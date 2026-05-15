@@ -87,6 +87,11 @@ class ApiRouter:
         routes: list[tuple[str, str, Callable[..., Any]]] = [
             ("POST", r"^/api/ingestion/sources$", self._register_source),
             ("POST", r"^/api/ingestion/sources/seed$", self._seed_default_sources),
+            ("GET", r"^/api/governance/sources/report$", self._source_governance_report),
+            ("POST", r"^/api/governance/sources/report$", self._source_governance_report),
+            ("GET", r"^/api/governance/audit-report$", self._audit_completeness_report),
+            ("POST", r"^/api/governance/audit-report$", self._audit_completeness_report),
+            ("POST", r"^/api/governance/sources/(?P<source_id>[^/]+)$", self._update_source_governance),
             ("POST", r"^/api/demo/full-flow$", self._seed_demo_full_flow),
             ("GET", r"^/api/health$", self._health),
             ("GET", r"^/api/metrics$", self._metrics),
@@ -231,6 +236,8 @@ class ApiRouter:
             return True
         if path.startswith("/api/readiness"):
             return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人"}
+        if path.startswith("/api/governance"):
+            return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人", "数据工程"}
         if path.startswith("/api/demo"):
             return role in {"system", "CEO", "CIO", "平台负责人"}
         if path.startswith("/api/market-data"):
@@ -270,6 +277,16 @@ class ApiRouter:
 
     def _seed_default_sources(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return {"sources": [to_plain(item) for item in self.service.seed_default_sources(actor=actor)]}
+
+    def _update_source_governance(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/governance/sources/(?P<source_id>[^/]+)$", path)
+        return to_plain(self.service.update_source_governance(match["source_id"], body, actor=actor))
+
+    def _source_governance_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.source_governance_report(body)
+
+    def _audit_completeness_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.audit_completeness_report(body)
 
     def _seed_demo_full_flow(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.seed_demo_full_flow(actor=actor)

@@ -648,11 +648,148 @@ class SystemService:
 
     def register_source(self, payload: Mapping[str, Any], *, actor: str = "system") -> SourceDefinition:
         source = payload if isinstance(payload, SourceDefinition) else SourceDefinition.from_dict(payload)
+        self._normalize_source_governance(source)
         if source.source_id in self.store.sources:
             raise ConflictError(f"source {source.source_id} already exists")
         self.store.sources[source.source_id] = source
         self._audit(actor, "register_source", "source", source.source_id, source=source.source_type, version=source.rights_tag.license_class)
         return source
+
+    def update_source_governance(self, source_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> SourceDefinition:
+        source = self.store.sources.get(source_id)
+        if source is None:
+            raise NotFoundError(f"source {source_id} not found")
+        if "field_whitelist" in payload:
+            source.field_whitelist = [str(item) for item in payload.get("field_whitelist", [])]
+        if "retention_policy" in payload:
+            source.retention_policy = str(payload.get("retention_policy", ""))
+        if "cache_ttl_days" in payload:
+            source.cache_ttl_days = int(payload.get("cache_ttl_days", 0))
+        if "contract_ref" in payload:
+            source.contract_ref = str(payload.get("contract_ref", ""))
+        if "commercial_scope" in payload:
+            source.commercial_scope = str(payload.get("commercial_scope", ""))
+        if "review_cadence" in payload:
+            source.review_cadence = str(payload.get("review_cadence", "quarterly"))
+        if "source_tos_uri" in payload:
+            source.source_tos_uri = str(payload.get("source_tos_uri", ""))
+        if "risk_level" in payload:
+            source.risk_level = str(payload.get("risk_level", source.risk_level))
+        self._normalize_source_governance(source, preserve_existing=True)
+        self._audit(actor, "update_source_governance", "source", source.source_id, source=source.source_type, version=source.rights_tag.license_class, approval_state=source.risk_level)
+        return source
+
+    def source_governance_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        risk_level = str(filters.get("risk_level", "")).strip()
+        source_type = str(filters.get("source_type", "")).strip()
+        sources = list(self.store.sources.values())
+        if risk_level:
+            sources = [source for source in sources if source.risk_level == risk_level]
+        if source_type:
+            sources = [source for source in sources if source.source_type == source_type]
+        rows: list[dict[str, Any]] = []
+        covered = 0
+        for source in sorted(sources, key=lambda item: item.source_id):
+            gaps = self._source_governance_gaps(source)
+            if not gaps:
+                covered += 1
+            rows.append(
+                {
+                    "source_id": source.source_id,
+                    "source_type": source.source_type,
+                    "risk_level": source.risk_level,
+                    "license_class": source.rights_tag.license_class,
+                    "retention_policy": source.retention_policy,
+                    "cache_ttl_days": source.cache_ttl_days,
+                    "commercial_scope": source.commercial_scope,
+                    "field_whitelist": list(source.field_whitelist),
+                    "contract_ref": source.contract_ref,
+                    "review_cadence": source.review_cadence,
+                    "gaps": gaps,
+                }
+            )
+        return {
+            "total": len(rows),
+            "covered": covered,
+            "coverage": round(covered / max(1, len(rows)), 4) if rows else 1.0,
+            "sources": rows,
+        }
+
+    def audit_completeness_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        action_prefix = str(filters.get("action_prefix", "")).strip()
+        events = list(self.store.audit_log)
+        if action_prefix:
+            events = [event for event in events if event.action.startswith(action_prefix)]
+        required_fields = ["event_id", "actor", "action", "resource_type", "resource_id", "source", "timestamp"]
+        field_counts = {field: 0 for field in required_fields}
+        incomplete: list[dict[str, Any]] = []
+        for event in events:
+            plain = to_plain(event)
+            missing = [field for field in required_fields if plain.get(field) in {"", None}]
+            for field in required_fields:
+                if field not in missing:
+                    field_counts[field] += 1
+            if missing:
+                incomplete.append({"event_id": event.event_id, "action": event.action, "missing": missing})
+        total = len(events)
+        field_coverage = {field: round(count / max(1, total), 4) if total else 1.0 for field, count in field_counts.items()}
+        return {
+            "total": total,
+            "complete": total - len(incomplete),
+            "coverage": round((total - len(incomplete)) / max(1, total), 4) if total else 1.0,
+            "field_coverage": field_coverage,
+            "incomplete": incomplete[:100],
+        }
+
+    def _normalize_source_governance(self, source: SourceDefinition, *, preserve_existing: bool = False) -> None:
+        _ = preserve_existing
+        if source.risk_level not in {"green", "yellow", "red"}:
+            raise ValidationError("source risk_level must be green, yellow, or red")
+        if not source.field_whitelist:
+            source.field_whitelist = sorted({str(value) for value in source.field_mapping.values() if str(value)})
+        if not source.retention_policy:
+            if source.source_type in {"regulatory", "exchange", "company_ir"}:
+                source.retention_policy = "retain_public_reference_with_source_uri"
+            elif source.risk_level == "red":
+                source.retention_policy = "manual_reference_only_no_cache"
+            else:
+                source.retention_policy = "contract_required_internal_reference"
+        if not source.cache_ttl_days:
+            if source.source_type in {"regulatory", "exchange", "company_ir"}:
+                source.cache_ttl_days = 3650
+            elif source.risk_level == "red":
+                source.cache_ttl_days = 0
+            else:
+                source.cache_ttl_days = 90
+        if not source.commercial_scope:
+            if source.source_type in {"regulatory", "exchange", "company_ir"}:
+                source.commercial_scope = "public_reference_internal_research"
+            elif source.risk_level == "red":
+                source.commercial_scope = "manual_reference_only"
+            else:
+                source.commercial_scope = "internal_research_only_contract_required"
+        if not source.review_cadence:
+            source.review_cadence = "quarterly"
+
+    def _source_governance_gaps(self, source: SourceDefinition) -> list[str]:
+        gaps: list[str] = []
+        if not source.retention_policy:
+            gaps.append("missing_retention_policy")
+        if source.cache_ttl_days < 0:
+            gaps.append("invalid_cache_ttl_days")
+        if source.source_type in {"vendor", "third_party_connector"} and not source.contract_ref:
+            gaps.append("missing_contract_ref")
+        if not source.commercial_scope:
+            gaps.append("missing_commercial_scope")
+        if source.field_mapping and not source.field_whitelist:
+            gaps.append("missing_field_whitelist")
+        if source.risk_level not in {"green", "yellow", "red"}:
+            gaps.append("invalid_risk_level")
+        if source.rights_tag.training_allowed and source.risk_level != "green":
+            gaps.append("training_allowed_on_non_green_source")
+        return gaps
 
     def seed_default_sources(self, *, actor: str = "system") -> list[SourceDefinition]:
         defaults = [
@@ -4028,12 +4165,16 @@ class SystemService:
         latest_benchmark = max(self.store.benchmark_runs.values(), key=lambda item: item.created_at, default=None)
         benchmark_metrics = latest_benchmark.metrics if latest_benchmark else {}
         entity_quality = self.entity_mapping_quality_report({})
+        source_governance = self.source_governance_report({})
+        audit_completeness = self.audit_completeness_report({})
         gates = [
             self._gate("evidence_coverage", evidence_coverage, 0.95, ">="),
             self._gate("research_conclusion_source_link_rate", conclusion_link_rate, 0.95, ">="),
             self._gate("pending_prompt_changes", float(pending_prompt_changes), 0.0, "=="),
             self._gate("red_zone_training_records", float(red_zone_training_records), 0.0, "=="),
             self._gate("high_risk_challenger_coverage", high_risk_challenger_coverage, 1.0, ">="),
+            self._gate("source_governance_coverage", float(source_governance.get("coverage", 0.0)), 0.95, ">="),
+            self._gate("audit_completeness", float(audit_completeness.get("coverage", 0.0)), 1.0, ">="),
             self._gate("entity_mapping_accuracy", float(entity_quality.get("accuracy", 0.0)), 0.98, ">="),
             self._gate("core_terms_f1", float(benchmark_metrics.get("term_f1", benchmark_metrics.get("core_terms_f1", 0.0))), 0.90, ">="),
             self._gate("evidence_page_hit_rate", float(benchmark_metrics.get("page_hit_rate", 0.0)), 0.95, ">="),
@@ -4057,6 +4198,8 @@ class SystemService:
                 "theses": len(theses),
                 "benchmark_runs": len(self.store.benchmark_runs),
                 "entity_mappings": len(self.store.entity_mappings),
+                "sources": len(self.store.sources),
+                "audit_events": len(self.store.audit_log),
             },
         }
 

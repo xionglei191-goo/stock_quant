@@ -85,10 +85,10 @@
 
 - `DOING` T-403 授权 EOD / 延时行情和供应商权限台账
   - 对应：E2-US1, E2-US3, E2-US4
-  - 已有：`authorized_eod_market_data` 默认来源、MarketDataPoint、`/api/market-data`、`/api/market-data/batch`、CorporateAction、`/api/corporate-actions`、批量导入逐条错误留痕、拆股/分红/代码变更公司行动、UI 入库入口、dashboard 摘要、rights tag 校验、实时数据阻断、红区/越权来源阻断测试、通达信 DuckDB 只读预览和导入接口
+  - 已有：`authorized_eod_market_data` 默认来源、MarketDataPoint、`/api/market-data`、`/api/market-data/batch`、CorporateAction、`/api/corporate-actions`、批量导入逐条错误留痕、拆股/分红/代码变更公司行动、UI 入库入口、dashboard 摘要、rights tag 校验、实时数据阻断、红区/越权来源阻断测试、通达信 DuckDB 只读预览和导入接口、source governance 台账字段、字段白名单、缓存期限和授权覆盖报告
   - 本地资源：`data/local/tdx/market_data.duckdb`，来自废弃项目 `stock_chs`，约 2703 万行、10849 个 symbol、覆盖 1990-12-19 至 2026-04-08；该目录已被 Git 忽略
   - 待做：通达信 symbol/market/date 字段映射完善、增量导入脚本、供应商字段白名单、行情数据质量报告
-  - 待做：通达信官网 `vipdoc` 下载/校验/解析兜底、公司行动自动复权、前复权/后复权口径声明、真实回测/估值/风险消费链路、授权台账和缓存保留期字段
+  - 待做：通达信官网 `vipdoc` 下载/校验/解析兜底、公司行动自动复权、前复权/后复权口径声明、真实回测/估值/风险消费链路、真实合同编号与供应商授权复核记录
   - 验收：生产输入数据 100% 能映射到授权台账；红黄绿分级覆盖率 >= 95%；未授权实时 non-display 数据不能进入自动化链路
 
 - `DOING` T-404 生产级状态库、对象存储和检索适配
@@ -151,8 +151,8 @@
 
 - `DOING` T-414 授权电话会/转录稿和研报引用策略
   - 对应：E2-US1, E2-US3, E6-US2
-  - 已有：`docs/transcript-research-citation-policy.md`、默认来源 `company_public_webcast` / `authorized_transcript_vendor` / `authorized_research_vendor`、rights tag 边界、公开 webcast 入库路径、供应商 transcript/research 默认禁止训练/再分发/派生、越权 transcript 拦截测试
-  - 待做：供应商白名单、合同条款字段、缓存保留期、引用片段限制、供应商对象 URI 脱敏、红区私会/路演纪要人工参考流程 UI、季度来源复核记录
+  - 已有：`docs/transcript-research-citation-policy.md`、默认来源 `company_public_webcast` / `authorized_transcript_vendor` / `authorized_research_vendor`、rights tag 边界、公开 webcast 入库路径、供应商 transcript/research 默认禁止训练/再分发/派生、越权 transcript 拦截测试、合同引用/缓存期限/商业范围/source TOS 治理字段
+  - 待做：供应商白名单真实合同条款录入、引用片段限制、供应商对象 URI 脱敏、红区私会/路演纪要人工参考流程 UI、季度来源复核记录
   - 验收：研报和转录稿默认只作为授权外部观点层；未经授权不得进入事实真相层、训练层或可执行建议层
 
 - `DOING` T-416 A 股补充数据 connector 引入
@@ -196,8 +196,8 @@
 
 - `DOING` T-421 安全、密钥和权限生产化
   - 对应：E2-US1, E2-US3, E6-US2, E6-US4, E9-US1；愿景扩展/生产化增强
-  - 已有：`scripts/security_check.py` 可检查 `.env` 误提交和常见密钥字面量，测试覆盖误提交场景
-  - 待做：密钥管理系统接入、密钥轮换记录、角色 + 数据域 + 动作级权限、供应商授权台账、数据红黄绿分级、审计字段完整性检查
+  - 已有：`scripts/security_check.py` 可检查 `.env` 误提交和常见密钥字面量，测试覆盖误提交场景；source governance report 可检查供应商授权台账、数据红黄绿分级、字段白名单和缓存期限；audit completeness report 可检查关键审计字段完整性
+  - 待做：密钥管理系统接入、密钥轮换记录、角色 + 数据域 + 动作级权限、真实供应商合同台账录入
   - 待做：PII/合同敏感字段扫描、权限越界告警、外部 API key 最小权限、供应商缓存保留期和删除策略
   - 验收：红区数据自动入库训练数 = 0；关键动作审计字段覆盖率 100%；越权访问可拦截并留痕
 

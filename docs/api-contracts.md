@@ -189,7 +189,30 @@
 
 #### `GET /api/readiness/vision-gate`
 
-返回项目愿景上线闸门报告，按证据覆盖率、研究结论原文回链率、pending prompt、红区训练记录、高风险 challenger 覆盖率、实体映射准确率和 benchmark 指标计算 `ready` / `not_ready`，并列出仍需人工验收的 UI、容量、备份恢复、权限红队和合规复核清单。
+返回项目愿景上线闸门报告，按证据覆盖率、研究结论原文回链率、pending prompt、红区训练记录、高风险 challenger 覆盖率、source governance 覆盖率、审计完整性、实体映射准确率和 benchmark 指标计算 `ready` / `not_ready`，并列出仍需人工验收的 UI、容量、备份恢复、权限红队和合规复核清单。
+
+#### `POST /api/governance/sources/{source_id}`
+
+更新来源授权治理字段，包括字段白名单、缓存期限、合同引用、商业使用范围、复核频率和 TOS URI。该接口不修改实际 `rights_tag`，只补齐来源治理台账。
+
+请求字段：
+
+- `field_whitelist`
+- `retention_policy`
+- `cache_ttl_days`
+- `contract_ref`
+- `commercial_scope`
+- `review_cadence`
+- `source_tos_uri`
+- `risk_level`
+
+#### `GET /api/governance/sources/report`
+
+返回来源授权覆盖报告，按 source 汇总 rights tag、字段白名单、缓存期限、合同引用和缺口项。可用 `source_type`、`risk_level` 过滤。
+
+#### `GET /api/governance/audit-report`
+
+返回审计日志字段完整性报告，检查关键动作是否具备 `event_id`、`actor`、`action`、`resource_type`、`resource_id`、`source` 和 `timestamp`。可用 `action_prefix` 过滤。
 
 #### `POST /api/connectors/astock/seed`
 
@@ -260,6 +283,14 @@
 - `redistribution_allowed`
 - `display_use`
 - `non_display_use`
+- `field_mapping`
+- `field_whitelist`
+- `retention_policy`
+- `cache_ttl_days`
+- `contract_ref`
+- `commercial_scope`
+- `review_cadence`
+- `source_tos_uri`
 
 #### `POST /api/ingestion/documents`
 

@@ -1251,6 +1251,41 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(filtered.data["total"], 1)
         self.assertEqual(filtered.data["connectors"][0]["connector_id"], "eastmoney_research")
 
+    def test_source_governance_report_tracks_contract_cache_and_audit_completeness(self) -> None:
+        self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, actor="data", role="data_engineer")
+        before = self.router.dispatch("POST", "/api/governance/sources/report", {"source_type": "vendor"}, role="risk_compliance")
+        self.assertTrue(before.success)
+        vendor_rows = {item["source_id"]: item for item in before.data["sources"]}
+        self.assertIn("authorized_eod_market_data", vendor_rows)
+        self.assertIn("missing_contract_ref", vendor_rows["authorized_eod_market_data"]["gaps"])
+        self.assertIn("close", vendor_rows["authorized_eod_market_data"]["field_whitelist"])
+
+        updated = self.router.dispatch(
+            "POST",
+            "/api/governance/sources/authorized_eod_market_data",
+            {
+                "contract_ref": "contract://market-data/eod-v1",
+                "retention_policy": "retain_adjusted_eod_for_research_10y",
+                "cache_ttl_days": 3650,
+                "commercial_scope": "internal_research_backtest_risk",
+                "field_whitelist": ["security_id", "as_of_date", "open", "high", "low", "close", "adjusted_close", "volume"],
+            },
+            actor="risk",
+            role="risk_compliance",
+        )
+        self.assertTrue(updated.success)
+        self.assertEqual(updated.data["contract_ref"], "contract://market-data/eod-v1")
+
+        after = self.router.dispatch("POST", "/api/governance/sources/report", {"source_type": "vendor"}, role="risk_compliance")
+        self.assertTrue(after.success)
+        vendor_rows = {item["source_id"]: item for item in after.data["sources"]}
+        self.assertNotIn("missing_contract_ref", vendor_rows["authorized_eod_market_data"]["gaps"])
+
+        audit_report = self.router.dispatch("GET", "/api/governance/audit-report", {}, role="risk_compliance")
+        self.assertTrue(audit_report.success)
+        self.assertGreaterEqual(audit_report.data["coverage"], 0.99)
+        self.assertEqual(audit_report.data["field_coverage"]["actor"], 1.0)
+
     def test_health_and_metrics_endpoints(self) -> None:
         health = self.router.dispatch("GET", "/api/health", {}, role="unknown")
         self.assertTrue(health.success)
@@ -2891,6 +2926,8 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("evidence_coverage", gate_names)
         self.assertIn("pending_prompt_changes", gate_names)
         self.assertIn("high_risk_challenger_coverage", gate_names)
+        self.assertIn("source_governance_coverage", gate_names)
+        self.assertIn("audit_completeness", gate_names)
         self.assertIn("production_ui_screenshot_acceptance", gate.data["pending_checklist"])
 
     def test_search_falls_back_when_external_backend_fails(self) -> None:

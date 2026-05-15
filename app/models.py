@@ -57,6 +57,13 @@ class SourceDefinition:
     risk_level: str = "green"
     field_mapping: dict[str, str] = field(default_factory=dict)
     allowed_document_types: list[str] = field(default_factory=list)
+    field_whitelist: list[str] = field(default_factory=list)
+    retention_policy: str = ""
+    cache_ttl_days: int = 0
+    contract_ref: str = ""
+    commercial_scope: str = ""
+    review_cadence: str = "quarterly"
+    source_tos_uri: str = ""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "SourceDefinition":
@@ -78,6 +85,13 @@ class SourceDefinition:
             risk_level=str(data.get("risk_level", "green")),
             field_mapping=dict(data.get("field_mapping", {})),
             allowed_document_types=list(data.get("allowed_document_types", [])),
+            field_whitelist=[str(item) for item in data.get("field_whitelist", [])],
+            retention_policy=str(data.get("retention_policy", "")),
+            cache_ttl_days=int(data.get("cache_ttl_days", 0)),
+            contract_ref=str(data.get("contract_ref", "")),
+            commercial_scope=str(data.get("commercial_scope", "")),
+            review_cadence=str(data.get("review_cadence", "quarterly")),
+            source_tos_uri=str(data.get("source_tos_uri", "")),
         )
 
 

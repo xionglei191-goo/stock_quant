@@ -226,6 +226,10 @@ curl -sS -X POST http://127.0.0.1:8000/api/connectors/astock/verify \
 
 `/api/readiness/vision-gate` 会返回 `ready` / `not_ready` 和逐项指标，避免把 demo 状态误判为生产可上线。UI 截图验收、跨浏览器、容量延迟、备份恢复、权限红队和合规复核仍作为上线前人工检查项。
 
+## 来源授权治理
+
+`/api/governance/sources/report` 汇总来源授权台账覆盖率，`/api/governance/audit-report` 检查关键审计字段完整性。供应商或第三方来源应补齐 `contract_ref`、`retention_policy`、`cache_ttl_days`、`commercial_scope` 和 `field_whitelist`，再进入自动化链路。
+
 ## PaddleOCR-VL 文档解析备用接口
 
 本地 PDF/文本流解析拿不到内容时，`/api/evidence/extract` 会在 `AI_QUANT_PADDLEOCR_TOKEN` 已配置的情况下自动调用 PaddleOCR-VL，并把返回 markdown 切成 evidence。也可以直接调用备用解析接口；密钥不要写入仓库，请通过环境变量注入：
