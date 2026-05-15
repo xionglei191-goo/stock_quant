@@ -60,7 +60,9 @@
 - `DOING` T-403 授权 EOD / 延时行情和供应商权限台账
   - 对应：E2-US1, E2-US3, E2-US4
   - 已有：`authorized_eod_market_data` 默认来源、MarketDataPoint、`/api/market-data`、`/api/market-data/batch`、CorporateAction、`/api/corporate-actions`、批量导入逐条错误留痕、拆股/分红/代码变更公司行动、UI 入库入口、dashboard 摘要、rights tag 校验、实时数据阻断、红区/越权来源阻断测试
-  - 待做：真实供应商 connector、字段级供应商白名单、公司行动自动复权计算、真实回测/估值消费链路
+  - 新增判断：`/home/xionglei/Project/stock_chs` 准备废弃，但其通达信来源历史行情可先迁入本项目使用；若存量数据不可用，再从通达信官网数据中心下载 `vipdoc` 数据重建
+  - 已迁入本地资源：`data/local/tdx/market_data.duckdb`，来自 `stock_chs/market_data.duckdb`，约 2703 万行、10849 个 symbol、覆盖 1990-12-19 至 2026-04-08；该目录已被 Git 忽略
+  - 待做：通达信 DuckDB 只读 adapter、批量导入 `/api/market-data/batch` 的增量脚本、字段级供应商白名单、公司行动自动复权计算、真实回测/估值消费链路、官网 `vipdoc` 下载/解析兜底
   - 说明：MVP 不接未经许可的实时 non-display 数据；行情只服务研究、估值、回测和风控
 
 - `DOING` T-404 生产级状态库、对象存储和检索适配
@@ -127,8 +129,15 @@
 - `DOING` T-414 授权电话会/转录稿和研报引用策略
   - 对应：E2-US1, E2-US3, E6-US2
   - 已有：`docs/transcript-research-citation-policy.md`、默认来源 `company_public_webcast` / `authorized_transcript_vendor` / `authorized_research_vendor`、rights tag 边界、公开 webcast 入库路径、供应商 transcript/research 默认禁止训练/再分发/派生、越权 transcript 拦截测试
-  - 待做：真实供应商合同逐条核验、缓存保留期字段、供应商对象 URI 脱敏策略、红区私会/路演纪要人工参考流程 UI、季度来源复核记录
+  - 新增判断：`/home/xionglei/文档/6大投行研报汇总` 后续作为本项目独立研报模块维护；当前目录约 22G、11742 个文件，其中 11702 个 PDF，按投行/年份/月组织
+  - 待做：本地研报 manifest 索引器、投行 source registry、按需 PDF 入湖、OCR/文本抽取队列、缓存保留期字段、供应商对象 URI 脱敏策略、红区私会/路演纪要人工参考流程 UI、季度来源复核记录
   - 输出：公开 webcast 与授权 transcript 白名单、缓存权限、引用与训练边界、来源审查字段、红区数据人工参考流程
+
+- `TODO` T-416 A 股补充数据 connector 引入
+  - 对应：E2-US1, E2-US3, E2-US4, E3-US3
+  - 输入：`a-stock-data` Apache-2.0 Skill，覆盖通达信/腾讯/东财/akshare/iwencai/同花顺/百度股市通/巨潮等 A 股数据端点
+  - 待做：逐项验证接口可用性和许可边界；优先接入东财研报发现、巨潮公告补充、腾讯估值快照、同花顺热点题材、百度概念/资金流、龙虎榜、解禁日历；把需要 key 的 iwencai 放到可选配置
+  - 验收：每个 connector 有 source definition、rights tag、限速/错误留痕、字段映射和最小测试；外部接口只作为补充，不替代授权/本地核心数据
 
 - `DONE` T-415 美股合规专题补充
   - 对应：E2-US1, E6-US2, E6-US4
