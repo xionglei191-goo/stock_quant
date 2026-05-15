@@ -100,17 +100,22 @@ docker compose up --build
 - 上交所 A 股最近公告检索预览和入湖
 - SEC EDGAR 最近 filings 元数据抓取和可选正文入湖
 - HKEXnews 最近公告检索预览和入湖
-- 授权 EOD/延时行情点入库，包含 source rights 校验、实时数据阻断、红区来源阻断和 dashboard 摘要
+- 公开/已提供 EOD/延时行情点入库，包含 source rights 校验、实时数据阻断、红区来源阻断和 dashboard 摘要
 - 13F 持仓记录入库，并可生成中低频拥挤度 snapshot
 - HTML 文档正文清洗并生成可读证据片段
 - PDF 对象文本流/Flate 流抽取兜底，可从本地 PDF 对象生成证据片段
 - `/api/document-parsing/paddleocr` PaddleOCR-VL 文档解析备用接口，证据抽取在本地解析无文本且配置 token 时会自动兜底
-- `/api/market-data/tdx/preview` 与 `/api/market-data/tdx/import` 读取本地通达信 DuckDB 日线库并导入授权 EOD 行情
-- `/api/research-reports/scan` 本地研报 manifest 索引，研报默认作为授权外部观点层维护
+- `/api/market-data/tdx/preview` 与 `/api/market-data/tdx/import` 读取本地通达信 DuckDB 日线库并导入公开/已提供 EOD 行情
+- `/api/research-reports/scan` 本地研报 manifest 索引，研报默认作为本地参考观点层维护
 - 术语、数值、期间和规则表格读取基线抽取，并可按中英 benchmark 样本集运行阈值、定位、表格和低置信度拦截评估
 - Issuer / Security / MarketDataPoint / Document / Evidence / Thesis / Signal / Decision / Review
 - CorporateAction 用于拆股、分红、代码变更等复权和估值链路
-- 英文 evidence 优先的研究问答与中文摘要审计，保留 summary/prompt/model 版本和人工覆核状态
+- `/api/market-data/adjusted` 提供 `raw`、`backward`、`forward` 复权计算视图；现金分红只作为公司行动返回，不默认混入价格因子
+- `/api/market-data/returns` 基于复权价格输出收益序列、累计收益、波动和最大回撤；默认价格收益，传 `total_return_method=cash_dividend_reinvested` 时计入 ex-date 现金分红
+- `/api/portfolio/returns` 将多个证券的公开复权收益按权重聚合为组合级收益、波动和回撤，仍保持 paper-only
+- `/api/portfolio/valuation` 用 as-of 前最近公开行情价计算持仓市值、权重、现金权重和缺失价格清单
+- `/api/portfolio/transactions` 和 `/api/portfolio/positions` 记录交易流水并按 as-of 派生持仓，供月报绩效和归因复算
+- 英文 evidence 优先的研究问答与中文摘要审计，保留 summary/prompt/model 版本、人工覆核状态和答案级质量/复核队列报告
 - benchmark、prompt 审批、scorecard、research card
 - Reg FD / non-display 合规闸门
 - approved decision 到 execution intent 的审批闸门
@@ -128,7 +133,7 @@ docker compose up --build
 - 批量 ingestion job，支持 connector normalize、去重、错误记录和任务状态查询
 - 采集调度 schedule，支持 cadence、retry_limit、最近 job 状态和失败重试
 - `/api/health` 与 `/api/metrics`，提供最小部署健康检查和运行指标
-- `/api/alerts` 告警闭环，支持默认规则播种、指标评估、开放告警查询和恢复状态
+- `/api/alerts` 告警闭环，支持默认规则播种、指标评估、开放告警查询、恢复状态、通知 outbox 和基于 playbook 的事故自动建单
 - Evidence extraction 支持 `\f` 分页文本，记录 `page_no` 和稳定 locator
 - 扫描件/空文本会优先尝试 PaddleOCR-VL 备用解析；未配置或解析失败时进入人工复核队列，并提供 evidence quality report
 
@@ -206,7 +211,7 @@ curl -sS -X POST http://127.0.0.1:8000/api/orchestration/dags/dag_daily_research
 
 ## A 股补充接口注册表
 
-`a-stock-data` 这类外部接口先进入候选注册表，逐项声明来源、字段映射、限速、是否需要 key、rights tag 和验证状态。默认只作为人工参考或补充研究，不替代本地/授权核心数据。
+`a-stock-data` 这类外部接口先进入候选注册表，逐项声明来源、字段映射、限速、是否需要 key、rights tag 和验证状态。默认只作为人工参考或补充研究，不替代本地通达信和官方公开披露核心数据。
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/api/connectors/astock/seed \
@@ -224,11 +229,11 @@ curl -sS -X POST http://127.0.0.1:8000/api/connectors/astock/verify \
 
 ## 愿景上线闸门
 
-`/api/readiness/vision-gate` 会返回 `ready` / `not_ready` 和逐项指标，避免把 demo 状态误判为生产可上线。UI 截图验收、跨浏览器、容量延迟、备份恢复、权限红队和合规复核仍作为上线前人工检查项。
+`/api/readiness/vision-gate` 会返回 `ready` / `not_ready` 和逐项指标，避免把 demo 状态误判为生产可上线。`/api/readiness/checklist` 可记录真实数据 smoke、UI 截图、跨浏览器、容量延迟、备份恢复、权限红队、合规复核和上线 checklist 的证据 URI、owner 与指标；未审计通过的项会留在闸门 `pending_checklist` 中。
 
-## 来源授权治理
+## 公开来源治理
 
-`/api/governance/sources/report` 汇总来源授权台账覆盖率，`/api/governance/audit-report` 检查关键审计字段完整性。供应商或第三方来源应补齐 `contract_ref`、`retention_policy`、`cache_ttl_days`、`commercial_scope` 和 `field_whitelist`，再进入自动化链路。
+`/api/governance/sources/report` 汇总公开来源 provenance 台账覆盖率，`/api/governance/sources/{source_id}/reviews` 记录季度来源复核，`/api/governance/source-review-reminders` 输出复核 owner 看板和逾期/即将到期提醒，系统治理 UI 会展示该看板，并可通过默认告警 `alert_source_review_overdue` 写入来源复核通知 outbox。`/api/governance/audit-report` 检查关键审计字段完整性，`/api/governance/data-security-report` 扫描已入湖文本中的邮箱、手机号、身份证样式和 secret/API key 字面量并返回脱敏片段；越权 API 访问会被 403 拦截并写入 `permission_denied` 审计事件。外部公开来源应补齐 `provenance_ref`、`source_tos_uri`、`retention_policy`、`cache_ttl_days`、`usage_scope` 和 `field_whitelist`，边界不清时只进入人工参考。
 
 ## PaddleOCR-VL 文档解析备用接口
 
@@ -274,7 +279,7 @@ curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/preview \
   -d '{"symbols":["600000"],"start_date":"2026-01-01","end_date":"2026-05-15","limit":5}'
 ```
 
-导入到授权 EOD 行情层：
+导入到公开/已提供 EOD 行情层：
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/import \
@@ -283,9 +288,36 @@ curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/import \
   -d '{"symbols":["600000"],"security_map":{"600000":"sec_600000"},"start_date":"2026-01-01","end_date":"2026-05-15","limit":200}'
 ```
 
+也可以把 `source_format` 设为 `vipdoc` 读取本地通达信 `vipdoc/*/lday/*.day` 文件，默认目录为 `./data/local/tdx/vipdoc`，可用 `AI_QUANT_TDX_VIPDOC_PATH` 覆盖：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/preview \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: data_engineer' \
+  -d '{"source_format":"vipdoc","symbols":["sh600000"],"start_date":"2026-01-01","end_date":"2026-05-15","limit":5}'
+```
+
+增量导入脚本会读取 SQLite 状态库中每个 symbol 对应 security 的最后入库日期，并从下一交易日开始拉取；`--dry-run` 只返回预览数量，不写状态库：
+
+```bash
+python3 scripts/import_tdx_market_data.py ./data/state.db \
+  --symbols 600000,000001 \
+  --security-map '{"600000":"sec_600000","000001":"sec_000001"}' \
+  --source-format duckdb \
+  --end-date 2026-05-15
+```
+
+`vipdoc` 压缩包下载必须显式传入公开可审计 URL 或本地文件，并建议提供 sha256：
+
+```bash
+python3 scripts/download_tdx_vipdoc.py https://example.invalid/tdx/vipdoc.zip \
+  --target-dir ./data/local/tdx/vipdoc_downloads \
+  --expected-sha256 <sha256>
+```
+
 ## 本地研报资产库
 
-研报默认只做“授权外部观点层”，不作为事实真相源，也不默认进入训练。扫描本地目录生成 manifest：
+研报默认只做“本地参考观点层”，不作为事实真相源，也不默认进入训练。扫描本地目录生成 manifest：
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/api/research-reports/scan \
@@ -301,6 +333,15 @@ curl -sS -X POST http://127.0.0.1:8000/api/research-reports/rr_xxx/ingest \
   -H 'Content-Type: application/json' \
   -H 'X-Role: analyst' \
   -d '{"issuer_id":"issuer_001","security_id":"sec_001"}'
+```
+
+私会、路演或边界不清转录稿只能登记 metadata-only 人工参考记录；接口会拒绝正文并创建人工复核项：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/research/manual-references \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: analyst' \
+  -d '{"document_id":"doc_private_note_meta","issuer_id":"issuer_demo","security_id":"security_demo_us","document_type":"private_meeting_note","title":"Private meeting metadata","source_uri":"private://meetings/demo","notes":"Metadata only; confirm publicness and Reg FD boundary."}'
 ```
 
 ## A 股公告接入

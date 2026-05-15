@@ -1,5 +1,7 @@
 # AI Native 虚拟量化基金组织下一步研究清单
 
+> 状态说明：本文是历史研究底稿，保留原始论证和引用脉络。当前执行口径已调整为“不采购或依赖商业授权数据”，以 `tasks/todo.md`、`docs/product-requirements-document.md`、`docs/api-contracts.md` 和代码中的 `public_*` / `local_reference_*` source governance 为准。
+
 ## 执行摘要
 
 从 CEO 视角看，这份“下一步研究清单”不应被当作一组松散课题，而应被管理成一个有明确阶段闸门的落地项目群：先解决**数据权利可用性**与**研究证据可审计性**，再解决**策略可执行性**与**组织可治理性**，最后再做**复杂基础设施升级**。对 A 股、港股、美股三市场而言，最值得优先投入的不是“更快的数据”，而是“可合法持续使用的数据”“可回溯的研究证据链”“可复盘的决策纪律”。公开披露层面，A 股以上市公司在交易所网站及符合监管规定媒体披露的信息为基本真相源，港股以 HKEXnews 为中心化披露平台，美股以 SEC EDGAR 与其 Data APIs 为基础；但行情、非展示使用、衍生数据、研报、会议转录等一旦进入自动化研究与商业化使用，授权边界立刻显著收紧，尤其是美股的 non-display / derived data 和港股的 wholesale market data 许可。citeturn16search1turn16search11turn22search0turn22search9turn40search1turn40search2turn6search10turn6search9turn7search5turn7search19

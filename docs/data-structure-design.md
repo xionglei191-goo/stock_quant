@@ -28,6 +28,47 @@
 
 ## 4. 核心实体模型
 
+### 4.0 SourceDefinition
+
+```json
+{
+  "source_id": "string",
+  "source_type": "regulatory|exchange|company_ir|public_market_data|public_web|local_reference|manual_reference|third_party_connector",
+  "risk_level": "green|yellow|red",
+  "field_whitelist": ["string"],
+  "retention_policy": "string",
+  "cache_ttl_days": 0,
+  "provenance_ref": "string",
+  "usage_scope": "string",
+  "collection_method": "string",
+  "robots_policy": "string",
+  "last_reviewed_at": "datetime|null",
+  "review_cadence": "monthly|quarterly|semiannual|annual",
+  "review_owner": "string",
+  "review_owner_role": "string",
+  "source_tos_uri": "string"
+}
+```
+
+### 4.0.1 SourceReviewRecord
+
+```json
+{
+  "review_id": "string",
+  "source_id": "string",
+  "reviewer": "string",
+  "reviewed_at": "datetime",
+  "review_period": "YYYYQn",
+  "status": "approved|conditional|rejected",
+  "publicness_status": "confirmed_public_or_local|manual_reference_only|unclear",
+  "tos_status": "reviewed|not_applicable|needs_review",
+  "robots_status": "reviewed_or_not_applicable|blocked|needs_review",
+  "usage_scope_status": "within_boundary|manual_reference_only|blocked",
+  "findings": ["string"],
+  "next_review_due_at": "datetime|null"
+}
+```
+
 ### 4.1 Issuer
 
 ```json
@@ -149,6 +190,31 @@
 }
 ```
 
+### 4.2.3 AdjustedMarketDataView
+
+`AdjustedMarketDataView` 是 `/api/market-data/adjusted` 的计算视图，不覆盖原始行情点。`raw` 保留入库价格；`backward` 将未来拆股、反向拆股和送股作用到更早价格；`forward` 将已发生公司行动作用到更新价格。现金分红作为 ex-date 现金流返回，不进入价格因子；`/api/market-data/returns` 在 `total_return_method=cash_dividend_reinvested` 时才计入收益。
+
+```json
+{
+  "security_id": "string",
+  "source_id": "string",
+  "data_type": "eod|delayed",
+  "adjustment_mode": "raw|backward|forward",
+  "adjustment_policy": {},
+  "corporate_actions": [],
+  "market_data": [
+    {
+      "data_id": "string",
+      "as_of_date": "YYYY-MM-DD",
+      "raw_close": 0.0,
+      "adjustment_factor": 1.0,
+      "computed_adjusted_close": 0.0,
+      "corporate_action_ids": ["string"]
+    }
+  ]
+}
+```
+
 ### 4.3 Document
 
 ```json
@@ -157,7 +223,7 @@
   "issuer_id": "string",
   "security_id": "string",
   "document_type": "announcement|annual_report|10-K|10-Q|8-K|20-F|6-K|research|transcript",
-  "source_type": "regulatory|exchange|company_ir|vendor",
+  "source_type": "regulatory|exchange|company_ir|public_market_data|local_reference|manual_reference|third_party_connector",
   "source_uri": "string",
   "object_uri": "string",
   "content_sha256": "string",
@@ -571,7 +637,7 @@
 | `REPLAY_OF` | StrategyReplay | DecisionPack | 决策形成策略回放 |
 | `HAS_PORTFOLIO_PROPOSAL` | Issuer | PortfolioProposal | 主体关联纸面组合候选方案 |
 | `PROPOSES_WEIGHT` | PortfolioProposal | Security | 纸面组合候选方案给出证券候选权重 |
-| `HAS_MARKET_DATA` | Security | MarketDataPoint | 证券关联授权 EOD/延时行情 |
+| `HAS_MARKET_DATA` | Security | MarketDataPoint | 证券关联公开/已提供 EOD/延时行情 |
 | `HAS_CORPORATE_ACTION` | Security | CorporateAction | 公司行动用于复权、估值和回测链路 |
 | `HAS_13F_HOLDING` | Issuer | InstitutionalHolding | 主体关联 13F 机构持仓 |
 | `HOLDS_SECURITY` | InstitutionalHolding | Security | 13F 持仓关联证券 |
@@ -588,19 +654,44 @@
 
 ## 6. 配置对象
 
-### 6.1 授权矩阵
+### 6.1 公开来源治理矩阵
 
 ```json
 {
   "source_id": "string",
-  "source_type": "regulatory|exchange|company_ir|vendor",
+  "source_type": "regulatory|exchange|company_ir|public_market_data|local_reference|manual_reference|third_party_connector",
   "license_class": "string",
   "training_allowed": false,
   "redistribution_allowed": false,
   "retention_policy": "string",
+  "provenance_ref": "string",
+  "source_tos_uri": "string",
+  "collection_method": "string",
+  "robots_policy": "string",
+  "usage_scope": "string",
+  "last_reviewed_at": "datetime",
   "display_use": "allowed|restricted",
   "non_display_use": "allowed|restricted",
   "derived_data_use": "allowed|restricted"
+}
+```
+
+### 6.1.1 来源复核记录
+
+```json
+{
+  "review_id": "string",
+  "source_id": "string",
+  "reviewer": "string",
+  "reviewed_at": "datetime",
+  "review_period": "2026Q2",
+  "status": "approved|conditional|rejected",
+  "publicness_status": "confirmed_public_or_local|manual_reference_only|unclear",
+  "tos_status": "reviewed|not_applicable|needs_review",
+  "robots_status": "reviewed_or_not_applicable|blocked|needs_review",
+  "usage_scope_status": "within_boundary|manual_reference_only|blocked",
+  "findings": ["string"],
+  "next_review_due_at": "datetime"
 }
 ```
 

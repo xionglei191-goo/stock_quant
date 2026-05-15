@@ -93,6 +93,10 @@
 
 按 `task_type`、`status`、`limit` 查询 LLM 任务模板。
 
+#### `GET /api/prompts/changes`
+
+按 `status`、`prompt_name`、`limit` 查询 prompt 变更审批记录，供 Agent 协作 UI 展示 pending/approved prompt。`POST /api/prompts/changes` 创建变更，`POST /api/prompts/changes/{request_id}/approve` 完成审批。
+
 #### `POST /api/llm/tasks/run`
 
 运行已审批 LLM 任务模板。接口会渲染模板变量、调用配置的 OpenAI/Anthropic 上游，并记录模型、prompt 版本、延迟、成本估算、回退路径和人工复核标记。上游不可用时按模板 `fallback_chain` 使用规则摘要、上一稳定输出或人工复核降级。
@@ -114,7 +118,7 @@
 
 #### `GET /api/llm/tasks/metrics`
 
-返回 LLM 任务模板数、已审批模板数、运行数、失败数、回退数、人工复核数、平均延迟和成本估算。
+返回 LLM 任务模板数、已审批模板数、运行数、失败数、错误率、回退数、人工复核数、平均延迟、成本估算、成本预算和预算使用率。默认告警 `alert_llm_cost_budget` 和 `alert_llm_error_rate` 消费该指标。
 
 #### `POST /api/orchestration/dags`
 
@@ -139,6 +143,22 @@
 - `run_id`
 - `inputs`
 - `idempotency_key`
+- `output_refs`
+- `task_statuses`
+- `status`
+- `error`
+- `force`
+
+#### `POST /api/orchestration/runs/{run_id}/retry`
+
+用失败或待复核 run 的冻结输入创建一次强制重放，返回新 `WorkflowRun`，并在 `inputs.retry_of` / `inputs.retry_error` 中保留原 run 和错误。默认告警 `alert_workflow_failed_runs` 使用 `workflow_failed_runs` 指标提示失败 run 需要重放。
+
+请求字段：
+
+- `run_id`
+- `inputs`
+- `task_statuses`
+- `status`
 - `output_refs`
 - `force`
 
@@ -179,40 +199,99 @@
 
 #### `POST /api/search/semantic`
 
-使用本地语义检索 adapter 对已入库 SearchRecord 执行轻量向量化排序。当前实现为 term-frequency cosine，用于固定 Qdrant/reranker 替换前的 API 契约，并继承原始记录的权限边界。
+使用本地语义检索 adapter 对已入库 SearchRecord 执行轻量向量化排序。当前实现为 term-frequency cosine，用于固定 Qdrant/reranker 替换前的 API 契约，并继承原始记录的权限边界。默认过滤 restricted 结果；可用 `include_restricted=true` 显式纳入本地参考/受限结果，返回项会标记 `source_boundary`、`rights_tag` 和 `risk_level`。
 
 请求字段：
 
 - `q`
 - `issuer_id`
+- `resource_types`
+- `include_restricted`
 - `limit`
+
+#### `POST /api/search/semantic/benchmark`
+
+对语义检索样本计算 `recall_at_k`。每个样本包含 `q`、`issuer_id`、`resource_types`、`include_restricted` 和 `expected_resource_ids`，用于回归检索质量和权限过滤行为。
 
 #### `GET /api/readiness/vision-gate`
 
-返回项目愿景上线闸门报告，按证据覆盖率、研究结论原文回链率、pending prompt、红区训练记录、高风险 challenger 覆盖率、source governance 覆盖率、审计完整性、实体映射准确率和 benchmark 指标计算 `ready` / `not_ready`，并列出仍需人工验收的 UI、容量、备份恢复、权限红队和合规复核清单。
+返回项目愿景上线闸门报告，按证据覆盖率、研究结论原文回链率、pending prompt、红区训练记录、高风险 challenger 覆盖率、source governance 覆盖率、审计完整性、实体映射准确率、benchmark 指标、季度事故演练覆盖率和 readiness checklist 覆盖率计算 `ready` / `not_ready`，并列出仍需人工验收的真实数据 smoke、UI、容量、备份恢复、权限红队、合规复核和上线 checklist 清单。
+
+#### `GET /api/readiness/checklist`
+
+查询上线验收台账。每个必填项包含 `check_id`、owner、状态、证据 URI、测量时间和指标；未写入记录时状态为 `pending`。可用 `status`、`owner_role` 过滤。过期的 `passed` 记录会在 `effective_status` 中标记为 `expired`，不会计入闸门通过。
+
+#### `POST /api/readiness/checklist/{check_id}`
+
+写入或更新真实上线验收记录，并进入审计日志。支持的 `check_id` 包括 `real_data_smoke_test`、`production_ui_screenshot_acceptance`、`cross_browser_acceptance`、`capacity_latency_report`、`backup_restore_drill`、`permission_red_team_test`、`compliance_review_record` 和 `launch_checklist`。
+
+请求字段：
+
+- `status`
+- `owner`
+- `evidence_uri`
+- `notes`
+- `metrics`
+- `measured_at`
+- `expires_at`
 
 #### `POST /api/governance/sources/{source_id}`
 
-更新来源授权治理字段，包括字段白名单、缓存期限、合同引用、商业使用范围、复核频率和 TOS URI。该接口不修改实际 `rights_tag`，只补齐来源治理台账。
+更新公开来源治理字段，包括字段白名单、缓存期限、来源/provenance 引用、用途范围、复核频率和 TOS URI。该接口不修改实际 `rights_tag`，只补齐来源治理台账。
 
 请求字段：
 
 - `field_whitelist`
 - `retention_policy`
 - `cache_ttl_days`
-- `contract_ref`
-- `commercial_scope`
+- `provenance_ref`
+- `usage_scope`
+- `collection_method`
+- `robots_policy`
+- `last_reviewed_at`
 - `review_cadence`
+- `review_owner`
+- `review_owner_role`
 - `source_tos_uri`
 - `risk_level`
 
 #### `GET /api/governance/sources/report`
 
-返回来源授权覆盖报告，按 source 汇总 rights tag、字段白名单、缓存期限、合同引用和缺口项。可用 `source_type`、`risk_level` 过滤。
+返回公开来源治理覆盖报告，按 source 汇总 rights tag、字段白名单、缓存期限、provenance 引用、TOS URI、用途范围、复核 owner、缺口项、最新复核记录和 `automation_ready` 白名单状态。可用 `source_type`、`risk_level` 过滤。
+
+#### `POST /api/governance/sources/{source_id}/reviews`
+
+写入一次来源复核记录，并同步更新该来源的 `last_reviewed_at`。复核记录用于季度来源检查，不替代 rights tag；`rejected`、公开性不清、TOS/robots 未复核或用途被阻断会在治理报告中进入 `blocked_reasons`。
+
+请求字段：
+
+- `review_id`
+- `reviewed_at`
+- `review_period`
+- `status`
+- `publicness_status`
+- `tos_status`
+- `robots_status`
+- `usage_scope_status`
+- `findings`
+- `next_review_due_at`
+- `notes`
+
+#### `GET /api/governance/source-reviews`
+
+查询来源复核记录。可用 `source_id`、`status`、`due_before`、`limit` 过滤；历史 `authorized_*` source id 会映射到当前 canonical public/local/manual source id。
+
+#### `GET /api/governance/source-review-reminders`
+
+返回季度来源复核提醒和 owner 看板，覆盖从未复核、已逾期和未来窗口内到期的来源，并保留阻断原因供治理看板展示。可用 `as_of`、`due_before`、`due_within_days`、`owner`、`owner_role`、`source_type`、`risk_level`、`include_blocked`、`limit` 过滤。系统治理 UI 消费该接口；默认告警规则 `alert_source_review_overdue` 使用 `source_review_overdue` 指标触发，可通过 `/api/alerts/notify` 写入来源复核通知 outbox。
 
 #### `GET /api/governance/audit-report`
 
 返回审计日志字段完整性报告，检查关键动作是否具备 `event_id`、`actor`、`action`、`resource_type`、`resource_id`、`source` 和 `timestamp`。可用 `action_prefix` 过滤。
+
+#### `GET /api/governance/data-security-report`
+
+扫描已入湖 document、evidence 和 research answer 中的邮箱、手机号、身份证样式和 secret/API key 字面量，返回脱敏 snippet、按类型/来源/严重级别聚合的统计，并用于 `sensitive_findings` 默认告警。可用 `resource_type`、`finding_type`、`issuer_id`、`source_id`、`scan_char_limit`、`limit` 过滤。越权 API 访问会被拦截并以 `permission_denied` 审计事件留痕，默认告警 `alert_permission_denied_events` 使用 `permission_denied_events` 指标触发。
 
 #### `POST /api/connectors/astock/seed`
 
@@ -237,13 +316,23 @@
 
 #### `POST /api/connectors/astock/verify`
 
-登记接口验证结果，不直接把第三方数据升级为授权事实层。`passed` 会把 connector 标为 `verified`；`blocked` 会阻断后续自动化使用。
+登记接口验证结果，不直接把第三方数据升级为事实层。`passed` 会把 connector 标为 `verified`；`blocked` 会阻断后续自动化使用。
 
 请求字段：
 
 - `connector_id`
 - `status`
 - `error`
+
+#### `POST /api/connectors/astock/fetch`
+
+对 A 股补充 connector 的本地样本行执行字段归一化、source URI 脱敏和权限边界评估。当前入口用于公开接口接入前的可重复样本验证；默认只返回 `manual_reference_or_supplemental_research_only` 结果，不写入事实真相层。`blocked` connector 或红区来源会被合规闸门拦截。
+
+请求字段：
+
+- `connector_id`
+- `sample_rows`
+- `limit`
 
 #### `GET /api/connectors/astock`
 
@@ -287,14 +376,17 @@
 - `field_whitelist`
 - `retention_policy`
 - `cache_ttl_days`
-- `contract_ref`
-- `commercial_scope`
+- `provenance_ref`
+- `usage_scope`
+- `collection_method`
+- `robots_policy`
+- `last_reviewed_at`
 - `review_cadence`
 - `source_tos_uri`
 
 #### `POST /api/ingestion/documents`
 
-提交原始文档入湖。
+提交原始文档入湖。`source_uri` 会在入库前移除 fragment，并对 `token`、`api_key`、`access_token`、`signature`、`secret` 等敏感查询参数做 `REDACTED` 脱敏，保留可审计 provenance 但不保留密钥样值。
 
 请求字段：
 
@@ -311,7 +403,8 @@
 
 #### `POST /api/market-data/points`
 
-写入授权 EOD 或延时行情点。接口会校验 `security_id`、`source_id`、市场一致性、`rights_tag` 是否超过 source 权限，并阻断实时行情或红区来源。
+写入公开/已提供 EOD 或延时行情点。接口会校验 `security_id`、`source_id`、市场一致性、`rights_tag` 是否超过 source 权限，并阻断实时行情或红区来源。
+若 source definition 配置了 `field_whitelist`，请求字段必须落在白名单或运行所需元数据字段内，避免未声明实时/non-display 字段进入自动化链路。
 
 请求字段：
 
@@ -327,14 +420,15 @@
 
 #### `POST /api/market-data/batch`
 
-批量写入授权 EOD 或延时行情点，逐条返回创建结果和错误，不因单条失败回滚整个批次。
+批量写入公开/已提供 EOD 或延时行情点，逐条返回创建结果和错误，不因单条失败回滚整个批次。
 
 #### `POST /api/market-data/tdx/preview`
 
-从本地通达信 DuckDB 日线库只读预览行情，不写入状态库。默认路径由 `AI_QUANT_TDX_DUCKDB_PATH` 指定。
+从本地通达信 DuckDB 日线库或 `vipdoc/*.day` 本地文件只读预览行情，不写入状态库。DuckDB 默认路径由 `AI_QUANT_TDX_DUCKDB_PATH` 指定；`vipdoc` 默认路径由 `AI_QUANT_TDX_VIPDOC_PATH` 指定。
 
 请求字段：
 
+- `source_format`：`duckdb|vipdoc`
 - `symbols`
 - `start_date`
 - `end_date`
@@ -343,10 +437,11 @@
 
 #### `POST /api/market-data/tdx/import`
 
-从本地通达信 DuckDB 日线库读取行情，并写入授权 EOD/延时行情层。导入时会复用 `/api/market-data/points` 的 source rights、security、market 和 data_type 校验。
+从本地通达信 DuckDB 日线库或 `vipdoc/*.day` 文件读取行情，并写入公开/已提供 EOD/延时行情层。导入时会复用 `/api/market-data/points` 的 source rights、security、market 和 data_type 校验。
 
 请求字段：
 
+- `source_format`：`duckdb|vipdoc`
 - `symbols`
 - `security_map`
 - `start_date`
@@ -355,6 +450,47 @@
 - `source_id`
 - `data_type`
 - `skip_existing`
+
+#### `GET|POST /api/market-data/quality-report`
+
+返回已入库公开/已提供行情的数据质量报告，覆盖 OHLC 区间一致性、source rights/红区拦截遗留检查、公开来源治理字段缺口、按证券/来源/类型的时间序列覆盖和日期断档。
+
+请求字段：
+
+- `security_id`
+- `market`
+- `source_id`
+- `data_type`
+- `max_gap_days`
+
+#### `GET /api/market-data/adjusted`
+
+返回公开/已提供行情的复权可消费视图，不改写原始 MarketDataPoint。支持 `raw`、`backward`、`forward` 三种口径；拆股、反向拆股和送股进入价格因子，现金分红只作为公司行动事件返回，不在未声明总回报方法时混入价格因子。
+
+请求字段：
+
+- `security_id`
+- `source_id`
+- `data_type`
+- `adjustment_mode`
+- `start_date`
+- `end_date`
+- `limit`
+
+#### `GET /api/market-data/returns`
+
+基于 `/api/market-data/adjusted` 的价格口径生成收益序列，供回测、估值和风险模块消费。返回逐期收益、累计收益、波动和最大回撤，并透传复权策略说明。默认 `total_return_method=price_only`；显式传 `cash_dividend_reinvested` 时，ex-date 现金分红按当前价格口径计入当期收益。
+
+请求字段：
+
+- `security_id`
+- `source_id`
+- `data_type`
+- `adjustment_mode`
+- `price_field`
+- `start_date`
+- `end_date`
+- `limit`
 
 #### `POST /api/corporate-actions`
 
@@ -662,7 +798,7 @@
 
 #### `POST /api/research-reports/scan`
 
-扫描本地授权研报目录，生成 manifest。研报默认作为外部观点层，不作为事实真相源，也不默认用于训练。默认根目录可由 `AI_QUANT_RESEARCH_REPORT_ROOT` 指定。
+扫描本地研报目录，生成 manifest。研报默认作为本地参考观点层，不作为事实真相源，也不默认用于训练。默认根目录可由 `AI_QUANT_RESEARCH_REPORT_ROOT` 指定。
 
 请求字段：
 
@@ -687,9 +823,35 @@
 - `document_id`
 - `language`
 
+#### `POST /api/research-reports/{report_id}/extract`
+
+对已登记研报执行本地文本抽取和引用片段索引。`.txt` 研报或请求中的 `text` 会生成 `research_report_citation` evidence，并按 `citation_char_limit` 截断；无文本的 PDF/扫描件会创建 `research_report_text_extraction_required` 人工复核项。研报 evidence 只作为本地参考引用，不升级为事实真相源。
+
+请求字段：
+
+- `text`
+- `citation_char_limit`
+- `parser_version`
+
+#### `POST /api/research/manual-references`
+
+登记私会、路演、expert note 或边界不清转录稿的 metadata-only 人工参考记录，并自动创建 `manual_reference_boundary_review` 人工复核项。该接口拒绝 `body`、`text` 或 `content`，不会把非公开文本写入事实层、证据层、训练层或可执行建议层。
+
+请求字段：
+
+- `document_id`
+- `issuer_id`
+- `security_id`
+- `source_id`
+- `document_type`
+- `title`
+- `source_uri`
+- `notes`
+- `severity`
+
 #### `POST /api/research/answers`
 
-创建英文 evidence 优先的研究问答与中文摘要审计记录。接口会保留英文原文 evidence、中文摘要、summary 版本、prompt 版本、模型版本、来源公开性和人工覆核状态，并写入审计日志。
+创建英文 evidence 优先的研究问答与中文摘要审计记录。接口会保留英文原文 evidence、中文摘要、summary 版本、prompt 版本、模型版本、来源公开性和人工覆核状态，并写入审计日志。对非公开或本地参考来源，`english_source_text` 会按 `citation_char_limit` 截断并标记 `citation_truncated`，避免长片段外泄。
 
 请求字段：
 
@@ -701,11 +863,16 @@
 - `prompt_version`
 - `model_version`
 - `human_review_status`
+- `citation_char_limit`
 - `reviewer`
 
 #### `GET /api/research/answers/{answer_id}`
 
 返回研究问答与摘要审计记录。
+
+#### `GET /api/research/answers/quality-report`
+
+返回答案级质量和人工复核队列报告，检查 evidence/document 回链、英文原文保留、受限来源引用截断、人工复核状态、summary/prompt/model 版本，并输出 `source_link_rate`、`review_coverage`、`pending_review` 和逐答案 `issues`。可用 `issuer_id`、`human_review_status`、`limit` 过滤；默认告警 `alert_research_answer_pending_review` 使用 `research_answer_pending_reviews` 指标触发。
 
 #### `POST /api/research/answers/{answer_id}/review`
 
@@ -818,6 +985,10 @@
 
 逐条关闭月报红灯项，写入处理结论、责任人、时间戳和审计事件。
 
+#### `GET /api/operating-reports/red-flag-reminders`
+
+查询月报红灯项 owner、due_date 和逾期状态。可用 `as_of_date`、`owner`、`status` 过滤，供提醒和经营看板使用。
+
 #### `GET /api/operating-reports/{report_id}`
 
 返回月度经营报告。
@@ -858,6 +1029,63 @@
 - `risk_budget`
 - `stress_scenarios`
 - `return_history`
+
+#### `POST /api/portfolio/returns`
+
+基于公开行情复权收益序列计算组合级收益、累计收益、波动、最大回撤和分组归因。输入 holdings/weights 后按共同收益日期对齐，权重自动归一；当前 MVP 路径只支持 long-only 权重，不生成交易指令。
+
+请求字段：
+
+- `holdings` 或 `weights`
+- `groups`
+- `source_id`
+- `data_type`
+- `adjustment_mode`
+- `total_return_method`
+- `start_date`
+- `end_date`
+- `limit`
+
+返回中的 `attribution` 会按 `market`、`currency`、`industry`、`style` 汇总权重和期间贡献；`industry` / `style` 可通过 `groups[security_id]` 显式传入。
+
+#### `POST /api/portfolio/valuation`
+
+基于公开/已提供行情做组合持仓估值。输入持仓股数和现金后，按 `as_of_date` 前最近行情价格计算市值、权重、现金权重和缺失价格清单。该接口只用于研究、回测、估值和风险展示，不代表可交易价格。
+
+请求字段：
+
+- `as_of_date`
+- `holdings`
+- `cash`
+- `currency`
+- `source_id`
+- `data_type`
+- `price_field`
+
+#### `POST /api/portfolio/transactions`
+
+登记真实或回测交易流水，作为持仓、月报绩效和归因的输入层。当前仅支持 long-only buy/sell，写入时校验证券、日期、数量、价格、费用和来源边界。
+
+请求字段：
+
+- `transaction_id`
+- `security_id`
+- `trade_date`
+- `side`
+- `quantity`
+- `price`
+- `fees`
+- `source_id`
+- `account_id`
+- `strategy_id`
+
+#### `GET /api/portfolio/transactions`
+
+按 `security_id`、`account_id`、`strategy_id` 查询交易流水。
+
+#### `GET /api/portfolio/positions`
+
+按交易流水派生 as-of 持仓，返回证券持仓股数、净成本、参与交易数和过滤条件。支持 `as_of_date`、`account_id`、`strategy_id`。
 
 #### `GET /api/portfolio/proposals`
 
@@ -935,6 +1163,19 @@
 
 - `seed_defaults`
 
+#### `POST /api/alerts/incidents/create`
+
+把当前开放告警按其 `playbook_id` 自动生成 IncidentReport，并把 `incident_report_id` 回写到 SystemAlert。可用 `alert_ids` 限定范围；`include_without_playbook=true` 时会使用通用告警分诊剧本。
+
+请求字段：
+
+- `alert_ids`
+- `include_without_playbook`
+- `root_cause`
+- `impact`
+- `action_items`
+- `owner`
+
 #### `POST /api/alerts/notify`
 
 把当前开放告警写入通知记录，可指定 `channel`、`target`、`alert_ids`。当前为内部/外部通道适配前的可靠 outbox，不直接调用第三方服务。
@@ -952,6 +1193,14 @@
 - `status`
 - `severity`
 - `owner`
+
+#### `POST /api/playbooks/seed`
+
+写入默认事故剧本和季度演练计划，覆盖文档解析失败、数据采集失败、检索降级、LLM 网关失败和权限/敏感数据泄漏五类事故。返回 `playbooks` 与 `schedules`。
+
+请求字段：
+
+- `create_schedules`
 - `limit`
 
 ## 5. 接口权限
@@ -983,7 +1232,7 @@
 
 以下场景必须返回 `423`：
 
-- 未授权数据尝试进入事实层
+- 边界不清或禁止自动化的数据尝试进入事实层
 - 未通过 Reg FD 审查的来源尝试进入可执行建议
 - non-display 数据试图绕过许可边界
 - 未审批 prompt 变更试图进入生产

@@ -1,5 +1,7 @@
 # AI Native 虚拟量化基金组织设计研究美股增补
 
+> 状态说明：本文是历史研究底稿，保留原始论证和引用脉络。当前执行口径已调整为“不采购或依赖商业授权数据”，以 `tasks/todo.md`、`docs/product-requirements-document.md`、`docs/api-contracts.md` 和代码中的 `public_*` / `local_reference_*` source governance 为准。
+
 ## 执行摘要
 
 将原方案从 A 股与港股扩展到美股后，组织设计应由 **A/H 双市场投研系统** 升级为 **A/H/U 三市场证据驱动型投研系统**。从公开信息基础设施看，美股的可研究性实际上更强：SEC 的 EDGAR 公司页面可直接聚合 10-K、10-Q、8-K、Proxy 等核心文件，EDGAR 全文检索覆盖自 2001 年以来的电子申报；同时，SEC 已对 10-K、10-Q、8-K、20-F、40-F 的封面信息实施 Inline XBRL 要求，这使美股在中低频基本面、事件驱动与披露文本分析方面，天然适合纳入 AI Native 投研流水线。 citeturn44search0turn44search4turn44search1

@@ -17,9 +17,9 @@ This note tracks US-market compliance questions that must be answered before the
 
 | Question | Current Stance | Owner |
 |---|---|---|
-| Is data used by a machine without human display? | Treat as non-display until vendor confirms otherwise | Data + Compliance |
-| Does derived data require separate declaration? | Treat as restricted unless contract says allowed | Compliance |
-| Can real-time data feed scoring, routing, or alerts? | Not in MVP; use EOD/delayed/authorized research data only | CIO |
+| Is data used by a machine without human display? | Treat as non-display and block automation unless the public source terms clearly allow it | Data + Compliance |
+| Does derived data require separate declaration? | Treat as restricted unless public source terms clearly allow it | Compliance |
+| Can real-time data feed scoring, routing, or alerts? | Not in MVP; use public/locally provided EOD or delayed data only | CIO |
 | Are professional/non-professional entitlements relevant? | Must be checked before user-specific market data display | Platform |
 
 ## Investment Adviser And External Management

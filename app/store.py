@@ -43,7 +43,9 @@ from .models import (
     ModelVersionRecord,
     OperatingReport,
     PortfolioProposal,
+    PortfolioTransaction,
     PromptChangeRequest,
+    ReadinessCheckRecord,
     ResearchAnswer,
     ResearchCard,
     ResearchReportAsset,
@@ -52,6 +54,7 @@ from .models import (
     ReviewRecord,
     Security,
     ScorecardProfile,
+    SourceReviewRecord,
     SourceDefinition,
     StrategyReplay,
     SystemAlert,
@@ -67,6 +70,7 @@ CollectionSpec = tuple[str, str, type]
 
 COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("sources", "source_id", SourceDefinition),
+    ("source_reviews", "review_id", SourceReviewRecord),
     ("astock_connectors", "connector_id", AStockConnectorDefinition),
     ("ingestion_jobs", "job_id", IngestionJob),
     ("ingestion_schedules", "schedule_id", IngestionSchedule),
@@ -85,6 +89,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("operating_reports", "report_id", OperatingReport),
     ("strategy_replays", "replay_id", StrategyReplay),
     ("portfolio_proposals", "proposal_id", PortfolioProposal),
+    ("portfolio_transactions", "transaction_id", PortfolioTransaction),
     ("benchmarks", "benchmark_id", BenchmarkConfig),
     ("benchmark_samples", "sample_id", BenchmarkSample),
     ("benchmark_results", "result_id", BenchmarkResult),
@@ -93,6 +98,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("entity_mappings", "mapping_id", EntityMapping),
     ("scorecards", "profile_id", ScorecardProfile),
     ("drill_schedules", "schedule_id", DrillSchedule),
+    ("readiness_checks", "check_id", ReadinessCheckRecord),
     ("prompt_changes", "request_id", PromptChangeRequest),
     ("llm_task_templates", "template_id", LLMTaskTemplate),
     ("llm_task_runs", "run_id", LLMTaskRun),
@@ -119,6 +125,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
 
 DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     Evidence: ("created_at",),
+    SourceReviewRecord: ("reviewed_at", "next_review_due_at"),
     AStockConnectorDefinition: ("last_checked_at",),
     IngestionJob: ("started_at", "completed_at"),
     IngestionSchedule: ("next_run_at", "created_at", "updated_at"),
@@ -133,6 +140,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     OperatingReport: ("created_at", "published_at"),
     StrategyReplay: ("created_at",),
     PortfolioProposal: ("created_at",),
+    PortfolioTransaction: ("created_at",),
     BenchmarkConfig: ("created_at",),
     BenchmarkSample: ("created_at",),
     BenchmarkResult: ("created_at",),
@@ -156,6 +164,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     EntityMapping: ("created_at",),
     ScorecardProfile: ("created_at",),
     DrillSchedule: ("next_run_at",),
+    ReadinessCheckRecord: ("measured_at", "expires_at", "updated_at"),
     LLMTaskTemplate: ("created_at", "updated_at"),
     LLMTaskRun: ("created_at",),
     WorkflowDefinition: ("created_at", "updated_at"),
@@ -167,7 +176,9 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
 
 OPTIONAL_DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     OperatingReport: ("published_at",),
+    SourceReviewRecord: ("next_review_due_at",),
     AStockConnectorDefinition: ("last_checked_at",),
+    ReadinessCheckRecord: ("expires_at",),
 }
 
 
@@ -181,7 +192,7 @@ def _hydrate_signature(data: dict[str, Any]) -> DecisionSignature:
 
 
 def _hydrate_model(model_type: type, data: dict[str, Any]) -> Any:
-    if model_type in {SourceDefinition, AStockConnectorDefinition, Issuer, Security, MarketDataPoint, Document, InstitutionalHolding, ResearchReportAsset}:
+    if model_type in {SourceDefinition, SourceReviewRecord, AStockConnectorDefinition, Issuer, Security, MarketDataPoint, Document, InstitutionalHolding, ResearchReportAsset}:
         return model_type.from_dict(data)
     if model_type is DecisionPack:
         data = dict(data)
@@ -209,6 +220,7 @@ def _json_payload(data: Any) -> dict[str, Any]:
 @dataclass(slots=True)
 class InMemoryStore:
     sources: dict[str, SourceDefinition] = field(default_factory=dict)
+    source_reviews: dict[str, SourceReviewRecord] = field(default_factory=dict)
     astock_connectors: dict[str, AStockConnectorDefinition] = field(default_factory=dict)
     ingestion_jobs: dict[str, IngestionJob] = field(default_factory=dict)
     ingestion_schedules: dict[str, IngestionSchedule] = field(default_factory=dict)
@@ -227,6 +239,7 @@ class InMemoryStore:
     operating_reports: dict[str, OperatingReport] = field(default_factory=dict)
     strategy_replays: dict[str, StrategyReplay] = field(default_factory=dict)
     portfolio_proposals: dict[str, PortfolioProposal] = field(default_factory=dict)
+    portfolio_transactions: dict[str, PortfolioTransaction] = field(default_factory=dict)
     benchmarks: dict[str, BenchmarkConfig] = field(default_factory=dict)
     benchmark_samples: dict[str, BenchmarkSample] = field(default_factory=dict)
     benchmark_results: dict[str, BenchmarkResult] = field(default_factory=dict)
@@ -235,6 +248,7 @@ class InMemoryStore:
     entity_mappings: dict[str, EntityMapping] = field(default_factory=dict)
     scorecards: dict[str, ScorecardProfile] = field(default_factory=dict)
     drill_schedules: dict[str, DrillSchedule] = field(default_factory=dict)
+    readiness_checks: dict[str, ReadinessCheckRecord] = field(default_factory=dict)
     prompt_changes: dict[str, PromptChangeRequest] = field(default_factory=dict)
     llm_task_templates: dict[str, LLMTaskTemplate] = field(default_factory=dict)
     llm_task_runs: dict[str, LLMTaskRun] = field(default_factory=dict)

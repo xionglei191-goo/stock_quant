@@ -4,8 +4,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import hashlib
 import json
+import os
 import sqlite3
+import struct
 import unittest
+import zipfile
 import zlib
 
 from app.api import ApiRouter
@@ -17,8 +20,10 @@ from app.object_store import S3CompatibleObjectStore
 from app.search import OpenSearchIndex, SearchRecord
 from app.services import SystemService
 from app.store import PostgreSQLStore, SQLiteStore
-from app.tdx_market_data import TDXMarketDataAdapter
+from app.tdx_market_data import TDXMarketDataAdapter, TDXVipdocAdapter
 from scripts.capacity_baseline import run_capacity_baseline
+from scripts.download_tdx_vipdoc import download_tdx_vipdoc_archive
+from scripts.import_tdx_market_data import run_tdx_incremental_import
 from scripts.migrate_sqlite_to_postgres import migrate_sqlite_to_postgres
 from scripts.postgres_schema_migrate import BASELINE_VERSION, apply_postgres_schema, mark_last_migration_rolled_back
 from scripts.security_check import scan_repository
@@ -315,6 +320,18 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("evidence_coverage", metrics)
         red_flag_id = response.data["red_flags"][0]["red_flag_id"]
         self.assertEqual(response.data["red_flags"][0]["status"], "open")
+        self.assertEqual(response.data["red_flags"][0]["owner_role"], "风险/合规")
+        self.assertEqual(response.data["red_flags"][0]["due_date"], "2026-05-31")
+
+        reminders = self.router.dispatch(
+            "GET",
+            "/api/operating-reports/red-flag-reminders",
+            {"as_of_date": "2026-06-02", "owner": "风险/合规"},
+            role="risk_compliance",
+        )
+        self.assertTrue(reminders.success, reminders.error)
+        self.assertGreaterEqual(reminders.data["overdue"], 1)
+        self.assertEqual(reminders.data["reminders"][0]["red_flag_id"], red_flag_id)
 
         published = self.router.dispatch(
             "POST",
@@ -335,7 +352,7 @@ class SystemServiceTests(unittest.TestCase):
         resolved_flag = self.router.dispatch(
             "POST",
             f"/api/operating-reports/opr_perf/red-flags/{red_flag_id}/resolve",
-            {"resolution": "data source mapped to authorized EOD feed", "resolved_by": "risk_owner"},
+            {"resolution": "data source mapped to public EOD feed", "resolved_by": "risk_owner"},
             actor="risk_owner",
             role="risk_compliance",
         )
@@ -477,11 +494,38 @@ class SystemServiceTests(unittest.TestCase):
                 actor="data",
             )
 
+    def test_ingest_document_sanitizes_sensitive_source_uri(self) -> None:
+        doc = self.service.ingest_document(
+            {
+                "document_id": "doc_sanitized_uri",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "annual_report",
+                "source_uri": "https://example.invalid/report.pdf?token=secret&lang=en&api_key=abc#frag",
+                "body": "Public filing body.",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+            },
+            actor="data",
+        )
+        self.addCleanup(lambda: Path(doc.object_uri).unlink(missing_ok=True))
+        self.assertEqual(doc.source_uri, "https://example.invalid/report.pdf?token=REDACTED&lang=en&api_key=REDACTED")
+        self.assertNotIn("secret", doc.source_uri)
+        self.assertNotIn("#frag", doc.source_uri)
+
     def test_transcript_and_research_sources_preserve_citation_boundaries(self) -> None:
         sources = {source.source_id: source for source in self.service.seed_default_sources(actor="risk")}
         self.assertIn("company_public_webcast", sources)
-        self.assertIn("authorized_transcript_vendor", sources)
-        self.assertIn("authorized_research_vendor", sources)
+        self.assertIn("manual_reference_transcripts", sources)
+        self.assertIn("local_research_reports", sources)
         public_doc = self.service.ingest_document(
             {
                 "document_id": "doc_webcast",
@@ -508,16 +552,16 @@ class SystemServiceTests(unittest.TestCase):
         with self.assertRaises(PermissionDenied):
             self.service.ingest_document(
                 {
-                    "document_id": "doc_vendor_transcript_bad",
+                    "document_id": "doc_manual_transcript_bad",
                     "issuer_id": "issuer_001",
                     "security_id": "sec_001",
-                    "source_id": "authorized_transcript_vendor",
-                    "source_type": "vendor",
+                    "source_id": "manual_reference_transcripts",
+                    "source_type": "manual_reference",
                     "document_type": "transcript",
-                    "source_uri": "vendor://transcripts/demo",
-                    "body": "Vendor transcript text.",
+                    "source_uri": "private://transcripts/demo",
+                    "body": "Private transcript text.",
                     "rights_tag": {
-                        "license_class": "authorized_transcript_internal",
+                        "license_class": "manual_transcript_reference",
                         "training_allowed": True,
                         "redistribution_allowed": False,
                         "display_use": "restricted",
@@ -527,8 +571,54 @@ class SystemServiceTests(unittest.TestCase):
                 },
                 actor="data",
             )
+        blocked_text = self.router.dispatch(
+            "POST",
+            "/api/research/manual-references",
+            {
+                "document_id": "doc_private_note_text",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "document_type": "private_meeting_note",
+                "title": "Private meeting note",
+                "source_uri": "private://meetings/demo",
+                "body": "Do not store this private note text.",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertFalse(blocked_text.success)
+        self.assertEqual(blocked_text.status_code, 422)
+
+        manual_reference = self.router.dispatch(
+            "POST",
+            "/api/research/manual-references",
+            {
+                "document_id": "doc_private_note_meta",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "document_type": "private_meeting_note",
+                "title": "Private meeting note metadata",
+                "source_uri": "private://meetings/demo",
+                "notes": "Metadata only; compliance must confirm Reg FD boundary.",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(manual_reference.success, manual_reference.error)
+        self.assertEqual(manual_reference.data["document"]["source_id"], "manual_reference_transcripts")
+        self.assertEqual(manual_reference.data["document"]["body"], "")
+        self.assertEqual(manual_reference.data["manual_review"]["issue_type"], "manual_reference_boundary_review")
+
+        manual_reviews = self.router.dispatch(
+            "GET",
+            "/api/evidence/manual-reviews",
+            {"issue_type": "manual_reference_boundary_review"},
+            role="risk_compliance",
+        )
+        self.assertTrue(manual_reviews.success)
+        self.assertEqual(manual_reviews.data["manual_reviews"][0]["document_id"], "doc_private_note_meta")
         policy = Path("docs/transcript-research-citation-policy.md").read_text(encoding="utf-8")
-        for fragment in ["company_public_webcast", "authorized_transcript_vendor", "No transcript or research text enters training", "Reg FD"]:
+        for fragment in ["company_public_webcast", "manual_reference_transcripts", "No transcript or research text enters training", "Reg FD"]:
             self.assertIn(fragment, policy)
 
     def test_research_report_manifest_scan_list_and_ingest(self) -> None:
@@ -541,7 +631,7 @@ class SystemServiceTests(unittest.TestCase):
             scanned = self.router.dispatch(
                 "POST",
                 "/api/research-reports/scan",
-                {"root_path": temp_dir, "limit": 10},
+                {"root_path": temp_dir, "extensions": [".pdf", ".txt"], "limit": 10},
                 actor="data",
                 role="data_engineer",
             )
@@ -575,6 +665,70 @@ class SystemServiceTests(unittest.TestCase):
             search = self.router.dispatch("GET", "/api/search", {"q": "Goldman outlook"}, role="analyst")
             self.assertTrue(search.success)
             self.assertIn("research_report", {item["resource_type"] for item in search.data["results"]})
+
+    def test_research_report_text_extraction_indexes_citations_and_manual_review(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            report_dir = Path(temp_dir) / "Morgan" / "2026" / "05"
+            report_dir.mkdir(parents=True)
+            text_path = report_dir / "Demo citation note.txt"
+            text_path.write_text("Revenue catalyst and margin expansion view. " * 20, encoding="utf-8")
+            pdf_path = report_dir / "Scanned local research.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n%%EOF")
+
+            scanned = self.router.dispatch(
+                "POST",
+                "/api/research-reports/scan",
+                {"root_path": temp_dir, "extensions": [".pdf", ".txt"], "limit": 10},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(scanned.success, scanned.error)
+            reports = {item["file_name"]: item for item in scanned.data["reports"]}
+            text_report = reports["Demo citation note.txt"]
+            pdf_report = reports["Scanned local research.pdf"]
+
+            self.router.dispatch(
+                "POST",
+                f"/api/research-reports/{text_report['report_id']}/ingest",
+                {"issuer_id": "issuer_001", "security_id": "sec_001", "document_id": "doc_research_text"},
+                actor="analyst",
+                role="analyst",
+            )
+            extracted = self.router.dispatch(
+                "POST",
+                f"/api/research-reports/{text_report['report_id']}/extract",
+                {"citation_char_limit": 160},
+                actor="analyst",
+                role="analyst",
+            )
+            self.assertTrue(extracted.success, extracted.error)
+            self.assertEqual(extracted.data["status"], "text_indexed")
+            self.assertTrue(extracted.data["citation_truncated"])
+            self.assertGreaterEqual(len(extracted.data["evidence"]), 1)
+            self.assertEqual(extracted.data["evidence"][0]["section"], "research_report_citation")
+            self.assertEqual(extracted.data["document"]["rights_tag"]["display_use"], "restricted")
+
+            search = self.router.dispatch("GET", "/api/search", {"q": "margin expansion"}, role="analyst")
+            self.assertTrue(search.success)
+            self.assertIn("evidence", {item["resource_type"] for item in search.data["results"]})
+
+            self.router.dispatch(
+                "POST",
+                f"/api/research-reports/{pdf_report['report_id']}/ingest",
+                {"issuer_id": "issuer_001", "security_id": "sec_001", "document_id": "doc_research_scanned"},
+                actor="analyst",
+                role="analyst",
+            )
+            needs_review = self.router.dispatch(
+                "POST",
+                f"/api/research-reports/{pdf_report['report_id']}/extract",
+                {},
+                actor="analyst",
+                role="analyst",
+            )
+            self.assertTrue(needs_review.success, needs_review.error)
+            self.assertEqual(needs_review.data["status"], "needs_text_review")
+            self.assertEqual(needs_review.data["manual_review"]["issue_type"], "research_report_text_extraction_required")
 
     def test_extract_evidence_strips_html_and_ignored_tags(self) -> None:
         self.service.ingest_document(
@@ -809,7 +963,8 @@ class SystemServiceTests(unittest.TestCase):
 
         seeded = self.router.dispatch("POST", "/api/alerts/rules/seed", {}, role="risk_compliance")
         self.assertTrue(seeded.success)
-        self.assertGreaterEqual(len(seeded.data["rules"]), 4)
+        self.assertGreaterEqual(len(seeded.data["rules"]), 5)
+        self.assertIn("alert_source_review_overdue", {item["rule_id"] for item in seeded.data["rules"]})
 
         evaluated = self.router.dispatch("POST", "/api/alerts/evaluate", {}, role="risk_compliance")
         self.assertTrue(evaluated.success)
@@ -841,6 +996,172 @@ class SystemServiceTests(unittest.TestCase):
         resolved = self.router.dispatch("POST", "/api/alerts/evaluate", {}, role="risk_compliance")
         self.assertTrue(resolved.success)
         self.assertIn("alert_open_manual_reviews", {item["rule_id"] for item in resolved.data["resolved"]})
+
+    def test_alerts_create_incident_reports_from_playbooks(self) -> None:
+        seeded_playbooks = self.router.dispatch("POST", "/api/playbooks/seed", {}, actor="risk", role="risk_compliance")
+        self.assertTrue(seeded_playbooks.success, seeded_playbooks.error)
+        self.assertGreaterEqual(len(seeded_playbooks.data["playbooks"]), 5)
+        self.assertIn("pb_document_parser_failure", {item["playbook_id"] for item in seeded_playbooks.data["playbooks"]})
+        self.assertGreaterEqual(len(seeded_playbooks.data["schedules"]), 5)
+
+        self.service.ingest_document(
+            {
+                "document_id": "doc_incident_scanned",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "10-K",
+                "source_uri": "https://example.invalid/incident-scanned.pdf",
+                "body": "",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        self.router.dispatch(
+            "POST",
+            "/api/evidence/extract",
+            {"document_id": "doc_incident_scanned", "parser_version": "pdf-rule-1"},
+            role="analyst",
+        )
+        rule = self.router.dispatch(
+            "POST",
+            "/api/alerts/rules",
+            {
+                "rule_id": "alert_parser_incident",
+                "metric": "counts.open_manual_reviews",
+                "operator": ">",
+                "threshold": 0,
+                "severity": "high",
+                "owner": "NLP/ML 负责人",
+                "playbook_id": "pb_document_parser_failure",
+            },
+            role="risk_compliance",
+        )
+        self.assertTrue(rule.success, rule.error)
+
+        evaluated = self.router.dispatch("POST", "/api/alerts/evaluate", {}, role="risk_compliance")
+        alert = next(item for item in evaluated.data["alerts"] if item["rule_id"] == "alert_parser_incident")
+        created = self.router.dispatch(
+            "POST",
+            "/api/alerts/incidents/create",
+            {"alert_ids": [alert["alert_id"]]},
+            actor="risk",
+            role="risk_compliance",
+        )
+        self.assertTrue(created.success, created.error)
+        self.assertEqual(created.data["count"], 1)
+        self.assertEqual(created.data["created"][0]["incident_type"], "document_parser_failure")
+
+        linked_alert = self.service.store.system_alerts[alert["alert_id"]]
+        self.assertTrue(linked_alert.incident_report_id.startswith("ir_"))
+        calendar = self.router.dispatch("GET", "/api/incidents/calendar", {}, role="risk_compliance")
+        self.assertEqual(len(calendar.data["reports"]), 1)
+
+    def test_source_review_overdue_alert_and_notification_outbox(self) -> None:
+        self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, actor="data", role="data_engineer")
+        review = self.router.dispatch(
+            "POST",
+            "/api/governance/sources/local_research_reports/reviews",
+            {
+                "review_id": "srrev_local_research_alert",
+                "reviewed_at": "2026-01-01T00:00:00+00:00",
+                "status": "conditional",
+                "publicness_status": "manual_reference_only",
+                "tos_status": "needs_review",
+                "robots_status": "reviewed_or_not_applicable",
+                "usage_scope_status": "manual_reference_only",
+                "next_review_due_at": "2026-05-01T00:00:00+00:00",
+            },
+            actor="risk",
+            role="risk_compliance",
+        )
+        self.assertTrue(review.success, review.error)
+        metrics = self.service.metrics()
+        self.assertGreaterEqual(metrics["source_review_overdue"], 1)
+        self.assertGreaterEqual(metrics["counts"]["source_review_overdue"], 1)
+
+        self.router.dispatch("POST", "/api/alerts/rules/seed", {}, role="risk_compliance")
+        evaluated = self.router.dispatch("POST", "/api/alerts/evaluate", {}, role="risk_compliance")
+        self.assertTrue(evaluated.success, evaluated.error)
+        review_alerts = [item for item in evaluated.data["alerts"] if item["rule_id"] == "alert_source_review_overdue"]
+        self.assertEqual(len(review_alerts), 1)
+        self.assertEqual(review_alerts[0]["owner"], "风险/合规")
+
+        notified = self.router.dispatch(
+            "POST",
+            "/api/alerts/notify",
+            {
+                "channel": "source_review_outbox",
+                "target": "risk-compliance-source-review",
+                "alert_ids": [review_alerts[0]["alert_id"]],
+            },
+            role="risk_compliance",
+        )
+        self.assertTrue(notified.success, notified.error)
+        self.assertEqual(notified.data["count"], 1)
+        self.assertEqual(notified.data["notifications"][0]["channel"], "source_review_outbox")
+        self.assertEqual(notified.data["notifications"][0]["payload"]["metric"], "source_review_overdue")
+
+    def test_llm_cost_budget_alert_uses_task_metrics(self) -> None:
+        original_budget = os.environ.get("AI_QUANT_LLM_COST_BUDGET")
+        os.environ["AI_QUANT_LLM_COST_BUDGET"] = "0.001"
+        self.addCleanup(lambda: os.environ.pop("AI_QUANT_LLM_COST_BUDGET", None) if original_budget is None else os.environ.__setitem__("AI_QUANT_LLM_COST_BUDGET", original_budget))
+        self.service.llm_gateway = LLMGateway(
+            api_key="test-key",
+            http_send=lambda _request, _timeout: b'{"choices":[{"message":{"content":"ok"}}]}',
+        )
+        self.service.create_prompt_change(
+            {
+                "request_id": "pr_cost_template",
+                "prompt_name": "cost-check",
+                "change_level": "baseline",
+                "requested_by": "ml",
+                "content": "Summarize {{source_text}}",
+            },
+            actor="ml",
+        )
+        self.service.approve_prompt_change("pr_cost_template", actor="risk", approved=True)
+        self.service.register_llm_task_template(
+            {
+                "template_id": "llmtpl_cost_check",
+                "task_type": "research_summary",
+                "prompt_name": "cost-check",
+                "content": "Summarize {{source_text}}",
+                "status": "approved",
+                "approved_prompt_change_id": "pr_cost_template",
+                "allowed_roles": ["分析师"],
+                "estimated_cost_per_1k_tokens": 1.0,
+            },
+            actor="ml",
+        )
+        run = self.router.dispatch(
+            "POST",
+            "/api/llm/tasks/run",
+            {
+                "run_id": "llmrun_cost_alert",
+                "template_id": "llmtpl_cost_check",
+                "role": "分析师",
+                "variables": {"source_text": "cost budget " * 500},
+            },
+            role="analyst",
+        )
+        self.assertTrue(run.success, run.error)
+        metrics = self.router.dispatch("GET", "/api/llm/tasks/metrics", {}, role="nlp_ml")
+        self.assertGreaterEqual(metrics.data["cost_budget_used"], 1.0)
+
+        self.router.dispatch("POST", "/api/alerts/rules/seed", {}, role="risk_compliance")
+        evaluated = self.router.dispatch("POST", "/api/alerts/evaluate", {}, role="risk_compliance")
+        self.assertTrue(evaluated.success, evaluated.error)
+        self.assertIn("alert_llm_cost_budget", {item["rule_id"] for item in evaluated.data["alerts"]})
 
     def test_router_dispatch(self) -> None:
         seeded_sources = self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
@@ -1221,6 +1542,39 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(metrics.data["counts"]["lineage_events"], 1)
         self.assertEqual(metrics.data["counts"]["model_versions"], 1)
 
+        failed_run = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags/dag_daily_research/run",
+            {
+                "run_id": "wfrun_daily_failed",
+                "inputs": {"as_of_date": "2026-05-16", "market": "A"},
+                "status": "failed",
+                "error": "extract_evidence timeout",
+                "task_statuses": {"extract_evidence": "failed"},
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(failed_run.success, failed_run.error)
+        self.assertEqual(failed_run.data["task_statuses"]["extract_evidence"], "failed")
+        failed_metrics = self.router.dispatch("GET", "/api/metrics", {}, role="platform")
+        self.assertEqual(failed_metrics.data["workflow_failed_runs"], 1)
+
+        retry = self.router.dispatch(
+            "POST",
+            "/api/orchestration/runs/wfrun_daily_failed/retry",
+            {"run_id": "wfrun_daily_retry", "status": "succeeded"},
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(retry.success, retry.error)
+        self.assertEqual(retry.data["inputs"]["retry_of"], "wfrun_daily_failed")
+        self.assertEqual(retry.data["status"], "succeeded")
+
+        self.router.dispatch("POST", "/api/alerts/rules/seed", {}, role="risk_compliance")
+        workflow_alerts = self.router.dispatch("POST", "/api/alerts/evaluate", {}, role="risk_compliance")
+        self.assertIn("alert_workflow_failed_runs", {item["rule_id"] for item in workflow_alerts.data["alerts"]})
+
     def test_astock_connector_registry_tracks_rights_mapping_and_verification(self) -> None:
         seeded = self.router.dispatch("POST", "/api/connectors/astock/seed", {}, actor="data", role="data_engineer")
         self.assertTrue(seeded.success)
@@ -1251,35 +1605,167 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(filtered.data["total"], 1)
         self.assertEqual(filtered.data["connectors"][0]["connector_id"], "eastmoney_research")
 
-    def test_source_governance_report_tracks_contract_cache_and_audit_completeness(self) -> None:
+        sample = self.router.dispatch(
+            "POST",
+            "/api/connectors/astock/fetch",
+            {
+                "connector_id": "eastmoney_research",
+                "sample_rows": [
+                    {
+                        "title": "Demo bank sector research",
+                        "url": "https://example.invalid/report?id=1&token=secret#section",
+                        "published_at": "2026-05-15",
+                    }
+                ],
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(sample.success, sample.error)
+        self.assertEqual(sample.data["created_count"], 1)
+        self.assertEqual(sample.data["normalized_rows"][0]["source_uri"], "https://example.invalid/report?id=1&token=REDACTED")
+        self.assertEqual(sample.data["normalized_rows"][0]["title"], "Demo bank sector research")
+        self.assertFalse(sample.data["automation_allowed"])
+        self.assertIn("source_risk_yellow", sample.data["automation_blockers"])
+        self.assertIn("restricted_rights_manual_reference_only", sample.data["automation_blockers"])
+
+        blocked = self.router.dispatch(
+            "POST",
+            "/api/connectors/astock/verify",
+            {"connector_id": "eastmoney_research", "status": "blocked", "error": "TOS boundary unclear"},
+            actor="risk",
+            role="risk_compliance",
+        )
+        self.assertTrue(blocked.success)
+        blocked_fetch = self.router.dispatch(
+            "POST",
+            "/api/connectors/astock/fetch",
+            {"connector_id": "eastmoney_research", "sample_rows": [{"title": "blocked"}]},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertFalse(blocked_fetch.success)
+        self.assertEqual(blocked_fetch.status_code, 423)
+
+    def test_source_governance_report_tracks_public_provenance_and_audit_completeness(self) -> None:
         self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, actor="data", role="data_engineer")
-        before = self.router.dispatch("POST", "/api/governance/sources/report", {"source_type": "vendor"}, role="risk_compliance")
+        before = self.router.dispatch("POST", "/api/governance/sources/report", {"source_type": "public_market_data"}, role="risk_compliance")
         self.assertTrue(before.success)
-        vendor_rows = {item["source_id"]: item for item in before.data["sources"]}
-        self.assertIn("authorized_eod_market_data", vendor_rows)
-        self.assertIn("missing_contract_ref", vendor_rows["authorized_eod_market_data"]["gaps"])
-        self.assertIn("close", vendor_rows["authorized_eod_market_data"]["field_whitelist"])
+        source_rows = {item["source_id"]: item for item in before.data["sources"]}
+        self.assertIn("public_eod_market_data", source_rows)
+        self.assertEqual(source_rows["public_eod_market_data"]["gaps"], [])
+        self.assertIn("close", source_rows["public_eod_market_data"]["field_whitelist"])
+        self.assertEqual(source_rows["public_eod_market_data"]["provenance_ref"], "local://data/local/tdx/market_data.duckdb")
+        self.assertEqual(source_rows["public_eod_market_data"]["collection_method"], "local_file_or_public_api")
+        self.assertEqual(source_rows["public_eod_market_data"]["robots_policy"], "reviewed_public_or_local_source")
+        self.assertEqual(source_rows["public_eod_market_data"]["review_owner_role"], "数据工程")
+        self.assertTrue(source_rows["public_eod_market_data"]["automation_ready"])
+
+        full_report = self.router.dispatch("GET", "/api/governance/sources/report", {}, role="risk_compliance")
+        full_rows = {item["source_id"]: item for item in full_report.data["sources"]}
+        self.assertFalse(full_rows["manual_reference_transcripts"]["automation_ready"])
+        self.assertIn("red_source_manual_reference_only", full_rows["manual_reference_transcripts"]["blocked_reasons"])
 
         updated = self.router.dispatch(
             "POST",
             "/api/governance/sources/authorized_eod_market_data",
             {
-                "contract_ref": "contract://market-data/eod-v1",
+                "provenance_ref": "public-api://tdx/vipdoc",
                 "retention_policy": "retain_adjusted_eod_for_research_10y",
                 "cache_ttl_days": 3650,
-                "commercial_scope": "internal_research_backtest_risk",
+                "usage_scope": "public_eod_internal_research_backtest_risk",
+                "collection_method": "official_public_download",
+                "robots_policy": "robots_and_tos_reviewed_2026q2",
+                "last_reviewed_at": "2026-05-15T00:00:00+00:00",
+                "review_owner": "market_data_owner",
+                "review_owner_role": "数据工程",
                 "field_whitelist": ["security_id", "as_of_date", "open", "high", "low", "close", "adjusted_close", "volume"],
             },
             actor="risk",
             role="risk_compliance",
         )
         self.assertTrue(updated.success)
-        self.assertEqual(updated.data["contract_ref"], "contract://market-data/eod-v1")
+        self.assertEqual(updated.data["source_id"], "public_eod_market_data")
+        self.assertEqual(updated.data["provenance_ref"], "public-api://tdx/vipdoc")
+        self.assertEqual(updated.data["collection_method"], "official_public_download")
+        self.assertEqual(updated.data["review_owner"], "market_data_owner")
 
-        after = self.router.dispatch("POST", "/api/governance/sources/report", {"source_type": "vendor"}, role="risk_compliance")
+        after = self.router.dispatch("POST", "/api/governance/sources/report", {"source_type": "public_market_data"}, role="risk_compliance")
         self.assertTrue(after.success)
-        vendor_rows = {item["source_id"]: item for item in after.data["sources"]}
-        self.assertNotIn("missing_contract_ref", vendor_rows["authorized_eod_market_data"]["gaps"])
+        source_rows = {item["source_id"]: item for item in after.data["sources"]}
+        self.assertEqual(source_rows["public_eod_market_data"]["usage_scope"], "public_eod_internal_research_backtest_risk")
+        self.assertEqual(source_rows["public_eod_market_data"]["robots_policy"], "robots_and_tos_reviewed_2026q2")
+        self.assertEqual(after.data["automation_ready"], 1)
+
+        review = self.router.dispatch(
+            "POST",
+            "/api/governance/sources/public_eod_market_data/reviews",
+            {
+                "review_id": "srrev_public_eod_2026q2",
+                "reviewed_at": "2026-05-15T00:00:00+00:00",
+                "review_period": "2026Q2",
+                "status": "approved",
+                "publicness_status": "confirmed_public_or_local",
+                "tos_status": "reviewed",
+                "robots_status": "reviewed_or_not_applicable",
+                "usage_scope_status": "within_boundary",
+                "next_review_due_at": "2099-01-01T00:00:00+00:00",
+                "findings": ["local DuckDB provenance and TDX vipdoc fallback remain internal research inputs"],
+            },
+            actor="risk",
+            role="risk_compliance",
+        )
+        self.assertTrue(review.success, review.error)
+        self.assertEqual(review.data["source_id"], "public_eod_market_data")
+        self.assertEqual(review.data["review_period"], "2026Q2")
+
+        reviews = self.router.dispatch("GET", "/api/governance/source-reviews", {"source_id": "authorized_eod_market_data"}, role="risk_compliance")
+        self.assertTrue(reviews.success)
+        self.assertEqual(reviews.data["total"], 1)
+        self.assertEqual(reviews.data["reviews"][0]["review_id"], "srrev_public_eod_2026q2")
+
+        reviewed_report = self.router.dispatch("GET", "/api/governance/sources/report", {"source_type": "public_market_data"}, role="risk_compliance")
+        reviewed_source = reviewed_report.data["sources"][0]
+        self.assertEqual(reviewed_report.data["reviewed_sources"], 1)
+        self.assertEqual(reviewed_source["latest_review"]["status"], "approved")
+        self.assertFalse(reviewed_source["review_overdue"])
+        self.assertTrue(reviewed_source["automation_ready"])
+
+        local_review = self.router.dispatch(
+            "POST",
+            "/api/governance/sources/local_research_reports/reviews",
+            {
+                "review_id": "srrev_local_research_expired",
+                "reviewed_at": "2026-01-01T00:00:00+00:00",
+                "status": "conditional",
+                "publicness_status": "manual_reference_only",
+                "tos_status": "needs_review",
+                "robots_status": "reviewed_or_not_applicable",
+                "usage_scope_status": "manual_reference_only",
+                "next_review_due_at": "2026-05-01T00:00:00+00:00",
+            },
+            actor="risk",
+            role="risk_compliance",
+        )
+        self.assertTrue(local_review.success, local_review.error)
+
+        reminders = self.router.dispatch(
+            "GET",
+            "/api/governance/source-review-reminders",
+            {"as_of": "2026-05-15T00:00:00+00:00", "due_within_days": 30, "owner_role": "风险/合规"},
+            role="risk_compliance",
+        )
+        self.assertTrue(reminders.success, reminders.error)
+        reminder_rows = {item["source_id"]: item for item in reminders.data["reminders"]}
+        self.assertIn("local_research_reports", reminder_rows)
+        self.assertIn("manual_reference_transcripts", reminder_rows)
+        self.assertNotIn("public_eod_market_data", reminder_rows)
+        self.assertEqual(reminder_rows["local_research_reports"]["status"], "overdue")
+        self.assertIn("latest_source_tos_needs_review", reminder_rows["local_research_reports"]["blocked_reasons"])
+        self.assertTrue(reminder_rows["manual_reference_transcripts"]["missing_review"])
+        owner_rows = {item["owner_role"]: item for item in reminders.data["owner_board"]}
+        self.assertGreaterEqual(owner_rows["风险/合规"]["overdue"], 1)
+        self.assertGreaterEqual(owner_rows["风险/合规"]["missing_review"], 1)
 
         audit_report = self.router.dispatch("GET", "/api/governance/audit-report", {}, role="risk_compliance")
         self.assertTrue(audit_report.success)
@@ -1315,10 +1801,69 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("tracked_env_file", finding_types)
         self.assertIn("assigned_secret", finding_types)
 
-    def test_authorized_market_data_respects_rights_and_dashboard(self) -> None:
+    def test_data_security_report_flags_sensitive_text_and_permission_alerts(self) -> None:
+        self.service.ingest_document(
+            {
+                "document_id": "doc_sensitive",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "10-K",
+                "source_uri": "https://example.invalid/sensitive",
+                "body": (
+                    "Contact alpha.owner@example.invalid or 13812345678. "
+                    "ID 11010519491231002X should not be indexed. "
+                    'api_key="' + "sk-" + 'prod-secret-value-123456" must be rotated.'
+                ),
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+
+        report = self.router.dispatch("GET", "/api/governance/data-security-report", {}, role="risk_compliance")
+        self.assertTrue(report.success, report.error)
+        self.assertGreaterEqual(report.data["total"], 4)
+        self.assertGreaterEqual(report.data["by_type"]["email"], 1)
+        self.assertGreaterEqual(report.data["by_type"]["cn_mobile"], 1)
+        self.assertGreaterEqual(report.data["by_type"]["cn_id"], 1)
+        self.assertGreaterEqual(report.data["by_type"]["secret_literal"], 1)
+        snippets = " ".join(item["snippet"] for item in report.data["findings"])
+        self.assertNotIn("alpha.owner@example.invalid", snippets)
+        self.assertNotIn("13812345678", snippets)
+        self.assertNotIn("11010519491231002X", snippets)
+        self.assertNotIn("sk-" + "prod-secret-value-123456", snippets)
+        self.assertIn("***REDACTED***", snippets)
+
+        metrics = self.router.dispatch("GET", "/api/metrics", {}, role="unknown")
+        self.assertGreaterEqual(metrics.data["sensitive_findings"], 4)
+        seeded = self.router.dispatch("POST", "/api/alerts/rules/seed", {}, role="risk_compliance")
+        self.assertIn("alert_sensitive_findings", {item["rule_id"] for item in seeded.data["rules"]})
+        evaluated = self.router.dispatch("POST", "/api/alerts/evaluate", {}, role="risk_compliance")
+        self.assertIn("alert_sensitive_findings", {item["rule_id"] for item in evaluated.data["alerts"]})
+
+        blocked = self.router.dispatch("POST", "/api/ingestion/documents", {}, actor="analyst", role="analyst")
+        self.assertFalse(blocked.success)
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(self.service.store.audit_log[-1].action, "permission_denied")
+
+        metrics_after_denied = self.router.dispatch("GET", "/api/metrics", {}, role="unknown")
+        self.assertEqual(metrics_after_denied.data["permission_denied_events"], 1)
+        evaluated_after_denied = self.router.dispatch("POST", "/api/alerts/evaluate", {}, role="risk_compliance")
+        self.assertIn("alert_permission_denied_events", {item["rule_id"] for item in evaluated_after_denied.data["alerts"]})
+
+    def test_public_market_data_respects_rights_and_dashboard(self) -> None:
         seeded = self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
         self.assertTrue(seeded.success)
-        self.assertIn("authorized_eod_market_data", {item["source_id"] for item in seeded.data["sources"]})
+        self.assertIn("public_eod_market_data", {item["source_id"] for item in seeded.data["sources"]})
 
         point = self.router.dispatch(
             "POST",
@@ -1326,7 +1871,7 @@ class SystemServiceTests(unittest.TestCase):
             {
                 "data_id": "md_001",
                 "security_id": "sec_001",
-                "source_id": "authorized_eod_market_data",
+                "source_id": "public_eod_market_data",
                 "as_of_date": "2026-05-14",
                 "data_type": "eod",
                 "close": 12.34,
@@ -1336,7 +1881,7 @@ class SystemServiceTests(unittest.TestCase):
             role="data_engineer",
         )
         self.assertTrue(point.success)
-        self.assertEqual(point.data["rights_tag"]["license_class"], "authorized_eod_research")
+        self.assertEqual(point.data["rights_tag"]["license_class"], "public_eod_reference")
         self.assertEqual(point.data["rights_tag"]["non_display_use"], "allowed")
 
         listed = self.router.dispatch("GET", "/api/market-data", {"security_id": "sec_001"}, role="CEO")
@@ -1357,7 +1902,7 @@ class SystemServiceTests(unittest.TestCase):
                     {
                         "data_id": "md_002",
                         "security_id": "sec_001",
-                        "source_id": "authorized_eod_market_data",
+                        "source_id": "public_eod_market_data",
                         "as_of_date": "2026-05-15",
                         "data_type": "delayed",
                         "close": 12.56,
@@ -1377,13 +1922,30 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(batch.data["created_count"], 1)
         self.assertEqual(batch.data["failed_count"], 1)
 
+        eod_next = self.router.dispatch(
+            "POST",
+            "/api/market-data/points",
+            {
+                "data_id": "md_003_eod",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "as_of_date": "2026-05-15",
+                "data_type": "eod",
+                "close": 12.56,
+                "adjusted_close": 12.56,
+                "volume": 1200000,
+            },
+            role="data_engineer",
+        )
+        self.assertTrue(eod_next.success, eod_next.error)
+
         action = self.router.dispatch(
             "POST",
             "/api/corporate-actions",
             {
                 "action_id": "ca_split",
                 "security_id": "sec_001",
-                "source_id": "authorized_eod_market_data",
+                "source_id": "public_eod_market_data",
                 "action_type": "split",
                 "ex_date": "2026-05-16",
                 "ratio": 2.0,
@@ -1392,11 +1954,78 @@ class SystemServiceTests(unittest.TestCase):
             role="data_engineer",
         )
         self.assertTrue(action.success, action.error)
+        dividend = self.router.dispatch(
+            "POST",
+            "/api/corporate-actions",
+            {
+                "action_id": "ca_cash_dividend",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "action_type": "cash_dividend",
+                "ex_date": "2026-05-15",
+                "cash_amount": 0.2,
+                "currency": "CNY",
+                "description": "cash dividend for total-return chain",
+            },
+            role="data_engineer",
+        )
+        self.assertTrue(dividend.success, dividend.error)
         corporate_actions = self.router.dispatch("GET", "/api/corporate-actions", {"security_id": "sec_001"}, role="CEO")
-        self.assertEqual(corporate_actions.data["corporate_actions"][0]["action_id"], "ca_split")
+        self.assertEqual(corporate_actions.data["count"], 2)
+        adjusted = self.router.dispatch(
+            "GET",
+            "/api/market-data/adjusted",
+            {"security_id": "sec_001", "source_id": "public_eod_market_data", "data_type": "eod", "adjustment_mode": "backward"},
+            role="CEO",
+        )
+        self.assertTrue(adjusted.success, adjusted.error)
+        self.assertEqual(adjusted.data["adjustment_mode"], "backward")
+        self.assertEqual(adjusted.data["market_data"][0]["corporate_action_ids"], ["ca_split"])
+        self.assertAlmostEqual(adjusted.data["market_data"][0]["computed_adjusted_close"], 6.17)
+        self.assertEqual(adjusted.data["market_data"][1]["cash_dividend"], 0.2)
+        self.assertEqual(adjusted.data["market_data"][1]["computed_adjusted_cash_dividend"], 0.1)
+        self.assertIn("cash_dividends", adjusted.data["adjustment_policy"])
+
+        forward = self.router.dispatch(
+            "GET",
+            "/api/market-data/adjusted",
+            {"security_id": "sec_001", "source_id": "public_eod_market_data", "data_type": "eod", "adjustment_mode": "forward"},
+            role="CEO",
+        )
+        self.assertTrue(forward.success, forward.error)
+        self.assertEqual(forward.data["market_data"][0]["computed_adjusted_close"], 12.34)
+
+        returns = self.router.dispatch(
+            "GET",
+            "/api/market-data/returns",
+            {"security_id": "sec_001", "source_id": "public_eod_market_data", "data_type": "eod", "adjustment_mode": "backward"},
+            role="CEO",
+        )
+        self.assertTrue(returns.success, returns.error)
+        self.assertEqual(returns.data["price_count"], 2)
+        self.assertEqual(returns.data["return_count"], 1)
+        self.assertEqual(returns.data["total_return_method"], "price_only")
+        self.assertAlmostEqual(returns.data["returns"][0]["return"], 6.28 / 6.17 - 1.0)
+        self.assertEqual(returns.data["adjustment_mode"], "backward")
+        total_returns = self.router.dispatch(
+            "GET",
+            "/api/market-data/returns",
+            {
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "data_type": "eod",
+                "adjustment_mode": "backward",
+                "total_return_method": "cash_dividend_reinvested",
+            },
+            role="CEO",
+        )
+        self.assertTrue(total_returns.success, total_returns.error)
+        self.assertEqual(total_returns.data["returns"][0]["cash_dividend"], 0.1)
+        self.assertGreater(total_returns.data["returns"][0]["return"], returns.data["returns"][0]["return"])
+
         refreshed_dashboard = self.router.dispatch("GET", "/api/dashboard/ceo", {}, role="CEO")
-        self.assertEqual(refreshed_dashboard.data["counts"]["market_data"], 2)
-        self.assertEqual(refreshed_dashboard.data["counts"]["corporate_actions"], 1)
+        self.assertEqual(refreshed_dashboard.data["counts"]["market_data"], 3)
+        self.assertEqual(refreshed_dashboard.data["counts"]["corporate_actions"], 2)
 
         blocked_realtime = self.router.dispatch(
             "POST",
@@ -1404,7 +2033,7 @@ class SystemServiceTests(unittest.TestCase):
             {
                 "data_id": "md_realtime",
                 "security_id": "sec_001",
-                "source_id": "authorized_eod_market_data",
+                "source_id": "public_eod_market_data",
                 "as_of_date": "2026-05-14",
                 "data_type": "realtime",
                 "close": 12.34,
@@ -1438,7 +2067,199 @@ class SystemServiceTests(unittest.TestCase):
         self.assertFalse(blocked_rights.success)
         self.assertEqual(blocked_rights.status_code, 403)
 
-    def test_tdx_market_data_preview_and_import_use_authorized_eod_path(self) -> None:
+        blocked_field = self.router.dispatch(
+            "POST",
+            "/api/market-data/points",
+            {
+                "data_id": "md_blocked_field",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "as_of_date": "2026-05-14",
+                "data_type": "eod",
+                "close": 12.34,
+                "volume": 100,
+                "real_time_bid": 12.35,
+            },
+            role="data_engineer",
+        )
+        self.assertFalse(blocked_field.success)
+        self.assertEqual(blocked_field.status_code, 422)
+        self.assertIn("field", blocked_field.error["message"])
+
+    def test_market_data_quality_report_flags_ohlc_governance_and_date_gaps(self) -> None:
+        self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
+        for payload in [
+            {
+                "data_id": "md_quality_001",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "as_of_date": "2026-05-14",
+                "data_type": "eod",
+                "open": 10.0,
+                "high": 10.5,
+                "low": 9.8,
+                "close": 10.2,
+                "volume": 1000,
+            },
+            {
+                "data_id": "md_quality_bad_ohlc",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "as_of_date": "2026-05-20",
+                "data_type": "eod",
+                "open": 10.0,
+                "high": 9.5,
+                "low": 9.0,
+                "close": 11.0,
+                "volume": 1000,
+            },
+        ]:
+            created = self.router.dispatch("POST", "/api/market-data/points", payload, role="data_engineer")
+            self.assertTrue(created.success, created.error)
+
+        report = self.router.dispatch(
+            "GET",
+            "/api/market-data/quality-report",
+            {"security_id": "sec_001", "max_gap_days": 1},
+            role="CEO",
+        )
+        self.assertTrue(report.success, report.error)
+        self.assertEqual(report.data["total_points"], 2)
+        self.assertEqual(report.data["invalid_ohlc"][0]["data_id"], "md_quality_bad_ohlc")
+        self.assertEqual(report.data["date_gaps"][0]["gap_days"], 5)
+        source_gap_rows = {item["source_id"]: item for item in report.data["source_governance_gaps"]}
+        self.assertNotIn("public_eod_market_data", source_gap_rows)
+        self.assertEqual(report.data["source_rights_gaps"], [])
+        self.assertLess(report.data["quality_score"], 1.0)
+
+    def test_portfolio_returns_consumes_public_adjusted_market_data(self) -> None:
+        self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
+        self.service.register_security(
+            {
+                "security_id": "sec_002",
+                "issuer_id": "issuer_001",
+                "ticker": "DEMO2",
+                "exchange": "SSE",
+                "currency": "CNY",
+                "market": "A",
+            },
+            actor="platform",
+        )
+        for payload in [
+            {"data_id": "md_p1_d1", "security_id": "sec_001", "as_of_date": "2026-05-14", "close": 10.0, "adjusted_close": 10.0, "volume": 100},
+            {"data_id": "md_p1_d2", "security_id": "sec_001", "as_of_date": "2026-05-15", "close": 11.0, "adjusted_close": 11.0, "volume": 100},
+            {"data_id": "md_p2_d1", "security_id": "sec_002", "as_of_date": "2026-05-14", "close": 20.0, "adjusted_close": 20.0, "volume": 100},
+            {"data_id": "md_p2_d2", "security_id": "sec_002", "as_of_date": "2026-05-15", "close": 19.0, "adjusted_close": 19.0, "volume": 100},
+        ]:
+            created = self.router.dispatch("POST", "/api/market-data/points", {"source_id": "public_eod_market_data", "data_type": "eod", **payload}, role="data_engineer")
+            self.assertTrue(created.success, created.error)
+
+        portfolio = self.router.dispatch(
+            "POST",
+            "/api/portfolio/returns",
+            {
+                "weights": {"sec_001": 0.6, "sec_002": 0.4},
+                "groups": {
+                    "sec_001": {"industry": "software", "style": "quality"},
+                    "sec_002": {"industry": "hardware", "style": "value"},
+                },
+                "source_id": "public_eod_market_data",
+                "data_type": "eod",
+                "adjustment_mode": "backward",
+                "total_return_method": "price_only",
+            },
+            role="CIO",
+        )
+        self.assertTrue(portfolio.success, portfolio.error)
+        self.assertEqual(portfolio.data["return_count"], 1)
+        expected = 0.6 * 0.1 + 0.4 * (-0.05)
+        self.assertAlmostEqual(portfolio.data["returns"][0]["return"], expected)
+        self.assertEqual(portfolio.data["coverage"]["component_count"], 2)
+        self.assertEqual(portfolio.data["weights"]["sec_001"], 0.6)
+        self.assertAlmostEqual(portfolio.data["attribution"]["industry"]["software"]["period_contribution"], 0.06)
+        self.assertAlmostEqual(portfolio.data["attribution"]["industry"]["hardware"]["period_contribution"], -0.02)
+        self.assertEqual(portfolio.data["attribution"]["style"]["quality"]["weight"], 0.6)
+
+    def test_portfolio_valuation_uses_latest_public_market_prices(self) -> None:
+        self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
+        self.service.register_security(
+            {
+                "security_id": "sec_val_002",
+                "issuer_id": "issuer_001",
+                "ticker": "VAL2",
+                "exchange": "SSE",
+                "currency": "CNY",
+                "market": "A",
+            },
+            actor="platform",
+        )
+        for payload in [
+            {"data_id": "md_val_1", "security_id": "sec_001", "as_of_date": "2026-05-14", "close": 10.0, "adjusted_close": 10.0, "volume": 100},
+            {"data_id": "md_val_2", "security_id": "sec_val_002", "as_of_date": "2026-05-13", "close": 20.0, "adjusted_close": 20.0, "volume": 100},
+        ]:
+            created = self.router.dispatch("POST", "/api/market-data/points", {"source_id": "public_eod_market_data", "data_type": "eod", **payload}, role="data_engineer")
+            self.assertTrue(created.success, created.error)
+
+        valuation = self.router.dispatch(
+            "POST",
+            "/api/portfolio/valuation",
+            {
+                "as_of_date": "2026-05-14",
+                "cash": 100.0,
+                "holdings": [
+                    {"security_id": "sec_001", "shares": 10},
+                    {"security_id": "sec_val_002", "shares": 5},
+                ],
+            },
+            role="CIO",
+        )
+        self.assertTrue(valuation.success, valuation.error)
+        self.assertEqual(valuation.data["gross_market_value"], 200.0)
+        self.assertEqual(valuation.data["total_market_value"], 300.0)
+        self.assertEqual(valuation.data["cash_weight"], round(100 / 300, 8))
+        self.assertEqual(valuation.data["positions"][1]["price_date"], "2026-05-13")
+        self.assertEqual(valuation.data["missing_price_count"], 0)
+
+    def test_portfolio_transactions_derive_asof_positions(self) -> None:
+        self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
+        for payload in [
+            {
+                "transaction_id": "ptxn_buy",
+                "security_id": "sec_001",
+                "trade_date": "2026-05-14",
+                "side": "buy",
+                "quantity": 100,
+                "price": 10.0,
+                "fees": 1.0,
+                "account_id": "acct_001",
+                "strategy_id": "strat_core",
+            },
+            {
+                "transaction_id": "ptxn_sell",
+                "security_id": "sec_001",
+                "trade_date": "2026-05-15",
+                "side": "sell",
+                "quantity": 40,
+                "price": 11.0,
+                "fees": 1.0,
+                "account_id": "acct_001",
+                "strategy_id": "strat_core",
+            },
+        ]:
+            created = self.router.dispatch("POST", "/api/portfolio/transactions", payload, role="PM")
+            self.assertTrue(created.success, created.error)
+
+        listed = self.router.dispatch("GET", "/api/portfolio/transactions", {"account_id": "acct_001"}, role="PM")
+        self.assertTrue(listed.success)
+        self.assertEqual(listed.data["total"], 2)
+
+        positions = self.router.dispatch("GET", "/api/portfolio/positions", {"account_id": "acct_001", "as_of_date": "2026-05-15"}, role="PM")
+        self.assertTrue(positions.success, positions.error)
+        self.assertEqual(positions.data["position_count"], 1)
+        self.assertEqual(positions.data["positions"][0]["shares"], 60.0)
+        self.assertEqual(positions.data["transaction_count"], 2)
+
+    def test_tdx_market_data_preview_and_import_use_public_eod_path(self) -> None:
         with TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "market_data.duckdb"
             connection = sqlite3.connect(db_path)
@@ -1502,7 +2323,7 @@ class SystemServiceTests(unittest.TestCase):
             self.assertEqual(imported.data["failed_count"], 0)
             listed = self.router.dispatch("GET", "/api/market-data", {"security_id": "sec_600000"}, role="CEO")
             self.assertEqual(len(listed.data["market_data"]), 2)
-            self.assertEqual(listed.data["market_data"][0]["source_id"], "authorized_eod_market_data")
+            self.assertEqual(listed.data["market_data"][0]["source_id"], "public_eod_market_data")
 
             duplicate = self.router.dispatch(
                 "POST",
@@ -1513,6 +2334,149 @@ class SystemServiceTests(unittest.TestCase):
             self.assertTrue(duplicate.success)
             self.assertEqual(duplicate.data["created_count"], 0)
             self.assertEqual(duplicate.data["skipped_count"], 2)
+
+    def test_tdx_vipdoc_preview_and_import_fallback(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            vipdoc_root = Path(temp_dir) / "vipdoc"
+            day_dir = vipdoc_root / "sh" / "lday"
+            day_dir.mkdir(parents=True)
+            (day_dir / "sh600000.day").write_bytes(
+                b"".join(
+                    [
+                        struct.pack("<IIIIIfII", 20260514, 1000, 1080, 990, 1050, 10500.0, 1000, 0),
+                        struct.pack("<IIIIIfII", 20260515, 1050, 1120, 1030, 1100, 13200.0, 1200, 0),
+                    ]
+                )
+            )
+            self.service.tdx_vipdoc = TDXVipdocAdapter(path=vipdoc_root)
+            self.service.register_security(
+                {
+                    "security_id": "sec_vip_600000",
+                    "issuer_id": "issuer_001",
+                    "ticker": "600000",
+                    "exchange": "SSE",
+                    "currency": "CNY",
+                    "market": "A",
+                },
+                actor="platform",
+            )
+
+            preview = self.router.dispatch(
+                "POST",
+                "/api/market-data/tdx/preview",
+                {"source_format": "vipdoc", "symbols": ["600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
+                role="data_engineer",
+            )
+            self.assertTrue(preview.success, preview.error)
+            self.assertEqual(preview.data["adapter"]["provider"], "tdx_vipdoc")
+            self.assertEqual(preview.data["count"], 2)
+            self.assertEqual(preview.data["rows"][0]["open"], 10.0)
+            self.assertEqual(preview.data["rows"][1]["close"], 11.0)
+
+            imported = self.router.dispatch(
+                "POST",
+                "/api/market-data/tdx/import",
+                {"source_format": "vipdoc", "symbols": ["sh600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(imported.success, imported.error)
+            self.assertEqual(imported.data["adapter"]["provider"], "tdx_vipdoc")
+            self.assertEqual(imported.data["created_count"], 2)
+            self.assertEqual(imported.data["failed_count"], 0)
+            listed = self.router.dispatch("GET", "/api/market-data", {"security_id": "sec_vip_600000"}, role="CEO")
+            self.assertEqual(len(listed.data["market_data"]), 2)
+            self.assertEqual(listed.data["market_data"][0]["source_id"], "public_eod_market_data")
+
+    def test_tdx_incremental_import_script_starts_after_existing_date(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            state_db = Path(temp_dir) / "state.db"
+            tdx_db = Path(temp_dir) / "market_data.duckdb"
+            connection = sqlite3.connect(tdx_db)
+            connection.execute(
+                """
+                CREATE TABLE daily_kline (
+                    symbol TEXT,
+                    trade_date TEXT,
+                    open REAL,
+                    close REAL,
+                    high REAL,
+                    low REAL,
+                    volume REAL,
+                    amount REAL,
+                    turnover REAL
+                )
+                """
+            )
+            connection.executemany(
+                "INSERT INTO daily_kline VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    ("600000", "2026-05-14", 10.0, 10.5, 10.8, 9.9, 1000.0, 10500.0, None),
+                    ("600000", "2026-05-15", 10.5, 11.0, 11.2, 10.3, 1200.0, 13200.0, None),
+                ],
+            )
+            connection.commit()
+            connection.close()
+
+            state_service = SystemService(SQLiteStore(state_db))
+            state_service.seed_default_sources(actor="data")
+            state_service.register_issuer({"issuer_id": "issuer_script", "legal_name": "Script Corp", "market": ["A"]}, actor="platform")
+            state_service.register_security(
+                {
+                    "security_id": "sec_600000",
+                    "issuer_id": "issuer_script",
+                    "ticker": "600000",
+                    "exchange": "SSE",
+                    "currency": "CNY",
+                    "market": "A",
+                },
+                actor="platform",
+            )
+            state_service.register_market_data_point(
+                {
+                    "security_id": "sec_600000",
+                    "source_id": "public_eod_market_data",
+                    "as_of_date": "2026-05-14",
+                    "data_type": "eod",
+                    "open": 10.0,
+                    "high": 10.8,
+                    "low": 9.9,
+                    "close": 10.5,
+                    "volume": 1000.0,
+                },
+                actor="data",
+            )
+
+            summary = run_tdx_incremental_import(
+                state_db,
+                symbols=["600000"],
+                security_map={"600000": "sec_600000"},
+                tdx_duckdb_path=tdx_db,
+                end_date="2026-05-15",
+                duckdb_connect=lambda path, _read_only: sqlite3.connect(path),
+            )
+            self.assertEqual(summary["created_count"], 1)
+            self.assertEqual(summary["results"][0]["start_date"], "2026-05-15")
+            reloaded = SystemService(SQLiteStore(state_db))
+            points = sorted(reloaded.store.market_data.values(), key=lambda item: item.as_of_date)
+            self.assertEqual([point.as_of_date for point in points], ["2026-05-14", "2026-05-15"])
+
+    def test_tdx_vipdoc_download_script_verifies_and_extracts_archive(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path = root / "vipdoc.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("sh/lday/sh600000.day", b"demo-day-bytes")
+            expected_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            target_dir = root / "target"
+
+            result = download_tdx_vipdoc_archive(str(archive_path), target_dir, expected_sha256=expected_sha256)
+            self.assertEqual(result["sha256"], expected_sha256)
+            self.assertEqual(result["extracted_count"], 1)
+            self.assertTrue((target_dir / "sh" / "lday" / "sh600000.day").exists())
+
+            with self.assertRaises(Exception):
+                download_tdx_vipdoc_archive(str(archive_path), root / "bad", expected_sha256="0" * 64)
 
     def test_13f_holdings_generate_crowding_snapshot(self) -> None:
         first = self.router.dispatch(
@@ -1794,6 +2758,11 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(prompt.success)
         self.assertEqual(prompt.data["status"], "pending")
 
+        prompt_list = self.router.dispatch("GET", "/api/prompts/changes", {"status": "pending"}, role="NLP/ML 负责人")
+        self.assertTrue(prompt_list.success)
+        self.assertEqual(prompt_list.data["total"], 1)
+        self.assertEqual(prompt_list.data["changes"][0]["request_id"], "pr_001")
+
         approved = self.router.dispatch(
             "POST",
             "/api/prompts/changes/pr_001/approve",
@@ -2067,7 +3036,7 @@ class SystemServiceTests(unittest.TestCase):
             {
                 "data_id": "md_graph",
                 "security_id": "sec_001",
-                "source_id": "authorized_eod_market_data",
+                "source_id": "public_eod_market_data",
                 "as_of_date": "2026-05-14",
                 "data_type": "eod",
                 "close": 88.5,
@@ -2340,12 +3309,22 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(answer.data["summary_version"], "summary-v2")
         self.assertEqual(answer.data["prompt_version"], "research-answer-v2")
         self.assertEqual(answer.data["model_version"], "gpt-audit-v1")
+        self.assertFalse(answer.data["citation_truncated"])
+        self.assertEqual(answer.data["citation_char_limit"], 0)
         self.assertIn("中文摘要", answer.data["chinese_summary"])
         self.assertIn(evidence.evidence_id, answer.data["evidence_ids"])
 
         loaded = self.router.dispatch("GET", "/api/research/answers/ans_001", {}, role="analyst")
         self.assertTrue(loaded.success)
         self.assertEqual(loaded.data["source_document_ids"], ["doc_answer"])
+        quality = self.router.dispatch("GET", "/api/research/answers/quality-report", {"issuer_id": "issuer_001"}, role="risk_compliance")
+        self.assertTrue(quality.success, quality.error)
+        self.assertEqual(quality.data["pending_review"], 1)
+        self.assertEqual(quality.data["source_link_rate"], 1.0)
+        self.assertIn("pending_human_review", quality.data["answers"][0]["issues"])
+        metrics = self.router.dispatch("GET", "/api/metrics", {}, role="unknown")
+        self.assertEqual(metrics.data["research_answer_pending_reviews"], 1)
+
         reviewed = self.router.dispatch(
             "POST",
             "/api/research/answers/ans_001/review",
@@ -2362,6 +3341,55 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(latest_audit.prompt_version, "research-answer-v2")
         self.assertEqual(latest_audit.model_version, "gpt-audit-v1")
         self.assertEqual(latest_audit.approval_state, "approved")
+        reviewed_quality = self.router.dispatch("GET", "/api/research/answers/quality-report", {"issuer_id": "issuer_001"}, role="risk_compliance")
+        self.assertEqual(reviewed_quality.data["pending_review"], 0)
+        self.assertEqual(reviewed_quality.data["review_coverage"], 1.0)
+
+    def test_research_answer_limits_non_public_citation_snippets(self) -> None:
+        self.service.seed_default_sources(actor="risk")
+        body = "Margin pressure and channel checks remain analyst reference material " * 20
+        doc = self.service.ingest_document(
+            {
+                "document_id": "doc_local_research_answer",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "local_research_reports",
+                "source_type": "local_reference",
+                "document_type": "research",
+                "source_uri": "local://research-reports/demo.pdf",
+                "body": body,
+                "rights_tag": {
+                    "license_class": "local_research_reference",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "restricted",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        self.addCleanup(lambda: Path(doc.object_uri).unlink(missing_ok=True))
+        evidence = self.service.extract_evidence("doc_local_research_answer", actor="analyst")[0]
+        answer = self.router.dispatch(
+            "POST",
+            "/api/research/answers",
+            {
+                "answer_id": "ans_limited_citation",
+                "issuer_id": "issuer_001",
+                "question": "What does the research say about margin pressure?",
+                "evidence_ids": [evidence.evidence_id],
+                "citation_char_limit": 120,
+            },
+            role="overseas_research",
+        )
+        self.assertTrue(answer.success, answer.error)
+        self.assertEqual(answer.data["source_publicness"], "local_research_reference")
+        self.assertTrue(answer.data["citation_truncated"])
+        self.assertEqual(answer.data["citation_char_limit"], 120)
+        self.assertLessEqual(len(answer.data["english_source_text"]), 160)
+        self.assertIn("[TRUNCATED_FOR_CITATION_BOUNDARY]", answer.data["english_source_text"])
 
     def test_structured_extraction_reads_markdown_tables(self) -> None:
         self.service.ingest_document(
@@ -2910,7 +3938,45 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(semantic.success)
         self.assertEqual(semantic.data["backend"], "local-semantic")
         self.assertGreaterEqual(len(semantic.data["results"]), 1)
-        self.assertEqual(semantic.data["results"][0]["source_boundary"], "inherits_record_rights")
+        self.assertIn("source_boundary", semantic.data["results"][0])
+        self.assertEqual(semantic.data["payload_filter"]["include_restricted"], False)
+
+        restricted_doc = self.service.ingest_document(
+            {
+                "document_id": "doc_semantic_restricted",
+                "issuer_id": "issuer_demo",
+                "security_id": "security_demo_us",
+                "source_id": "local_research_reports",
+                "source_type": "local_reference",
+                "document_type": "research",
+                "source_uri": "local://research/semantic",
+                "body": "restricted alpha catalyst",
+                "rights_tag": {
+                    "license_class": "local_research_reference",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "restricted",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        restricted_default = self.router.dispatch("POST", "/api/search/semantic", {"q": "restricted alpha catalyst", "issuer_id": "issuer_demo"}, role="CEO")
+        self.assertNotIn(restricted_doc.document_id, {item["resource_id"] for item in restricted_default.data["results"]})
+        restricted_included = self.router.dispatch("POST", "/api/search/semantic", {"q": "restricted alpha catalyst", "issuer_id": "issuer_demo", "include_restricted": True, "resource_types": ["document"]}, role="CEO")
+        self.assertIn(restricted_doc.document_id, {item["resource_id"] for item in restricted_included.data["results"]})
+        self.assertEqual(restricted_included.data["results"][0]["risk_level"], "restricted")
+
+        benchmark = self.router.dispatch(
+            "POST",
+            "/api/search/semantic/benchmark",
+            {"samples": [{"q": "restricted alpha catalyst", "issuer_id": "issuer_demo", "resource_types": ["document"], "include_restricted": True, "expected_resource_ids": [restricted_doc.document_id]}]},
+            role="CEO",
+        )
+        self.assertTrue(benchmark.success, benchmark.error)
+        self.assertEqual(benchmark.data["recall_at_k"], 1.0)
         self.assertGreaterEqual(len(self.service.thesis_payload("thesis_demo")["evidence"]), 1)
 
         second = self.router.dispatch("POST", "/api/demo/full-flow", {}, actor="platform_owner", role="platform")
@@ -2928,7 +3994,40 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("high_risk_challenger_coverage", gate_names)
         self.assertIn("source_governance_coverage", gate_names)
         self.assertIn("audit_completeness", gate_names)
+        self.assertIn("quarterly_incident_drill_coverage", gate_names)
+        self.assertIn("readiness_checklist_coverage", gate_names)
+        self.assertIn("real_data_smoke_test", gate.data["pending_checklist"])
         self.assertIn("production_ui_screenshot_acceptance", gate.data["pending_checklist"])
+        self.assertEqual(gate.data["counts"]["readiness_checks"], 0)
+
+        recorded = self.router.dispatch(
+            "POST",
+            "/api/readiness/checklist/production_ui_screenshot_acceptance",
+            {
+                "status": "passed",
+                "owner": "platform_owner",
+                "evidence_uri": "artifact://ui-screenshots/2026-05-15",
+                "notes": "desktop and mobile screenshots accepted",
+                "metrics": {"desktop": 1, "mobile": 1},
+                "measured_at": "2026-05-15T00:00:00+00:00",
+            },
+            actor="platform_owner",
+            role="platform",
+        )
+        self.assertTrue(recorded.success, recorded.error)
+        self.assertEqual(recorded.data["check_id"], "production_ui_screenshot_acceptance")
+
+        checklist = self.router.dispatch("GET", "/api/readiness/checklist", {}, role="risk_compliance")
+        self.assertTrue(checklist.success)
+        self.assertEqual(checklist.data["required"], 8)
+        self.assertEqual(checklist.data["passed"], 1)
+        self.assertEqual(checklist.data["coverage"], 0.125)
+
+        updated_gate = self.router.dispatch("GET", "/api/readiness/vision-gate", {}, role="CEO")
+        self.assertTrue(updated_gate.success)
+        self.assertNotIn("production_ui_screenshot_acceptance", updated_gate.data["pending_checklist"])
+        self.assertIn("real_data_smoke_test", updated_gate.data["pending_checklist"])
+        self.assertEqual(updated_gate.data["counts"]["readiness_checks"], 1)
 
     def test_search_falls_back_when_external_backend_fails(self) -> None:
         class FailingSearchIndex:
@@ -3056,7 +4155,7 @@ class SystemServiceTests(unittest.TestCase):
                 {
                     "data_id": "md_persist",
                     "security_id": "security_persist",
-                    "source_id": "authorized_eod_market_data",
+                    "source_id": "public_eod_market_data",
                     "as_of_date": "2026-05-14",
                     "data_type": "eod",
                     "close": 101.25,
@@ -3276,7 +4375,7 @@ class SystemServiceTests(unittest.TestCase):
             {
                 "data_id": "md_pg",
                 "security_id": "security_pg",
-                "source_id": "authorized_eod_market_data",
+                "source_id": "public_eod_market_data",
                 "as_of_date": "2026-05-14",
                 "data_type": "eod",
                 "close": 45.75,
@@ -3487,7 +4586,8 @@ class SystemServiceTests(unittest.TestCase):
         result = validate_ui_html(run_node=False)
         self.assertEqual(result["nav_labels"], 10)
         self.assertEqual(result["status_labels"], 7)
-        self.assertEqual(result["required_ids"], 21)
+        self.assertEqual(result["required_ids"], 30)
+        self.assertEqual(result["required_functions"], 22)
         self.assertEqual(result["node_check"], "skipped")
 
     def test_production_runbook_and_env_template_cover_required_operations(self) -> None:

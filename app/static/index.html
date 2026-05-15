@@ -473,7 +473,7 @@
       <button class="active" data-open="dashboard">总览</button>
       <button data-open="ingestion">数据中台</button>
       <button data-open="search">研究工作台</button>
-      <button data-open="dashboard">Agent 协作</button>
+      <button data-open="agents">Agent 协作</button>
       <button data-open="review">策略实验室</button>
       <button data-open="committee">投委会</button>
       <button data-open="incidents">风控合规</button>
@@ -482,7 +482,7 @@
       <button data-open="incidents">系统治理</button>
       <div class="nav-footer">
         <div class="nav-card"><strong>系统时间</strong><span id="navClock">2026-05-15</span></div>
-        <div class="nav-card"><strong>市场状态</strong><span id="navMarket">已开盘 · 授权延时数据</span></div>
+        <div class="nav-card"><strong>市场状态</strong><span id="navMarket">已开盘 · 公开延时数据</span></div>
       </div>
     </nav>
     <main>
@@ -553,7 +553,7 @@
           <div class="panel span-6">
             <h2>系统架构运行概览</h2>
             <div class="system-strip">
-              <div class="system-box"><strong>数据源授权矩阵</strong><span id="sysSources">0 个来源</span></div>
+              <div class="system-box"><strong>公开来源矩阵</strong><span id="sysSources">0 个来源</span></div>
               <div class="system-box"><strong>对象存储</strong><span id="sysObjectStore">local</span></div>
               <div class="system-box"><strong>检索后端</strong><span id="sysSearch">local</span></div>
               <div class="system-box"><strong>审计日志</strong><span id="sysAudit">0 条</span></div>
@@ -585,6 +585,37 @@
         <div class="panel">
           <h2>Results</h2>
           <table><thead><tr><th>Type</th><th>ID</th><th>Score</th><th>Snippet</th></tr></thead><tbody id="searchRows"></tbody></table>
+        </div>
+      </section>
+
+      <section data-tab="agents">
+        <div class="grid">
+          <div class="panel span-12">
+            <h2>Prompt 审批</h2>
+            <div class="row">
+              <input id="promptChangeId" value="pr_ui_review" aria-label="prompt change id">
+              <input id="promptName" value="research-summary" aria-label="prompt name">
+              <select id="promptChangeLevel" aria-label="prompt change level">
+                <option value="minor">Minor</option>
+                <option value="baseline">Baseline</option>
+                <option value="major">Major</option>
+              </select>
+              <input id="promptContent" value="Summarize with source-boundary notes: {{source_text}}" aria-label="prompt content">
+              <button id="createPromptChange" class="primary">Create Prompt</button>
+              <button id="approvePromptChange">Approve</button>
+              <button id="loadPromptChanges">Load Prompts</button>
+            </div>
+            <table><thead><tr><th>Request</th><th>Name</th><th>Status</th><th>Level</th></tr></thead><tbody id="promptChangeRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>模型服务预算</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>Runs</strong><span id="llmRuns">0</span></div>
+              <div class="system-box"><strong>Error Rate</strong><span id="llmErrorRate">0%</span></div>
+              <div class="system-box"><strong>Cost</strong><span id="llmCost">0</span></div>
+              <div class="system-box"><strong>Budget Used</strong><span id="llmBudgetUsed">0%</span></div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -653,10 +684,10 @@
             <table><thead><tr><th>Type</th><th>Published</th><th>URI</th></tr></thead><tbody id="hkexRows"></tbody></table>
           </div>
           <div class="panel span-12">
-            <h2>Authorized Market Data</h2>
+            <h2>公开行情数据</h2>
             <div class="row">
               <input id="mdSecurityId" value="security_demo_us" aria-label="market data security id">
-              <input id="mdSourceId" value="authorized_eod_market_data" aria-label="market data source id">
+              <input id="mdSourceId" value="public_eod_market_data" aria-label="market data source id">
               <select id="mdType" aria-label="market data type">
                 <option value="eod">EOD</option>
                 <option value="delayed">Delayed</option>
@@ -668,6 +699,26 @@
               <button id="loadMarketData">Load Market Data</button>
             </div>
             <table><thead><tr><th>Security</th><th>Date</th><th>Close</th><th>Rights</th></tr></thead><tbody id="marketDataRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>人工参考边界复核</h2>
+            <div class="row">
+              <input id="manualRefDocId" value="doc_private_note_meta" aria-label="manual reference document id">
+              <input id="manualRefIssuerId" value="issuer_demo" aria-label="manual reference issuer id">
+              <input id="manualRefSecurityId" value="security_demo_us" aria-label="manual reference security id">
+              <select id="manualRefType" aria-label="manual reference type">
+                <option value="private_meeting_note">Private Meeting</option>
+                <option value="roadshow_note">Roadshow</option>
+                <option value="expert_note">Expert Note</option>
+                <option value="transcript">Transcript</option>
+              </select>
+              <input id="manualRefTitle" value="Private meeting metadata" aria-label="manual reference title">
+              <input id="manualRefUri" value="private://meetings/demo" aria-label="manual reference uri">
+              <input id="manualRefNotes" value="Metadata only; confirm publicness and Reg FD boundary." aria-label="manual reference notes">
+              <button id="createManualReference" class="primary">Create Review</button>
+              <button id="loadManualReferences">Load Reviews</button>
+            </div>
+            <table><thead><tr><th>Document</th><th>Issue</th><th>Status</th><th>Action</th></tr></thead><tbody id="manualReferenceRows"></tbody></table>
           </div>
           <div class="panel span-12">
             <h2>13F Holdings</h2>
@@ -715,11 +766,27 @@
       </section>
 
       <section data-tab="incidents">
-        <div class="row"><button id="loadIncidents" class="primary">Load Incidents</button></div>
+        <div class="row">
+          <button id="loadIncidents" class="primary">Load Incidents</button>
+          <button id="loadSourceReviews">Load Source Reviews</button>
+          <button id="notifySourceReviews">Notify Reviews</button>
+        </div>
         <div class="grid">
           <div class="panel span-4"><h2>Playbooks</h2><pre id="playbooksBox"></pre></div>
           <div class="panel span-4"><h2>Reports</h2><pre id="reportsBox"></pre></div>
           <div class="panel span-4"><h2>Schedules</h2><pre id="schedulesBox"></pre></div>
+          <div class="panel span-6">
+            <h2>来源复核提醒</h2>
+            <table><thead><tr><th>Source</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead><tbody id="sourceReviewRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>复核 Owner 看板</h2>
+            <table><thead><tr><th>Owner</th><th>Total</th><th>Overdue</th><th>Blocked</th></tr></thead><tbody id="sourceReviewOwnerRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>复核通知 Outbox</h2>
+            <table><thead><tr><th>Alert</th><th>Channel</th><th>Status</th><th>Target</th></tr></thead><tbody id="sourceReviewNotificationRows"></tbody></table>
+          </div>
         </div>
       </section>
     </main>
@@ -817,12 +884,16 @@
           const pct = Math.round((item.score || 0) * 100);
           return `<div class="heat-cell"><strong>${item.issuer_id}</strong><div class="bar"><span style="width:${pct}%"></span></div><span>${pct}% ${item.source}</span></div>`;
         }).join("") || "<span>No crowding snapshots</span>";
+        const sourceReviewOverdue = counts.source_review_overdue || 0;
+        const sourceReviewDueSoon = counts.source_review_due_soon || 0;
+        const securityFindings = (counts.sensitive_findings || 0) + (counts.permission_denied_events || 0);
         const riskItems = [
           ["公告理解错误风险", counts.extraction_results ? "低" : "中", counts.extraction_results ? 20 : 45, counts.extraction_results ? "ok" : "warn"],
           ["研报偏见风险", counts.challengers ? "中" : "待建", counts.challengers ? 42 : 30, "warn"],
           ["情绪过热风险", counts.signals ? "中" : "低", counts.signals ? 58 : 20, "warn"],
           ["模型幻觉风险", counts.evidence ? "监控中" : "偏高", counts.evidence ? 24 : 70, counts.evidence ? "ok" : "block"],
-          ["权限滥用风险", counts.open_exceptions ? "处理中" : "已闭环", counts.open_exceptions ? 64 : 100, counts.open_exceptions ? "warn" : "ok"]
+          ["权限/敏感数据风险", securityFindings ? `${securityFindings} 待处理` : "已闭环", securityFindings ? 76 : 12, securityFindings ? "block" : "ok"],
+          ["来源复核风险", sourceReviewOverdue ? `${sourceReviewOverdue} 逾期` : `${sourceReviewDueSoon} 待复核`, sourceReviewOverdue ? 72 : sourceReviewDueSoon ? 42 : 12, sourceReviewOverdue ? "block" : sourceReviewDueSoon ? "warn" : "ok"]
         ];
         $("riskRows").innerHTML = riskItems.map(([label, level, value, tone]) => `<div class="risk-row"><span>${label}</span><span class="badge ${tone}">${level}</span><div class="bar"><span style="width:${value}%"></span></div></div>`).join("");
         $("graphIssuer").textContent = data.filings_timeline?.[0]?.issuer_id || "公司";
@@ -867,6 +938,64 @@
         const { data, trace_id } = await api(`/api/decision-packs/${id}`, { role: "cio" });
         $("decisionBox").textContent = pretty(data);
         setStatus(`Decision loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    function renderPromptChanges(items) {
+      $("promptChangeRows").innerHTML = rows(items, "No prompt changes", (item) => `<tr><td>${item.request_id}</td><td>${item.prompt_name}</td><td><span class="badge ${item.status === "approved" ? "ok" : item.status === "rejected" ? "block" : "warn"}">${item.status}</span></td><td>${item.change_level}</td></tr>`);
+    }
+
+    async function loadPromptChanges() {
+      try {
+        const [{ data, trace_id }, metrics] = await Promise.all([
+          api("/api/prompts/changes?limit=20", { role: "nlp_ml" }),
+          api("/api/llm/tasks/metrics", { role: "nlp_ml" })
+        ]);
+        renderPromptChanges(data.changes);
+        $("llmRuns").textContent = `${metrics.data.runs || 0}`;
+        $("llmErrorRate").textContent = pct(metrics.data.error_rate || 0);
+        $("llmCost").textContent = `${metrics.data.estimated_cost || 0} / ${metrics.data.cost_budget || 0}`;
+        $("llmBudgetUsed").textContent = pct(metrics.data.cost_budget_used || 0);
+        setStatus(`Prompt changes loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function createPromptChange() {
+      try {
+        const { data, trace_id } = await api("/api/prompts/changes", {
+          method: "POST",
+          role: "nlp_ml",
+          body: {
+            request_id: $("promptChangeId").value,
+            prompt_name: $("promptName").value,
+            change_level: $("promptChangeLevel").value,
+            requested_by: $("actor").value || "ui_user",
+            content: $("promptContent").value
+          }
+        });
+        renderPromptChanges([data]);
+        setStatus(`Prompt change created · ${trace_id}`);
+        await loadDashboard();
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function approvePromptChange() {
+      try {
+        const id = encodeURIComponent($("promptChangeId").value || "");
+        const { data, trace_id } = await api(`/api/prompts/changes/${id}/approve`, {
+          method: "POST",
+          role: "risk_compliance",
+          body: { approved: true }
+        });
+        renderPromptChanges([data]);
+        setStatus(`Prompt change approved · ${trace_id}`);
+        await loadDashboard();
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -989,6 +1118,39 @@
       }
     }
 
+    async function createManualReference() {
+      try {
+        const { data, trace_id } = await api("/api/research/manual-references", {
+          method: "POST",
+          role: "analyst",
+          body: {
+            document_id: $("manualRefDocId").value,
+            issuer_id: $("manualRefIssuerId").value,
+            security_id: $("manualRefSecurityId").value,
+            document_type: $("manualRefType").value,
+            title: $("manualRefTitle").value,
+            source_uri: $("manualRefUri").value,
+            notes: $("manualRefNotes").value
+          }
+        });
+        $("manualReferenceRows").innerHTML = rows([data.manual_review], "No manual references", (item) => `<tr><td>${item.document_id}</td><td>${item.issue_type}</td><td>${item.status}</td><td>${item.suggested_action}</td></tr>`);
+        setStatus(`Manual reference routed · ${trace_id}`);
+        await loadDashboard();
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function loadManualReferences() {
+      try {
+        const { data, trace_id } = await api("/api/evidence/manual-reviews?issue_type=manual_reference_boundary_review&limit=20", { role: "risk_compliance" });
+        $("manualReferenceRows").innerHTML = rows(data.manual_reviews, "No manual references", (item) => `<tr><td>${item.document_id}</td><td>${item.issue_type}</td><td>${item.status}</td><td>${item.suggested_action}</td></tr>`);
+        setStatus(`Manual references loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
     async function add13fHolding() {
       try {
         const { data, trace_id } = await api("/api/13f/holdings", {
@@ -1086,11 +1248,48 @@
 
     async function loadIncidents() {
       try {
-        const { data, trace_id } = await api("/api/incidents/calendar", { role: "risk_compliance" });
+        const [{ data, trace_id }, reviews] = await Promise.all([
+          api("/api/incidents/calendar", { role: "risk_compliance" }),
+          api("/api/governance/source-review-reminders?due_within_days=30&limit=20", { role: "risk_compliance" })
+        ]);
         $("playbooksBox").textContent = pretty(data.playbooks || []);
         $("reportsBox").textContent = pretty(data.reports || []);
         $("schedulesBox").textContent = pretty(data.schedules || []);
+        renderSourceReviews(reviews.data);
         setStatus(`Incidents loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    function renderSourceReviews(data) {
+      $("sourceReviewRows").innerHTML = rows(data.reminders, "No source reviews due", (item) => `<tr><td>${item.source_id}</td><td>${item.review_owner_role || item.review_owner}</td><td>${item.due_at || ""}</td><td><span class="badge ${item.status === "overdue" ? "block" : "warn"}">${item.status}</span></td></tr>`);
+      $("sourceReviewOwnerRows").innerHTML = rows(data.owner_board, "No owner workload", (item) => `<tr><td>${item.owner_role || item.owner}</td><td>${item.total}</td><td>${item.overdue}</td><td>${item.blocked}</td></tr>`);
+    }
+
+    async function loadSourceReviews() {
+      try {
+        const { data, trace_id } = await api("/api/governance/source-review-reminders?due_within_days=30&limit=20", { role: "risk_compliance" });
+        renderSourceReviews(data);
+        setStatus(`Source reviews loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function notifySourceReviews() {
+      try {
+        await api("/api/alerts/rules/seed", { method: "POST", role: "risk_compliance" });
+        const evaluated = await api("/api/alerts/evaluate", { method: "POST", role: "risk_compliance" });
+        const reviewAlerts = (evaluated.data.alerts || []).filter((item) => item.rule_id === "alert_source_review_overdue").map((item) => item.alert_id);
+        const { data, trace_id } = await api("/api/alerts/notify", {
+          method: "POST",
+          role: "risk_compliance",
+          body: { channel: "source_review_outbox", target: "risk-compliance-source-review", alert_ids: reviewAlerts }
+        });
+        $("sourceReviewNotificationRows").innerHTML = rows(data.notifications, "No notifications", (item) => `<tr><td>${item.alert_id}</td><td>${item.channel}</td><td>${item.status}</td><td>${item.target}</td></tr>`);
+        setStatus(`Source review notifications queued · ${trace_id}`);
+        await loadDashboard();
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1142,6 +1341,9 @@
     $("refresh").addEventListener("click", loadDashboard);
     $("seed").addEventListener("click", seedDemo);
     $("loadEntity").addEventListener("click", loadEntity);
+    $("createPromptChange").addEventListener("click", createPromptChange);
+    $("approvePromptChange").addEventListener("click", approvePromptChange);
+    $("loadPromptChanges").addEventListener("click", loadPromptChanges);
     $("runSearch").addEventListener("click", runSearch);
     $("loadDecision").addEventListener("click", loadDecision);
     $("loadIntent").addEventListener("click", loadIntent);
@@ -1152,6 +1354,8 @@
     $("previewHkex").addEventListener("click", previewHkex);
     $("addMarketData").addEventListener("click", addMarketData);
     $("loadMarketData").addEventListener("click", loadMarketData);
+    $("createManualReference").addEventListener("click", createManualReference);
+    $("loadManualReferences").addEventListener("click", loadManualReferences);
     $("add13fHolding").addEventListener("click", add13fHolding);
     $("update13fCrowding").addEventListener("click", update13fCrowding);
     $("load13fHoldings").addEventListener("click", load13fHoldings);
@@ -1159,6 +1363,8 @@
     $("createSchedule").addEventListener("click", createSchedule);
     $("runSchedules").addEventListener("click", runSchedules);
     $("loadIncidents").addEventListener("click", loadIncidents);
+    $("loadSourceReviews").addEventListener("click", loadSourceReviews);
+    $("notifySourceReviews").addEventListener("click", notifySourceReviews);
     function currentReportId() {
       const now = new Date();
       return `opr_${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}`;

@@ -2,7 +2,7 @@
 
 ## Decision
 
-Do not introduce Feast or Kafka in the current productionization phase. The system is still centered on batch-oriented A/H/U public filings, authorized EOD or delayed market data, evidence extraction, research review, and human committee approval. SQLite/PostgreSQL records, object storage, OpenSearch-compatible retrieval, ingestion schedules, audit logs, and alert rules are sufficient for the present workload.
+Do not introduce Feast or Kafka in the current productionization phase. The system is still centered on batch-oriented A/H/U public filings, public or locally provided EOD/delayed market data, evidence extraction, research review, and human committee approval. SQLite/PostgreSQL records, object storage, OpenSearch-compatible retrieval, ingestion schedules, audit logs, and alert rules are sufficient for the present workload.
 
 ## Why Not Now
 

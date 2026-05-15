@@ -5,8 +5,9 @@
 - 状态只用 `TODO` `DOING` `DONE` `BLOCKED`
 - 本文件维护“达到项目愿景”的剩余路线图；历史实现只在“已落地基线”里汇总
 - 每项任务必须映射到 `docs/mvp-backlog.md` 的 E1-E9；无法完全映射的标注为“愿景扩展/生产化增强”
-- 新增能力默认遵循：研究先于交易、公开/授权数据先于自动化、人工审批先于执行意图
-- 研报、转录稿、第三方接口和行情数据必须先确认授权边界，再进入自动化链路
+- 新增能力默认遵循：研究先于交易、公开/已提供数据先于自动化、人工审批先于执行意图
+- 不采购或依赖商业授权数据；行情、披露、研报线索、转录稿和第三方接口统一优先使用已提供本地数据、官方公开披露、公开网页/API、开源工具可采集的数据
+- 所有外部数据进入自动化链路前必须记录来源、URL/API、采集时间、robots/TOS/公开性判断、字段边界、缓存期限和用途边界；边界不清的数据只进入人工参考
 
 ## 当前判断
 
@@ -14,7 +15,7 @@
 
 新增资源：本地通达信历史行情已迁入 `data/local/tdx/market_data.duckdb`；本地研报目录 `/home/xionglei/文档/6大投行研报汇总` 可作为后续独立研报资产库；`a-stock-data` 可作为 A 股补充接口候选；LLM gateway 与 PaddleOCR-VL 已具备可配置的外部能力入口。
 
-剩余关键缺口：距离完整愿景仍差真实数据管线、授权台账、研报合规资产库、大样本双语 benchmark、真实 bbox 和版面定位、图谱/向量/语义检索生产 adapter、生产 UI、外部监控告警、任务编排、血缘、模型治理、密钥管理和最终上线验收闸门。
+剩余关键缺口：距离完整愿景仍差真实公开数据管线、公开来源 provenance 台账、研报/转录稿公开性与引用边界、大样本双语 benchmark、真实 bbox 和版面定位、图谱/向量/语义检索生产 adapter、生产 UI、外部监控告警、任务编排、血缘、模型治理、密钥管理和最终上线验收闸门。
 
 近期优先级：先完成 M6 生产化事实层，再完成 M7 经营驾驶舱和投研闭环；M8 聚焦数据/研报/LLM 工作流扩展；M9 补齐生产基础设施和治理；M10 用量化指标判断是否达到项目愿景。
 
@@ -83,13 +84,14 @@
   - 输出：中文公告/年报样本集、英文 SEC 披露样本集、标注手册、规则基线报告、抽取/证据定位/表格指标、回归样例库
   - 验收：核心术语 F1 >= 0.90；证据页命中率 >= 0.95；关键数值口径映射准确率 >= 0.92；低置信度样本能拦截
 
-- `DOING` T-403 授权 EOD / 延时行情和供应商权限台账
+- `DOING` T-403 公开 EOD / 延时行情和来源 provenance 台账
   - 对应：E2-US1, E2-US3, E2-US4
-  - 已有：`authorized_eod_market_data` 默认来源、MarketDataPoint、`/api/market-data`、`/api/market-data/batch`、CorporateAction、`/api/corporate-actions`、批量导入逐条错误留痕、拆股/分红/代码变更公司行动、UI 入库入口、dashboard 摘要、rights tag 校验、实时数据阻断、红区/越权来源阻断测试、通达信 DuckDB 只读预览和导入接口、source governance 台账字段、字段白名单、缓存期限和授权覆盖报告
+  - 已有：`public_eod_market_data` 公开/已提供 EOD 来源、MarketDataPoint、`/api/market-data`、`/api/market-data/batch`、CorporateAction、`/api/corporate-actions`、`/api/market-data/adjusted` 原始/前复权/后复权计算视图、`/api/market-data/returns` 回测/估值/风险收益序列消费入口、`/api/portfolio/returns` 组合级公开复权收益/波动/回撤消费入口、`/api/portfolio/valuation` 真实持仓估值/现金权重/缺失价格 adapter、价格收益与 `cash_dividend_reinvested` 现金分红总回报口径、批量导入逐条错误留痕、拆股/分红/代码变更公司行动、UI 入库入口、dashboard 摘要、rights tag 校验、实时数据阻断、红区/越权来源阻断测试、行情字段白名单入库校验、通达信 DuckDB 只读预览和导入接口、通达信 `vipdoc/*.day` 本地校验/解析兜底、`vipdoc` 显式 URL 下载/sha256 校验/zip 安全解压脚本、SQLite 状态库增量导入脚本、source governance/provenance 台账字段、字段白名单、缓存期限、公开来源覆盖报告、行情数据质量报告
+  - 已有：来源 provenance 可记录 `provenance_ref`、`source_tos_uri`、`collection_method`、`robots_policy`、`usage_scope`、`last_reviewed_at`，`/api/governance/sources/{source_id}/reviews` 可记录季度来源复核、复核状态、TOS/robots/用途边界和下次复核日期；历史 `authorized_eod_market_data` 输入兼容映射到 `public_eod_market_data`
   - 本地资源：`data/local/tdx/market_data.duckdb`，来自废弃项目 `stock_chs`，约 2703 万行、10849 个 symbol、覆盖 1990-12-19 至 2026-04-08；该目录已被 Git 忽略
-  - 待做：通达信 symbol/market/date 字段映射完善、增量导入脚本、供应商字段白名单、行情数据质量报告
-  - 待做：通达信官网 `vipdoc` 下载/校验/解析兜底、公司行动自动复权、前复权/后复权口径声明、真实回测/估值/风险消费链路、真实合同编号与供应商授权复核记录
-  - 验收：生产输入数据 100% 能映射到授权台账；红黄绿分级覆盖率 >= 95%；未授权实时 non-display 数据不能进入自动化链路
+  - 待做：通达信 symbol/market/date 字段映射覆盖更多真实 schema
+  - 待做：真实成交流水 adapter、组合级行业/风格/币种风险分解
+  - 验收：生产输入数据 100% 能映射到公开来源 provenance 台账；红黄绿分级覆盖率 >= 95%；边界不清、禁止缓存/禁止自动化或实时 non-display 数据不能进入自动化链路
 
 - `DOING` T-404 生产级状态库、对象存储和检索适配
   - 对应：E3-US4, E6-US4, E8-US2
@@ -105,7 +107,7 @@
 
 - `DOING` T-406 三市场主体页和知识图谱生产化
   - 对应：E3-US2, E3-US4, E8-US2
-  - 已有：EntityMapping、LEI/FIGI/CIK/ISIN/ticker 字段、`/api/entity-mappings/batch`、`/api/entity-mappings/quality-report`、A/H/U 批量映射入库、样本映射准确率报告、`/api/graph/query` 按 issuer/security/evidence/thesis/decision 聚合主体、证券、授权行情、公司行动、文件、证据、观点、信号、决策、execution intent、复盘、回放、例外、research card、13F、crowding、challenger、disclosure event 和派生 `portfolio_positions`，并返回带时间/来源属性的图谱边
+  - 已有：EntityMapping、LEI/FIGI/CIK/ISIN/ticker 字段、`/api/entity-mappings/batch`、`/api/entity-mappings/quality-report`、A/H/U 批量映射入库、样本映射准确率报告、`/api/graph/query` 按 issuer/security/evidence/thesis/decision 聚合主体、证券、公开行情、公司行动、文件、证据、观点、信号、决策、execution intent、复盘、回放、例外、research card、13F、crowding、challenger、disclosure event 和派生 `portfolio_positions`，并返回带时间/来源属性的图谱边
   - 待做：ADR/中概队列真实批量映射、双时间轴版本字段、主体页 UI 细化、图谱 adapter、向量检索 adapter、观点到证据回溯率报告
   - 验收：A/H/U 样本公司映射准确率 >= 98%；观点到证据可回溯率 >= 95%；节点/边具备来源、时间戳和版本
 
@@ -119,8 +121,9 @@
 
 - `DOING` T-408 月报/回放生产化和真实绩效归因
   - 对应：E8-US3, E7-US1
-  - 已有：月报草稿/发布状态、CEO/CIO/风险合规发布审批、`/api/operating-reports/{report_id}/publish`、`/api/operating-reports/{report_id}/red-flags/{red_flag_id}/resolve`、红灯项逐条 ID/状态/处理结论审计、`portfolio_returns`/`portfolio_values` 与 benchmark 输入、TWR/总收益/最大回撤/换手/信息比率、归因指标透传、版本化 strategy replay 与 `/api/strategy-replays` 筛选、发布审计事件
-  - 待做：真实持仓流水和成交流水 adapter、分行业/风格/货币归因、月报 PDF/Board pack 导出、回放批次对比 UI、红灯项 owner/due_date 字段和提醒
+  - 已有：月报草稿/发布状态、CEO/CIO/风险合规发布审批、`/api/operating-reports/{report_id}/publish`、`/api/operating-reports/{report_id}/red-flags/{red_flag_id}/resolve`、红灯项逐条 ID/状态/处理结论审计、红灯项 owner/owner_role/due_date 标准化、`/api/operating-reports/red-flag-reminders` 逾期提醒、`portfolio_returns`/`portfolio_values` 与 benchmark 输入、TWR/总收益/最大回撤/换手/信息比率、归因指标透传、版本化 strategy replay 与 `/api/strategy-replays` 筛选、发布审计事件、`/api/portfolio/transactions` 交易流水 ledger、`/api/portfolio/positions` as-of 持仓派生 adapter
+  - 已有：`/api/portfolio/returns` 支持按 market/currency/industry/style 输出组合收益分组归因，industry/style 可通过 `groups[security_id]` 注入，供月报绩效归因复算
+  - 待做：月报 PDF/Board pack 导出、回放批次对比 UI
   - 验收：月报草稿不能绕过审批发布；绩效指标可由真实收益或 NAV 序列复算；每个红灯项有 owner 和截止时间
 
 - `DOING` T-409 Black-Litterman、风险预算和组合约束原型
@@ -132,13 +135,15 @@
 - `DOING` T-410 英文原文优先的研究问答与摘要审计
   - 对应：E4-US2, E6-US3, E6-US4, E7-US2
   - 已有：ResearchAnswer、`/api/research/answers`、`/api/research/answers/{answer_id}/review`、英文 evidence 校验、英文原文保留、中文摘要链路、summary/prompt/model 版本、来源公开性、人工覆核状态、人工审核通过/驳回、审计日志写入
-  - 待做：交互式 filing 原文问答 UI、摘要质量 benchmark、真实模型调用与回退策略、引用格式细化、答案级证据覆盖率、人工复核队列
+  - 已有：`/api/research/answers/quality-report` 可输出答案级 evidence/document 回链率、人工复核覆盖率、pending review 队列、截断引用和逐答案问题；默认告警 `alert_research_answer_pending_review` 基于 `research_answer_pending_reviews` 指标触发
+  - 待做：交互式 filing 原文问答 UI、摘要质量 benchmark、真实模型调用与回退策略、引用格式细化
   - 验收：关键研究问答必须保留英文原文 evidence；中文摘要不能替代原文引用；摘要变更必须记录模型和 prompt 版本
 
 - `DOING` T-411 生产监控、告警和事故闭环
   - 对应：E6-US4, E9-US1, E9-US2
   - 已有：`/api/health`、`/api/metrics`、AlertRule、SystemAlert、AlertNotification、默认告警规则播种、`/api/alerts/evaluate` 指标评估、开放/恢复告警状态、`/api/alerts/notify` 通知 outbox、`/api/alerts/notifications` 查询、risk dashboard 告警计数、解析失败人工复核告警测试
-  - 待做：OpenTelemetry 接入、结构化日志输出、真实外部告警通道发送器、采集/检索/LLM/OCR 失败专用告警、事故自动建单、RCA 与演练结果回写
+  - 已有：`/api/playbooks/seed` 可播种文档解析失败、数据采集失败、检索降级、LLM 网关失败和权限/敏感数据泄漏五类事故剧本及季度演练计划；`/api/alerts/incidents/create` 可将带 `playbook_id` 的开放告警自动生成 IncidentReport 并回写 `incident_report_id`
+  - 待做：OpenTelemetry 接入、结构化日志输出、真实外部告警通道发送器、采集/检索/LLM/OCR 失败专用外部通道、RCA 与演练结果生产回写
   - 验收：五类事故剧本均有 owner、SLA、止血动作、回滚动作；季度演练覆盖率 100%
 
 - `DOING` T-412 生产部署 runbook 与验收清单
@@ -149,32 +154,42 @@
 
 ## P2 数据与研究资产扩展 / M8
 
-- `DOING` T-414 授权电话会/转录稿和研报引用策略
+- `DOING` T-414 公开电话会/转录稿和研报线索引用策略
   - 对应：E2-US1, E2-US3, E6-US2
-  - 已有：`docs/transcript-research-citation-policy.md`、默认来源 `company_public_webcast` / `authorized_transcript_vendor` / `authorized_research_vendor`、rights tag 边界、公开 webcast 入库路径、供应商 transcript/research 默认禁止训练/再分发/派生、越权 transcript 拦截测试、合同引用/缓存期限/商业范围/source TOS 治理字段
-  - 待做：供应商白名单真实合同条款录入、引用片段限制、供应商对象 URI 脱敏、红区私会/路演纪要人工参考流程 UI、季度来源复核记录
-  - 验收：研报和转录稿默认只作为授权外部观点层；未经授权不得进入事实真相层、训练层或可执行建议层
+  - 已有：`docs/transcript-research-citation-policy.md`、默认来源 `company_public_webcast` / `manual_reference_transcripts` / `local_research_reports`、rights tag 边界、公开 webcast 入库路径、非公开 transcript/research 默认禁止训练/再分发/派生、越权 transcript 拦截测试、来源引用/缓存期限/公开性/source TOS 治理字段
+  - 已有：历史 `authorized_*` 来源输入已兼容映射到 `public_*` / `local_reference_*` / `manual_reference_*` canonical source，避免新数据继续落到商业授权命名
+  - 已有：公开网页/API `source_uri` 入湖前会移除 fragment，并脱敏 `token`、`api_key`、`access_token`、`signature`、`secret` 等敏感查询参数
+  - 已有：研究问答对非公开或本地参考来源按 `citation_char_limit` 截断英文引用片段，并记录 `citation_truncated`
+  - 已有：source governance report 基于 provenance 缺口、risk level 和用途边界计算 `automation_ready`，作为公开来源自动化白名单
+  - 已有：红区私会/路演/expert note 只能通过 `/api/research/manual-references` 登记 metadata-only 人工参考记录；接口拒绝正文并自动创建 `manual_reference_boundary_review`，UI 已提供人工参考边界复核入口
+  - 已有：`/api/governance/source-review-reminders` 支持从未复核、逾期、即将到期来源提醒，按 `review_owner` / `review_owner_role` 汇总 owner 看板，并透传 TOS/robots/用途边界阻断原因
+  - 已有：系统治理 UI 已展示来源复核提醒、owner 看板和来源复核通知 outbox；默认告警 `alert_source_review_overdue` 会基于 `source_review_overdue` 指标触发并可通过 `/api/alerts/notify` 写入通知 outbox
+  - 待做：接入真实外部通知发送器和来源复核 SLA 升级策略
+  - 验收：研报和转录稿默认只作为公开外部观点层或本地人工参考层；非公开、边界不清或禁止自动化的数据不得进入事实真相层、训练层或可执行建议层
 
 - `DOING` T-416 A 股补充数据 connector 引入
   - 对应：E2-US1, E2-US3, E2-US4, E3-US3
   - 输入：`a-stock-data` Apache-2.0 Skill，覆盖通达信/腾讯/东财/akshare/iwencai/同花顺/百度股市通/巨潮等 A 股数据端点
   - 已有：A 股补充 connector 注册表、source definition、rights tag、限速、字段映射、验证状态、错误留痕和最小测试；默认 restricted rights，仅人工参考/补充研究
-  - 待做：逐项真实验证接口可用性、稳定性、调用限制和许可边界；接入具体 fetch adapter 和字段归一化样本
+  - 已有：`/api/connectors/astock/fetch` 支持本地样本行字段归一化、公开网页/API URI 脱敏、rights/provenance 边界评估、blocked/red-zone 合规拦截和 automation blockers 输出
+  - 待做：逐项真实验证接口可用性、稳定性、调用限制和许可边界；接入真实 HTTP fetch adapter 与各端点字段样本库
   - 优先级：东财研报发现、巨潮公告补充、腾讯估值快照、同花顺热点题材、百度概念/资金流、龙虎榜、解禁日历；需要 key 的 iwencai 放到可选配置
-  - 验收：外部接口只作为补充，不替代授权/本地核心数据；红区或边界不清的数据只能进入人工参考，不进入自动化链路
+  - 验收：外部接口只作为公开补充，不替代本地通达信和官方披露核心数据；红区、边界不清、禁止缓存或禁止自动化的数据只能进入人工参考，不进入自动化链路
 
 - `DOING` T-417 本地研报资产库模块
   - 对应：E2-US1, E2-US3, E3-US3, E5-US1, E6-US2；愿景扩展/生产化增强
   - 输入：本地目录 `/home/xionglei/文档/6大投行研报汇总`，约 22G、11742 个文件，其中 11702 个 PDF，按投行/年份/月组织
   - 已有：本地研报 manifest 扫描、投行/source registry、文件指纹、按需登记为 Document、权限边界、检索入口
-  - 待做：OCR/文本抽取队列、引用片段索引、缓存保留期、人工复核入口
+  - 已有：`/api/research-reports/{report_id}/extract` 支持本地 `.txt`/显式文本抽取、`citation_char_limit` 引用片段索引、restricted evidence 回链和无文本/扫描件 `research_report_text_extraction_required` 人工复核入口
+  - 待做：PDF/OCR 批量抽取队列、缓存保留期策略和大目录增量处理
   - 待做：研报观点与公司/行业/事件映射、同一主题多来源观点对比、研报偏见告警、单一来源占比控制、过期研报提示
-  - 验收：研报不能作为事实真相源；不得默认用于训练；所有引用必须回链到授权来源、页码/片段和使用边界
+  - 验收：研报不能作为事实真相源；不得默认用于训练；所有引用必须回链到本地文件或公开来源、页码/片段和使用边界
 
 - `DOING` T-418 大模型 / Agent 工作流生产化
   - 对应：E6-US3, E6-US4, E8-US1, E9-US1；愿景扩展/生产化增强
   - 已有：LLM gateway、OpenAI/Anthropic 兼容转发、默认模型配置、调用审计、密钥环境变量注入、任务级 prompt 模板、baseline prompt 审批记录、模型回退策略、规则/上一稳定版本/人工复核降级链、调用成本/延迟/错误率记录、角色和数据域元数据
-  - 待做：摘要质量 benchmark、prompt 变更 UI 审批、任务结果人工复核队列、Agent 角色权限矩阵落到 UI、模型供应商 SLA 和成本预算告警
+  - 已有：`GET /api/prompts/changes` 查询 prompt 变更审批记录，Agent 协作 UI 支持创建/审批 prompt 变更和查看 LLM runs/error/cost/budget；默认告警 `alert_llm_cost_budget` / `alert_llm_error_rate` 基于 `llm_tasks` 指标触发
+  - 待做：摘要质量 benchmark、任务结果人工复核队列、Agent 角色权限矩阵落到 UI、模型服务 SLA 真实外部通道和预算升级策略
   - 待做：研究摘要、研报摘要、filing 问答、challenger、red team、事故 RCA 的独立模板和验收阈值
   - 验收：生产 prompt 100% 可追溯；未审批 prompt 变更数 = 0；高风险结论 challenger 覆盖率 = 100%
 
@@ -183,22 +198,26 @@
 - `DOING` T-419 图谱 / 向量 / 语义检索生产化
   - 对应：E3-US2, E3-US4, E8-US2；愿景扩展/生产化增强
   - 已有：`/api/graph/query` 关系回查、本地轻量语义检索 adapter、证据/研究卡/研报/问答混合 SearchRecord、权限边界继承标记
-  - 待做：Neo4j 或替代 property graph adapter、Qdrant 或替代向量检索 adapter、embedding/reranker 管线、payload filter、权限过滤、检索质量 benchmark
+  - 已有：语义检索支持 `issuer_id` / `resource_types` payload filter、默认 restricted 结果过滤、显式 `include_restricted`、结果级 `source_boundary` / `rights_tag` / `risk_level` 和 `/api/search/semantic/benchmark` recall@k 质量回归
+  - 待做：Neo4j 或替代 property graph adapter、Qdrant 或替代向量检索 adapter、embedding/reranker 管线
   - 待做：图谱边来源、时间版本、实体消歧置信度、观点到证据回链率、检索失败 fallback 和重建脚本
   - 验收：观点、持仓、证据可沿图谱回查；结论到证据回溯率 >= 95%；语义检索结果保留来源和权限边界
 
 - `DOING` T-420 任务编排、血缘和模型治理
   - 对应：E3-US4, E6-US4, E8-US3, E9-US2；愿景扩展/生产化增强
   - 已有：轻量 DAG / workflow definition、任务运行记录、幂等键、任务级审计、数据血缘事件、模型版本记录、模型/prompt/输入输出引用关联
-  - 待做：Airflow/Dagster/Cron 生产选择、采集/解析/抽取/索引/benchmark 任务 DAG 执行器、失败重放、调度日历、回放输入冻结
+  - 已有：`/api/orchestration/runs/{run_id}/retry` 支持失败/待复核 run 基于冻结输入重放，保留 `retry_of` / `retry_error`，任务状态可定位到具体 failed task；默认告警 `alert_workflow_failed_runs` 基于 `workflow_failed_runs` 指标触发
+  - 待做：Airflow/Dagster/Cron 生产选择、采集/解析/抽取/索引/benchmark 任务 DAG 执行器、调度日历
   - 待做：OpenLineage adapter、MLflow adapter、任务依赖可视化、失败任务自动建单、调度 SLA 告警
   - 验收：任一解析、特征生产、信号计算和投委会打包均可 replay；失败任务可定位输入、版本、错误和重试记录
 
 - `DOING` T-421 安全、密钥和权限生产化
   - 对应：E2-US1, E2-US3, E6-US2, E6-US4, E9-US1；愿景扩展/生产化增强
-  - 已有：`scripts/security_check.py` 可检查 `.env` 误提交和常见密钥字面量，测试覆盖误提交场景；source governance report 可检查供应商授权台账、数据红黄绿分级、字段白名单和缓存期限；audit completeness report 可检查关键审计字段完整性
-  - 待做：密钥管理系统接入、密钥轮换记录、角色 + 数据域 + 动作级权限、真实供应商合同台账录入
-  - 待做：PII/合同敏感字段扫描、权限越界告警、外部 API key 最小权限、供应商缓存保留期和删除策略
+  - 已有：`scripts/security_check.py` 可检查 `.env` 误提交和常见密钥字面量，测试覆盖误提交场景；source governance report 可检查公开来源 provenance 台账、数据红黄绿分级、字段白名单和缓存期限；audit completeness report 可检查关键审计字段完整性
+  - 已有：`/api/governance/data-security-report` 可扫描 document/evidence/research answer 中的邮箱、手机号、身份证样式和 secret/API key 字面量，返回脱敏 snippet 与按类型/来源聚合统计；默认告警 `alert_sensitive_findings` 基于 `sensitive_findings` 指标触发
+  - 已有：API 网关会对角色越权访问返回 403 并写入 `permission_denied` 审计事件；默认告警 `alert_permission_denied_events` 基于 `permission_denied_events` 指标触发，risk dashboard 已纳入权限/敏感数据风险
+  - 待做：密钥管理系统接入、密钥轮换记录、角色 + 数据域 + 动作级权限、公开来源 provenance 台账录入
+  - 待做：外部密钥管理系统接入、密钥轮换记录、外部 API key 最小权限、公开来源缓存保留期和删除策略的生产执行记录
   - 验收：红区数据自动入库训练数 = 0；关键动作审计字段覆盖率 100%；越权访问可拦截并留痕
 
 ## 愿景验收闸门 / M10
@@ -208,7 +227,8 @@
   - 指标：证据覆盖率 >= 95%；关键研究结论原文回链率 >= 95%；未审批 prompt 变更数 = 0；红区数据自动入库训练数 = 0；高风险结论 challenger 覆盖率 = 100%
   - 指标：A/H/U 样本公司映射准确率 >= 98%；核心术语 F1 >= 0.90；证据页命中率 >= 0.95；关键数值口径映射准确率 >= 0.92；季度事故演练覆盖率 100%
   - 已有：愿景上线闸门报告接口，集中计算证据覆盖率、研究结论回链率、pending prompt、红区训练记录、高风险 challenger 覆盖率、实体映射和 benchmark 指标，并明确 `ready/not_ready`
-  - 待做：真实数据 smoke test、生产 UI 截图验收、跨浏览器验收、容量和延迟报告、备份恢复演练、权限红队测试、合规复核记录、上线 checklist
+  - 已有：`/api/readiness/checklist` 可写入真实数据 smoke、生产 UI 截图、跨浏览器、容量/延迟、备份恢复、权限红队、合规复核和上线 checklist 的 owner、证据 URI、指标、过期时间，并进入审计日志；vision gate 已纳入 checklist 覆盖率和季度事故演练覆盖率
+  - 待做：真实环境中执行 smoke test、UI 截图验收、跨浏览器验收、容量和延迟报告、备份恢复演练、权限红队测试、合规复核记录并回填证据 URI
   - 验收：全部 M6-M9 任务达到验收口径；所有关键失败路径有人工复核或降级；上线评审记录可审计
 
 ## 明确非目标
@@ -217,13 +237,13 @@
   - 原因：当前愿景是研究增强和人工审批执行；自动下单需要券商接口、best execution、账户合规、交易风控和更高监管边界
 
 - `BLOCKED` 高频/秒级交易
-  - 原因：当前系统定位为中低频、公开/授权数据驱动，不建设低延迟行情和交易基础设施
+  - 原因：当前系统定位为中低频、公开/已提供数据驱动，不建设低延迟行情和交易基础设施
 
-- `BLOCKED` 未授权实时 non-display 数据进入自动化链路
-  - 原因：未授权实时和 non-display 数据不能绕过授权台账、用途标签和合规审批
+- `BLOCKED` 边界不清或禁止自动化的实时/non-display 数据进入自动化链路
+  - 原因：实时和 non-display 数据必须有清晰公开来源、用途标签、TOS/robots 判断和人工审批；边界不清时只能人工参考
 
-- `BLOCKED` 未授权研报、转录稿或第三方内容用于训练
-  - 原因：研报和转录稿默认是授权外部观点层，不是事实真相源，也不默认可训练、再分发或派生
+- `BLOCKED` 非公开研报、转录稿或第三方内容用于训练
+  - 原因：研报和转录稿默认是公开外部观点层或本地人工参考层，不是事实真相源，也不默认可训练、再分发或派生
 
 - `BLOCKED` 脱离人工审批的仓位调整
   - 原因：PortfolioProposal 只输出纸面组合或候选权重；进入 execution intent 仍必须经过投委会和合规审批

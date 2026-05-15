@@ -60,9 +60,14 @@ class SourceDefinition:
     field_whitelist: list[str] = field(default_factory=list)
     retention_policy: str = ""
     cache_ttl_days: int = 0
-    contract_ref: str = ""
-    commercial_scope: str = ""
+    provenance_ref: str = ""
+    usage_scope: str = ""
+    collection_method: str = ""
+    robots_policy: str = ""
+    last_reviewed_at: Any = None
     review_cadence: str = "quarterly"
+    review_owner: str = ""
+    review_owner_role: str = ""
     source_tos_uri: str = ""
 
     @classmethod
@@ -88,10 +93,57 @@ class SourceDefinition:
             field_whitelist=[str(item) for item in data.get("field_whitelist", [])],
             retention_policy=str(data.get("retention_policy", "")),
             cache_ttl_days=int(data.get("cache_ttl_days", 0)),
-            contract_ref=str(data.get("contract_ref", "")),
-            commercial_scope=str(data.get("commercial_scope", "")),
+            provenance_ref=str(data.get("provenance_ref", data.get("contract_ref", ""))),
+            usage_scope=str(data.get("usage_scope", data.get("commercial_scope", ""))),
+            collection_method=str(data.get("collection_method", "")),
+            robots_policy=str(data.get("robots_policy", "")),
+            last_reviewed_at=parse_datetime(data.get("last_reviewed_at")) if data.get("last_reviewed_at") else None,
             review_cadence=str(data.get("review_cadence", "quarterly")),
+            review_owner=str(data.get("review_owner", "")),
+            review_owner_role=str(data.get("review_owner_role", "")),
             source_tos_uri=str(data.get("source_tos_uri", "")),
+        )
+
+
+@dataclass(slots=True)
+class SourceReviewRecord:
+    review_id: str
+    source_id: str
+    reviewer: str
+    reviewed_at: Any = field(default_factory=utcnow)
+    review_period: str = ""
+    status: str = "approved"
+    publicness_status: str = "confirmed_public_or_local"
+    tos_status: str = "reviewed"
+    robots_status: str = "reviewed_or_not_applicable"
+    usage_scope_status: str = "within_boundary"
+    notes: str = ""
+    findings: list[str] = field(default_factory=list)
+    next_review_due_at: Any = None
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"approved", "conditional", "rejected"}, "status")
+        _validate_choice(self.publicness_status, {"confirmed_public_or_local", "manual_reference_only", "unclear"}, "publicness_status")
+        _validate_choice(self.tos_status, {"reviewed", "not_applicable", "needs_review"}, "tos_status")
+        _validate_choice(self.robots_status, {"reviewed_or_not_applicable", "blocked", "needs_review"}, "robots_status")
+        _validate_choice(self.usage_scope_status, {"within_boundary", "manual_reference_only", "blocked"}, "usage_scope_status")
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "SourceReviewRecord":
+        return cls(
+            review_id=str(data["review_id"]),
+            source_id=str(data["source_id"]),
+            reviewer=str(data["reviewer"]),
+            reviewed_at=parse_datetime(data.get("reviewed_at")) if data.get("reviewed_at") else utcnow(),
+            review_period=str(data.get("review_period", "")),
+            status=str(data.get("status", "approved")),
+            publicness_status=str(data.get("publicness_status", "confirmed_public_or_local")),
+            tos_status=str(data.get("tos_status", "reviewed")),
+            robots_status=str(data.get("robots_status", "reviewed_or_not_applicable")),
+            usage_scope_status=str(data.get("usage_scope_status", "within_boundary")),
+            notes=str(data.get("notes", "")),
+            findings=[str(item) for item in data.get("findings", [])],
+            next_review_due_at=parse_datetime(data.get("next_review_due_at")) if data.get("next_review_due_at") else None,
         )
 
 
@@ -463,6 +515,25 @@ class PortfolioProposal:
 
 
 @dataclass(slots=True)
+class PortfolioTransaction:
+    transaction_id: str
+    security_id: str
+    trade_date: str
+    side: str
+    quantity: float
+    price: float
+    currency: str = ""
+    fees: float = 0.0
+    source_id: str = ""
+    account_id: str = ""
+    strategy_id: str = ""
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.side, {"buy", "sell"}, "side")
+
+
+@dataclass(slots=True)
 class BenchmarkConfig:
     benchmark_id: str
     language: str
@@ -636,6 +707,8 @@ class ResearchAnswer:
     prompt_version: str = ""
     model_version: str = ""
     source_publicness: str = "unknown"
+    citation_char_limit: int = 0
+    citation_truncated: bool = False
     human_review_status: str = "pending"
     reviewer: str = ""
     created_at: Any = field(default_factory=utcnow)
@@ -656,7 +729,7 @@ class ResearchReportAsset:
     size_bytes: int = 0
     fingerprint: str = ""
     content_sha256: str = ""
-    rights_tag: RightsTag = field(default_factory=lambda: RightsTag("authorized_research_reference", False, False, "restricted", "restricted", "restricted"))
+    rights_tag: RightsTag = field(default_factory=lambda: RightsTag("local_research_reference", False, False, "restricted", "restricted", "restricted"))
     document_id: str = ""
     status: str = "indexed"
     indexed_at: Any = field(default_factory=utcnow)
@@ -676,7 +749,7 @@ class ResearchReportAsset:
             size_bytes=int(data.get("size_bytes", 0)),
             fingerprint=str(data.get("fingerprint", "")),
             content_sha256=str(data.get("content_sha256", "")),
-            rights_tag=RightsTag.from_dict(data.get("rights_tag", {"license_class": "authorized_research_reference", "display_use": "restricted"})),
+            rights_tag=RightsTag.from_dict(data.get("rights_tag", {"license_class": "local_research_reference", "display_use": "restricted"})),
             document_id=str(data.get("document_id", "")),
             status=str(data.get("status", "indexed")),
             indexed_at=parse_datetime(data.get("indexed_at")),
@@ -847,6 +920,22 @@ class AuditEvent:
     approval_state: str = ""
     trace_id: str = ""
     timestamp: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class ReadinessCheckRecord:
+    check_id: str
+    status: str
+    owner: str
+    evidence_uri: str = ""
+    notes: str = ""
+    metrics: dict[str, Any] = field(default_factory=dict)
+    measured_at: Any = field(default_factory=utcnow)
+    expires_at: Any = None
+    updated_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"pending", "passed", "failed", "blocked"}, "status")
 
 
 @dataclass(slots=True)
