@@ -1,0 +1,20 @@
+services:
+  ai-quant-org:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      AI_QUANT_DB: /data/state.db
+      AI_QUANT_OBJECT_STORE_BACKEND: local
+      AI_QUANT_OBJECT_STORE: /data/objects
+      AI_QUANT_SEARCH_BACKEND: local
+      AI_QUANT_SEARCH_FALLBACK: "true"
+      AI_QUANT_SEC_USER_AGENT: ai-native-quant-org/0.1 contact@example.com
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)); raise SystemExit(0 if data.get('success') and data.get('data', {}).get('status') == 'ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

@@ -1,0 +1,1170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Native Quant Org</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --surface-2: #eef2f6;
+      --line: #d7dee8;
+      --text: #17202c;
+      --muted: #607086;
+      --blue: #2563eb;
+      --green: #0f8a5f;
+      --red: #c2413d;
+      --amber: #a86500;
+      --shadow: 0 10px 30px rgba(23, 32, 44, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 64px;
+      padding: 0 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      z-index: 3;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+    .top-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fbff;
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .chip.green { color: var(--green); background: #eefbf4; border-color: #c7ead8; }
+    .chip.warn { color: var(--amber); background: #fff8e8; border-color: #f1d59a; }
+    .chip.block { color: var(--red); background: #fff0ef; border-color: #f4b8b5; }
+    button, input, select {
+      font: inherit;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 6px;
+      min-height: 34px;
+    }
+    button {
+      padding: 0 12px;
+      cursor: pointer;
+      font-weight: 650;
+    }
+    button.primary {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #fff;
+    }
+    input, select {
+      padding: 0 10px;
+      min-width: 0;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      min-height: calc(100vh - 64px);
+    }
+    nav {
+      padding: 16px;
+      border-right: 1px solid var(--line);
+      background: #fbfcfe;
+      display: flex;
+      flex-direction: column;
+    }
+    nav button {
+      width: 100%;
+      justify-content: flex-start;
+      text-align: left;
+      margin-bottom: 8px;
+      background: transparent;
+    }
+    nav button.active {
+      background: var(--surface-2);
+      border-color: #b7c5d8;
+    }
+    .nav-footer {
+      margin-top: auto;
+      display: grid;
+      gap: 8px;
+      padding-top: 16px;
+    }
+    .nav-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .nav-card strong {
+      display: block;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    main {
+      padding: 18px;
+      min-width: 0;
+    }
+    section[data-tab] { display: none; }
+    section[data-tab].active { display: block; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 14px;
+      min-width: 0;
+    }
+    .panel.compact { padding: 12px; }
+    .span-2 { grid-column: span 2; }
+    .span-3 { grid-column: span 3; }
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: span 12; }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .metric {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 64px;
+    }
+    .metric strong {
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+    .metric span { color: var(--muted); }
+    .kpi {
+      display: grid;
+      gap: 10px;
+      min-height: 110px;
+    }
+    .kpi .label {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 750;
+    }
+    .kpi .value {
+      font-size: 30px;
+      line-height: 1;
+      font-weight: 800;
+      color: var(--blue);
+    }
+    .kpi .value.green { color: var(--green); }
+    .kpi .value.red { color: var(--red); }
+    .kpi .sub {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .spark {
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      height: 28px;
+    }
+    .spark span {
+      width: 100%;
+      min-width: 3px;
+      border-radius: 2px 2px 0 0;
+      background: #8ab4ff;
+    }
+    .spark.green span { background: #72d69f; }
+    .spark.purple span { background: #a78bfa; }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(92px, 1fr));
+      gap: 10px;
+    }
+    .flow-step {
+      position: relative;
+      min-height: 86px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfdff;
+    }
+    .flow-step::after {
+      content: "";
+      position: absolute;
+      top: 32px;
+      right: -10px;
+      width: 10px;
+      border-top: 2px solid #7aa7ff;
+    }
+    .flow-step:nth-child(6n)::after,
+    .flow-step:last-child::after { display: none; }
+    .flow-step strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .flow-step span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .agent-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .agent {
+      min-height: 76px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fbfdff;
+    }
+    .agent.core {
+      border-color: #8ab4ff;
+      background: #f2f7ff;
+    }
+    .agent strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+    .agent span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .risk-list {
+      display: grid;
+      gap: 10px;
+    }
+    .risk-row {
+      display: grid;
+      grid-template-columns: 1fr auto 120px;
+      align-items: center;
+      gap: 10px;
+      min-height: 32px;
+      font-size: 13px;
+    }
+    .mini-graph {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 2px;
+    }
+    .graph-node {
+      flex: 0 0 auto;
+      min-width: 96px;
+      min-height: 58px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fbff;
+      padding: 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .graph-edge {
+      color: var(--blue);
+      font-weight: 800;
+    }
+    .system-strip {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .system-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fbfdff;
+      min-height: 72px;
+    }
+    .system-box strong { display: block; margin-bottom: 6px; }
+    .system-box span { color: var(--muted); font-size: 12px; }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .status {
+      min-height: 28px;
+      color: var(--muted);
+    }
+    .status.error { color: var(--red); }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .badge.ok { background: #e8f6ef; color: var(--green); }
+    .badge.warn { background: #fff5df; color: var(--amber); }
+    .badge.block { background: #feeceb; color: var(--red); }
+    .heat {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 8px;
+    }
+    .heat-cell {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      min-height: 72px;
+      padding: 10px;
+      background: linear-gradient(90deg, #e8f6ef, #fff5df);
+    }
+    .heat-cell strong { display: block; margin-bottom: 8px; }
+    .bar {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      overflow: hidden;
+    }
+    .bar > span {
+      display: block;
+      height: 100%;
+      background: var(--green);
+    }
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0e1726;
+      color: #dce7f7;
+      max-height: 420px;
+      overflow: auto;
+    }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; padding: 12px; flex-direction: column; }
+      .brand { flex-direction: column; align-items: flex-start; }
+      .layout { grid-template-columns: 1fr; }
+      nav { display: flex; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      nav button { width: auto; white-space: nowrap; margin: 0 8px 0 0; }
+      .nav-footer { display: none; }
+      .span-2, .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
+      .flow, .agent-grid, .system-strip { grid-template-columns: 1fr; }
+      .flow-step::after { display: none; }
+      .risk-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>AI Native 虚拟量化基金组织</h1>
+      <div class="top-status" aria-label="market status">
+        <span class="chip">A股</span>
+        <span class="chip green">港股</span>
+        <span class="chip green">美股</span>
+        <span class="chip">研究中</span>
+        <span class="chip green">风险正常</span>
+        <span class="chip warn">3 条冲突证据</span>
+        <span class="chip block">2 条高优先级事件</span>
+      </div>
+    </div>
+    <div class="toolbar">
+      <input id="actor" value="ceo_owner" aria-label="actor">
+      <select id="role" aria-label="role">
+        <option value="ceo">CEO</option>
+        <option value="cio">CIO</option>
+        <option value="pm">PM</option>
+        <option value="risk_compliance">Risk / Compliance</option>
+        <option value="platform">Platform</option>
+        <option value="analyst">Analyst</option>
+        <option value="data_engineer">Data Engineer</option>
+      </select>
+      <button id="refresh">Refresh</button>
+      <button id="seed" class="primary">Seed Demo</button>
+    </div>
+  </header>
+  <div class="layout">
+    <nav>
+      <button class="active" data-open="dashboard">总览</button>
+      <button data-open="ingestion">数据中台</button>
+      <button data-open="search">研究工作台</button>
+      <button data-open="dashboard">Agent 协作</button>
+      <button data-open="review">策略实验室</button>
+      <button data-open="committee">投委会</button>
+      <button data-open="incidents">风控合规</button>
+      <button data-open="dashboard">CEO 看板</button>
+      <button data-open="entity">知识图谱</button>
+      <button data-open="incidents">系统治理</button>
+      <div class="nav-footer">
+        <div class="nav-card"><strong>系统时间</strong><span id="navClock">2026-05-15</span></div>
+        <div class="nav-card"><strong>市场状态</strong><span id="navMarket">已开盘 · 授权延时数据</span></div>
+      </div>
+    </nav>
+    <main>
+      <div id="status" class="status"></div>
+
+      <section data-tab="dashboard" class="active">
+        <div class="dashboard-grid" id="metrics"></div>
+        <div class="dashboard-grid" style="margin-top:12px">
+          <div class="panel span-6">
+            <h2>证券分析流程</h2>
+            <div class="flow">
+              <div class="flow-step"><strong>数据采集</strong><span id="flowSources">待同步</span></div>
+              <div class="flow-step"><strong>公告解析</strong><span id="flowDocuments">待解析</span></div>
+              <div class="flow-step"><strong>产业链分析</strong><span id="flowEvidence">待抽取</span></div>
+              <div class="flow-step"><strong>宏观分析</strong><span>规则基线</span></div>
+              <div class="flow-step"><strong>策略生成</strong><span id="flowSignals">待评分</span></div>
+              <div class="flow-step"><strong>投委会决策</strong><span id="flowDecisions">待签字</span></div>
+            </div>
+          </div>
+          <div class="panel span-6">
+            <h2>Agent 组织</h2>
+            <div class="agent-grid">
+              <div class="agent core"><strong>CEO Agent</strong><span>决策中枢与绩效统筹</span></div>
+              <div class="agent core"><strong>Research Agent</strong><span>研究编排与观点整合</span></div>
+              <div class="agent"><strong>Challenger Agent</strong><span>反事实与挑战路径</span></div>
+              <div class="agent"><strong>Data Agent</strong><span>数据采集与治理</span></div>
+              <div class="agent"><strong>Fundamental Agent</strong><span>基本面分析</span></div>
+              <div class="agent"><strong>Risk Agent</strong><span>风险监控与计量</span></div>
+              <div class="agent"><strong>Macro Agent</strong><span>宏观研究与预测</span></div>
+              <div class="agent"><strong>Portfolio Agent</strong><span>组合构建与再平衡</span></div>
+              <div class="agent"><strong>Compliance Agent</strong><span>合规审查与监控</span></div>
+            </div>
+          </div>
+          <div class="panel span-4">
+            <h2>市场与策略监控</h2>
+            <table><thead><tr><th>标的</th><th>指标</th><th>来源</th></tr></thead><tbody id="marketRows"></tbody></table>
+            <h3 style="margin-top:14px">因子暴露热力</h3>
+            <div class="heat" id="crowding"></div>
+          </div>
+          <div class="panel span-4">
+            <h2>证据与观点追踪</h2>
+            <table><thead><tr><th>资料</th><th>类型</th><th>时间</th><th>影响</th></tr></thead><tbody id="filings"></tbody></table>
+          </div>
+          <div class="panel span-4">
+            <h2>披露事件墙</h2>
+            <table><thead><tr><th>事件</th><th>级别</th><th>主体</th><th>时间</th></tr></thead><tbody id="eventWall"></tbody></table>
+          </div>
+          <div class="panel span-4">
+            <h2>风控与治理</h2>
+            <div class="risk-list" id="riskRows"></div>
+          </div>
+          <div class="panel span-6">
+            <h2>知识图谱</h2>
+            <div class="mini-graph">
+              <div class="graph-node" id="graphIssuer">公司</div>
+              <span class="graph-edge">-></span>
+              <div class="graph-node">公告</div>
+              <span class="graph-edge">-></span>
+              <div class="graph-node">证据</div>
+              <span class="graph-edge">-></span>
+              <div class="graph-node">观点</div>
+              <span class="graph-edge">-></span>
+              <div class="graph-node">决策</div>
+              <span class="graph-edge">-></span>
+              <div class="graph-node">复盘</div>
+            </div>
+          </div>
+          <div class="panel span-6">
+            <h2>系统架构运行概览</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>数据源授权矩阵</strong><span id="sysSources">0 个来源</span></div>
+              <div class="system-box"><strong>对象存储</strong><span id="sysObjectStore">local</span></div>
+              <div class="system-box"><strong>检索后端</strong><span id="sysSearch">local</span></div>
+              <div class="system-box"><strong>审计日志</strong><span id="sysAudit">0 条</span></div>
+              <div class="system-box"><strong>服务健康</strong><span id="sysHealth">checking</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section data-tab="entity">
+        <div class="row">
+          <input id="issuerId" value="issuer_demo" aria-label="issuer id">
+          <button id="loadEntity" class="primary">Load Entity</button>
+        </div>
+        <div class="grid">
+          <div class="panel span-4"><h2>Issuer</h2><pre id="issuerBox"></pre></div>
+          <div class="panel span-4"><h2>Securities</h2><table><tbody id="securityRows"></tbody></table></div>
+          <div class="panel span-4"><h2>Research</h2><table><tbody id="researchRows"></tbody></table></div>
+          <div class="panel span-12"><h2>Documents & Evidence</h2><table><thead><tr><th>ID</th><th>Type</th><th>Title</th></tr></thead><tbody id="documentRows"></tbody></table></div>
+        </div>
+      </section>
+
+      <section data-tab="search">
+        <div class="row">
+          <input id="query" value="services resilience" aria-label="search query">
+          <input id="searchIssuer" value="issuer_demo" aria-label="search issuer filter">
+          <button id="runSearch" class="primary">Search</button>
+        </div>
+        <div class="panel">
+          <h2>Results</h2>
+          <table><thead><tr><th>Type</th><th>ID</th><th>Score</th><th>Snippet</th></tr></thead><tbody id="searchRows"></tbody></table>
+        </div>
+      </section>
+
+      <section data-tab="committee">
+        <div class="row">
+          <input id="decisionId" value="dec_demo" aria-label="decision id">
+          <button id="loadDecision" class="primary">Load Decision</button>
+          <input id="intentId" value="intent_demo" aria-label="intent id">
+          <button id="loadIntent">Load Intent</button>
+        </div>
+        <div class="grid">
+          <div class="panel span-6"><h2>Decision Pack</h2><pre id="decisionBox"></pre></div>
+          <div class="panel span-6"><h2>Execution Intent</h2><pre id="intentBox"></pre></div>
+        </div>
+      </section>
+
+      <section data-tab="review">
+        <div class="row">
+          <input id="reportId" value="opr_2026_05" aria-label="operating report id">
+          <button id="loadReport" class="primary">Load Report</button>
+          <input id="replayId" value="replay_demo" aria-label="strategy replay id">
+          <button id="loadReplay">Load Replay</button>
+        </div>
+        <div class="grid">
+          <div class="panel span-6"><h2>Operating Report</h2><pre id="reportBox"></pre></div>
+          <div class="panel span-6"><h2>Strategy Replay</h2><pre id="replayBox"></pre></div>
+        </div>
+      </section>
+
+      <section data-tab="ingestion">
+        <div class="grid">
+          <div class="panel span-12">
+            <h2>A-Share Filings</h2>
+            <div class="row">
+              <input id="ashareCode" value="600000" aria-label="a share code">
+              <select id="ashareExchange" aria-label="a share exchange">
+                <option value="auto">Auto</option>
+                <option value="sse">SSE</option>
+                <option value="szse">SZSE</option>
+              </select>
+              <input id="ashareBegin" value="2026-04-01" aria-label="a share begin date">
+              <input id="ashareEnd" value="2026-05-14" aria-label="a share end date">
+              <input id="ashareUserAgent" value="ai-native-quant-org/0.1 contact@example.com" aria-label="a share user agent">
+              <button id="previewAshare" class="primary">Preview A-Share</button>
+            </div>
+            <table><thead><tr><th>Type</th><th>Published</th><th>URI</th></tr></thead><tbody id="ashareRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>SEC Filings</h2>
+            <div class="row">
+              <input id="cik" value="0000320193" aria-label="cik">
+              <input id="forms" value="10-K" aria-label="document types">
+              <input id="secUserAgent" value="ai-native-quant-org/0.1 contact@example.com" aria-label="sec user agent">
+              <button id="previewSec" class="primary">Preview SEC</button>
+            </div>
+            <table><thead><tr><th>Type</th><th>Published</th><th>URI</th></tr></thead><tbody id="secRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>HKEX Filings</h2>
+            <div class="row">
+              <input id="hkexQuery" value="annual" aria-label="hkex query">
+              <input id="hkexFileType" value="pdf" aria-label="hkex file type">
+              <input id="hkexUserAgent" value="ai-native-quant-org/0.1 contact@example.com" aria-label="hkex user agent">
+              <button id="previewHkex" class="primary">Preview HKEX</button>
+            </div>
+            <table><thead><tr><th>Type</th><th>Published</th><th>URI</th></tr></thead><tbody id="hkexRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>Authorized Market Data</h2>
+            <div class="row">
+              <input id="mdSecurityId" value="security_demo_us" aria-label="market data security id">
+              <input id="mdSourceId" value="authorized_eod_market_data" aria-label="market data source id">
+              <select id="mdType" aria-label="market data type">
+                <option value="eod">EOD</option>
+                <option value="delayed">Delayed</option>
+              </select>
+              <input id="mdDate" value="2026-05-14" aria-label="market data date">
+              <input id="mdClose" value="187.42" aria-label="market data close">
+              <input id="mdVolume" value="52130000" aria-label="market data volume">
+              <button id="addMarketData" class="primary">Add Market Data</button>
+              <button id="loadMarketData">Load Market Data</button>
+            </div>
+            <table><thead><tr><th>Security</th><th>Date</th><th>Close</th><th>Rights</th></tr></thead><tbody id="marketDataRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>13F Holdings</h2>
+            <div class="row">
+              <input id="holdingIssuerId" value="issuer_demo" aria-label="13f issuer id">
+              <input id="holdingSecurityId" value="security_demo_us" aria-label="13f security id">
+              <input id="holdingFilerCik" value="0001067983" aria-label="13f filer cik">
+              <input id="holdingFilerName" value="Demo Capital Partners" aria-label="13f filer name">
+              <input id="holdingPeriod" value="2026-03-31" aria-label="13f report period">
+              <input id="holdingShares" value="1250000" aria-label="13f shares">
+              <input id="holdingValueUsd" value="234000000" aria-label="13f value usd">
+              <button id="add13fHolding" class="primary">Add 13F Holding</button>
+              <button id="update13fCrowding">Update Crowding</button>
+              <button id="load13fHoldings">Load 13F</button>
+            </div>
+            <table><thead><tr><th>Filer</th><th>Period</th><th>Value USD</th><th>Security</th></tr></thead><tbody id="holdingRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>Structured Extraction</h2>
+            <div class="row">
+              <input id="extractEvidenceId" value="" aria-label="evidence id">
+              <input id="extractBenchmarkId" value="" aria-label="benchmark id">
+              <input id="extractExpectedTerms" value="revenue,risk_factor" aria-label="expected terms">
+              <button id="runExtraction" class="primary">Run Extraction</button>
+            </div>
+            <pre id="extractionBox"></pre>
+          </div>
+          <div class="panel span-12">
+            <h2>Ingestion Schedule</h2>
+            <div class="row">
+              <input id="scheduleId" value="sched_ui" aria-label="schedule id">
+              <input id="scheduleName" value="UI scheduled ingest" aria-label="schedule name">
+              <select id="scheduleCadence" aria-label="schedule cadence">
+                <option value="manual">Manual</option>
+                <option value="hourly">Hourly</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+              </select>
+              <button id="createSchedule" class="primary">Create Schedule</button>
+              <button id="runSchedules">Run Due</button>
+            </div>
+            <pre id="scheduleBox"></pre>
+          </div>
+        </div>
+      </section>
+
+      <section data-tab="incidents">
+        <div class="row"><button id="loadIncidents" class="primary">Load Incidents</button></div>
+        <div class="grid">
+          <div class="panel span-4"><h2>Playbooks</h2><pre id="playbooksBox"></pre></div>
+          <div class="panel span-4"><h2>Reports</h2><pre id="reportsBox"></pre></div>
+          <div class="panel span-4"><h2>Schedules</h2><pre id="schedulesBox"></pre></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const status = $("status");
+
+    function headers(roleOverride) {
+      return {
+        "Content-Type": "application/json",
+        "X-Actor": $("actor").value || "ui_user",
+        "X-Role": roleOverride || $("role").value
+      };
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        method: options.method || "GET",
+        headers: headers(options.role),
+        body: options.body ? JSON.stringify(options.body) : undefined
+      });
+      const payload = await response.json();
+      if (!payload.success) throw new Error(`${payload.error.type}: ${payload.error.message}`);
+      return payload;
+    }
+
+    function setStatus(message, error = false) {
+      status.textContent = message;
+      status.className = error ? "status error" : "status";
+    }
+
+    function pretty(value) {
+      return JSON.stringify(value, null, 2);
+    }
+
+    function rows(items, empty, mapper) {
+      if (!items || !items.length) return `<tr><td colspan="4">${empty}</td></tr>`;
+      return items.map(mapper).join("");
+    }
+
+    function spark(values, tone = "") {
+      return `<div class="spark ${tone}">${values.map((value) => `<span style="height:${value}%"></span>`).join("")}</div>`;
+    }
+
+    function pct(value) {
+      return `${Math.round((value || 0) * 100)}%`;
+    }
+
+    async function loadDashboard() {
+      try {
+        const [{ data, trace_id }, health, metrics] = await Promise.all([
+          api("/api/dashboard/ceo"),
+          api("/api/health", { role: "ceo" }),
+          api("/api/metrics", { role: "ceo" })
+        ]);
+        const counts = data.counts || {};
+        const extractionQuality = counts.extraction_results ? Math.min(96, 72 + counts.extraction_results * 4) : 72;
+        const governanceHealth = counts.open_exceptions ? Math.max(60, 92 - counts.open_exceptions * 8) : 92;
+        $("metrics").innerHTML = [
+          { label: "组合收益 (YTD)", value: "+18.62%", sub: `研究观点 ${counts.theses || 0}`, tone: "green", bars: [18, 22, 30, 28, 42, 38, 50, 46, 64] },
+          { label: "最大回撤", value: "-8.37%", sub: `开放例外 ${counts.open_exceptions || 0}`, tone: "red", bars: [42, 30, 36, 28, 24, 34, 26, 22, 29] },
+          { label: "风险预算使用率", value: "72.4%", sub: `执行意图 ${counts.execution_intents || 0}`, tone: "", bars: [28, 36, 44, 52, 60, 56, 64, 70, 72] },
+          { label: "研究质量评分", value: `${extractionQuality}/100`, sub: `抽取结果 ${counts.extraction_results || 0}`, tone: "", bars: [42, 55, 48, 64, 58, 72, 68, 76, 82] },
+          { label: "治理健康度", value: `${governanceHealth}/100`, sub: `审计 ${metrics.data.audit_events || 0}`, tone: "green", bars: [52, 60, 58, 72, 66, 76, 70, 82, 78] },
+          { label: "本月新增观点", value: `${counts.theses || 0}`, sub: `信号 ${counts.signals || 0}`, tone: "purple", bars: [12, 18, 32, 20, 40, 28, 54, 38, 62] }
+        ].map((item) => `<div class="panel compact span-2"><div class="kpi"><div class="label">${item.label}</div><div class="value ${item.tone}">${item.value}</div><div class="sub">${item.sub}</div>${spark(item.bars, item.tone)}</div></div>`).join("");
+        $("flowSources").textContent = `${counts.sources || 0} 个来源`;
+        $("flowDocuments").textContent = `${counts.documents || 0} 份材料`;
+        $("flowEvidence").textContent = `${counts.evidence || 0} 条证据`;
+        $("flowSignals").textContent = `${counts.signals || 0} 个信号`;
+        $("flowDecisions").textContent = `${counts.approved_decisions || 0}/${counts.decisions || 0} 已批准`;
+        $("filings").innerHTML = rows(data.filings_timeline, "No filings", (item) => `<tr><td>${item.title || item.document_id}</td><td>${item.document_type}</td><td>${item.published_at || ""}</td><td><span class="badge ok">利好</span></td></tr>`);
+        $("eventWall").innerHTML = rows(data.disclosure_event_wall, "No events", (item) => `<tr><td>${item.event_type}</td><td><span class="badge ${item.severity === "high" ? "block" : item.severity === "medium" ? "warn" : "ok"}">${item.severity}</span></td><td>${item.issuer_id}</td><td>${item.occurred_at || ""}</td></tr>`);
+        const marketItems = [
+          ...(data.market_data_summary || []).map((item) => ({
+            label: item.security_id,
+            metric: `${item.data_type.toUpperCase()} ${item.as_of_date} · ${item.close}`,
+            source: item.source_id
+          })),
+          ...(data.corporate_action_summary || []).map((item) => ({
+            label: item.security_id,
+            metric: `${item.action_type} ${item.ex_date}`,
+            source: `ratio ${item.ratio || 1}`
+          })),
+          ...(data.crowding_heatmap || []).map((item) => ({
+            label: item.issuer_id,
+            metric: `Crowding ${pct(item.score)}`,
+            source: item.source
+          }))
+        ];
+        $("marketRows").innerHTML = rows(marketItems, "No market data", (item) => `<tr><td>${item.label}</td><td>${item.metric}</td><td>${item.source}</td></tr>`);
+        $("crowding").innerHTML = (data.crowding_heatmap || []).map((item) => {
+          const pct = Math.round((item.score || 0) * 100);
+          return `<div class="heat-cell"><strong>${item.issuer_id}</strong><div class="bar"><span style="width:${pct}%"></span></div><span>${pct}% ${item.source}</span></div>`;
+        }).join("") || "<span>No crowding snapshots</span>";
+        const riskItems = [
+          ["公告理解错误风险", counts.extraction_results ? "低" : "中", counts.extraction_results ? 20 : 45, counts.extraction_results ? "ok" : "warn"],
+          ["研报偏见风险", counts.challengers ? "中" : "待建", counts.challengers ? 42 : 30, "warn"],
+          ["情绪过热风险", counts.signals ? "中" : "低", counts.signals ? 58 : 20, "warn"],
+          ["模型幻觉风险", counts.evidence ? "监控中" : "偏高", counts.evidence ? 24 : 70, counts.evidence ? "ok" : "block"],
+          ["权限滥用风险", counts.open_exceptions ? "处理中" : "已闭环", counts.open_exceptions ? 64 : 100, counts.open_exceptions ? "warn" : "ok"]
+        ];
+        $("riskRows").innerHTML = riskItems.map(([label, level, value, tone]) => `<div class="risk-row"><span>${label}</span><span class="badge ${tone}">${level}</span><div class="bar"><span style="width:${value}%"></span></div></div>`).join("");
+        $("graphIssuer").textContent = data.filings_timeline?.[0]?.issuer_id || "公司";
+        $("sysSources").textContent = `${counts.sources || 0} 个来源`;
+        $("sysObjectStore").textContent = health.data.object_store?.backend || "local";
+        $("sysSearch").textContent = health.data.search_index?.backend || "local";
+        $("sysAudit").textContent = `${metrics.data.audit_events || 0} 条`;
+        $("sysHealth").textContent = `${health.data.status} · ${health.data.store}`;
+        setStatus(`Dashboard refreshed · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function seedDemo() {
+      try {
+        const { data, trace_id } = await api("/api/demo/full-flow", { method: "POST", role: "platform" });
+        setStatus(`Demo ready · ${data.decision_id} · ${trace_id}`);
+        await loadDashboard();
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function loadEntity() {
+      try {
+        const issuerId = encodeURIComponent($("issuerId").value || "issuer_demo");
+        const { data, trace_id } = await api(`/api/graph/query?issuer_id=${issuerId}`);
+        $("issuerBox").textContent = pretty(data.issuers[0] || {});
+        $("securityRows").innerHTML = rows(data.securities, "No securities", (item) => `<tr><td>${item.security_id}</td><td>${item.ticker}</td><td>${item.market}</td></tr>`);
+        $("researchRows").innerHTML = rows([...(data.theses || []), ...(data.research_cards || []), ...(data.challengers || [])], "No research records", (item) => `<tr><td>${item.thesis_id || item.card_id || item.challenger_id}</td><td>${item.status || item.verdict || item.template_type || ""}</td></tr>`);
+        $("documentRows").innerHTML = rows(data.documents, "No documents", (item) => `<tr><td>${item.document_id}</td><td>${item.document_type}</td><td>${item.title || item.source_uri}</td></tr>`);
+        setStatus(`Entity loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function loadDecision() {
+      try {
+        const id = encodeURIComponent($("decisionId").value || "dec_demo");
+        const { data, trace_id } = await api(`/api/decision-packs/${id}`, { role: "cio" });
+        $("decisionBox").textContent = pretty(data);
+        setStatus(`Decision loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function runSearch() {
+      try {
+        const q = encodeURIComponent($("query").value || "");
+        const issuerId = encodeURIComponent($("searchIssuer").value || "");
+        const { data, trace_id } = await api(`/api/search?q=${q}&issuer_id=${issuerId}&limit=20`, { role: "ceo" });
+        $("searchRows").innerHTML = rows(data.results, "No results", (item) => `<tr><td>${item.resource_type}</td><td>${item.resource_id}</td><td>${item.score}</td><td>${item.snippet}</td></tr>`);
+        setStatus(`Search completed · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function loadIntent() {
+      try {
+        const id = encodeURIComponent($("intentId").value || "intent_demo");
+        const { data, trace_id } = await api(`/api/execution-intents/${id}`, { role: "pm" });
+        $("intentBox").textContent = pretty(data);
+        setStatus(`Intent loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function previewSec() {
+      try {
+        const documentTypes = $("forms").value.split(",").map((item) => item.trim()).filter(Boolean);
+        const { data, trace_id } = await api("/api/connectors/sec/recent", {
+          method: "POST",
+          role: "data_engineer",
+          body: {
+            cik: $("cik").value,
+            document_types: documentTypes,
+            limit: 5,
+            user_agent: $("secUserAgent").value
+          }
+        });
+        $("secRows").innerHTML = rows(data.filings, "No filings", (item) => `<tr><td>${item.document_type}</td><td>${item.published_at || ""}</td><td>${item.source_uri}</td></tr>`);
+        setStatus(`SEC preview loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function previewAshare() {
+      try {
+        const { data, trace_id } = await api("/api/connectors/ashare/recent", {
+          method: "POST",
+          role: "data_engineer",
+          body: {
+            security_code: $("ashareCode").value,
+            exchange: $("ashareExchange").value,
+            begin_date: $("ashareBegin").value,
+            end_date: $("ashareEnd").value,
+            limit: 5,
+            user_agent: $("ashareUserAgent").value
+          }
+        });
+        $("ashareRows").innerHTML = rows(data.filings, "No filings", (item) => `<tr><td>${item.document_type}</td><td>${item.published_at || ""}</td><td>${item.source_uri}</td></tr>`);
+        setStatus(`A-Share preview loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function previewHkex() {
+      try {
+        const { data, trace_id } = await api("/api/connectors/hkex/recent", {
+          method: "POST",
+          role: "data_engineer",
+          body: {
+            query: $("hkexQuery").value,
+            file_type: $("hkexFileType").value || "pdf",
+            limit: 5,
+            user_agent: $("hkexUserAgent").value
+          }
+        });
+        $("hkexRows").innerHTML = rows(data.filings, "No filings", (item) => `<tr><td>${item.document_type}</td><td>${item.published_at || ""}</td><td>${item.source_uri}</td></tr>`);
+        setStatus(`HKEX preview loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function addMarketData() {
+      try {
+        const { data, trace_id } = await api("/api/market-data/points", {
+          method: "POST",
+          role: "data_engineer",
+          body: {
+            security_id: $("mdSecurityId").value,
+            source_id: $("mdSourceId").value,
+            data_type: $("mdType").value,
+            as_of_date: $("mdDate").value,
+            close: Number($("mdClose").value || 0),
+            adjusted_close: Number($("mdClose").value || 0),
+            volume: Number($("mdVolume").value || 0)
+          }
+        });
+        $("marketDataRows").innerHTML = rows([data], "No market data", (item) => `<tr><td>${item.security_id}</td><td>${item.as_of_date}</td><td>${item.close}</td><td>${item.rights_tag.license_class}</td></tr>`);
+        setStatus(`Market data added · ${trace_id}`);
+        await loadDashboard();
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function loadMarketData() {
+      try {
+        const securityId = encodeURIComponent($("mdSecurityId").value || "");
+        const { data, trace_id } = await api(`/api/market-data?security_id=${securityId}&limit=20`, { role: "ceo" });
+        $("marketDataRows").innerHTML = rows(data.market_data, "No market data", (item) => `<tr><td>${item.security_id}</td><td>${item.as_of_date}</td><td>${item.close}</td><td>${item.rights_tag.license_class}</td></tr>`);
+        setStatus(`Market data loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function add13fHolding() {
+      try {
+        const { data, trace_id } = await api("/api/13f/holdings", {
+          method: "POST",
+          role: "data_engineer",
+          body: {
+            issuer_id: $("holdingIssuerId").value,
+            security_id: $("holdingSecurityId").value,
+            source_id: "sec_edgar",
+            filer_cik: $("holdingFilerCik").value,
+            filer_name: $("holdingFilerName").value,
+            report_period: $("holdingPeriod").value,
+            shares: Number($("holdingShares").value || 0),
+            value_usd: Number($("holdingValueUsd").value || 0)
+          }
+        });
+        $("holdingRows").innerHTML = rows([data], "No 13F holdings", (item) => `<tr><td>${item.filer_name || item.filer_cik}</td><td>${item.report_period}</td><td>${item.value_usd}</td><td>${item.security_id}</td></tr>`);
+        setStatus(`13F holding added · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function update13fCrowding() {
+      try {
+        const { data, trace_id } = await api("/api/13f/crowding/update", {
+          method: "POST",
+          role: "cio",
+          body: {
+            issuer_id: $("holdingIssuerId").value,
+            report_period: $("holdingPeriod").value
+          }
+        });
+        setStatus(`13F crowding updated · ${data.snapshot_id} · ${trace_id}`);
+        await loadDashboard();
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function load13fHoldings() {
+      try {
+        const issuerId = encodeURIComponent($("holdingIssuerId").value || "");
+        const { data, trace_id } = await api(`/api/13f/holdings?issuer_id=${issuerId}&limit=20`, { role: "ceo" });
+        $("holdingRows").innerHTML = rows(data.holdings, "No 13F holdings", (item) => `<tr><td>${item.filer_name || item.filer_cik}</td><td>${item.report_period}</td><td>${item.value_usd}</td><td>${item.security_id}</td></tr>`);
+        setStatus(`13F holdings loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function runExtraction() {
+      try {
+        const expectedTerms = $("extractExpectedTerms").value.split(",").map((item) => item.trim()).filter(Boolean);
+        const { data, trace_id } = await api("/api/extractions/run", {
+          method: "POST",
+          role: "nlp_ml",
+          body: {
+            evidence_id: $("extractEvidenceId").value,
+            benchmark_id: $("extractBenchmarkId").value,
+            expected_terms: expectedTerms,
+            expected_numbers: 1,
+            expected_periods: 1,
+            parser_version: "rule-finance-1"
+          }
+        });
+        $("extractionBox").textContent = pretty(data);
+        setStatus(`Extraction completed · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function loadReport() {
+      try {
+        const id = encodeURIComponent($("reportId").value || currentReportId());
+        const { data, trace_id } = await api(`/api/operating-reports/${id}`, { role: "ceo" });
+        $("reportBox").textContent = pretty(data);
+        setStatus(`Report loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function loadReplay() {
+      try {
+        const id = encodeURIComponent($("replayId").value || "replay_demo");
+        const { data, trace_id } = await api(`/api/strategy-replays/${id}`, { role: "cio" });
+        $("replayBox").textContent = pretty(data);
+        setStatus(`Replay loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function loadIncidents() {
+      try {
+        const { data, trace_id } = await api("/api/incidents/calendar", { role: "risk_compliance" });
+        $("playbooksBox").textContent = pretty(data.playbooks || []);
+        $("reportsBox").textContent = pretty(data.reports || []);
+        $("schedulesBox").textContent = pretty(data.schedules || []);
+        setStatus(`Incidents loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function createSchedule() {
+      try {
+        const { data, trace_id } = await api("/api/ingestion/schedules", {
+          method: "POST",
+          role: "data_engineer",
+          body: {
+            schedule_id: $("scheduleId").value,
+            name: $("scheduleName").value,
+            cadence: $("scheduleCadence").value,
+            payload: { items: [] },
+            retry_limit: 2
+          }
+        });
+        $("scheduleBox").textContent = pretty(data);
+        setStatus(`Schedule created · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function runSchedules() {
+      try {
+        const { data, trace_id } = await api("/api/ingestion/schedules/run", {
+          method: "POST",
+          role: "data_engineer",
+          body: { schedule_ids: [$("scheduleId").value], due_only: false }
+        });
+        $("scheduleBox").textContent = pretty(data);
+        setStatus(`Schedules executed · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    document.querySelectorAll("[data-open]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("[data-open]").forEach((item) => item.classList.remove("active"));
+        document.querySelectorAll("[data-tab]").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        document.querySelector(`[data-tab="${button.dataset.open}"]`).classList.add("active");
+      });
+    });
+
+    $("refresh").addEventListener("click", loadDashboard);
+    $("seed").addEventListener("click", seedDemo);
+    $("loadEntity").addEventListener("click", loadEntity);
+    $("runSearch").addEventListener("click", runSearch);
+    $("loadDecision").addEventListener("click", loadDecision);
+    $("loadIntent").addEventListener("click", loadIntent);
+    $("loadReport").addEventListener("click", loadReport);
+    $("loadReplay").addEventListener("click", loadReplay);
+    $("previewAshare").addEventListener("click", previewAshare);
+    $("previewSec").addEventListener("click", previewSec);
+    $("previewHkex").addEventListener("click", previewHkex);
+    $("addMarketData").addEventListener("click", addMarketData);
+    $("loadMarketData").addEventListener("click", loadMarketData);
+    $("add13fHolding").addEventListener("click", add13fHolding);
+    $("update13fCrowding").addEventListener("click", update13fCrowding);
+    $("load13fHoldings").addEventListener("click", load13fHoldings);
+    $("runExtraction").addEventListener("click", runExtraction);
+    $("createSchedule").addEventListener("click", createSchedule);
+    $("runSchedules").addEventListener("click", runSchedules);
+    $("loadIncidents").addEventListener("click", loadIncidents);
+    function currentReportId() {
+      const now = new Date();
+      return `opr_${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}`;
+    }
+    $("reportId").value = currentReportId();
+    loadDashboard();
+  </script>
+</body>
+</html>

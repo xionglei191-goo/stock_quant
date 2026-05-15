@@ -1,0 +1,13 @@
+[project]
+name = "ai-native-quant-org"
+version = "0.1.0"
+description = "A minimal, testable MVP backend for the AI Native virtual quant fund organization."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+
+[tool.unittest]
+test-directory = "tests"

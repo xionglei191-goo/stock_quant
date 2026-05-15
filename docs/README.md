@@ -1,0 +1,24 @@
+# 项目文档索引
+
+- [deep-research-report.md](./deep-research-report.md): 战略研究底稿
+- [deep-research-report-加美股.md](./deep-research-report-%E5%8A%A0%E7%BE%8E%E8%82%A1.md): 美股扩展研究
+- [deep-research-report -next.md](./deep-research-report%20-next.md): 下一步研究清单
+- [project-audit.md](./project-audit.md): 资料完整性审查
+- [project-support.md](./project-support.md): 项目支持文档
+- [risk-register.md](./risk-register.md): 风险与依赖登记册
+- [development-task-book.md](./development-task-book.md): 开发任务书
+- [product-requirements-document.md](./product-requirements-document.md): PRD
+- [mvp-backlog.md](./mvp-backlog.md): MVP backlog
+- [workstreams-by-role.md](./workstreams-by-role.md): 按角色拆分的执行包
+- [../tasks/todo.md](../tasks/todo.md): 执行待办清单
+- [system-architecture.md](./system-architecture.md): 系统架构设计
+- [data-structure-design.md](./data-structure-design.md): 数据结构设计
+- [postgresql-schema.sql](./postgresql-schema.sql): PostgreSQL 生产状态库基线 schema
+- [postgresql-migrations.md](./postgresql-migrations.md): PostgreSQL schema 迁移、dry-run、迁移记录和回滚策略
+- [production-runbook.md](./production-runbook.md): 生产部署、备份、回滚和月度运维 runbook
+- [portfolio-construction-spec.md](./portfolio-construction-spec.md): Black-Litterman 纸面组合、风险预算、约束和诊断规格
+- [feast-kafka-decision-memo.md](./feast-kafka-decision-memo.md): Feast / Kafka 暂缓上线、触发阈值、迁移草案和 PoC 成本
+- [transcript-research-citation-policy.md](./transcript-research-citation-policy.md): 电话会、转录稿、卖方研报引用和训练边界策略
+- [us-compliance-open-questions.md](./us-compliance-open-questions.md): Reg FD、Non-Display、投顾、券商、衍生品和跨境合规开放问题
+- [api-contracts.md](./api-contracts.md): 接口契约
+- [development-ready-checklist.md](./development-ready-checklist.md): 开发就绪清单

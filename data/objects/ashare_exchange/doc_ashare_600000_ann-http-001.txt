@@ -1,0 +1,1 @@
+HTTP ingestion job body with services resilience.
