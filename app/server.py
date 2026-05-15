@@ -80,6 +80,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/ingestion/sources",
                         "/api/ingestion/documents",
                         "/api/evidence/extract",
+                        "/api/document-parsing/paddleocr",
                         "/api/thesis/create",
                     ],
                 }

@@ -9,6 +9,7 @@ import zlib
 
 from app.api import ApiRouter
 from app.connectors import AShareConnector, ConnectorDocument
+from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
 from app.object_store import S3CompatibleObjectStore
@@ -106,6 +107,7 @@ class _FakePostgresDatabase:
 class SystemServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.service = SystemService()
+        self.service.document_parser = PaddleOCRParser(token="")
         self.router = ApiRouter(self.service)
         self.service.register_source(
             {
@@ -617,6 +619,73 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("PDF revenue grew 12%.", evidences[0].span_text)
         self.assertEqual(evidences[0].bbox, "page=1;chunk=1")
 
+    def test_extract_evidence_uses_paddleocr_fallback_for_scanned_pdf_object(self) -> None:
+        sent = []
+        jsonl = json.dumps(
+            {
+                "result": {
+                    "layoutParsingResults": [
+                        {"markdown": {"text": "OCR revenue grew 15%."}},
+                        {"markdown": {"text": "OCR risk factors stayed manageable."}},
+                    ]
+                }
+            }
+        ).encode("utf-8")
+
+        def fake_send(request, timeout):
+            sent.append(
+                {
+                    "url": request.full_url,
+                    "method": request.get_method(),
+                    "timeout": timeout,
+                    "headers": {key.lower(): value for key, value in request.header_items()},
+                    "body": request.data or b"",
+                }
+            )
+            if request.full_url.endswith("/api/v2/ocr/jobs") and request.get_method() == "POST":
+                return b'{"data":{"jobId":"job_ocr_1"}}'
+            if request.full_url.endswith("/api/v2/ocr/jobs/job_ocr_1"):
+                return b'{"data":{"state":"done","resultUrl":{"jsonUrl":"https://result.example/doc.jsonl"}}}'
+            if request.full_url == "https://result.example/doc.jsonl":
+                return jsonl
+            return b"{}"
+
+        self.service.document_parser = PaddleOCRParser(token="ocr-test-token", poll_interval=0, max_polls=2, http_send=fake_send)
+        stored = self.service.object_store.put_bytes("src_sec", "doc_ocr", b"%PDF-1.4\n%%EOF", suffix=".pdf")
+        self.addCleanup(lambda: Path(stored.uri).unlink(missing_ok=True))
+        self.service.ingest_document(
+            {
+                "document_id": "doc_ocr",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "10-K",
+                "source_uri": "https://example.invalid/doc-ocr.pdf",
+                "object_uri": stored.uri,
+                "content_sha256": stored.sha256,
+                "body": "",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+
+        evidences = self.service.extract_evidence("doc_ocr", actor="analyst", parser_version="pdf-rule-1")
+        self.assertEqual(len(evidences), 2)
+        self.assertIn("OCR revenue grew 15%.", evidences[0].span_text)
+        self.assertIn(b'name="file"; filename="doc_ocr.pdf"', sent[0]["body"])
+        self.assertEqual(sent[0]["headers"]["authorization"], "bearer ocr-test-token")
+        self.assertEqual(self.service.manual_review_payload({"document_id": "doc_ocr"})["manual_reviews"], [])
+        self.assertEqual(self.service.store.audit_log[-2].action, "parse_document_with_paddleocr")
+
     def test_extract_evidence_routes_empty_or_scanned_document_to_manual_review(self) -> None:
         self.service.ingest_document(
             {
@@ -832,6 +901,60 @@ class SystemServiceTests(unittest.TestCase):
         self.assertFalse(response.success)
         self.assertEqual(response.status_code, 403)
         self.assertTrue(response.trace_id.startswith("trace_"))
+
+    def test_paddleocr_document_parsing_api_submits_url_and_collects_markdown(self) -> None:
+        sent = []
+        jsonl = (
+            json.dumps({"result": {"layoutParsingResults": [{"markdown": {"text": "Page one markdown."}}]}})
+            + "\n"
+            + json.dumps({"result": {"layoutParsingResults": [{"markdown": {"text": "Page two markdown."}}]}})
+        ).encode("utf-8")
+
+        def fake_send(request, timeout):
+            sent.append(
+                {
+                    "url": request.full_url,
+                    "method": request.get_method(),
+                    "timeout": timeout,
+                    "headers": {key.lower(): value for key, value in request.header_items()},
+                    "body": json.loads(request.data.decode("utf-8")) if request.data else {},
+                }
+            )
+            if request.full_url.endswith("/api/v2/ocr/jobs") and request.get_method() == "POST":
+                return b'{"data":{"jobId":"job_url_1"}}'
+            if request.full_url.endswith("/api/v2/ocr/jobs/job_url_1"):
+                return b'{"data":{"state":"done","resultUrl":{"jsonUrl":"https://result.example/url.jsonl"}}}'
+            if request.full_url == "https://result.example/url.jsonl":
+                return jsonl
+            return b"{}"
+
+        self.service.document_parser = PaddleOCRParser(
+            token="ocr-test-token",
+            model="PaddleOCR-VL-1.5",
+            timeout=9,
+            poll_interval=0,
+            max_polls=2,
+            http_send=fake_send,
+        )
+        response = self.router.dispatch(
+            "POST",
+            "/api/document-parsing/paddleocr",
+            {
+                "file_url": "https://reports.example/demo.pdf",
+                "optional_payload": {"useChartRecognition": True},
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(response.success, response.error)
+        self.assertEqual(response.data["job_id"], "job_url_1")
+        self.assertEqual(response.data["page_count"], 2)
+        self.assertIn("Page two markdown.", response.data["text"])
+        self.assertEqual(sent[0]["url"], "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs")
+        self.assertEqual(sent[0]["headers"]["authorization"], "bearer ocr-test-token")
+        self.assertEqual(sent[0]["body"]["fileUrl"], "https://reports.example/demo.pdf")
+        self.assertTrue(sent[0]["body"]["optionalPayload"]["useChartRecognition"])
+        self.assertEqual(self.service.store.audit_log[-1].action, "parse_document_with_paddleocr")
 
     def test_llm_gateway_routes_forward_openai_and_anthropic_payloads(self) -> None:
         sent = []

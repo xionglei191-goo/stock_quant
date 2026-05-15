@@ -137,6 +137,7 @@ class ApiRouter:
             ("POST", r"^/api/extractions/run$", self._extract_structured_facts),
             ("GET", r"^/api/extractions/(?P<extraction_id>[^/]+)$", self._get_extraction_result),
             ("POST", r"^/api/evidence/extract$", self._extract_evidence),
+            ("POST", r"^/api/document-parsing/paddleocr$", self._parse_document_with_paddleocr),
             ("GET", r"^/api/evidence/manual-reviews$", self._list_manual_reviews),
             ("GET", r"^/api/evidence/quality-report$", self._evidence_quality_report),
             ("POST", r"^/api/thesis/create$", self._create_thesis),
@@ -212,6 +213,8 @@ class ApiRouter:
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO", "PM", "分析师", "海外研究负责人"}
         if path.startswith("/api/llm"):
             return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人", "分析师", "NLP/ML 负责人", "海外研究负责人"}
+        if path.startswith("/api/document-parsing"):
+            return role in {"system", "风险/合规", "平台负责人", "分析师", "数据工程", "NLP/ML 负责人", "海外研究负责人"}
         if path.startswith("/api/evidence") or path.startswith("/api/extractions") or path.startswith("/api/thesis") or path.startswith("/api/scoring"):
             return role in {"system", "分析师", "海外研究负责人", "CIO", "PM", "平台负责人", "NLP/ML 负责人", "风险/合规"}
         if path.startswith("/api/decision-packs") or path.startswith("/api/approvals") or path.startswith("/api/exceptions"):
@@ -396,6 +399,9 @@ class ApiRouter:
             model_version=str(body.get("model_version", "rule-0")),
         )
         return {"evidence": [to_plain(e) for e in evidences]}
+
+    def _parse_document_with_paddleocr(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.parse_document_with_paddleocr(body, actor=actor)
 
     def _list_manual_reviews(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.manual_review_payload(body)

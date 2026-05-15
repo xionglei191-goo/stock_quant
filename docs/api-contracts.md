@@ -65,6 +65,27 @@
 - `max_tokens`
 - 其他字段会原样转发给上游
 
+#### `POST /api/document-parsing/paddleocr`
+
+调用配置的 PaddleOCR-VL 文档解析备用接口。请求必须配置 `AI_QUANT_PADDLEOCR_TOKEN`；服务端只记录 provider、job id 和模型审计，不记录 token。
+
+请求字段：
+
+- `document_id` 可选；解析已入湖文档的 `object_uri`，如无本地对象且 `source_uri` 是 HTTP(S)，则提交 URL
+- `file_url` 可选；直接提交远程文件 URL
+- `optional_payload` 可选；覆盖 PaddleOCR 可选参数，例如 `useChartRecognition`
+
+返回字段：
+
+- `provider`
+- `model`
+- `job_id`
+- `state`
+- `result_url`
+- `page_count`
+- `pages`
+- `text`
+
 #### `POST /api/ingestion/sources`
 
 创建或更新数据源定义。
@@ -339,7 +360,7 @@
 
 #### `POST /api/evidence/extract`
 
-从文档生成证据切片。若当前规则/PDF 文本流解析器无法得到文本，会创建 `ManualReviewItem` 并返回 `422`，供 OCR fallback 或人工复核队列处理。
+从文档生成证据切片。若当前规则/PDF 文本流解析器无法得到文本，且 `AI_QUANT_PADDLEOCR_TOKEN` 已配置，会先调用 PaddleOCR-VL 备用解析并把 markdown 结果切成 evidence；备用解析未配置、失败或仍无文本时，会创建 `ManualReviewItem` 并返回 `422`。
 
 请求字段：
 

@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from .errors import ComplianceGateError, ConflictError, NotFoundError, PermissionDenied, ValidationError
 from .connectors import ConnectorRegistry
+from .document_parser import PaddleOCRParser
 from .llm_gateway import LLMGateway
 from .models import (
     AuditEvent,
@@ -78,6 +79,7 @@ class SystemService:
         self.store = store or InMemoryStore()
         self.connectors = ConnectorRegistry()
         self.llm_gateway = LLMGateway()
+        self.document_parser = PaddleOCRParser()
         self.object_store = create_object_store_from_env(Path.cwd() / "data" / "objects")
         self.search_index = create_search_index_from_env()
         self.local_search_index = LocalSearchIndex()
@@ -96,6 +98,32 @@ class SystemService:
     def llm_anthropic_messages(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
         result = self.llm_gateway.anthropic_messages(payload)
         self._audit(actor, "llm_anthropic_messages", "llm_gateway", result["endpoint"], source="llm_gateway", model_version=result["model"])
+        return result
+
+    def parse_document_with_paddleocr(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        optional_payload = self._document_parser_optional_payload(payload)
+        document_id = str(payload.get("document_id", "")).strip()
+        file_url = str(payload.get("file_url") or payload.get("fileUrl") or "").strip()
+        if document_id:
+            document = self.store.documents.get(document_id)
+            if document is None:
+                raise NotFoundError(f"document {document_id} not found")
+            result = self._parse_document_with_paddleocr(document, optional_payload=optional_payload)
+            resource_id = document_id
+        elif file_url:
+            result = self.document_parser.parse_url(file_url, optional_payload=optional_payload)
+            resource_id = file_url
+        else:
+            raise ValidationError("document parser requires document_id or file_url")
+        self._audit(
+            actor,
+            "parse_document_with_paddleocr",
+            "document_parser",
+            resource_id,
+            source="paddleocr",
+            version=str(result.get("job_id", "")),
+            model_version=str(result.get("model", "")),
+        )
         return result
 
     def _audit(
@@ -889,13 +917,38 @@ class SystemService:
             raise NotFoundError(f"document {document_id} not found")
         source_text = document.body or self._document_object_text(document)
         chunks = chunk_text_by_page(source_text)
+        fallback_error = ""
+        if not chunks and self.document_parser.configured():
+            try:
+                parsed = self._parse_document_with_paddleocr(document)
+                source_text = str(parsed.get("text", ""))
+                chunks = chunk_text_by_page(source_text)
+                if chunks:
+                    parser_version = f"{parser_version}+paddleocr-vl"
+                    model_version = str(parsed.get("model") or model_version)
+                    self._audit(
+                        actor,
+                        "parse_document_with_paddleocr",
+                        "document",
+                        document_id,
+                        source="paddleocr",
+                        version=str(parsed.get("job_id", "")),
+                        model_version=model_version,
+                    )
+                else:
+                    fallback_error = "PaddleOCR returned no extractable markdown"
+            except ValidationError as exc:
+                fallback_error = str(exc)
         if not chunks:
+            message = "No extractable text was found. The file may be scanned, image-only, encrypted, or unsupported by the current parser."
+            if fallback_error:
+                message = f"{message} OCR fallback failed or returned no text: {fallback_error}"
             self._create_manual_review(
                 document,
                 issue_type="empty_or_scanned_document",
                 severity="high",
                 parser_version=parser_version,
-                message="No extractable text was found. The file may be scanned, image-only, encrypted, or unsupported by the current parser.",
+                message=message,
                 suggested_action="Run OCR fallback or route the document to analyst review before using it as evidence.",
                 actor=actor,
             )
@@ -1017,6 +1070,28 @@ class SystemService:
         if suffix == ".pdf" or data.startswith(b"%PDF"):
             return pdf_bytes_to_text(data)
         return data.decode("utf-8", errors="ignore")
+
+    def _document_parser_optional_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("optional_payload", payload.get("optionalPayload", {}))
+        if raw is None:
+            return {}
+        if not isinstance(raw, Mapping):
+            raise ValidationError("optional_payload must be an object")
+        return dict(raw)
+
+    def _parse_document_with_paddleocr(self, document: Document, *, optional_payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        if document.object_uri:
+            try:
+                data = self.object_store.read_bytes(document.object_uri)
+            except (FileNotFoundError, IsADirectoryError, OSError, ValueError):
+                data = b""
+            if data:
+                filename = Path(urlparse(document.object_uri).path).name or f"{document.document_id}.pdf"
+                return self.document_parser.parse_bytes(data, filename=filename, optional_payload=optional_payload)
+        source_uri = str(document.source_uri or "").strip()
+        if source_uri.startswith(("http://", "https://")):
+            return self.document_parser.parse_url(source_uri, optional_payload=optional_payload)
+        raise ValidationError("document has no readable object_uri or http(s) source_uri for PaddleOCR parsing")
 
     def create_thesis(
         self,
@@ -3257,6 +3332,7 @@ class SystemService:
             "store": type(self.store).__name__,
             "object_store": self.object_store.describe(),
             "search_index": self.search_index.describe(),
+            "document_parser": self.document_parser.describe(),
         }
 
     def metrics(self) -> dict[str, Any]:
@@ -3269,6 +3345,7 @@ class SystemService:
             "pending_prompt_changes": sum(1 for item in self.store.prompt_changes.values() if item.status == "pending"),
             "object_store": self.object_store.describe(),
             "search_index": self.search_index.describe(),
+            "document_parser": self.document_parser.describe(),
             "store": type(self.store).__name__,
         }
 

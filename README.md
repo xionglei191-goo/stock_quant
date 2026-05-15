@@ -98,6 +98,7 @@ docker compose up --build
 - 13F 持仓记录入库，并可生成中低频拥挤度 snapshot
 - HTML 文档正文清洗并生成可读证据片段
 - PDF 对象文本流/Flate 流抽取兜底，可从本地 PDF 对象生成证据片段
+- `/api/document-parsing/paddleocr` PaddleOCR-VL 文档解析备用接口，证据抽取在本地解析无文本且配置 token 时会自动兜底
 - 术语、数值、期间和规则表格读取基线抽取，并可按中英 benchmark 样本集运行阈值、定位、表格和低置信度拦截评估
 - Issuer / Security / MarketDataPoint / Document / Evidence / Thesis / Signal / Decision / Review
 - CorporateAction 用于拆股、分红、代码变更等复权和估值链路
@@ -121,7 +122,7 @@ docker compose up --build
 - `/api/health` 与 `/api/metrics`，提供最小部署健康检查和运行指标
 - `/api/alerts` 告警闭环，支持默认规则播种、指标评估、开放告警查询和恢复状态
 - Evidence extraction 支持 `\f` 分页文本，记录 `page_no` 和稳定 locator
-- 扫描件/空文本解析失败会进入人工复核队列，并提供 evidence quality report
+- 扫描件/空文本会优先尝试 PaddleOCR-VL 备用解析；未配置或解析失败时进入人工复核队列，并提供 evidence quality report
 
 ## 说明
 
@@ -162,6 +163,33 @@ curl -sS -X POST http://127.0.0.1:8000/api/llm/anthropic/messages \
   -H 'Content-Type: application/json' \
   -H 'X-Role: analyst' \
   -d '{"max_tokens":256,"messages":[{"role":"user","content":"用一句话说明今天的研究重点"}]}'
+```
+
+## PaddleOCR-VL 文档解析备用接口
+
+本地 PDF/文本流解析拿不到内容时，`/api/evidence/extract` 会在 `AI_QUANT_PADDLEOCR_TOKEN` 已配置的情况下自动调用 PaddleOCR-VL，并把返回 markdown 切成 evidence。也可以直接调用备用解析接口；密钥不要写入仓库，请通过环境变量注入：
+
+```bash
+export AI_QUANT_PADDLEOCR_TOKEN=...
+export AI_QUANT_PADDLEOCR_MODEL=PaddleOCR-VL-1.5
+```
+
+解析远程文件 URL：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/document-parsing/paddleocr \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: data_engineer' \
+  -d '{"file_url":"https://example.com/report.pdf"}'
+```
+
+解析已入湖文档：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/document-parsing/paddleocr \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: analyst' \
+  -d '{"document_id":"doc_001","optional_payload":{"useChartRecognition":true}}'
 ```
 
 ## A 股公告接入
