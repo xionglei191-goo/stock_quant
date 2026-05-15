@@ -36,3 +36,4 @@ dist/
 
 # Local runtime state
 data/state.db
+data/local/

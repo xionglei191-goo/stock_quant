@@ -46,10 +46,10 @@ AI_QUANT_POSTGRES_DSN=postgresql://user:password@localhost:5432/ai_quant python3
 python3 scripts/migrate_sqlite_to_postgres.py ./data/state.db postgresql://user:password@localhost:5432/ai_quant --replace
 ```
 
-文档入湖会把原文保存到对象存储。默认是本地目录 `./data/objects`，也可以用 `AI_QUANT_OBJECT_STORE` 指定：
+文档入湖会把原文保存到对象存储。默认是本地目录 `./data/objects`，也可以用 `AI_QUANT_OBJECT_STORE` 指定。仓库里的 `data/objects` 主要保留演示/测试样例；本地运行建议改用未纳管目录，例如 `./data/local/objects`：
 
 ```bash
-AI_QUANT_DB=./data/state.db AI_QUANT_OBJECT_STORE=./data/objects python3 -m app.server
+AI_QUANT_DB=./data/state.db AI_QUANT_OBJECT_STORE=./data/local/objects python3 -m app.server
 ```
 
 也可以切到 S3 兼容对象存储和 OpenSearch 兼容检索。实现只使用标准库 HTTP 客户端；未配置外部检索或外部检索异常时，`AI_QUANT_SEARCH_FALLBACK=true` 会回退到内置全文检索：
