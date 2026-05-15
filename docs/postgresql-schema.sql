@@ -30,6 +30,10 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_records_position
 CREATE INDEX IF NOT EXISTS idx_ai_quant_records_payload_gin
     ON ai_quant.records USING GIN (payload);
 
+CREATE INDEX IF NOT EXISTS idx_ai_quant_astock_connectors_status
+    ON ai_quant.records ((payload->>'provider'), (payload->>'status'), (payload->>'last_check_status'))
+    WHERE collection = 'astock_connectors';
+
 CREATE INDEX IF NOT EXISTS idx_ai_quant_documents_issuer
     ON ai_quant.records ((payload->>'issuer_id'))
     WHERE collection = 'documents';
@@ -81,6 +85,30 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_benchmark_runs_benchmark
 CREATE INDEX IF NOT EXISTS idx_ai_quant_research_answers_issuer
     ON ai_quant.records ((payload->>'issuer_id'), (payload->>'source_publicness'), (payload->>'human_review_status'))
     WHERE collection = 'research_answers';
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_research_reports_source
+    ON ai_quant.records ((payload->>'source_id'), (payload->>'broker'), (payload->>'status'))
+    WHERE collection = 'research_reports';
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_llm_task_templates_status
+    ON ai_quant.records ((payload->>'task_type'), (payload->>'status'), (payload->>'prompt_version'))
+    WHERE collection = 'llm_task_templates';
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_llm_task_runs_status
+    ON ai_quant.records ((payload->>'task_type'), (payload->>'status'), (payload->>'fallback_used'))
+    WHERE collection = 'llm_task_runs';
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_workflow_runs_status
+    ON ai_quant.records ((payload->>'dag_id'), (payload->>'status'), (payload->>'idempotency_key'))
+    WHERE collection = 'workflow_runs';
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_lineage_events_dataset
+    ON ai_quant.records ((payload->>'dataset'), (payload->>'job_run_id'))
+    WHERE collection = 'lineage_events';
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_model_versions_status
+    ON ai_quant.records ((payload->>'model_name'), (payload->>'status'), (payload->>'version'))
+    WHERE collection = 'model_versions';
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_theses_issuer
     ON ai_quant.records ((payload->>'issuer_id'), (payload->>'status'))
@@ -235,6 +263,69 @@ SELECT
     updated_at
 FROM ai_quant.records
 WHERE collection = 'research_answers';
+
+CREATE OR REPLACE VIEW ai_quant.astock_connectors AS
+SELECT
+    item_id AS connector_id,
+    payload->>'provider' AS provider,
+    payload->>'endpoint_type' AS endpoint_type,
+    payload->>'source_id' AS source_id,
+    payload->>'status' AS status,
+    payload->>'last_check_status' AS last_check_status,
+    payload,
+    updated_at
+FROM ai_quant.records
+WHERE collection = 'astock_connectors';
+
+CREATE OR REPLACE VIEW ai_quant.llm_task_runs AS
+SELECT
+    item_id AS run_id,
+    payload->>'template_id' AS template_id,
+    payload->>'task_type' AS task_type,
+    payload->>'status' AS status,
+    payload->>'model' AS model,
+    payload->>'prompt_version' AS prompt_version,
+    payload->>'fallback_used' AS fallback_used,
+    (payload->>'latency_ms')::numeric AS latency_ms,
+    (payload->>'estimated_cost')::numeric AS estimated_cost,
+    payload,
+    updated_at
+FROM ai_quant.records
+WHERE collection = 'llm_task_runs';
+
+CREATE OR REPLACE VIEW ai_quant.workflow_runs AS
+SELECT
+    item_id AS run_id,
+    payload->>'dag_id' AS dag_id,
+    payload->>'status' AS status,
+    payload->>'idempotency_key' AS idempotency_key,
+    payload,
+    updated_at
+FROM ai_quant.records
+WHERE collection = 'workflow_runs';
+
+CREATE OR REPLACE VIEW ai_quant.lineage_events AS
+SELECT
+    item_id AS lineage_id,
+    payload->>'job_run_id' AS job_run_id,
+    payload->>'dataset' AS dataset,
+    payload->>'code_version' AS code_version,
+    payload,
+    updated_at
+FROM ai_quant.records
+WHERE collection = 'lineage_events';
+
+CREATE OR REPLACE VIEW ai_quant.model_versions AS
+SELECT
+    item_id AS model_version_id,
+    payload->>'model_name' AS model_name,
+    payload->>'version' AS version,
+    payload->>'model_type' AS model_type,
+    payload->>'status' AS status,
+    payload,
+    updated_at
+FROM ai_quant.records
+WHERE collection = 'model_versions';
 
 CREATE OR REPLACE VIEW ai_quant.market_data AS
 SELECT

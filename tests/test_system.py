@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import hashlib
 import json
+import sqlite3
 import unittest
 import zlib
 
@@ -16,9 +17,11 @@ from app.object_store import S3CompatibleObjectStore
 from app.search import OpenSearchIndex, SearchRecord
 from app.services import SystemService
 from app.store import PostgreSQLStore, SQLiteStore
+from app.tdx_market_data import TDXMarketDataAdapter
 from scripts.capacity_baseline import run_capacity_baseline
 from scripts.migrate_sqlite_to_postgres import migrate_sqlite_to_postgres
 from scripts.postgres_schema_migrate import BASELINE_VERSION, apply_postgres_schema, mark_last_migration_rolled_back
+from scripts.security_check import scan_repository
 from scripts.ui_static_check import validate_ui_html
 
 
@@ -528,6 +531,51 @@ class SystemServiceTests(unittest.TestCase):
         for fragment in ["company_public_webcast", "authorized_transcript_vendor", "No transcript or research text enters training", "Reg FD"]:
             self.assertIn(fragment, policy)
 
+    def test_research_report_manifest_scan_list_and_ingest(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            report_dir = Path(temp_dir) / "Goldman" / "2026" / "05"
+            report_dir.mkdir(parents=True)
+            report_path = report_dir / "Demo Corp outlook.pdf"
+            report_path.write_bytes(b"%PDF-1.4\nresearch report\n%%EOF")
+
+            scanned = self.router.dispatch(
+                "POST",
+                "/api/research-reports/scan",
+                {"root_path": temp_dir, "limit": 10},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(scanned.success, scanned.error)
+            self.assertEqual(scanned.data["indexed_count"], 1)
+            report = scanned.data["reports"][0]
+            self.assertEqual(report["broker"], "Goldman")
+            self.assertEqual(report["year"], "2026")
+            self.assertEqual(report["month"], "05")
+            self.assertFalse(report["rights_tag"]["training_allowed"])
+            self.assertEqual(report["rights_tag"]["display_use"], "restricted")
+            self.assertIn(report["source_id"], self.service.store.sources)
+
+            listed = self.router.dispatch("GET", "/api/research-reports", {"broker": "goldman"}, role="analyst")
+            self.assertTrue(listed.success)
+            self.assertEqual(listed.data["count"], 1)
+
+            ingested = self.router.dispatch(
+                "POST",
+                f"/api/research-reports/{report['report_id']}/ingest",
+                {"issuer_id": "issuer_001", "security_id": "sec_001", "document_id": "doc_research_goldman"},
+                actor="analyst",
+                role="analyst",
+            )
+            self.assertTrue(ingested.success, ingested.error)
+            self.assertTrue(ingested.data["created"])
+            self.assertEqual(ingested.data["document"]["document_type"], "research")
+            self.assertEqual(ingested.data["document"]["object_uri"], str(report_path))
+            self.assertEqual(ingested.data["report"]["status"], "ingested")
+
+            search = self.router.dispatch("GET", "/api/search", {"q": "Goldman outlook"}, role="analyst")
+            self.assertTrue(search.success)
+            self.assertIn("research_report", {item["resource_type"] for item in search.data["results"]})
+
     def test_extract_evidence_strips_html_and_ignored_tags(self) -> None:
         self.service.ingest_document(
             {
@@ -1022,6 +1070,187 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("AI_QUANT_LLM_API_KEY", response.error["message"])
 
+    def test_llm_task_templates_run_with_audited_cost_and_latency(self) -> None:
+        sent = []
+
+        def fake_send(request, timeout):
+            sent.append({"url": request.full_url, "body": json.loads(request.data.decode("utf-8")), "timeout": timeout})
+            return '{"id":"chatcmpl_task","choices":[{"message":{"content":"中文摘要：Revenue rose."}}]}'.encode("utf-8")
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            http_send=fake_send,
+        )
+        seeded = self.router.dispatch("POST", "/api/llm/task-templates/seed", {}, actor="ml", role="nlp_ml")
+        self.assertTrue(seeded.success)
+        self.assertGreaterEqual(len(seeded.data["templates"]), 4)
+        self.assertEqual(self.service.store.llm_task_templates["llmtpl_filing_qa_v1"].status, "approved")
+
+        run = self.router.dispatch(
+            "POST",
+            "/api/llm/tasks/run",
+            {
+                "run_id": "llmrun_filing_001",
+                "template_id": "llmtpl_filing_qa_v1",
+                "role": "分析师",
+                "variables": {"question": "What changed?", "source_text": "Revenue rose 12% year over year."},
+                "temperature": 0.1,
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(run.success)
+        self.assertEqual(run.data["status"], "succeeded")
+        self.assertEqual(run.data["model"], "qwen3.6-plus")
+        self.assertEqual(run.data["prompt_version"], "pr_llmtpl_filing_qa_v1_baseline")
+        self.assertFalse(run.data["human_review_required"])
+        self.assertEqual(sent[0]["url"], "https://llm.example.test/v1/chat/completions")
+        self.assertIn("Revenue rose 12%", sent[0]["body"]["messages"][0]["content"])
+        self.assertGreaterEqual(run.data["estimated_input_tokens"], 1)
+        self.assertEqual(self.service.store.audit_log[-1].action, "run_llm_task")
+
+        metrics = self.router.dispatch("GET", "/api/llm/tasks/metrics", {}, role="nlp_ml")
+        self.assertTrue(metrics.success)
+        self.assertEqual(metrics.data["runs"], 1)
+        self.assertEqual(metrics.data["failed_runs"], 0)
+
+    def test_llm_task_falls_back_to_rule_summary_when_gateway_unavailable(self) -> None:
+        self.service.llm_gateway = LLMGateway(api_key="", http_send=lambda _request, _timeout: b"{}")
+        self.router.dispatch("POST", "/api/llm/task-templates/seed", {}, actor="ml", role="nlp_ml")
+        run = self.router.dispatch(
+            "POST",
+            "/api/llm/tasks/run",
+            {
+                "run_id": "llmrun_fallback_001",
+                "template_id": "llmtpl_research_summary_v1",
+                "role": "分析师",
+                "variables": {"source_text": "Authorized evidence says revenue improved and margin expanded."},
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(run.success)
+        self.assertEqual(run.data["status"], "fallback")
+        self.assertEqual(run.data["fallback_used"], "rule_summary")
+        self.assertTrue(run.data["human_review_required"])
+        self.assertIn("AI_QUANT_LLM_API_KEY", run.data["error"])
+
+    def test_workflow_lineage_and_model_version_records_are_idempotent(self) -> None:
+        workflow = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags",
+            {
+                "dag_id": "dag_daily_research",
+                "name": "Daily research pipeline",
+                "idempotency_key_fields": ["as_of_date"],
+                "tasks": [
+                    {"task_id": "collect_filings", "owner": "数据工程"},
+                    {"task_id": "extract_evidence", "owner": "NLP/ML 负责人"},
+                ],
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(workflow.success)
+
+        first_run = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags/dag_daily_research/run",
+            {"run_id": "wfrun_daily_001", "inputs": {"as_of_date": "2026-05-15", "market": "A"}},
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(first_run.success)
+        self.assertEqual(first_run.data["status"], "succeeded")
+        self.assertEqual(first_run.data["task_statuses"]["collect_filings"], "succeeded")
+
+        second_run = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags/dag_daily_research/run",
+            {"run_id": "wfrun_daily_duplicate", "inputs": {"as_of_date": "2026-05-15", "market": "U"}},
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(second_run.success)
+        self.assertEqual(second_run.data["run_id"], "wfrun_daily_001")
+
+        model_version = self.router.dispatch(
+            "POST",
+            "/api/model-versions",
+            {
+                "model_version_id": "modelv_summary_001",
+                "model_name": "research-summary",
+                "version": "2026-05-15",
+                "model_type": "llm",
+                "prompt_versions": ["pr_llmtpl_research_summary_v1_baseline"],
+                "metrics": {"coverage": 0.96},
+                "status": "approved",
+            },
+            actor="ml",
+            role="nlp_ml",
+        )
+        self.assertTrue(model_version.success)
+
+        lineage = self.router.dispatch(
+            "POST",
+            "/api/lineage/events",
+            {
+                "lineage_id": "lin_daily_001",
+                "job_run_id": "wfrun_daily_001",
+                "dataset": "evidence_chunks",
+                "input_refs": ["doc:doc_demo"],
+                "output_refs": ["evidence:evi_demo"],
+                "code_version": "local-test",
+                "model_versions": ["modelv_summary_001"],
+                "prompt_versions": ["pr_llmtpl_research_summary_v1_baseline"],
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(lineage.success)
+        self.assertEqual(lineage.data["dataset"], "evidence_chunks")
+        self.assertEqual(self.service.store.audit_log[-1].action, "record_lineage_event")
+
+        runs = self.router.dispatch("GET", "/api/orchestration/runs", {}, role="platform")
+        self.assertTrue(runs.success)
+        self.assertEqual(runs.data["total"], 1)
+        metrics = self.router.dispatch("GET", "/api/metrics", {}, role="platform")
+        self.assertEqual(metrics.data["counts"]["workflow_runs"], 1)
+        self.assertEqual(metrics.data["counts"]["lineage_events"], 1)
+        self.assertEqual(metrics.data["counts"]["model_versions"], 1)
+
+    def test_astock_connector_registry_tracks_rights_mapping_and_verification(self) -> None:
+        seeded = self.router.dispatch("POST", "/api/connectors/astock/seed", {}, actor="data", role="data_engineer")
+        self.assertTrue(seeded.success)
+        self.assertGreaterEqual(len(seeded.data["connectors"]), 8)
+        eastmoney = self.service.store.astock_connectors["eastmoney_research"]
+        self.assertEqual(eastmoney.rights_tag.display_use, "restricted")
+        self.assertIn("title", eastmoney.field_mapping)
+        self.assertIn(eastmoney.source_id, self.service.store.sources)
+
+        verify = self.router.dispatch(
+            "POST",
+            "/api/connectors/astock/verify",
+            {"connector_id": "eastmoney_research", "status": "passed"},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(verify.success)
+        self.assertEqual(verify.data["updated"][0]["status"], "verified")
+        self.assertEqual(verify.data["updated"][0]["last_check_status"], "passed")
+
+        filtered = self.router.dispatch(
+            "POST",
+            "/api/connectors/astock/query",
+            {"status": "verified"},
+            role="data_engineer",
+        )
+        self.assertTrue(filtered.success)
+        self.assertEqual(filtered.data["total"], 1)
+        self.assertEqual(filtered.data["connectors"][0]["connector_id"], "eastmoney_research")
+
     def test_health_and_metrics_endpoints(self) -> None:
         health = self.router.dispatch("GET", "/api/health", {}, role="unknown")
         self.assertTrue(health.success)
@@ -1038,6 +1267,18 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(metrics.data["object_store"]["backend"], "local")
         self.assertEqual(metrics.data["search_index"]["backend"], "local")
         self.assertEqual(metrics.data["counts"]["sources"], 1)
+
+    def test_security_check_flags_tracked_env_and_literal_secrets(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "safe.env.example").write_text("AI_QUANT_LLM_API_KEY=\n", encoding="utf-8")
+            (root / ".env").write_text("AI_QUANT_LLM_API_KEY=" + "sk-" + "realshouldnotbehere123456\n", encoding="utf-8")
+            (root / "settings.py").write_text('TOKEN = "' + "0123456789abcdef0123456789abcdef" + '"\n', encoding="utf-8")
+            result = scan_repository(root)
+        self.assertFalse(result["ok"])
+        finding_types = {item["type"] for item in result["findings"]}
+        self.assertIn("tracked_env_file", finding_types)
+        self.assertIn("assigned_secret", finding_types)
 
     def test_authorized_market_data_respects_rights_and_dashboard(self) -> None:
         seeded = self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
@@ -1161,6 +1402,82 @@ class SystemServiceTests(unittest.TestCase):
         )
         self.assertFalse(blocked_rights.success)
         self.assertEqual(blocked_rights.status_code, 403)
+
+    def test_tdx_market_data_preview_and_import_use_authorized_eod_path(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "market_data.duckdb"
+            connection = sqlite3.connect(db_path)
+            connection.execute(
+                """
+                CREATE TABLE daily_kline (
+                    symbol TEXT,
+                    trade_date TEXT,
+                    open REAL,
+                    close REAL,
+                    high REAL,
+                    low REAL,
+                    volume REAL,
+                    amount REAL,
+                    turnover REAL
+                )
+                """
+            )
+            connection.executemany(
+                "INSERT INTO daily_kline VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    ("600000", "2026-05-14", 10.0, 10.5, 10.8, 9.9, 1000.0, 10500.0, None),
+                    ("600000", "2026-05-15", 10.5, 11.0, 11.2, 10.3, 1200.0, 13200.0, None),
+                ],
+            )
+            connection.commit()
+            connection.close()
+
+            self.service.tdx_market_data = TDXMarketDataAdapter(path=db_path, connect=lambda path, _read_only: sqlite3.connect(path))
+            self.service.register_security(
+                {
+                    "security_id": "sec_600000",
+                    "issuer_id": "issuer_001",
+                    "ticker": "600000",
+                    "exchange": "SSE",
+                    "currency": "CNY",
+                    "market": "A",
+                },
+                actor="platform",
+            )
+
+            preview = self.router.dispatch(
+                "POST",
+                "/api/market-data/tdx/preview",
+                {"symbols": ["sh600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
+                role="data_engineer",
+            )
+            self.assertTrue(preview.success, preview.error)
+            self.assertEqual(preview.data["count"], 2)
+            self.assertEqual(preview.data["rows"][0]["symbol"], "600000")
+
+            imported = self.router.dispatch(
+                "POST",
+                "/api/market-data/tdx/import",
+                {"symbols": ["600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(imported.success, imported.error)
+            self.assertEqual(imported.data["created_count"], 2)
+            self.assertEqual(imported.data["failed_count"], 0)
+            listed = self.router.dispatch("GET", "/api/market-data", {"security_id": "sec_600000"}, role="CEO")
+            self.assertEqual(len(listed.data["market_data"]), 2)
+            self.assertEqual(listed.data["market_data"][0]["source_id"], "authorized_eod_market_data")
+
+            duplicate = self.router.dispatch(
+                "POST",
+                "/api/market-data/tdx/import",
+                {"symbols": ["600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
+                role="data_engineer",
+            )
+            self.assertTrue(duplicate.success)
+            self.assertEqual(duplicate.data["created_count"], 0)
+            self.assertEqual(duplicate.data["skipped_count"], 2)
 
     def test_13f_holdings_generate_crowding_snapshot(self) -> None:
         first = self.router.dispatch(
@@ -2554,11 +2871,27 @@ class SystemServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(search.data["results"]), 1)
         self.assertIn(search.data["results"][0]["resource_type"], {"document", "evidence", "thesis", "research_card"})
         self.assertFalse(any("<html>" in item["snippet"] for item in search.data["results"]))
+        semantic = self.router.dispatch("POST", "/api/search/semantic", {"q": "resilient services demand", "issuer_id": "issuer_demo"}, role="CEO")
+        self.assertTrue(semantic.success)
+        self.assertEqual(semantic.data["backend"], "local-semantic")
+        self.assertGreaterEqual(len(semantic.data["results"]), 1)
+        self.assertEqual(semantic.data["results"][0]["source_boundary"], "inherits_record_rights")
         self.assertGreaterEqual(len(self.service.thesis_payload("thesis_demo")["evidence"]), 1)
 
         second = self.router.dispatch("POST", "/api/demo/full-flow", {}, actor="platform_owner", role="platform")
         self.assertTrue(second.success)
         self.assertEqual(second.data["dashboard"]["counts"]["execution_intents"], 1)
+
+    def test_vision_acceptance_gate_reports_real_readiness_gaps(self) -> None:
+        self.router.dispatch("POST", "/api/demo/full-flow", {}, actor="platform_owner", role="platform")
+        gate = self.router.dispatch("GET", "/api/readiness/vision-gate", {}, role="CEO")
+        self.assertTrue(gate.success)
+        self.assertEqual(gate.data["status"], "not_ready")
+        gate_names = {item["name"] for item in gate.data["gates"]}
+        self.assertIn("evidence_coverage", gate_names)
+        self.assertIn("pending_prompt_changes", gate_names)
+        self.assertIn("high_risk_challenger_coverage", gate_names)
+        self.assertIn("production_ui_screenshot_acceptance", gate.data["pending_checklist"])
 
     def test_search_falls_back_when_external_backend_fails(self) -> None:
         class FailingSearchIndex:

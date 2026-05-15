@@ -65,6 +65,167 @@
 - `max_tokens`
 - 其他字段会原样转发给上游
 
+#### `POST /api/llm/task-templates/seed`
+
+写入默认生产 LLM 任务模板和对应 baseline prompt 审批记录，覆盖研究摘要、filing 问答、challenger 和事故 RCA。
+
+#### `POST /api/llm/task-templates`
+
+登记生产 LLM 任务模板。`status=approved` 时必须提供已审批的 `approved_prompt_change_id`，否则不能进入生产运行。
+
+请求字段：
+
+- `template_id`
+- `task_type`
+- `prompt_name`
+- `prompt_version`
+- `content`
+- `provider`
+- `model`
+- `status`
+- `approved_prompt_change_id`
+- `fallback_chain`
+- `data_domains`
+- `allowed_roles`
+- `risk_level`
+
+#### `GET /api/llm/task-templates`
+
+按 `task_type`、`status`、`limit` 查询 LLM 任务模板。
+
+#### `POST /api/llm/tasks/run`
+
+运行已审批 LLM 任务模板。接口会渲染模板变量、调用配置的 OpenAI/Anthropic 上游，并记录模型、prompt 版本、延迟、成本估算、回退路径和人工复核标记。上游不可用时按模板 `fallback_chain` 使用规则摘要、上一稳定输出或人工复核降级。
+
+请求字段：
+
+- `run_id`
+- `template_id`
+- `role`
+- `variables`
+- `provider`
+- `model`
+- `llm_payload`
+- `previous_output`
+
+#### `GET /api/llm/tasks/runs`
+
+按 `task_type`、`status`、`limit` 查询 LLM 任务运行记录。
+
+#### `GET /api/llm/tasks/metrics`
+
+返回 LLM 任务模板数、已审批模板数、运行数、失败数、回退数、人工复核数、平均延迟和成本估算。
+
+#### `POST /api/orchestration/dags`
+
+登记轻量 DAG / 工作流定义，作为 Airflow、Dagster 或 Cron 接入前的生产契约层。
+
+请求字段：
+
+- `dag_id`
+- `name`
+- `tasks`
+- `cadence`
+- `owner_role`
+- `status`
+- `idempotency_key_fields`
+
+#### `POST /api/orchestration/dags/{dag_id}/run`
+
+登记一次工作流运行。默认根据 DAG 的 `idempotency_key_fields` 生成幂等键；同一 DAG 和幂等键再次运行会返回已有运行，除非 `force=true`。
+
+请求字段：
+
+- `run_id`
+- `inputs`
+- `idempotency_key`
+- `output_refs`
+- `force`
+
+#### `GET /api/orchestration/runs`
+
+按 `dag_id`、`status`、`limit` 查询工作流运行记录。
+
+#### `POST /api/lineage/events`
+
+记录数据血缘事件，将任务运行、输入、输出、代码版本、模型版本和 prompt 版本关联起来。
+
+请求字段：
+
+- `lineage_id`
+- `job_run_id`
+- `dataset`
+- `input_refs`
+- `output_refs`
+- `code_version`
+- `model_versions`
+- `prompt_versions`
+
+#### `POST /api/model-versions`
+
+登记模型或规则版本，供回放、审计和上线闸门引用。
+
+请求字段：
+
+- `model_version_id`
+- `model_name`
+- `version`
+- `model_type`
+- `artifact_uri`
+- `training_dataset_ids`
+- `prompt_versions`
+- `metrics`
+- `status`
+
+#### `POST /api/search/semantic`
+
+使用本地语义检索 adapter 对已入库 SearchRecord 执行轻量向量化排序。当前实现为 term-frequency cosine，用于固定 Qdrant/reranker 替换前的 API 契约，并继承原始记录的权限边界。
+
+请求字段：
+
+- `q`
+- `issuer_id`
+- `limit`
+
+#### `GET /api/readiness/vision-gate`
+
+返回项目愿景上线闸门报告，按证据覆盖率、研究结论原文回链率、pending prompt、红区训练记录、高风险 challenger 覆盖率、实体映射准确率和 benchmark 指标计算 `ready` / `not_ready`，并列出仍需人工验收的 UI、容量、备份恢复、权限红队和合规复核清单。
+
+#### `POST /api/connectors/astock/seed`
+
+写入 A 股补充接口候选注册表，包括东财研报发现、巨潮公告补充、腾讯估值快照、同花顺热点、百度概念/资金流、龙虎榜、解禁日历和可选 iwencai。所有候选默认 restricted rights，不进入事实真相层或训练层。
+
+#### `POST /api/connectors/astock`
+
+登记单个 A 股补充接口候选，要求已有 `source_id`，并显式声明 rights tag、限速、字段映射和允许用途。
+
+请求字段：
+
+- `connector_id`
+- `provider`
+- `endpoint_type`
+- `source_id`
+- `rights_tag`
+- `priority`
+- `requires_key`
+- `rate_limit_per_minute`
+- `field_mapping`
+- `allowed_use`
+
+#### `POST /api/connectors/astock/verify`
+
+登记接口验证结果，不直接把第三方数据升级为授权事实层。`passed` 会把 connector 标为 `verified`；`blocked` 会阻断后续自动化使用。
+
+请求字段：
+
+- `connector_id`
+- `status`
+- `error`
+
+#### `GET /api/connectors/astock`
+
+按 `provider`、`status`、`requires_key`、`limit` 查询 A 股补充接口注册表。
+
 #### `POST /api/document-parsing/paddleocr`
 
 调用配置的 PaddleOCR-VL 文档解析备用接口。请求必须配置 `AI_QUANT_PADDLEOCR_TOKEN`；服务端只记录 provider、job id 和模型审计，不记录 token。
@@ -136,6 +297,33 @@
 #### `POST /api/market-data/batch`
 
 批量写入授权 EOD 或延时行情点，逐条返回创建结果和错误，不因单条失败回滚整个批次。
+
+#### `POST /api/market-data/tdx/preview`
+
+从本地通达信 DuckDB 日线库只读预览行情，不写入状态库。默认路径由 `AI_QUANT_TDX_DUCKDB_PATH` 指定。
+
+请求字段：
+
+- `symbols`
+- `start_date`
+- `end_date`
+- `limit`
+- `include_summary`
+
+#### `POST /api/market-data/tdx/import`
+
+从本地通达信 DuckDB 日线库读取行情，并写入授权 EOD/延时行情层。导入时会复用 `/api/market-data/points` 的 source rights、security、market 和 data_type 校验。
+
+请求字段：
+
+- `symbols`
+- `security_map`
+- `start_date`
+- `end_date`
+- `limit`
+- `source_id`
+- `data_type`
+- `skip_existing`
 
 #### `POST /api/corporate-actions`
 
@@ -440,6 +628,33 @@
 #### `GET /api/thesis/{thesis_id}`
 
 返回研究结论及其证据链。
+
+#### `POST /api/research-reports/scan`
+
+扫描本地授权研报目录，生成 manifest。研报默认作为外部观点层，不作为事实真相源，也不默认用于训练。默认根目录可由 `AI_QUANT_RESEARCH_REPORT_ROOT` 指定。
+
+请求字段：
+
+- `root_path`
+- `extensions`
+- `limit`
+- `hash_files`
+- `per_broker_sources`
+
+#### `GET /api/research-reports`
+
+按 broker、source、status 或关键词查询研报 manifest。
+
+#### `POST /api/research-reports/{report_id}/ingest`
+
+将单份研报按需登记为 `Document`，保留本地 `object_uri` 和 restricted rights tag，供 OCR、证据抽取和人工引用使用。
+
+请求字段：
+
+- `issuer_id`
+- `security_id`
+- `document_id`
+- `language`
 
 #### `POST /api/research/answers`
 

@@ -82,6 +82,45 @@ class SourceDefinition:
 
 
 @dataclass(slots=True)
+class AStockConnectorDefinition:
+    connector_id: str
+    provider: str
+    endpoint_type: str
+    source_id: str
+    rights_tag: RightsTag
+    priority: int = 100
+    status: str = "candidate"
+    requires_key: bool = False
+    rate_limit_per_minute: int = 30
+    field_mapping: dict[str, str] = field(default_factory=dict)
+    allowed_use: list[str] = field(default_factory=lambda: ["manual_reference"])
+    notes: str = ""
+    last_check_status: str = "not_checked"
+    last_error: str = ""
+    last_checked_at: Any = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "AStockConnectorDefinition":
+        return cls(
+            connector_id=str(data["connector_id"]),
+            provider=str(data["provider"]),
+            endpoint_type=str(data["endpoint_type"]),
+            source_id=str(data["source_id"]),
+            rights_tag=RightsTag.from_dict(data.get("rights_tag", {"license_class": "candidate_astock_reference"})),
+            priority=int(data.get("priority", 100)),
+            status=str(data.get("status", "candidate")),
+            requires_key=bool(data.get("requires_key", False)),
+            rate_limit_per_minute=int(data.get("rate_limit_per_minute", 30)),
+            field_mapping=dict(data.get("field_mapping", {})),
+            allowed_use=[str(item) for item in data.get("allowed_use", ["manual_reference"])],
+            notes=str(data.get("notes", "")),
+            last_check_status=str(data.get("last_check_status", "not_checked")),
+            last_error=str(data.get("last_error", "")),
+            last_checked_at=parse_datetime(data.get("last_checked_at")) if data.get("last_checked_at") else None,
+        )
+
+
+@dataclass(slots=True)
 class IngestionJob:
     job_id: str
     status: str
@@ -450,6 +489,105 @@ class PromptChangeRequest:
 
 
 @dataclass(slots=True)
+class LLMTaskTemplate:
+    template_id: str
+    task_type: str
+    prompt_name: str
+    prompt_version: str
+    content: str
+    provider: str = "openai"
+    model: str = ""
+    status: str = "draft"
+    approved_prompt_change_id: str = ""
+    fallback_chain: list[str] = field(default_factory=lambda: ["rule_summary", "manual_review"])
+    data_domains: list[str] = field(default_factory=list)
+    allowed_roles: list[str] = field(default_factory=list)
+    risk_level: str = "medium"
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    output_schema: dict[str, Any] = field(default_factory=dict)
+    estimated_cost_per_1k_tokens: float = 0.0
+    max_latency_ms: int = 30000
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class LLMTaskRun:
+    run_id: str
+    template_id: str
+    task_type: str
+    status: str
+    provider: str
+    model: str
+    prompt_version: str
+    input_summary: str = ""
+    output: dict[str, Any] = field(default_factory=dict)
+    fallback_used: str = ""
+    latency_ms: int = 0
+    estimated_input_tokens: int = 0
+    estimated_output_tokens: int = 0
+    estimated_cost: float = 0.0
+    error: str = ""
+    human_review_required: bool = True
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class WorkflowDefinition:
+    dag_id: str
+    name: str
+    tasks: list[dict[str, Any]] = field(default_factory=list)
+    cadence: str = "manual"
+    owner_role: str = "平台负责人"
+    status: str = "active"
+    idempotency_key_fields: list[str] = field(default_factory=list)
+    description: str = ""
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class WorkflowRun:
+    run_id: str
+    dag_id: str
+    status: str
+    idempotency_key: str
+    inputs: dict[str, Any] = field(default_factory=dict)
+    task_statuses: dict[str, str] = field(default_factory=dict)
+    output_refs: list[str] = field(default_factory=list)
+    error: str = ""
+    started_at: Any = field(default_factory=utcnow)
+    completed_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class LineageEvent:
+    lineage_id: str
+    job_run_id: str
+    dataset: str
+    input_refs: list[str] = field(default_factory=list)
+    output_refs: list[str] = field(default_factory=list)
+    code_version: str = ""
+    model_versions: list[str] = field(default_factory=list)
+    prompt_versions: list[str] = field(default_factory=list)
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class ModelVersionRecord:
+    model_version_id: str
+    model_name: str
+    version: str
+    model_type: str = "llm"
+    artifact_uri: str = ""
+    training_dataset_ids: list[str] = field(default_factory=list)
+    prompt_versions: list[str] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    status: str = "candidate"
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
 class ResearchTemplate:
     template_id: str
     template_type: str
@@ -488,6 +626,47 @@ class ResearchAnswer:
     reviewer: str = ""
     created_at: Any = field(default_factory=utcnow)
     updated_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class ResearchReportAsset:
+    report_id: str
+    source_id: str
+    broker: str
+    file_path: str
+    file_name: str
+    title: str
+    year: str = ""
+    month: str = ""
+    file_type: str = "pdf"
+    size_bytes: int = 0
+    fingerprint: str = ""
+    content_sha256: str = ""
+    rights_tag: RightsTag = field(default_factory=lambda: RightsTag("authorized_research_reference", False, False, "restricted", "restricted", "restricted"))
+    document_id: str = ""
+    status: str = "indexed"
+    indexed_at: Any = field(default_factory=utcnow)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ResearchReportAsset":
+        return cls(
+            report_id=str(data["report_id"]),
+            source_id=str(data["source_id"]),
+            broker=str(data.get("broker", "")),
+            file_path=str(data["file_path"]),
+            file_name=str(data.get("file_name", "")),
+            title=str(data.get("title", "")),
+            year=str(data.get("year", "")),
+            month=str(data.get("month", "")),
+            file_type=str(data.get("file_type", "pdf")),
+            size_bytes=int(data.get("size_bytes", 0)),
+            fingerprint=str(data.get("fingerprint", "")),
+            content_sha256=str(data.get("content_sha256", "")),
+            rights_tag=RightsTag.from_dict(data.get("rights_tag", {"license_class": "authorized_research_reference", "display_use": "restricted"})),
+            document_id=str(data.get("document_id", "")),
+            status=str(data.get("status", "indexed")),
+            indexed_at=parse_datetime(data.get("indexed_at")),
+        )
 
 
 @dataclass(slots=True)

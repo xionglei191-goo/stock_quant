@@ -94,6 +94,8 @@ class ApiRouter:
             ("POST", r"^/api/securities$", self._register_security),
             ("POST", r"^/api/market-data/points$", self._register_market_data_point),
             ("POST", r"^/api/market-data/batch$", self._register_market_data_batch),
+            ("POST", r"^/api/market-data/tdx/preview$", self._tdx_market_data_preview),
+            ("POST", r"^/api/market-data/tdx/import$", self._import_tdx_market_data),
             ("GET", r"^/api/market-data$", self._list_market_data),
             ("POST", r"^/api/corporate-actions$", self._register_corporate_action),
             ("GET", r"^/api/corporate-actions$", self._list_corporate_actions),
@@ -106,6 +108,11 @@ class ApiRouter:
             ("POST", r"^/api/entity-mappings$", self._register_entity_mapping),
             ("POST", r"^/api/entity-mappings/batch$", self._register_entity_mapping_batch),
             ("GET", r"^/api/entity-mappings/quality-report$", self._entity_mapping_quality_report),
+            ("POST", r"^/api/connectors/astock/seed$", self._seed_astock_connectors),
+            ("POST", r"^/api/connectors/astock$", self._register_astock_connector),
+            ("GET", r"^/api/connectors/astock$", self._list_astock_connectors),
+            ("POST", r"^/api/connectors/astock/query$", self._list_astock_connectors),
+            ("POST", r"^/api/connectors/astock/verify$", self._verify_astock_connectors),
             ("POST", r"^/api/connectors/preview$", self._preview_connector_document),
             ("POST", r"^/api/connectors/ashare/recent$", self._fetch_ashare_recent_filings),
             ("POST", r"^/api/connectors/sec/recent$", self._fetch_sec_recent_filings),
@@ -131,6 +138,10 @@ class ApiRouter:
             ("POST", r"^/api/templates/seed$", self._seed_default_templates),
             ("POST", r"^/api/scorecards$", self._register_scorecard),
             ("POST", r"^/api/research-cards$", self._create_research_card),
+            ("POST", r"^/api/research-reports/scan$", self._scan_research_reports),
+            ("GET", r"^/api/research-reports$", self._list_research_reports),
+            ("POST", r"^/api/research-reports$", self._list_research_reports),
+            ("POST", r"^/api/research-reports/(?P<report_id>[^/]+)/ingest$", self._ingest_research_report),
             ("POST", r"^/api/research/answers$", self._create_research_answer),
             ("POST", r"^/api/research/answers/(?P<answer_id>[^/]+)/review$", self._review_research_answer),
             ("GET", r"^/api/research/answers/(?P<answer_id>[^/]+)$", self._get_research_answer),
@@ -154,8 +165,28 @@ class ApiRouter:
             ("POST", r"^/api/alerts/notify$", self._notify_alerts),
             ("GET", r"^/api/alerts/notifications$", self._list_alert_notifications),
             ("GET", r"^/api/alerts$", self._list_alerts),
+            ("POST", r"^/api/llm/task-templates/seed$", self._seed_llm_task_templates),
+            ("POST", r"^/api/llm/task-templates$", self._register_llm_task_template),
+            ("GET", r"^/api/llm/task-templates$", self._list_llm_task_templates),
+            ("POST", r"^/api/llm/task-templates/query$", self._list_llm_task_templates),
+            ("POST", r"^/api/llm/tasks/run$", self._run_llm_task),
+            ("GET", r"^/api/llm/tasks/runs$", self._list_llm_task_runs),
+            ("POST", r"^/api/llm/tasks/runs$", self._list_llm_task_runs),
+            ("GET", r"^/api/llm/tasks/metrics$", self._llm_task_metrics),
             ("POST", r"^/api/llm/openai/chat/completions$", self._llm_openai_chat_completions),
             ("POST", r"^/api/llm/anthropic/messages$", self._llm_anthropic_messages),
+            ("POST", r"^/api/orchestration/dags$", self._register_workflow_definition),
+            ("GET", r"^/api/orchestration/dags$", self._list_workflow_definitions),
+            ("POST", r"^/api/orchestration/dags/query$", self._list_workflow_definitions),
+            ("POST", r"^/api/orchestration/dags/(?P<dag_id>[^/]+)/run$", self._run_workflow_definition),
+            ("GET", r"^/api/orchestration/runs$", self._list_workflow_runs),
+            ("POST", r"^/api/orchestration/runs$", self._list_workflow_runs),
+            ("POST", r"^/api/lineage/events$", self._record_lineage_event),
+            ("GET", r"^/api/lineage/events$", self._list_lineage_events),
+            ("POST", r"^/api/lineage/events/query$", self._list_lineage_events),
+            ("POST", r"^/api/model-versions$", self._register_model_version),
+            ("GET", r"^/api/model-versions$", self._list_model_versions),
+            ("POST", r"^/api/model-versions/query$", self._list_model_versions),
             ("GET", r"^/api/signals/(?P<signal_id>[^/]+)$", self._get_signal),
             ("POST", r"^/api/decision-packs/build$", self._build_decision_pack),
             ("GET", r"^/api/decision-packs/(?P<decision_id>[^/]+)$", self._get_decision_pack),
@@ -176,10 +207,13 @@ class ApiRouter:
             ("GET", r"^/api/portfolio/proposals$", self._list_portfolio_proposals),
             ("GET", r"^/api/portfolio/proposals/(?P<proposal_id>[^/]+)$", self._get_portfolio_proposal),
             ("GET", r"^/api/graph/query$", self._query_graph),
+            ("GET", r"^/api/search/semantic$", self._semantic_search),
+            ("POST", r"^/api/search/semantic$", self._semantic_search),
             ("GET", r"^/api/search$", self._search),
             ("POST", r"^/api/search$", self._search),
             ("GET", r"^/api/dashboard/ceo$", self._dashboard_ceo),
             ("GET", r"^/api/dashboard/risk$", self._dashboard_risk),
+            ("GET", r"^/api/readiness/vision-gate$", self._vision_acceptance_report),
             ("GET", r"^/api/incidents/calendar$", self._incident_calendar),
         ]
         for route_method, pattern, handler in routes:
@@ -195,6 +229,8 @@ class ApiRouter:
             return False
         if path.startswith("/api/dashboard"):
             return True
+        if path.startswith("/api/readiness"):
+            return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人"}
         if path.startswith("/api/demo"):
             return role in {"system", "CEO", "CIO", "平台负责人"}
         if path.startswith("/api/market-data"):
@@ -205,14 +241,16 @@ class ApiRouter:
             return method == "GET" or role in {"system", "风险/合规", "平台负责人", "数据工程", "CIO", "分析师", "海外研究负责人"}
         if path.startswith("/api/disclosure-events"):
             return method == "GET" or role in {"system", "风险/合规", "平台负责人", "数据工程", "CIO", "分析师", "海外研究负责人"}
-        if path.startswith("/api/ingestion/sources") or path.startswith("/api/ingestion/documents") or path.startswith("/api/ingestion/sec") or path.startswith("/api/ingestion/ashare") or path.startswith("/api/ingestion/hkex") or path.startswith("/api/ingestion/jobs") or path.startswith("/api/ingestion/schedules") or path.startswith("/api/entity-mappings") or path.startswith("/api/connectors/preview") or path.startswith("/api/connectors/sec") or path.startswith("/api/connectors/ashare") or path.startswith("/api/connectors/hkex"):
+        if path.startswith("/api/ingestion/sources") or path.startswith("/api/ingestion/documents") or path.startswith("/api/ingestion/sec") or path.startswith("/api/ingestion/ashare") or path.startswith("/api/ingestion/hkex") or path.startswith("/api/ingestion/jobs") or path.startswith("/api/ingestion/schedules") or path.startswith("/api/entity-mappings") or path.startswith("/api/connectors/preview") or path.startswith("/api/connectors/sec") or path.startswith("/api/connectors/ashare") or path.startswith("/api/connectors/hkex") or path.startswith("/api/connectors/astock"):
             return role in {"system", "风险/合规", "平台负责人", "数据工程"}
         if path.startswith("/api/benchmarks") or path.startswith("/api/prompts/changes") or path.startswith("/api/scorecards"):
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO"}
-        if path.startswith("/api/templates") or path.startswith("/api/research-cards") or path.startswith("/api/research/answers") or path.startswith("/api/crowding") or path.startswith("/api/challenger") or path.startswith("/api/playbooks") or path.startswith("/api/incident-reports") or path.startswith("/api/drill-schedules") or path.startswith("/api/alerts"):
-            return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO", "PM", "分析师", "海外研究负责人"}
+        if path.startswith("/api/templates") or path.startswith("/api/research-cards") or path.startswith("/api/research-reports") or path.startswith("/api/research/answers") or path.startswith("/api/crowding") or path.startswith("/api/challenger") or path.startswith("/api/playbooks") or path.startswith("/api/incident-reports") or path.startswith("/api/drill-schedules") or path.startswith("/api/alerts"):
+            return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO", "PM", "分析师", "海外研究负责人", "数据工程"}
         if path.startswith("/api/llm"):
             return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人", "分析师", "NLP/ML 负责人", "海外研究负责人"}
+        if path.startswith("/api/orchestration") or path.startswith("/api/lineage") or path.startswith("/api/model-versions"):
+            return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人", "数据工程", "NLP/ML 负责人"}
         if path.startswith("/api/document-parsing"):
             return role in {"system", "风险/合规", "平台负责人", "分析师", "数据工程", "NLP/ML 负责人", "海外研究负责人"}
         if path.startswith("/api/evidence") or path.startswith("/api/extractions") or path.startswith("/api/thesis") or path.startswith("/api/scoring"):
@@ -254,6 +292,12 @@ class ApiRouter:
     def _register_market_data_batch(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.register_market_data_batch(body, actor=actor)
 
+    def _tdx_market_data_preview(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.tdx_market_data_preview(body)
+
+    def _import_tdx_market_data(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.import_tdx_market_data(body, actor=actor)
+
     def _list_market_data(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.market_data_payload(body)
 
@@ -289,6 +333,18 @@ class ApiRouter:
 
     def _entity_mapping_quality_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.entity_mapping_quality_report(body)
+
+    def _seed_astock_connectors(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return {"connectors": [to_plain(item) for item in self.service.seed_astock_connectors(actor=actor)]}
+
+    def _register_astock_connector(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_astock_connector(body, actor=actor))
+
+    def _list_astock_connectors(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.astock_connectors_payload(body)
+
+    def _verify_astock_connectors(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.verify_astock_connectors(body, actor=actor)
 
     def _preview_connector_document(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.preview_connector_document(str(body["market"]), body["raw"])
@@ -373,6 +429,16 @@ class ApiRouter:
     def _create_research_card(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.create_research_card(body, actor=actor))
 
+    def _scan_research_reports(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.scan_research_reports(body, actor=actor)
+
+    def _list_research_reports(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.research_reports_payload(body)
+
+    def _ingest_research_report(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/research-reports/(?P<report_id>[^/]+)/ingest$", path)
+        return self.service.ingest_research_report(match["report_id"], body, actor=actor)
+
     def _create_research_answer(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.create_research_answer(body, actor=actor))
 
@@ -452,11 +518,54 @@ class ApiRouter:
     def _list_alerts(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.alerts_payload(body)
 
+    def _seed_llm_task_templates(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return {"templates": [to_plain(item) for item in self.service.seed_default_llm_task_templates(actor=actor)]}
+
+    def _register_llm_task_template(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_llm_task_template(body, actor=actor))
+
+    def _list_llm_task_templates(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.llm_task_templates_payload(body)
+
+    def _run_llm_task(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.run_llm_task(body, actor=actor))
+
+    def _list_llm_task_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.llm_task_runs_payload(body)
+
+    def _llm_task_metrics(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.llm_task_metrics()
+
     def _llm_openai_chat_completions(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.llm_openai_chat_completions(body, actor=actor)
 
     def _llm_anthropic_messages(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.llm_anthropic_messages(body, actor=actor)
+
+    def _register_workflow_definition(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_workflow_definition(body, actor=actor))
+
+    def _list_workflow_definitions(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.workflow_definitions_payload(body)
+
+    def _run_workflow_definition(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/orchestration/dags/(?P<dag_id>[^/]+)/run$", path)
+        return to_plain(self.service.run_workflow_definition(match["dag_id"], body, actor=actor))
+
+    def _list_workflow_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.workflow_runs_payload(body)
+
+    def _record_lineage_event(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.record_lineage_event(body, actor=actor))
+
+    def _list_lineage_events(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.lineage_events_payload(body)
+
+    def _register_model_version(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_model_version(body, actor=actor))
+
+    def _list_model_versions(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.model_versions_payload(body)
 
     def _get_signal(self, path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/signals/(?P<signal_id>[^/]+)$", path)
@@ -531,11 +640,17 @@ class ApiRouter:
     def _search(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.search(body)
 
+    def _semantic_search(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.semantic_search(body)
+
     def _dashboard_ceo(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.dashboard()
 
     def _dashboard_risk(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.dashboard()
+
+    def _vision_acceptance_report(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.vision_acceptance_report()
 
     def _incident_calendar(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.incident_calendar()

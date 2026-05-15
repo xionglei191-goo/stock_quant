@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import timedelta
+import hashlib
+import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
@@ -12,10 +15,13 @@ from .errors import ComplianceGateError, ConflictError, NotFoundError, Permissio
 from .connectors import ConnectorRegistry
 from .document_parser import PaddleOCRParser
 from .llm_gateway import LLMGateway
+from .research_reports import cheap_fingerprint, content_sha256, infer_report_metadata, iter_report_files, report_id_for_path, safe_source_part
+from .tdx_market_data import TDXMarketDataAdapter
 from .models import (
     AuditEvent,
     AlertNotification,
     AlertRule,
+    AStockConnectorDefinition,
     BenchmarkConfig,
     BenchmarkResult,
     BenchmarkRun,
@@ -39,13 +45,18 @@ from .models import (
     IncidentReport,
     InstitutionalHolding,
     Issuer,
+    LineageEvent,
+    LLMTaskRun,
+    LLMTaskTemplate,
     ManualReviewItem,
     MarketDataPoint,
+    ModelVersionRecord,
     OperatingReport,
     PortfolioProposal,
     PromptChangeRequest,
     ResearchAnswer,
     ResearchCard,
+    ResearchReportAsset,
     ResearchTemplate,
     ResearchSignal,
     ReviewRecord,
@@ -55,9 +66,11 @@ from .models import (
     StrategyReplay,
     SystemAlert,
     ThesisCard,
+    WorkflowDefinition,
+    WorkflowRun,
 )
 from .object_store import create_object_store_from_env
-from .search import LocalSearchIndex, SearchRecord, create_search_index_from_env
+from .search import LocalSearchIndex, LocalSemanticIndex, SearchRecord, create_search_index_from_env
 from .store import InMemoryStore
 from .utils import chunk_text, chunk_text_by_page, looks_like_html, new_id, parse_datetime, pdf_bytes_to_text, to_plain, utcnow
 
@@ -80,9 +93,11 @@ class SystemService:
         self.connectors = ConnectorRegistry()
         self.llm_gateway = LLMGateway()
         self.document_parser = PaddleOCRParser()
+        self.tdx_market_data = TDXMarketDataAdapter()
         self.object_store = create_object_store_from_env(Path.cwd() / "data" / "objects")
         self.search_index = create_search_index_from_env()
         self.local_search_index = LocalSearchIndex()
+        self.semantic_index = LocalSemanticIndex()
         self.search_fallback = os.environ.get("AI_QUANT_SEARCH_FALLBACK", "true").strip().lower() not in {"0", "false", "no"}
         self.started_at = utcnow()
         self.trace_id = ""
@@ -99,6 +114,480 @@ class SystemService:
         result = self.llm_gateway.anthropic_messages(payload)
         self._audit(actor, "llm_anthropic_messages", "llm_gateway", result["endpoint"], source="llm_gateway", model_version=result["model"])
         return result
+
+    def register_llm_task_template(self, payload: Mapping[str, Any], *, actor: str = "system") -> LLMTaskTemplate:
+        status = str(payload.get("status", "draft"))
+        if status not in {"draft", "pending", "approved", "deprecated"}:
+            raise ValidationError("LLM task template status must be draft, pending, approved, or deprecated")
+        approved_change_id = str(payload.get("approved_prompt_change_id", "")).strip()
+        if status == "approved":
+            if not approved_change_id:
+                raise ValidationError("approved LLM task template requires approved_prompt_change_id")
+            change = self.store.prompt_changes.get(approved_change_id)
+            if change is None or change.status != "approved":
+                raise ValidationError("approved_prompt_change_id must reference an approved prompt change")
+        template = LLMTaskTemplate(
+            template_id=str(payload.get("template_id", new_id("llmtpl"))),
+            task_type=str(payload["task_type"]),
+            prompt_name=str(payload["prompt_name"]),
+            prompt_version=str(payload.get("prompt_version") or approved_change_id or "draft"),
+            content=str(payload.get("content", "")),
+            provider=str(payload.get("provider", "openai")),
+            model=str(payload.get("model", "")),
+            status=status,
+            approved_prompt_change_id=approved_change_id,
+            fallback_chain=[str(item) for item in payload.get("fallback_chain", ["rule_summary", "manual_review"])],
+            data_domains=[str(item) for item in payload.get("data_domains", [])],
+            allowed_roles=[str(item) for item in payload.get("allowed_roles", [])],
+            risk_level=str(payload.get("risk_level", "medium")),
+            input_schema=dict(payload.get("input_schema", {})),
+            output_schema=dict(payload.get("output_schema", {})),
+            estimated_cost_per_1k_tokens=float(payload.get("estimated_cost_per_1k_tokens", 0.0)),
+            max_latency_ms=int(payload.get("max_latency_ms", 30000)),
+        )
+        if template.provider not in {"openai", "anthropic"}:
+            raise ValidationError("LLM task template provider must be openai or anthropic")
+        if template.risk_level not in {"low", "medium", "high", "critical"}:
+            raise ValidationError("LLM task template risk_level must be low, medium, high, or critical")
+        if template.template_id in self.store.llm_task_templates:
+            raise ConflictError(f"LLM task template {template.template_id} already exists")
+        self.store.llm_task_templates[template.template_id] = template
+        self._audit(
+            actor,
+            "register_llm_task_template",
+            "llm_task_template",
+            template.template_id,
+            source="llm_gateway",
+            version=template.prompt_version,
+            prompt_version=template.prompt_version,
+            approval_state=template.status,
+        )
+        return template
+
+    def seed_default_llm_task_templates(self, *, actor: str = "system") -> list[LLMTaskTemplate]:
+        defaults = [
+            {
+                "template_id": "llmtpl_research_summary_v1",
+                "task_type": "research_summary",
+                "prompt_name": "research-summary",
+                "content": "请基于以下授权材料生成中文研究摘要，并保留英文原文引用线索。\n\n{{source_text}}",
+                "data_domains": ["public_filing", "authorized_research"],
+                "allowed_roles": ["分析师", "海外研究负责人", "CIO", "风险/合规"],
+                "risk_level": "medium",
+                "fallback_chain": ["rule_summary", "manual_review"],
+            },
+            {
+                "template_id": "llmtpl_filing_qa_v1",
+                "task_type": "filing_qa",
+                "prompt_name": "filing-qa",
+                "content": "你是英文披露文件研究助手。问题：{{question}}\n\n英文原文证据：\n{{source_text}}",
+                "data_domains": ["public_filing"],
+                "allowed_roles": ["分析师", "海外研究负责人", "CIO"],
+                "risk_level": "medium",
+                "fallback_chain": ["rule_summary", "manual_review"],
+            },
+            {
+                "template_id": "llmtpl_challenger_v1",
+                "task_type": "challenger",
+                "prompt_name": "challenger",
+                "content": "请作为反方研究员，找出该投资假设的关键反证和需要人工复核的弱点。\n\n假设：{{hypothesis}}\n证据：{{source_text}}",
+                "data_domains": ["public_filing", "authorized_market_data"],
+                "allowed_roles": ["CIO", "风险/合规", "PM", "分析师"],
+                "risk_level": "high",
+                "fallback_chain": ["rule_summary", "manual_review"],
+            },
+            {
+                "template_id": "llmtpl_incident_rca_v1",
+                "task_type": "incident_rca",
+                "prompt_name": "incident-rca",
+                "content": "根据事故记录生成 RCA 草稿，必须区分事实、推断和待确认项。\n\n{{incident_context}}",
+                "data_domains": ["audit", "ops"],
+                "allowed_roles": ["平台负责人", "风险/合规", "CEO"],
+                "risk_level": "high",
+                "fallback_chain": ["rule_summary", "manual_review"],
+            },
+        ]
+        created: list[LLMTaskTemplate] = []
+        for item in defaults:
+            if item["template_id"] in self.store.llm_task_templates:
+                created.append(self.store.llm_task_templates[item["template_id"]])
+                continue
+            change_id = f"pr_{item['template_id']}_baseline"
+            if change_id not in self.store.prompt_changes:
+                self.create_prompt_change(
+                    {
+                        "request_id": change_id,
+                        "prompt_name": item["prompt_name"],
+                        "change_level": "baseline",
+                        "requested_by": actor,
+                        "content": item["content"],
+                    },
+                    actor=actor,
+                )
+                self.approve_prompt_change(change_id, actor=actor, approved=True)
+            created.append(
+                self.register_llm_task_template(
+                    {
+                        **item,
+                        "status": "approved",
+                        "approved_prompt_change_id": change_id,
+                        "prompt_version": change_id,
+                    },
+                    actor=actor,
+                )
+            )
+        return created
+
+    def llm_task_templates_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        task_type = str(filters.get("task_type", "")).strip()
+        status = str(filters.get("status", "")).strip()
+        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
+        templates = list(self.store.llm_task_templates.values())
+        if task_type:
+            templates = [item for item in templates if item.task_type == task_type]
+        if status:
+            templates = [item for item in templates if item.status == status]
+        templates = sorted(templates, key=lambda item: item.updated_at, reverse=True)[:limit]
+        return {"templates": [to_plain(item) for item in templates], "total": len(templates)}
+
+    def run_llm_task(self, payload: Mapping[str, Any], *, actor: str = "system") -> LLMTaskRun:
+        template_id = str(payload["template_id"])
+        template = self.store.llm_task_templates.get(template_id)
+        if template is None:
+            raise NotFoundError(f"LLM task template {template_id} not found")
+        if template.status != "approved" and not bool(payload.get("allow_unapproved", False)):
+            raise ComplianceGateError("LLM task template must be approved before production use")
+        caller_role = str(payload.get("role", "")).strip()
+        if template.allowed_roles and caller_role and caller_role not in template.allowed_roles:
+            raise PermissionDenied(f"role {caller_role} is not allowed for LLM task template {template_id}")
+        variables = dict(payload.get("variables", {}))
+        rendered_prompt = self._render_llm_prompt(template.content, variables)
+        provider = str(payload.get("provider", template.provider))
+        model = str(payload.get("model") or template.model or self.llm_gateway.default_model)
+        previous_output = payload.get("previous_output")
+        started = time.monotonic()
+        run_id = str(payload.get("run_id", new_id("llmrun")))
+        output: dict[str, Any] = {}
+        error = ""
+        fallback_used = ""
+        status = "succeeded"
+        try:
+            if provider == "openai":
+                response = self.llm_gateway.openai_chat_completions(self._openai_task_payload(payload, rendered_prompt, model=model))
+            elif provider == "anthropic":
+                response = self.llm_gateway.anthropic_messages(self._anthropic_task_payload(payload, rendered_prompt, model=model))
+            else:
+                raise ValidationError("LLM task provider must be openai or anthropic")
+            output = {"mode": "llm", "response": response["response"]}
+        except Exception as exc:
+            error = str(exc)
+            status, fallback_used, output = self._llm_task_fallback(
+                template,
+                rendered_prompt,
+                previous_output=previous_output,
+                error=error,
+            )
+        latency_ms = max(0, int((time.monotonic() - started) * 1000))
+        output_text = self._llm_output_text(output)
+        input_tokens = self._estimate_tokens(rendered_prompt)
+        output_tokens = self._estimate_tokens(output_text)
+        estimated_cost = round((input_tokens + output_tokens) / 1000 * template.estimated_cost_per_1k_tokens, 6)
+        human_review_required = template.risk_level in {"high", "critical"} or fallback_used in {"manual_review", "rule_summary", "previous_stable"} or bool(payload.get("human_review_required", False))
+        run = LLMTaskRun(
+            run_id=run_id,
+            template_id=template.template_id,
+            task_type=template.task_type,
+            status=status,
+            provider=provider,
+            model=model,
+            prompt_version=template.prompt_version,
+            input_summary=self._summarize_text(rendered_prompt),
+            output=output,
+            fallback_used=fallback_used,
+            latency_ms=latency_ms,
+            estimated_input_tokens=input_tokens,
+            estimated_output_tokens=output_tokens,
+            estimated_cost=estimated_cost,
+            error=error,
+            human_review_required=human_review_required,
+        )
+        if run.run_id in self.store.llm_task_runs:
+            raise ConflictError(f"LLM task run {run.run_id} already exists")
+        self.store.llm_task_runs[run.run_id] = run
+        self._audit(
+            actor,
+            "run_llm_task",
+            "llm_task_run",
+            run.run_id,
+            source="llm_gateway",
+            version=template.prompt_version,
+            model_version=model,
+            prompt_version=template.prompt_version,
+            approval_state=status,
+        )
+        return run
+
+    def llm_task_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        task_type = str(filters.get("task_type", "")).strip()
+        status = str(filters.get("status", "")).strip()
+        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
+        runs = list(self.store.llm_task_runs.values())
+        if task_type:
+            runs = [item for item in runs if item.task_type == task_type]
+        if status:
+            runs = [item for item in runs if item.status == status]
+        runs = sorted(runs, key=lambda item: item.created_at, reverse=True)[:limit]
+        return {"runs": [to_plain(item) for item in runs], "total": len(runs)}
+
+    def llm_task_metrics(self) -> dict[str, Any]:
+        runs = list(self.store.llm_task_runs.values())
+        failed = [item for item in runs if item.status != "succeeded"]
+        fallbacks = [item for item in runs if item.fallback_used]
+        review_required = [item for item in runs if item.human_review_required]
+        avg_latency = round(sum(item.latency_ms for item in runs) / max(1, len(runs)), 2)
+        total_cost = round(sum(item.estimated_cost for item in runs), 6)
+        return {
+            "templates": len(self.store.llm_task_templates),
+            "approved_templates": sum(1 for item in self.store.llm_task_templates.values() if item.status == "approved"),
+            "runs": len(runs),
+            "failed_runs": len(failed),
+            "fallback_runs": len(fallbacks),
+            "human_review_required": len(review_required),
+            "avg_latency_ms": avg_latency,
+            "estimated_cost": total_cost,
+        }
+
+    def _render_llm_prompt(self, template: str, variables: Mapping[str, Any]) -> str:
+        rendered = template
+        for key, value in variables.items():
+            rendered = rendered.replace("{{" + str(key) + "}}", str(value))
+            rendered = rendered.replace("{{ " + str(key) + " }}", str(value))
+        unresolved = re.findall(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}", rendered)
+        if unresolved:
+            raise ValidationError(f"missing LLM prompt variables: {sorted(set(unresolved))}")
+        if not rendered.strip():
+            raise ValidationError("rendered LLM prompt is empty")
+        return rendered
+
+    def _openai_task_payload(self, payload: Mapping[str, Any], prompt: str, *, model: str) -> dict[str, Any]:
+        body = dict(payload.get("llm_payload", {}))
+        body.setdefault("model", model)
+        body.setdefault("temperature", float(payload.get("temperature", 0.2)))
+        body.setdefault("messages", [{"role": "user", "content": prompt}])
+        return body
+
+    def _anthropic_task_payload(self, payload: Mapping[str, Any], prompt: str, *, model: str) -> dict[str, Any]:
+        body = dict(payload.get("llm_payload", {}))
+        body.setdefault("model", model)
+        body.setdefault("max_tokens", int(payload.get("max_tokens", 1024)))
+        body.setdefault("messages", [{"role": "user", "content": prompt}])
+        return body
+
+    def _llm_task_fallback(
+        self,
+        template: LLMTaskTemplate,
+        prompt: str,
+        *,
+        previous_output: Any,
+        error: str,
+    ) -> tuple[str, str, dict[str, Any]]:
+        for fallback in template.fallback_chain:
+            if fallback == "previous_stable" and previous_output:
+                return "fallback", "previous_stable", {"mode": "previous_stable", "response": previous_output, "needs_review": True}
+            if fallback == "rule_summary":
+                return "fallback", "rule_summary", {"mode": "rule_summary", "summary": self._rule_summary(prompt), "needs_review": True, "upstream_error": error}
+            if fallback == "manual_review":
+                return "needs_review", "manual_review", {"mode": "manual_review", "needs_review": True, "upstream_error": error}
+        return "failed", "", {"mode": "failed", "needs_review": True, "upstream_error": error}
+
+    def _rule_summary(self, text: str) -> str:
+        normalized = " ".join(text.split())
+        if len(normalized) <= 260:
+            return normalized
+        return normalized[:257].rstrip() + "..."
+
+    def _llm_output_text(self, output: Mapping[str, Any]) -> str:
+        if "summary" in output:
+            return str(output["summary"])
+        response = output.get("response")
+        if isinstance(response, Mapping):
+            choices = response.get("choices")
+            if isinstance(choices, list) and choices:
+                message = choices[0].get("message") if isinstance(choices[0], Mapping) else None
+                if isinstance(message, Mapping):
+                    return str(message.get("content", ""))
+            content = response.get("content")
+            if isinstance(content, list) and content:
+                first = content[0]
+                if isinstance(first, Mapping):
+                    return str(first.get("text", ""))
+            return str(response)[:2000]
+        return str(output)[:2000]
+
+    def _estimate_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+        return max(1, int(len(text) / 4))
+
+    def _summarize_text(self, text: str) -> str:
+        normalized = " ".join(text.split())
+        return normalized[:300]
+
+    def register_workflow_definition(self, payload: Mapping[str, Any], *, actor: str = "system") -> WorkflowDefinition:
+        tasks = [dict(item) for item in payload.get("tasks", [])]
+        if not tasks:
+            raise ValidationError("workflow definition requires at least one task")
+        missing_task_ids = [index for index, item in enumerate(tasks) if not str(item.get("task_id", "")).strip()]
+        if missing_task_ids:
+            raise ValidationError(f"workflow tasks missing task_id at positions: {missing_task_ids}")
+        workflow = WorkflowDefinition(
+            dag_id=str(payload.get("dag_id", new_id("dag"))),
+            name=str(payload["name"]),
+            tasks=tasks,
+            cadence=str(payload.get("cadence", "manual")),
+            owner_role=str(payload.get("owner_role", "平台负责人")),
+            status=str(payload.get("status", "active")),
+            idempotency_key_fields=[str(item) for item in payload.get("idempotency_key_fields", [])],
+            description=str(payload.get("description", "")),
+        )
+        if workflow.status not in {"active", "paused", "deprecated"}:
+            raise ValidationError("workflow status must be active, paused, or deprecated")
+        if workflow.dag_id in self.store.workflow_definitions:
+            raise ConflictError(f"workflow definition {workflow.dag_id} already exists")
+        self.store.workflow_definitions[workflow.dag_id] = workflow
+        self._audit(actor, "register_workflow_definition", "workflow_definition", workflow.dag_id, approval_state=workflow.status)
+        return workflow
+
+    def run_workflow_definition(self, dag_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> WorkflowRun:
+        workflow = self.store.workflow_definitions.get(dag_id)
+        if workflow is None:
+            raise NotFoundError(f"workflow definition {dag_id} not found")
+        if workflow.status != "active" and not bool(payload.get("allow_inactive", False)):
+            raise ComplianceGateError("workflow definition must be active before run")
+        inputs = dict(payload.get("inputs", {}))
+        idempotency_key = str(payload.get("idempotency_key", "")).strip() or self._workflow_idempotency_key(workflow, inputs)
+        if not bool(payload.get("force", False)):
+            existing = next((item for item in self.store.workflow_runs.values() if item.dag_id == dag_id and item.idempotency_key == idempotency_key), None)
+            if existing:
+                return existing
+        task_statuses = {str(task["task_id"]): "succeeded" for task in workflow.tasks}
+        output_refs = [str(item) for item in payload.get("output_refs", [])]
+        run = WorkflowRun(
+            run_id=str(payload.get("run_id", new_id("wfrun"))),
+            dag_id=dag_id,
+            status=str(payload.get("status", "succeeded")),
+            idempotency_key=idempotency_key,
+            inputs=inputs,
+            task_statuses=task_statuses,
+            output_refs=output_refs,
+            error=str(payload.get("error", "")),
+        )
+        if run.status not in {"queued", "running", "succeeded", "failed", "needs_review"}:
+            raise ValidationError("workflow run status must be queued, running, succeeded, failed, or needs_review")
+        if run.run_id in self.store.workflow_runs:
+            raise ConflictError(f"workflow run {run.run_id} already exists")
+        self.store.workflow_runs[run.run_id] = run
+        self._audit(actor, "run_workflow_definition", "workflow_run", run.run_id, version=workflow.dag_id, approval_state=run.status)
+        return run
+
+    def workflow_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        dag_id = str(filters.get("dag_id", "")).strip()
+        status = str(filters.get("status", "")).strip()
+        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
+        runs = list(self.store.workflow_runs.values())
+        if dag_id:
+            runs = [item for item in runs if item.dag_id == dag_id]
+        if status:
+            runs = [item for item in runs if item.status == status]
+        runs = sorted(runs, key=lambda item: item.started_at, reverse=True)[:limit]
+        return {"runs": [to_plain(item) for item in runs], "total": len(runs)}
+
+    def workflow_definitions_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        status = str(filters.get("status", "")).strip()
+        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
+        definitions = list(self.store.workflow_definitions.values())
+        if status:
+            definitions = [item for item in definitions if item.status == status]
+        definitions = sorted(definitions, key=lambda item: item.updated_at, reverse=True)[:limit]
+        return {"workflows": [to_plain(item) for item in definitions], "total": len(definitions)}
+
+    def record_lineage_event(self, payload: Mapping[str, Any], *, actor: str = "system") -> LineageEvent:
+        job_run_id = str(payload["job_run_id"])
+        if job_run_id not in self.store.workflow_runs and bool(payload.get("require_workflow_run", True)):
+            raise NotFoundError(f"workflow run {job_run_id} not found")
+        event = LineageEvent(
+            lineage_id=str(payload.get("lineage_id", new_id("lin"))),
+            job_run_id=job_run_id,
+            dataset=str(payload["dataset"]),
+            input_refs=[str(item) for item in payload.get("input_refs", [])],
+            output_refs=[str(item) for item in payload.get("output_refs", [])],
+            code_version=str(payload.get("code_version", "")),
+            model_versions=[str(item) for item in payload.get("model_versions", [])],
+            prompt_versions=[str(item) for item in payload.get("prompt_versions", [])],
+        )
+        if event.lineage_id in self.store.lineage_events:
+            raise ConflictError(f"lineage event {event.lineage_id} already exists")
+        self.store.lineage_events[event.lineage_id] = event
+        self._audit(actor, "record_lineage_event", "lineage_event", event.lineage_id, version=event.code_version)
+        return event
+
+    def lineage_events_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        job_run_id = str(filters.get("job_run_id", "")).strip()
+        dataset = str(filters.get("dataset", "")).strip()
+        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
+        events = list(self.store.lineage_events.values())
+        if job_run_id:
+            events = [item for item in events if item.job_run_id == job_run_id]
+        if dataset:
+            events = [item for item in events if item.dataset == dataset]
+        events = sorted(events, key=lambda item: item.created_at, reverse=True)[:limit]
+        return {"lineage_events": [to_plain(item) for item in events], "total": len(events)}
+
+    def register_model_version(self, payload: Mapping[str, Any], *, actor: str = "system") -> ModelVersionRecord:
+        record = ModelVersionRecord(
+            model_version_id=str(payload.get("model_version_id", new_id("modelv"))),
+            model_name=str(payload["model_name"]),
+            version=str(payload["version"]),
+            model_type=str(payload.get("model_type", "llm")),
+            artifact_uri=str(payload.get("artifact_uri", "")),
+            training_dataset_ids=[str(item) for item in payload.get("training_dataset_ids", [])],
+            prompt_versions=[str(item) for item in payload.get("prompt_versions", [])],
+            metrics=dict(payload.get("metrics", {})),
+            status=str(payload.get("status", "candidate")),
+        )
+        if record.status not in {"candidate", "approved", "deprecated", "rolled_back"}:
+            raise ValidationError("model version status must be candidate, approved, deprecated, or rolled_back")
+        if record.model_version_id in self.store.model_versions:
+            raise ConflictError(f"model version {record.model_version_id} already exists")
+        self.store.model_versions[record.model_version_id] = record
+        self._audit(actor, "register_model_version", "model_version", record.model_version_id, model_version=record.version, approval_state=record.status)
+        return record
+
+    def model_versions_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        model_name = str(filters.get("model_name", "")).strip()
+        status = str(filters.get("status", "")).strip()
+        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
+        records = list(self.store.model_versions.values())
+        if model_name:
+            records = [item for item in records if item.model_name == model_name]
+        if status:
+            records = [item for item in records if item.status == status]
+        records = sorted(records, key=lambda item: item.created_at, reverse=True)[:limit]
+        return {"model_versions": [to_plain(item) for item in records], "total": len(records)}
+
+    def _workflow_idempotency_key(self, workflow: WorkflowDefinition, inputs: Mapping[str, Any]) -> str:
+        if workflow.idempotency_key_fields:
+            material = {field: inputs.get(field) for field in workflow.idempotency_key_fields}
+        else:
+            material = inputs
+        raw = json.dumps(to_plain(material), ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(f"{workflow.dag_id}:{raw}".encode("utf-8")).hexdigest()[:24]
 
     def parse_document_with_paddleocr(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
         optional_payload = self._document_parser_optional_payload(payload)
@@ -282,6 +771,124 @@ class SystemService:
                 continue
             created.append(self.register_source(item, actor=actor))
         return created
+
+    def seed_astock_connectors(self, *, actor: str = "system") -> list[AStockConnectorDefinition]:
+        defaults = [
+            ("eastmoney_research", "eastmoney", "research_discovery", 10, False, {"title": "title", "url": "source_uri", "published_at": "published_at"}),
+            ("cninfo_announcements", "cninfo", "announcement", 20, False, {"security_code": "ticker", "title": "title", "url": "source_uri"}),
+            ("tencent_valuation_snapshot", "tencent", "valuation_snapshot", 30, False, {"symbol": "ticker", "pe": "pe_ttm", "pb": "pb"}),
+            ("ths_hot_topics", "tonghuashun", "hot_topic", 40, False, {"topic": "theme", "stocks": "constituents"}),
+            ("baidu_concepts", "baidu_stock", "concept_fund_flow", 50, False, {"concept": "theme", "net_inflow": "net_inflow"}),
+            ("dragon_tiger_list", "exchange_public", "dragon_tiger_list", 60, False, {"trade_date": "as_of_date", "security_code": "ticker"}),
+            ("unlock_calendar", "exchange_public", "unlock_calendar", 70, False, {"unlock_date": "event_date", "security_code": "ticker"}),
+            ("iwencai_optional", "iwencai", "query", 90, True, {"query": "query", "rows": "rows"}),
+        ]
+        created: list[AStockConnectorDefinition] = []
+        for connector_id, provider, endpoint_type, priority, requires_key, mapping in defaults:
+            if connector_id in self.store.astock_connectors:
+                created.append(self.store.astock_connectors[connector_id])
+                continue
+            source_id = f"astock_{connector_id}"
+            rights_tag = {
+                "license_class": "candidate_astock_reference",
+                "training_allowed": False,
+                "redistribution_allowed": False,
+                "display_use": "restricted",
+                "non_display_use": "restricted",
+                "derived_data_use": "restricted",
+            }
+            if source_id not in self.store.sources:
+                self.register_source(
+                    {
+                        "source_id": source_id,
+                        "source_type": "third_party_connector",
+                        "description": f"A-share supplemental connector candidate: {provider} {endpoint_type}.",
+                        "risk_level": "yellow",
+                        "field_mapping": mapping,
+                        "rights_tag": rights_tag,
+                    },
+                    actor=actor,
+                )
+            created.append(
+                self.register_astock_connector(
+                    {
+                        "connector_id": connector_id,
+                        "provider": provider,
+                        "endpoint_type": endpoint_type,
+                        "source_id": source_id,
+                        "priority": priority,
+                        "requires_key": requires_key,
+                        "rate_limit_per_minute": 20 if provider in {"iwencai", "tonghuashun"} else 60,
+                        "field_mapping": mapping,
+                        "allowed_use": ["manual_reference", "supplemental_research"],
+                        "rights_tag": rights_tag,
+                        "notes": "Candidate connector from a-stock-data / public A-share data ecosystem; verify license and stability before automation.",
+                    },
+                    actor=actor,
+                )
+            )
+        return created
+
+    def register_astock_connector(self, payload: Mapping[str, Any], *, actor: str = "system") -> AStockConnectorDefinition:
+        connector = AStockConnectorDefinition.from_dict(payload)
+        if connector.status not in {"candidate", "verified", "blocked", "deprecated"}:
+            raise ValidationError("A-stock connector status must be candidate, verified, blocked, or deprecated")
+        if connector.last_check_status not in {"not_checked", "passed", "failed", "blocked", "manual_review"}:
+            raise ValidationError("A-stock connector last_check_status must be not_checked, passed, failed, blocked, or manual_review")
+        if connector.source_id not in self.store.sources:
+            raise NotFoundError(f"source {connector.source_id} not found")
+        if connector.connector_id in self.store.astock_connectors:
+            raise ConflictError(f"A-stock connector {connector.connector_id} already exists")
+        if connector.rights_tag.training_allowed or connector.rights_tag.redistribution_allowed:
+            raise ComplianceGateError("supplemental A-stock connectors cannot default to training or redistribution use")
+        self.store.astock_connectors[connector.connector_id] = connector
+        self._audit(actor, "register_astock_connector", "astock_connector", connector.connector_id, source=connector.provider, approval_state=connector.status)
+        return connector
+
+    def astock_connectors_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        provider = str(filters.get("provider", "")).strip()
+        status = str(filters.get("status", "")).strip()
+        requires_key = filters.get("requires_key")
+        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
+        connectors = list(self.store.astock_connectors.values())
+        if provider:
+            connectors = [item for item in connectors if item.provider == provider]
+        if status:
+            connectors = [item for item in connectors if item.status == status]
+        if requires_key is not None:
+            expected_requires_key = requires_key if isinstance(requires_key, bool) else str(requires_key).strip().lower() in {"1", "true", "yes"}
+            connectors = [item for item in connectors if item.requires_key is expected_requires_key]
+        connectors = sorted(connectors, key=lambda item: item.priority)[:limit]
+        return {"connectors": [to_plain(item) for item in connectors], "total": len(connectors)}
+
+    def verify_astock_connectors(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        results = payload.get("results")
+        if results is None:
+            results = [payload]
+        updated: list[AStockConnectorDefinition] = []
+        for item in results:
+            if not isinstance(item, Mapping):
+                raise ValidationError("A-stock connector verification result must be an object")
+            connector_id = str(item["connector_id"])
+            connector = self.store.astock_connectors.get(connector_id)
+            if connector is None:
+                raise NotFoundError(f"A-stock connector {connector_id} not found")
+            status = str(item.get("status", "manual_review"))
+            if status not in {"passed", "failed", "blocked", "manual_review"}:
+                raise ValidationError("A-stock connector verification status must be passed, failed, blocked, or manual_review")
+            connector.last_check_status = status
+            connector.last_error = str(item.get("error", ""))
+            connector.last_checked_at = utcnow()
+            if status == "passed":
+                connector.status = "verified"
+            elif status == "blocked":
+                connector.status = "blocked"
+            else:
+                connector.status = "candidate"
+            updated.append(connector)
+            self._audit(actor, "verify_astock_connector", "astock_connector", connector.connector_id, source=connector.provider, approval_state=status)
+        return {"updated": [to_plain(item) for item in updated], "total": len(updated)}
 
     def preview_connector_document(self, market: str, raw: Mapping[str, Any]) -> dict[str, Any]:
         normalized = self.connectors.normalize(market, dict(raw))
@@ -790,6 +1397,94 @@ class SystemService:
         points.sort(key=lambda item: (item.as_of_date, item.security_id, item.source_id), reverse=True)
         return {"market_data": [to_plain(item) for item in points[:limit]]}
 
+    def tdx_market_data_preview(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        rows = self.tdx_market_data.query_daily(
+            symbols=self._tdx_symbols(payload),
+            start_date=str(payload.get("start_date", "1900-01-01")),
+            end_date=str(payload.get("end_date", "2099-12-31")),
+            limit=self._bounded_limit(payload.get("limit", 100), 10000),
+        )
+        result = {
+            "adapter": self.tdx_market_data.describe(),
+            "rows": rows,
+            "count": len(rows),
+        }
+        if bool(payload.get("include_summary", False)):
+            result["summary"] = self.tdx_market_data.summary()
+        return result
+
+    def import_tdx_market_data(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        source_id = str(payload.get("source_id", "authorized_eod_market_data"))
+        if source_id not in self.store.sources:
+            if source_id == "authorized_eod_market_data":
+                self.seed_default_sources(actor=actor)
+            else:
+                raise NotFoundError(f"source {source_id} not found")
+        data_type = str(payload.get("data_type", "eod"))
+        rows = self.tdx_market_data.query_daily(
+            symbols=self._tdx_symbols(payload),
+            start_date=str(payload.get("start_date", "1900-01-01")),
+            end_date=str(payload.get("end_date", "2099-12-31")),
+            limit=self._bounded_limit(payload.get("limit", 100), 10000),
+        )
+        security_map = payload.get("security_map", {})
+        if not isinstance(security_map, Mapping):
+            raise ValidationError("security_map must be an object when provided")
+        created: list[MarketDataPoint] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for index, row in enumerate(rows):
+            symbol = str(row.get("symbol", "")).strip()
+            trade_date = str(row.get("trade_date", "")).strip()
+            security = self._resolve_tdx_security(symbol, security_map)
+            if security is None:
+                errors.append({"index": index, "symbol": symbol, "trade_date": trade_date, "error": "security mapping not found"})
+                continue
+            data_id = self._market_data_id(security.security_id, trade_date, data_type, source_id)
+            if data_id in self.store.market_data and bool(payload.get("skip_existing", True)):
+                skipped.append({"index": index, "symbol": symbol, "trade_date": trade_date, "data_id": data_id})
+                continue
+            try:
+                created.append(
+                    self.register_market_data_point(
+                        {
+                            "data_id": data_id,
+                            "security_id": security.security_id,
+                            "source_id": source_id,
+                            "market": security.market,
+                            "as_of_date": trade_date,
+                            "data_type": data_type,
+                            "currency": security.currency,
+                            "open": row.get("open", 0.0) or 0.0,
+                            "high": row.get("high", 0.0) or 0.0,
+                            "low": row.get("low", 0.0) or 0.0,
+                            "close": row.get("close", 0.0) or 0.0,
+                            "adjusted_close": row.get("close", 0.0) or 0.0,
+                            "volume": row.get("volume", 0.0) or 0.0,
+                        },
+                        actor=actor,
+                    )
+                )
+            except (ValidationError, NotFoundError, PermissionDenied, ConflictError) as exc:
+                errors.append({"index": index, "symbol": symbol, "trade_date": trade_date, "error": str(exc)})
+        self._audit(
+            actor,
+            "import_tdx_market_data",
+            "market_data",
+            str(payload.get("batch_id", "tdx_import")),
+            source="tdx",
+            approval_state=f"created={len(created)};skipped={len(skipped)};failed={len(errors)}",
+        )
+        return {
+            "source_rows": len(rows),
+            "created": [to_plain(item) for item in created],
+            "skipped": skipped,
+            "errors": errors,
+            "created_count": len(created),
+            "skipped_count": len(skipped),
+            "failed_count": len(errors),
+        }
+
     def register_entity_mapping(self, payload: Mapping[str, Any], *, actor: str = "system") -> EntityMapping:
         issuer_id = str(payload["issuer_id"])
         if issuer_id not in self.store.issuers:
@@ -903,6 +1598,115 @@ class SystemService:
             version=document.version,
         )
         return document
+
+    def scan_research_reports(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        raw_root = str(payload.get("root_path") or os.environ.get("AI_QUANT_RESEARCH_REPORT_ROOT") or "").strip()
+        if not raw_root:
+            raise ValidationError("research report scan requires root_path or AI_QUANT_RESEARCH_REPORT_ROOT")
+        root = Path(raw_root).expanduser()
+        if not root.exists() or not root.is_dir():
+            raise ValidationError(f"research report root not found: {root}")
+        extensions = payload.get("extensions", [".pdf"])
+        if isinstance(extensions, str):
+            extensions = [item.strip() for item in extensions.split(",")]
+        if not isinstance(extensions, list):
+            raise ValidationError("extensions must be a list or comma-separated string")
+        limit = self._bounded_limit(payload.get("limit", 1000), 10000)
+        hash_files = bool(payload.get("hash_files", False))
+        per_broker_sources = bool(payload.get("per_broker_sources", True))
+        files = iter_report_files(root, extensions={str(item).lower() for item in extensions}, limit=limit)
+        reports: list[ResearchReportAsset] = []
+        for path in files:
+            metadata = infer_report_metadata(path, root)
+            broker = str(metadata["broker"])
+            source_id = self._research_report_source_id(broker) if per_broker_sources else "authorized_research_vendor"
+            self._ensure_research_report_source(source_id, broker, actor=actor)
+            report = ResearchReportAsset(
+                report_id=report_id_for_path(path),
+                source_id=source_id,
+                broker=broker,
+                file_path=str(path),
+                file_name=path.name,
+                title=str(metadata["title"]),
+                year=str(metadata["year"]),
+                month=str(metadata["month"]),
+                file_type=path.suffix.lower().lstrip(".") or "unknown",
+                size_bytes=path.stat().st_size,
+                fingerprint=cheap_fingerprint(path, root),
+                content_sha256=content_sha256(path) if hash_files else "",
+                rights_tag=self.store.sources[source_id].rights_tag,
+            )
+            existing = self.store.research_reports.get(report.report_id)
+            if existing and existing.document_id:
+                report.document_id = existing.document_id
+                report.status = existing.status
+            self.store.research_reports[report.report_id] = report
+            reports.append(report)
+        self._audit(
+            actor,
+            "scan_research_reports",
+            "research_report",
+            str(root),
+            source="research_report_manifest",
+            approval_state=f"indexed={len(reports)}",
+        )
+        return {"root_path": str(root), "indexed_count": len(reports), "reports": [to_plain(item) for item in reports]}
+
+    def research_reports_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        broker = str(filters.get("broker", "")).strip().lower()
+        source_id = str(filters.get("source_id", "")).strip()
+        status = str(filters.get("status", "")).strip()
+        query = str(filters.get("q", "")).strip().lower()
+        limit = self._bounded_limit(filters.get("limit", 50), 1000)
+        reports = list(self.store.research_reports.values())
+        if broker:
+            reports = [item for item in reports if broker in item.broker.lower()]
+        if source_id:
+            reports = [item for item in reports if item.source_id == source_id]
+        if status:
+            reports = [item for item in reports if item.status == status]
+        if query:
+            reports = [item for item in reports if query in f"{item.title} {item.file_name} {item.broker} {item.year} {item.month}".lower()]
+        reports.sort(key=lambda item: (item.year, item.month, item.broker, item.file_name), reverse=True)
+        return {"count": len(reports), "reports": [to_plain(item) for item in reports[:limit]]}
+
+    def ingest_research_report(self, report_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        report = self.store.research_reports.get(report_id)
+        if report is None:
+            raise NotFoundError(f"research report {report_id} not found")
+        issuer_id = str(payload["issuer_id"])
+        security_id = str(payload.get("security_id", ""))
+        document_id = str(payload.get("document_id", f"doc_{report.report_id}"))
+        if document_id in self.store.documents:
+            report.document_id = document_id
+            report.status = "ingested"
+            self.store.commit()
+            return {"report": to_plain(report), "document": to_plain(self.store.documents[document_id]), "created": False}
+        document = self.ingest_document(
+            {
+                "document_id": document_id,
+                "issuer_id": issuer_id,
+                "security_id": security_id,
+                "source_id": report.source_id,
+                "source_type": "vendor",
+                "document_type": "research",
+                "source_uri": f"research-report://{report.report_id}",
+                "object_uri": report.file_path,
+                "content_sha256": report.content_sha256,
+                "body": "",
+                "title": report.title,
+                "rights_tag": to_plain(report.rights_tag),
+                "language": str(payload.get("language", "zh")),
+                "version": str(payload.get("version", "v1")),
+            },
+            actor=actor,
+        )
+        report.document_id = document.document_id
+        report.status = "ingested"
+        self.store.research_reports[report.report_id] = report
+        self._audit(actor, "ingest_research_report", "research_report", report.report_id, source=report.source_id, approval_state=report.status)
+        return {"report": to_plain(report), "document": to_plain(document), "created": True}
 
     def extract_evidence(
         self,
@@ -3192,6 +3996,85 @@ class SystemService:
                 }
             raise
 
+    def semantic_search(self, filters: Mapping[str, Any]) -> dict[str, Any]:
+        query = str(filters.get("q", "")).strip()
+        if not query:
+            return {"query": query, "results": []}
+        issuer_filter = str(filters.get("issuer_id", "")).strip()
+        limit = self._bounded_limit(filters.get("limit", 20))
+        records = self._search_records()
+        sync_result = self.semantic_index.sync(records)
+        results = self.semantic_index.search(records, query=query, issuer_id=issuer_filter, limit=limit)
+        return {
+            "query": query,
+            "backend": self.semantic_index.backend,
+            "sync": sync_result,
+            "results": results,
+            "rights_filter": "inherits_search_record_scope",
+        }
+
+    def vision_acceptance_report(self) -> dict[str, Any]:
+        documents = list(self.store.documents.values())
+        documents_with_evidence = {item.document_id for item in self.store.evidence.values()}
+        evidence_coverage = len(documents_with_evidence) / max(1, len(documents)) if documents else 0.0
+        theses = list(self.store.theses.values())
+        conclusions_with_evidence = [item for item in theses if item.evidence_ids]
+        conclusion_link_rate = len(conclusions_with_evidence) / max(1, len(theses)) if theses else 0.0
+        pending_prompt_changes = sum(1 for item in self.store.prompt_changes.values() if item.status == "pending")
+        high_risk_theses = [item for item in theses if item.confidence < 0.5 or item.status in {"review", "approved"}]
+        challenged = {item.thesis_id for item in self.store.challengers.values()}
+        high_risk_challenger_coverage = len([item for item in high_risk_theses if item.thesis_id in challenged]) / max(1, len(high_risk_theses)) if high_risk_theses else 1.0
+        red_zone_training_records = self._red_zone_training_records()
+        latest_benchmark = max(self.store.benchmark_runs.values(), key=lambda item: item.created_at, default=None)
+        benchmark_metrics = latest_benchmark.metrics if latest_benchmark else {}
+        entity_quality = self.entity_mapping_quality_report({})
+        gates = [
+            self._gate("evidence_coverage", evidence_coverage, 0.95, ">="),
+            self._gate("research_conclusion_source_link_rate", conclusion_link_rate, 0.95, ">="),
+            self._gate("pending_prompt_changes", float(pending_prompt_changes), 0.0, "=="),
+            self._gate("red_zone_training_records", float(red_zone_training_records), 0.0, "=="),
+            self._gate("high_risk_challenger_coverage", high_risk_challenger_coverage, 1.0, ">="),
+            self._gate("entity_mapping_accuracy", float(entity_quality.get("accuracy", 0.0)), 0.98, ">="),
+            self._gate("core_terms_f1", float(benchmark_metrics.get("term_f1", benchmark_metrics.get("core_terms_f1", 0.0))), 0.90, ">="),
+            self._gate("evidence_page_hit_rate", float(benchmark_metrics.get("page_hit_rate", 0.0)), 0.95, ">="),
+            self._gate("numeric_mapping_accuracy", float(benchmark_metrics.get("number_recall", benchmark_metrics.get("numeric_mapping_accuracy", 0.0))), 0.92, ">="),
+        ]
+        pending_checklist = [
+            "production_ui_screenshot_acceptance",
+            "cross_browser_acceptance",
+            "capacity_latency_report",
+            "backup_restore_drill",
+            "permission_red_team_test",
+            "compliance_review_record",
+        ]
+        status = "ready" if all(item["passed"] for item in gates) and not pending_checklist else "not_ready"
+        return {
+            "status": status,
+            "gates": gates,
+            "pending_checklist": pending_checklist,
+            "counts": {
+                "documents": len(documents),
+                "theses": len(theses),
+                "benchmark_runs": len(self.store.benchmark_runs),
+                "entity_mappings": len(self.store.entity_mappings),
+            },
+        }
+
+    def _gate(self, name: str, value: float, threshold: float, operator: str) -> dict[str, Any]:
+        if operator == ">=":
+            passed = value >= threshold
+        elif operator == "==":
+            passed = value == threshold
+        else:
+            raise ValidationError(f"unsupported gate operator: {operator}")
+        return {"name": name, "value": round(value, 4), "threshold": threshold, "operator": operator, "passed": passed}
+
+    def _red_zone_training_records(self) -> int:
+        red_sources = {source.source_id for source in self.store.sources.values() if source.risk_level == "red" or source.rights_tag.training_allowed}
+        documents = [item for item in self.store.documents.values() if item.source_id in red_sources]
+        reports = [item for item in self.store.research_reports.values() if item.source_id in red_sources]
+        return len(documents) + len(reports)
+
     def _search_records(self) -> list[SearchRecord]:
         records: list[SearchRecord] = []
         for document in self.store.documents.values():
@@ -3249,6 +4132,17 @@ class SystemService:
                     title=answer.question,
                     body=f"{answer.chinese_summary} {answer.english_source_text}",
                     weight=1.0,
+                )
+            )
+        for report in self.store.research_reports.values():
+            records.append(
+                SearchRecord(
+                    resource_type="research_report",
+                    resource_id=report.report_id,
+                    issuer_id="",
+                    title=report.title,
+                    body=f"{report.broker} {report.file_name} {report.year} {report.month} {report.status} {report.source_id}",
+                    weight=0.9,
                 )
             )
         for point in self.store.market_data.values():
@@ -3332,7 +4226,10 @@ class SystemService:
             "store": type(self.store).__name__,
             "object_store": self.object_store.describe(),
             "search_index": self.search_index.describe(),
+            "semantic_index": self.semantic_index.describe(),
+            "llm_gateway": self.llm_gateway.describe(),
             "document_parser": self.document_parser.describe(),
+            "tdx_market_data": self.tdx_market_data.describe(),
         }
 
     def metrics(self) -> dict[str, Any]:
@@ -3345,7 +4242,11 @@ class SystemService:
             "pending_prompt_changes": sum(1 for item in self.store.prompt_changes.values() if item.status == "pending"),
             "object_store": self.object_store.describe(),
             "search_index": self.search_index.describe(),
+            "semantic_index": self.semantic_index.describe(),
+            "llm_gateway": self.llm_gateway.describe(),
+            "llm_tasks": self.llm_task_metrics(),
             "document_parser": self.document_parser.describe(),
+            "tdx_market_data": self.tdx_market_data.describe(),
             "store": type(self.store).__name__,
         }
 
@@ -3425,6 +4326,7 @@ class SystemService:
         return {
             "counts": {
                 "sources": len(self.store.sources),
+                "astock_connectors": len(self.store.astock_connectors),
                 "ingestion_jobs": len(self.store.ingestion_jobs),
                 "ingestion_schedules": len(self.store.ingestion_schedules),
                 "issuers": len(self.store.issuers),
@@ -3441,6 +4343,13 @@ class SystemService:
                 "benchmark_runs": len(self.store.benchmark_runs),
                 "extraction_results": len(self.store.extraction_results),
                 "research_answers": len(self.store.research_answers),
+                "research_reports": len(self.store.research_reports),
+                "llm_task_templates": len(self.store.llm_task_templates),
+                "llm_task_runs": len(self.store.llm_task_runs),
+                "workflow_definitions": len(self.store.workflow_definitions),
+                "workflow_runs": len(self.store.workflow_runs),
+                "lineage_events": len(self.store.lineage_events),
+                "model_versions": len(self.store.model_versions),
                 "theses": len(self.store.theses),
                 "signals": len(self.store.signals),
                 "decisions": len(self.store.decisions),
@@ -3555,8 +4464,64 @@ class SystemService:
     def _hkex_user_agent(self, payload: Mapping[str, Any]) -> str:
         return str(payload.get("user_agent") or os.environ.get("AI_QUANT_HKEX_USER_AGENT") or DEFAULT_HKEX_USER_AGENT)
 
-    def _bounded_limit(self, value: Any) -> int:
-        return max(1, min(100, int(value)))
+    def _bounded_limit(self, value: Any, max_value: int = 100) -> int:
+        return max(1, min(max_value, int(value)))
+
+    def _tdx_symbols(self, payload: Mapping[str, Any]) -> list[str]:
+        raw_symbols = payload.get("symbols", payload.get("symbol", []))
+        if isinstance(raw_symbols, str):
+            symbols = [item.strip() for item in raw_symbols.split(",")]
+        elif isinstance(raw_symbols, list):
+            symbols = [str(item).strip() for item in raw_symbols]
+        else:
+            symbols = []
+        symbols = [self._normalize_tdx_symbol(symbol) for symbol in symbols if self._normalize_tdx_symbol(symbol)]
+        if not symbols:
+            raise ValidationError("TDX market data requires symbols")
+        return list(dict.fromkeys(symbols))
+
+    def _resolve_tdx_security(self, symbol: str, security_map: Mapping[str, Any]) -> Security | None:
+        mapped = str(security_map.get(symbol) or security_map.get(self._normalize_tdx_symbol(symbol)) or "").strip()
+        if mapped and mapped in self.store.securities:
+            return self.store.securities[mapped]
+        normalized = self._normalize_tdx_symbol(symbol)
+        if normalized in self.store.securities:
+            return self.store.securities[normalized]
+        for security in self.store.securities.values():
+            if self._normalize_tdx_symbol(security.ticker) == normalized:
+                return security
+        return None
+
+    def _normalize_tdx_symbol(self, symbol: str) -> str:
+        value = str(symbol).strip().lower()
+        value = re.sub(r"^(sh|sz|bj)", "", value)
+        value = re.sub(r"\.(sh|sz|bj|ss|szse|sse)$", "", value)
+        return re.sub(r"\D+", "", value)
+
+    def _research_report_source_id(self, broker: str) -> str:
+        return f"authorized_research_{safe_source_part(broker)}"
+
+    def _ensure_research_report_source(self, source_id: str, broker: str, *, actor: str) -> None:
+        if source_id in self.store.sources:
+            return
+        self.register_source(
+            {
+                "source_id": source_id,
+                "source_type": "vendor",
+                "description": f"Authorized research report source for {broker}. External viewpoint only, not a fact source.",
+                "risk_level": "yellow",
+                "allowed_document_types": ["research"],
+                "rights_tag": {
+                    "license_class": "authorized_research_reference",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "restricted",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+            },
+            actor=actor,
+        )
 
     def _sec_document_id(self, filing: Any) -> str:
         metadata = filing.metadata or {}

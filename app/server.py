@@ -81,6 +81,8 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/ingestion/documents",
                         "/api/evidence/extract",
                         "/api/document-parsing/paddleocr",
+                        "/api/market-data/tdx/preview",
+                        "/api/research-reports",
                         "/api/thesis/create",
                     ],
                 }

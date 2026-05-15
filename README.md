@@ -80,6 +80,12 @@ UI 静态验收会检查左侧信息架构、顶部状态条、关键面板 ID �
 python3 scripts/ui_static_check.py
 ```
 
+提交或部署前可运行密钥与 `.env` 误提交检查：
+
+```bash
+python3 scripts/security_check.py .
+```
+
 Docker Compose：
 
 ```bash
@@ -99,6 +105,8 @@ docker compose up --build
 - HTML 文档正文清洗并生成可读证据片段
 - PDF 对象文本流/Flate 流抽取兜底，可从本地 PDF 对象生成证据片段
 - `/api/document-parsing/paddleocr` PaddleOCR-VL 文档解析备用接口，证据抽取在本地解析无文本且配置 token 时会自动兜底
+- `/api/market-data/tdx/preview` 与 `/api/market-data/tdx/import` 读取本地通达信 DuckDB 日线库并导入授权 EOD 行情
+- `/api/research-reports/scan` 本地研报 manifest 索引，研报默认作为授权外部观点层维护
 - 术语、数值、期间和规则表格读取基线抽取，并可按中英 benchmark 样本集运行阈值、定位、表格和低置信度拦截评估
 - Issuer / Security / MarketDataPoint / Document / Evidence / Thesis / Signal / Decision / Review
 - CorporateAction 用于拆股、分红、代码变更等复权和估值链路
@@ -165,6 +173,59 @@ curl -sS -X POST http://127.0.0.1:8000/api/llm/anthropic/messages \
   -d '{"max_tokens":256,"messages":[{"role":"user","content":"用一句话说明今天的研究重点"}]}'
 ```
 
+生产工作流入口会先登记已审批 prompt 模板，再按任务运行并记录模型、prompt 版本、成本估算、延迟、回退路径和人工复核标记：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/llm/task-templates/seed \
+  -H 'X-Role: nlp_ml'
+
+curl -sS -X POST http://127.0.0.1:8000/api/llm/tasks/run \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: analyst' \
+  -d '{"template_id":"llmtpl_filing_qa_v1","role":"分析师","variables":{"question":"收入变化是什么？","source_text":"Revenue rose 12% year over year."}}'
+
+curl -sS http://127.0.0.1:8000/api/llm/tasks/metrics \
+  -H 'X-Role: nlp_ml'
+```
+
+## 任务编排与血缘
+
+M9 生产治理底座提供轻量 DAG、运行记录、血缘事件和模型版本接口。现阶段它不替代 Airflow/Dagster，而是先固定幂等键、输入输出引用、代码版本、模型版本和 prompt 版本，确保任何解析、抽取、索引、benchmark 或投研打包任务都能被审计和 replay。
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/orchestration/dags \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: platform' \
+  -d '{"dag_id":"dag_daily_research","name":"Daily research pipeline","idempotency_key_fields":["as_of_date"],"tasks":[{"task_id":"collect_filings"},{"task_id":"extract_evidence"}]}'
+
+curl -sS -X POST http://127.0.0.1:8000/api/orchestration/dags/dag_daily_research/run \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: platform' \
+  -d '{"inputs":{"as_of_date":"2026-05-15"}}'
+```
+
+## A 股补充接口注册表
+
+`a-stock-data` 这类外部接口先进入候选注册表，逐项声明来源、字段映射、限速、是否需要 key、rights tag 和验证状态。默认只作为人工参考或补充研究，不替代本地/授权核心数据。
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/connectors/astock/seed \
+  -H 'X-Role: data_engineer'
+
+curl -sS -X POST http://127.0.0.1:8000/api/connectors/astock/verify \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: data_engineer' \
+  -d '{"connector_id":"eastmoney_research","status":"passed"}'
+```
+
+## 图谱与语义检索
+
+`/api/graph/query` 保留证据、观点、决策和复盘的关系回查；`/api/search/semantic` 提供本地轻量语义检索 adapter，当前用 term-frequency cosine 固定接口和权限边界，后续可替换为 Qdrant/embedding/reranker。
+
+## 愿景上线闸门
+
+`/api/readiness/vision-gate` 会返回 `ready` / `not_ready` 和逐项指标，避免把 demo 状态误判为生产可上线。UI 截图验收、跨浏览器、容量延迟、备份恢复、权限红队和合规复核仍作为上线前人工检查项。
+
 ## PaddleOCR-VL 文档解析备用接口
 
 本地 PDF/文本流解析拿不到内容时，`/api/evidence/extract` 会在 `AI_QUANT_PADDLEOCR_TOKEN` 已配置的情况下自动调用 PaddleOCR-VL，并把返回 markdown 切成 evidence。也可以直接调用备用解析接口；密钥不要写入仓库，请通过环境变量注入：
@@ -190,6 +251,52 @@ curl -sS -X POST http://127.0.0.1:8000/api/document-parsing/paddleocr \
   -H 'Content-Type: application/json' \
   -H 'X-Role: analyst' \
   -d '{"document_id":"doc_001","optional_payload":{"useChartRecognition":true}}'
+```
+
+## 通达信本地行情
+
+本地通达信 DuckDB 默认读取 `./data/local/tdx/market_data.duckdb`，需要安装可选依赖：
+
+```bash
+python3 -m pip install '.[tdx]'
+```
+
+预览日线：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/preview \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: data_engineer' \
+  -d '{"symbols":["600000"],"start_date":"2026-01-01","end_date":"2026-05-15","limit":5}'
+```
+
+导入到授权 EOD 行情层：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/import \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: data_engineer' \
+  -d '{"symbols":["600000"],"security_map":{"600000":"sec_600000"},"start_date":"2026-01-01","end_date":"2026-05-15","limit":200}'
+```
+
+## 本地研报资产库
+
+研报默认只做“授权外部观点层”，不作为事实真相源，也不默认进入训练。扫描本地目录生成 manifest：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/research-reports/scan \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: data_engineer' \
+  -d '{"root_path":"/home/xionglei/文档/6大投行研报汇总","limit":100}'
+```
+
+按需把单份研报登记为 Document：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/research-reports/rr_xxx/ingest \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: analyst' \
+  -d '{"issuer_id":"issuer_001","security_id":"sec_001"}'
 ```
 
 ## A 股公告接入

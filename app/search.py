@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import base64
+from collections import Counter
 import json
+import math
 import os
 import re
 from typing import Any, Callable, Iterable
@@ -68,6 +70,58 @@ class LocalSearchIndex:
         start = max(0, min(positions) - 70)
         end = min(len(compact), start + 220)
         return compact[start:end]
+
+
+class LocalSemanticIndex:
+    backend = "local-semantic"
+
+    def sync(self, records: Iterable[SearchRecord]) -> dict[str, Any]:
+        count = sum(1 for _item in records)
+        return {"backend": self.backend, "indexed": count, "mode": "inline"}
+
+    def search(self, records: Iterable[SearchRecord], *, query: str, issuer_id: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        query_vector = self._vector(query)
+        if not query_vector:
+            return []
+        results: list[dict[str, Any]] = []
+        for record in records:
+            if issuer_id and record.issuer_id != issuer_id:
+                continue
+            record_text = f"{record.title}\n{record.body}"
+            score = self._cosine(query_vector, self._vector(record_text)) * record.weight
+            if score <= 0:
+                continue
+            results.append(
+                {
+                    "resource_type": record.resource_type,
+                    "resource_id": record.resource_id,
+                    "issuer_id": record.issuer_id,
+                    "title": record.title,
+                    "snippet": LocalSearchIndex()._snippet(f"{record.title}. {record.body}", list(query_vector.keys())),
+                    "score": round(score, 4),
+                    "source_boundary": "inherits_record_rights",
+                }
+            )
+        results.sort(key=lambda item: (-item["score"], item["resource_type"], item["resource_id"]))
+        return results[:limit]
+
+    def describe(self) -> dict[str, str]:
+        return {"backend": self.backend, "embedding": "term-frequency-cosine"}
+
+    def _vector(self, text: str) -> Counter[str]:
+        tokens = [term.lower() for term in re.findall(r"[\w\u4e00-\u9fff]+", text) if len(term.strip()) > 1]
+        return Counter(tokens)
+
+    def _cosine(self, left: Counter[str], right: Counter[str]) -> float:
+        if not left or not right:
+            return 0.0
+        overlap = set(left) & set(right)
+        numerator = sum(left[token] * right[token] for token in overlap)
+        left_norm = math.sqrt(sum(value * value for value in left.values()))
+        right_norm = math.sqrt(sum(value * value for value in right.values()))
+        if left_norm == 0 or right_norm == 0:
+            return 0.0
+        return numerator / (left_norm * right_norm)
 
 
 class OpenSearchIndex:

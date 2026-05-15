@@ -11,6 +11,7 @@ from .models import (
     AuditEvent,
     AlertNotification,
     AlertRule,
+    AStockConnectorDefinition,
     BenchmarkConfig,
     BenchmarkResult,
     BenchmarkRun,
@@ -34,13 +35,18 @@ from .models import (
     IncidentReport,
     InstitutionalHolding,
     Issuer,
+    LineageEvent,
+    LLMTaskRun,
+    LLMTaskTemplate,
     ManualReviewItem,
     MarketDataPoint,
+    ModelVersionRecord,
     OperatingReport,
     PortfolioProposal,
     PromptChangeRequest,
     ResearchAnswer,
     ResearchCard,
+    ResearchReportAsset,
     ResearchTemplate,
     ResearchSignal,
     ReviewRecord,
@@ -50,6 +56,8 @@ from .models import (
     StrategyReplay,
     SystemAlert,
     ThesisCard,
+    WorkflowDefinition,
+    WorkflowRun,
 )
 from .utils import parse_datetime, to_plain
 
@@ -59,6 +67,7 @@ CollectionSpec = tuple[str, str, type]
 
 COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("sources", "source_id", SourceDefinition),
+    ("astock_connectors", "connector_id", AStockConnectorDefinition),
     ("ingestion_jobs", "job_id", IngestionJob),
     ("ingestion_schedules", "schedule_id", IngestionSchedule),
     ("issuers", "issuer_id", Issuer),
@@ -85,9 +94,16 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("scorecards", "profile_id", ScorecardProfile),
     ("drill_schedules", "schedule_id", DrillSchedule),
     ("prompt_changes", "request_id", PromptChangeRequest),
+    ("llm_task_templates", "template_id", LLMTaskTemplate),
+    ("llm_task_runs", "run_id", LLMTaskRun),
+    ("workflow_definitions", "dag_id", WorkflowDefinition),
+    ("workflow_runs", "run_id", WorkflowRun),
+    ("lineage_events", "lineage_id", LineageEvent),
+    ("model_versions", "model_version_id", ModelVersionRecord),
     ("templates", "template_id", ResearchTemplate),
     ("research_answers", "answer_id", ResearchAnswer),
     ("research_cards", "card_id", ResearchCard),
+    ("research_reports", "report_id", ResearchReportAsset),
     ("crowding", "snapshot_id", CrowdingSnapshot),
     ("institutional_holdings", "holding_id", InstitutionalHolding),
     ("disclosure_events", "event_id", DisclosureEvent),
@@ -103,6 +119,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
 
 DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     Evidence: ("created_at",),
+    AStockConnectorDefinition: ("last_checked_at",),
     IngestionJob: ("started_at", "completed_at"),
     IngestionSchedule: ("next_run_at", "created_at", "updated_at"),
     MarketDataPoint: ("created_at",),
@@ -125,6 +142,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     ResearchTemplate: ("created_at",),
     ResearchAnswer: ("created_at", "updated_at"),
     ResearchCard: ("created_at",),
+    ResearchReportAsset: ("indexed_at",),
     CrowdingSnapshot: ("created_at",),
     InstitutionalHolding: ("created_at",),
     DisclosureEvent: ("occurred_at", "created_at"),
@@ -138,11 +156,18 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     EntityMapping: ("created_at",),
     ScorecardProfile: ("created_at",),
     DrillSchedule: ("next_run_at",),
+    LLMTaskTemplate: ("created_at", "updated_at"),
+    LLMTaskRun: ("created_at",),
+    WorkflowDefinition: ("created_at", "updated_at"),
+    WorkflowRun: ("started_at", "completed_at"),
+    LineageEvent: ("created_at",),
+    ModelVersionRecord: ("created_at",),
 }
 
 
 OPTIONAL_DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     OperatingReport: ("published_at",),
+    AStockConnectorDefinition: ("last_checked_at",),
 }
 
 
@@ -156,7 +181,7 @@ def _hydrate_signature(data: dict[str, Any]) -> DecisionSignature:
 
 
 def _hydrate_model(model_type: type, data: dict[str, Any]) -> Any:
-    if model_type in {SourceDefinition, Issuer, Security, MarketDataPoint, Document, InstitutionalHolding}:
+    if model_type in {SourceDefinition, AStockConnectorDefinition, Issuer, Security, MarketDataPoint, Document, InstitutionalHolding, ResearchReportAsset}:
         return model_type.from_dict(data)
     if model_type is DecisionPack:
         data = dict(data)
@@ -184,6 +209,7 @@ def _json_payload(data: Any) -> dict[str, Any]:
 @dataclass(slots=True)
 class InMemoryStore:
     sources: dict[str, SourceDefinition] = field(default_factory=dict)
+    astock_connectors: dict[str, AStockConnectorDefinition] = field(default_factory=dict)
     ingestion_jobs: dict[str, IngestionJob] = field(default_factory=dict)
     ingestion_schedules: dict[str, IngestionSchedule] = field(default_factory=dict)
     issuers: dict[str, Issuer] = field(default_factory=dict)
@@ -210,9 +236,16 @@ class InMemoryStore:
     scorecards: dict[str, ScorecardProfile] = field(default_factory=dict)
     drill_schedules: dict[str, DrillSchedule] = field(default_factory=dict)
     prompt_changes: dict[str, PromptChangeRequest] = field(default_factory=dict)
+    llm_task_templates: dict[str, LLMTaskTemplate] = field(default_factory=dict)
+    llm_task_runs: dict[str, LLMTaskRun] = field(default_factory=dict)
+    workflow_definitions: dict[str, WorkflowDefinition] = field(default_factory=dict)
+    workflow_runs: dict[str, WorkflowRun] = field(default_factory=dict)
+    lineage_events: dict[str, LineageEvent] = field(default_factory=dict)
+    model_versions: dict[str, ModelVersionRecord] = field(default_factory=dict)
     templates: dict[str, ResearchTemplate] = field(default_factory=dict)
     research_answers: dict[str, ResearchAnswer] = field(default_factory=dict)
     research_cards: dict[str, ResearchCard] = field(default_factory=dict)
+    research_reports: dict[str, ResearchReportAsset] = field(default_factory=dict)
     crowding: dict[str, CrowdingSnapshot] = field(default_factory=dict)
     institutional_holdings: dict[str, InstitutionalHolding] = field(default_factory=dict)
     disclosure_events: dict[str, DisclosureEvent] = field(default_factory=dict)
