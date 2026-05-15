@@ -50,7 +50,50 @@ python3 -m py_compile app/*.py tests/*.py scripts/*.py
 python3 -m unittest discover -s tests
 python3 scripts/ui_static_check.py
 python3 scripts/capacity_baseline.py --records 100
+python3 scripts/full_run_acceptance.py --capacity-records 10
 python3 scripts/smoke_test.py http://127.0.0.1:8000
+```
+
+进入 staging 后，对真实部署地址执行 HTTP 验收。该脚本只会使用模拟成交，不会开启真实券商或自动下单：
+
+```bash
+AI_QUANT_STAGING_URL=https://staging.example.internal \
+AI_QUANT_STAGING_ARTIFACT_PREFIX=s3://ai-quant-staging-artifacts/readiness/$(date +%Y%m%d) \
+AI_QUANT_POSTGRES_DSN=postgresql://... \
+AI_QUANT_S3_BUCKET=ai-quant-staging \
+AI_QUANT_OPENSEARCH_URL=https://search.example.internal \
+AI_QUANT_OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.internal/v1/logs \
+python3 scripts/staging_acceptance.py --record-readiness --notify-missing
+```
+
+本机全量 staging 栈可直接用 Compose 启动 PostgreSQL、MinIO、OpenSearch、Neo4j、Qdrant、OpenTelemetry collector，以及 OpenLineage/MLflow HTTP 占位端点并自动跑验收：
+
+```bash
+bash scripts/local_staging_stack.sh
+```
+
+本机 staging 已验证的通过口径：`/api/health` 返回 `PostgreSQLStore`；对象存储为 S3/MinIO；检索为 OpenSearch；模拟成交通过且 `live_execution_allowed=false`；图谱回溯率 100%；HTTP 容量基线无 breach；PostgreSQL、S3/MinIO、OpenSearch、OTel、Neo4j、Qdrant、OpenLineage 和 MLflow 均可达；Neo4j/Qdrant/OpenLineage/MLflow outbox 演练通过。最近一次本机复验 `p95=114ms`。若机器未安装 Docker/Podman，该脚本会退出并提示安装容器运行时；没有容器运行时无法在本机真实启动上述依赖。
+
+可选外部 adapter 目标：
+
+- `AI_QUANT_NEO4J_SYNC_TARGET`
+- `AI_QUANT_QDRANT_SYNC_TARGET`
+- `AI_QUANT_OPENLINEAGE_TARGET`
+- `AI_QUANT_MLFLOW_TRACKING_URI`
+- `AI_QUANT_SECRET_MANAGER_PROVIDER`
+
+生成上线验收证据包，并把缺失证据分派到 outbox：
+
+```bash
+python3 - <<'PY'
+from app.api import create_default_router
+
+router = create_default_router()
+package = router.dispatch("POST", "/api/readiness/evidence-package", {"record_export": True}, role="CEO", actor="release_owner")
+print(package.data["status"], package.data["missing_evidence_count"], package.data["pending_checklist"])
+notify = router.dispatch("POST", "/api/readiness/evidence-package/notify", {}, role="risk_compliance", actor="release_owner")
+print(notify.data["notification_count"], notify.data["usage_boundary"])
+PY
 ```
 
 检查项：
@@ -59,6 +102,7 @@ python3 scripts/smoke_test.py http://127.0.0.1:8000
 - `/api/metrics` 返回 store、object_store、search_index
 - `/ui` 可以加载，并包含目标信息架构
 - `/api/demo/full-flow` 可以生成端到端 demo
+- `/api/execution-intents/{intent_id}/simulate` 只生成模拟成交并写入组合流水，不连接真实券商
 - `/api/alerts/rules/seed` 和 `/api/alerts/evaluate` 可运行
 - PostgreSQL/S3/OpenSearch 使用生产账号和最小权限
 - SEC/HKEX/A 股 connector 设置了合规 user agent

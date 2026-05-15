@@ -16,6 +16,7 @@ from .models import (
     BenchmarkResult,
     BenchmarkRun,
     BenchmarkSample,
+    CacheRetentionRunRecord,
     CorporateAction,
     DrillSchedule,
     DisclosureEvent,
@@ -36,6 +37,7 @@ from .models import (
     InstitutionalHolding,
     Issuer,
     LineageEvent,
+    LLMBudgetApproval,
     LLMTaskRun,
     LLMTaskTemplate,
     ManualReviewItem,
@@ -53,6 +55,8 @@ from .models import (
     ResearchSignal,
     ReviewRecord,
     Security,
+    SecretRotationRecord,
+    SimulatedExecution,
     ScorecardProfile,
     SourceReviewRecord,
     SourceDefinition,
@@ -84,6 +88,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("signals", "signal_id", ResearchSignal),
     ("decisions", "decision_id", DecisionPack),
     ("execution_intents", "intent_id", ExecutionIntent),
+    ("simulated_executions", "execution_id", SimulatedExecution),
     ("reviews", "review_id", ReviewRecord),
     ("manual_reviews", "review_id", ManualReviewItem),
     ("operating_reports", "report_id", OperatingReport),
@@ -99,7 +104,10 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("scorecards", "profile_id", ScorecardProfile),
     ("drill_schedules", "schedule_id", DrillSchedule),
     ("readiness_checks", "check_id", ReadinessCheckRecord),
+    ("secret_rotations", "rotation_id", SecretRotationRecord),
+    ("cache_retention_runs", "run_id", CacheRetentionRunRecord),
     ("prompt_changes", "request_id", PromptChangeRequest),
+    ("llm_budget_approvals", "approval_id", LLMBudgetApproval),
     ("llm_task_templates", "template_id", LLMTaskTemplate),
     ("llm_task_runs", "run_id", LLMTaskRun),
     ("workflow_definitions", "dag_id", WorkflowDefinition),
@@ -135,6 +143,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     ResearchSignal: ("generated_at",),
     DecisionPack: ("created_at",),
     ExecutionIntent: ("created_at",),
+    SimulatedExecution: ("created_at",),
     ReviewRecord: ("created_at",),
     ManualReviewItem: ("created_at", "updated_at"),
     OperatingReport: ("created_at", "published_at"),
@@ -163,8 +172,11 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     ExceptionItem: ("created_at",),
     EntityMapping: ("created_at",),
     ScorecardProfile: ("created_at",),
-    DrillSchedule: ("next_run_at",),
+    DrillSchedule: ("next_run_at", "last_run_at"),
     ReadinessCheckRecord: ("measured_at", "expires_at", "updated_at"),
+    SecretRotationRecord: ("rotated_at", "next_rotation_due_at", "created_at"),
+    CacheRetentionRunRecord: ("executed_at", "as_of", "created_at"),
+    LLMBudgetApproval: ("expires_at", "created_at", "updated_at"),
     LLMTaskTemplate: ("created_at", "updated_at"),
     LLMTaskRun: ("created_at",),
     WorkflowDefinition: ("created_at", "updated_at"),
@@ -179,6 +191,10 @@ OPTIONAL_DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     SourceReviewRecord: ("next_review_due_at",),
     AStockConnectorDefinition: ("last_checked_at",),
     ReadinessCheckRecord: ("expires_at",),
+    DrillSchedule: ("last_run_at",),
+    SecretRotationRecord: ("next_rotation_due_at",),
+    CacheRetentionRunRecord: ("executed_at",),
+    LLMBudgetApproval: ("expires_at",),
 }
 
 
@@ -234,6 +250,7 @@ class InMemoryStore:
     signals: dict[str, ResearchSignal] = field(default_factory=dict)
     decisions: dict[str, DecisionPack] = field(default_factory=dict)
     execution_intents: dict[str, ExecutionIntent] = field(default_factory=dict)
+    simulated_executions: dict[str, SimulatedExecution] = field(default_factory=dict)
     reviews: dict[str, ReviewRecord] = field(default_factory=dict)
     manual_reviews: dict[str, ManualReviewItem] = field(default_factory=dict)
     operating_reports: dict[str, OperatingReport] = field(default_factory=dict)
@@ -249,7 +266,10 @@ class InMemoryStore:
     scorecards: dict[str, ScorecardProfile] = field(default_factory=dict)
     drill_schedules: dict[str, DrillSchedule] = field(default_factory=dict)
     readiness_checks: dict[str, ReadinessCheckRecord] = field(default_factory=dict)
+    secret_rotations: dict[str, SecretRotationRecord] = field(default_factory=dict)
+    cache_retention_runs: dict[str, CacheRetentionRunRecord] = field(default_factory=dict)
     prompt_changes: dict[str, PromptChangeRequest] = field(default_factory=dict)
+    llm_budget_approvals: dict[str, LLMBudgetApproval] = field(default_factory=dict)
     llm_task_templates: dict[str, LLMTaskTemplate] = field(default_factory=dict)
     llm_task_runs: dict[str, LLMTaskRun] = field(default_factory=dict)
     workflow_definitions: dict[str, WorkflowDefinition] = field(default_factory=dict)

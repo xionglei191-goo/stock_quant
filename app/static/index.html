@@ -616,6 +616,46 @@
               <div class="system-box"><strong>Budget Used</strong><span id="llmBudgetUsed">0%</span></div>
             </div>
           </div>
+          <div class="panel span-12">
+            <h2>Agent 权限矩阵</h2>
+            <div class="row">
+              <select id="permissionRole" aria-label="permission role">
+                <option value="analyst">Analyst</option>
+                <option value="cio">CIO</option>
+                <option value="pm">PM</option>
+                <option value="risk_compliance">Risk / Compliance</option>
+                <option value="platform">Platform</option>
+                <option value="data_engineer">Data Engineer</option>
+                <option value="nlp_ml">NLP / ML</option>
+                <option value="ceo">CEO</option>
+              </select>
+              <select id="permissionDomain" aria-label="permission data domain">
+                <option value="">All Domains</option>
+                <option value="llm_gateway">LLM Gateway</option>
+                <option value="research">Research</option>
+                <option value="ingestion">Ingestion</option>
+                <option value="source_governance">Source Governance</option>
+                <option value="investment_decisions">Investment Decisions</option>
+                <option value="execution_intent">Execution Intent</option>
+              </select>
+              <select id="permissionAction" aria-label="permission action">
+                <option value="">All Actions</option>
+                <option value="read">Read</option>
+                <option value="write">Write</option>
+                <option value="execute">Execute</option>
+                <option value="approve">Approve</option>
+              </select>
+              <button id="loadPermissionMatrix" class="primary">Load Matrix</button>
+            </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>Allowed</strong><span id="permissionAllowed">0</span></div>
+              <div class="system-box"><strong>Denied</strong><span id="permissionDenied">0</span></div>
+              <div class="system-box"><strong>Red Domains</strong><span id="permissionRedAllowed">0</span></div>
+              <div class="system-box"><strong>Rules</strong><span id="permissionRuleCount">0</span></div>
+              <div class="system-box"><strong>Domains</strong><span id="permissionDomainCount">0</span></div>
+            </div>
+            <table style="margin-top:12px"><thead><tr><th>Rule</th><th>Action</th><th>Domain</th><th>Decision</th></tr></thead><tbody id="permissionRows"></tbody></table>
+          </div>
         </div>
       </section>
 
@@ -638,10 +678,23 @@
           <button id="loadReport" class="primary">Load Report</button>
           <input id="replayId" value="replay_demo" aria-label="strategy replay id">
           <button id="loadReplay">Load Replay</button>
+          <input id="replayDecisionId" value="dec_demo" aria-label="strategy replay decision id">
+          <button id="compareReplays">Compare Replays</button>
         </div>
         <div class="grid">
           <div class="panel span-6"><h2>Operating Report</h2><pre id="reportBox"></pre></div>
           <div class="panel span-6"><h2>Strategy Replay</h2><pre id="replayBox"></pre></div>
+          <div class="panel span-12">
+            <h2>回放批次对比</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>Batch</strong><span id="replayCompareCount">0</span></div>
+              <div class="system-box"><strong>Variance</strong><span id="replayVarianceCount">0</span></div>
+              <div class="system-box"><strong>Latest</strong><span id="replayLatestId">-</span></div>
+              <div class="system-box"><strong>Review</strong><span id="replayReviewCount">0</span></div>
+              <div class="system-box"><strong>Continue</strong><span id="replayContinueCount">0</span></div>
+            </div>
+            <table style="margin-top:12px"><thead><tr><th>Replay</th><th>Version</th><th>Outcome</th><th>Next</th></tr></thead><tbody id="replayCompareRows"></tbody></table>
+          </div>
         </div>
       </section>
 
@@ -1001,6 +1054,38 @@
       }
     }
 
+    function renderPermissionMatrix(data) {
+      const role = data.summary_by_role?.[0] || {};
+      $("permissionAllowed").textContent = `${role.allowed || 0}`;
+      $("permissionDenied").textContent = `${role.denied || 0}`;
+      $("permissionRedAllowed").textContent = `${role.red_allowed || 0}`;
+      $("permissionRuleCount").textContent = `${data.coverage?.rules || 0}`;
+      $("permissionDomainCount").textContent = `${data.coverage?.data_domains || 0}`;
+      $("permissionRows").innerHTML = rows(data.rules, "No permission rules", (item) => {
+        const decision = item.public || item.allowed_roles.includes(role.role) || item.allowed_roles.includes("*");
+        const domains = item.data_domains.join(", ");
+        const roleLabel = item.public ? "public" : decision ? "allowed" : "denied";
+        const tone = item.public || decision ? "ok" : "block";
+        return `<tr><td>${item.rule_id}</td><td>${item.method} · ${item.action}</td><td>${domains}</td><td><span class="badge ${tone}">${roleLabel}</span></td></tr>`;
+      });
+    }
+
+    async function loadPermissionMatrix() {
+      try {
+        const params = new URLSearchParams({
+          role: $("permissionRole").value,
+          include_role_matrix: "false"
+        });
+        if ($("permissionDomain").value) params.set("data_domain", $("permissionDomain").value);
+        if ($("permissionAction").value) params.set("action", $("permissionAction").value);
+        const { data, trace_id } = await api(`/api/governance/permission-matrix?${params.toString()}`, { role: "risk_compliance" });
+        renderPermissionMatrix(data);
+        setStatus(`Permission matrix loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
     async function runSearch() {
       try {
         const q = encodeURIComponent($("query").value || "");
@@ -1246,6 +1331,26 @@
       }
     }
 
+    function renderReplayCompare(data) {
+      $("replayCompareCount").textContent = `${data.count || 0}`;
+      $("replayVarianceCount").textContent = `${data.variance_count || 0}`;
+      $("replayLatestId").textContent = data.latest_replay_id || "-";
+      $("replayReviewCount").textContent = `${data.action_counts?.review_again || 0}`;
+      $("replayContinueCount").textContent = `${data.action_counts?.continue_or_expand || 0}`;
+      $("replayCompareRows").innerHTML = rows(data.replays, "No replay batches", (item) => `<tr><td>${item.replay_id}</td><td>${item.version}</td><td>${item.actual_outcome || item.expected_outcome}</td><td>${item.action_bucket}</td></tr>`);
+    }
+
+    async function compareReplays() {
+      try {
+        const decisionId = encodeURIComponent($("replayDecisionId").value || "");
+        const { data, trace_id } = await api(`/api/strategy-replays/compare?decision_id=${decisionId}&limit=20`, { role: "cio" });
+        renderReplayCompare(data);
+        setStatus(`Replay comparison loaded · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
     async function loadIncidents() {
       try {
         const [{ data, trace_id }, reviews] = await Promise.all([
@@ -1344,11 +1449,13 @@
     $("createPromptChange").addEventListener("click", createPromptChange);
     $("approvePromptChange").addEventListener("click", approvePromptChange);
     $("loadPromptChanges").addEventListener("click", loadPromptChanges);
+    $("loadPermissionMatrix").addEventListener("click", loadPermissionMatrix);
     $("runSearch").addEventListener("click", runSearch);
     $("loadDecision").addEventListener("click", loadDecision);
     $("loadIntent").addEventListener("click", loadIntent);
     $("loadReport").addEventListener("click", loadReport);
     $("loadReplay").addEventListener("click", loadReplay);
+    $("compareReplays").addEventListener("click", compareReplays);
     $("previewAshare").addEventListener("click", previewAshare);
     $("previewSec").addEventListener("click", previewSec);
     $("previewHkex").addEventListener("click", previewHkex);

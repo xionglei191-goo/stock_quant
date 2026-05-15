@@ -110,4 +110,5 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
 
 
 if __name__ == "__main__":
-    serve()
+    import os
+    serve(host=os.environ.get("AI_QUANT_HOST", "127.0.0.1"))

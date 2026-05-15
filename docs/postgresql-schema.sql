@@ -43,7 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_documents_source
     WHERE collection = 'documents';
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_security_date
-    ON ai_quant.records ((payload->>'security_id'), ((payload->>'as_of_date')::date))
+    ON ai_quant.records ((payload->>'security_id'), (payload->>'as_of_date'))
     WHERE collection = 'market_data';
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_source
@@ -51,11 +51,11 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_source
     WHERE collection = 'market_data';
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_corporate_actions_security
-    ON ai_quant.records ((payload->>'security_id'), (payload->>'action_type'), ((payload->>'ex_date')::date))
+    ON ai_quant.records ((payload->>'security_id'), (payload->>'action_type'), (payload->>'ex_date'))
     WHERE collection = 'corporate_actions';
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_13f_issuer_period
-    ON ai_quant.records ((payload->>'issuer_id'), ((payload->>'report_period')::date))
+    ON ai_quant.records ((payload->>'issuer_id'), (payload->>'report_period'))
     WHERE collection = 'institutional_holdings';
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_13f_security
@@ -110,6 +110,10 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_model_versions_status
     ON ai_quant.records ((payload->>'model_name'), (payload->>'status'), (payload->>'version'))
     WHERE collection = 'model_versions';
 
+CREATE INDEX IF NOT EXISTS idx_ai_quant_cache_retention_runs_status
+    ON ai_quant.records ((payload->>'status'), (payload->>'as_of'))
+    WHERE collection = 'cache_retention_runs';
+
 CREATE INDEX IF NOT EXISTS idx_ai_quant_theses_issuer
     ON ai_quant.records ((payload->>'issuer_id'), (payload->>'status'))
     WHERE collection = 'theses';
@@ -117,6 +121,14 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_theses_issuer
 CREATE INDEX IF NOT EXISTS idx_ai_quant_decisions_state
     ON ai_quant.records ((payload->>'approval_state'))
     WHERE collection = 'decisions';
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_simulated_executions_intent
+    ON ai_quant.records ((payload->>'intent_id'), (payload->>'status'), (payload->>'account_id'))
+    WHERE collection = 'simulated_executions';
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_portfolio_transactions_filter
+    ON ai_quant.records ((payload->>'account_id'), (payload->>'strategy_id'), (payload->>'security_id'), (payload->>'trade_date'))
+    WHERE collection = 'portfolio_transactions';
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_operating_reports_status
     ON ai_quant.records ((payload->>'status'), (payload->>'period'))
@@ -131,7 +143,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_portfolio_proposals_status
     WHERE collection = 'portfolio_proposals';
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_schedules_status
-    ON ai_quant.records ((payload->>'status'), ((payload->>'next_run_at')::timestamptz))
+    ON ai_quant.records ((payload->>'status'), (payload->>'next_run_at'))
     WHERE collection = 'ingestion_schedules';
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_alert_rules_enabled
@@ -426,6 +438,40 @@ SELECT
     updated_at
 FROM ai_quant.records
 WHERE collection = 'portfolio_proposals';
+
+CREATE OR REPLACE VIEW ai_quant.simulated_executions AS
+SELECT
+    item_id AS execution_id,
+    payload->>'intent_id' AS intent_id,
+    payload->>'transaction_id' AS transaction_id,
+    payload->>'mode' AS mode,
+    payload->>'status' AS status,
+    (payload->>'fill_price')::numeric AS fill_price,
+    (payload->>'quantity')::numeric AS quantity,
+    (payload->>'notional')::numeric AS notional,
+    (payload->>'live_execution_allowed')::boolean AS live_execution_allowed,
+    payload->>'account_id' AS account_id,
+    payload,
+    updated_at
+FROM ai_quant.records
+WHERE collection = 'simulated_executions';
+
+CREATE OR REPLACE VIEW ai_quant.portfolio_transactions AS
+SELECT
+    item_id AS transaction_id,
+    payload->>'security_id' AS security_id,
+    (payload->>'trade_date')::date AS trade_date,
+    payload->>'side' AS side,
+    (payload->>'quantity')::numeric AS quantity,
+    (payload->>'price')::numeric AS price,
+    (payload->>'fees')::numeric AS fees,
+    payload->>'source_id' AS source_id,
+    payload->>'account_id' AS account_id,
+    payload->>'strategy_id' AS strategy_id,
+    payload,
+    updated_at
+FROM ai_quant.records
+WHERE collection = 'portfolio_transactions';
 
 CREATE OR REPLACE VIEW ai_quant.alert_rules AS
 SELECT

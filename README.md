@@ -74,6 +74,20 @@ python3 -m app.server
 python3 scripts/smoke_test.py http://127.0.0.1:8000
 ```
 
+本地全链路验收可直接运行，不需要真实券商或外部生产环境；交易环节固定使用模拟成交：
+
+```bash
+python3 scripts/full_run_acceptance.py --capacity-records 10
+```
+
+预发布环境接入真实 PostgreSQL/S3/OpenSearch 等依赖后，运行 staging HTTP 验收。该脚本会回填已执行的 smoke/capacity readiness 记录，并保持交易为模拟成交：
+
+```bash
+AI_QUANT_STAGING_URL=https://staging.example.internal \
+AI_QUANT_STAGING_ARTIFACT_PREFIX=s3://ai-quant-staging-artifacts/readiness/$(date +%Y%m%d) \
+python3 scripts/staging_acceptance.py --record-readiness --notify-missing
+```
+
 UI 静态验收会检查左侧信息架构、顶部状态条、关键面板 ID 和前端脚本语法：
 
 ```bash
@@ -91,6 +105,14 @@ Docker Compose：
 ```bash
 docker compose up --build
 ```
+
+本机全量 staging 栈会启动 PostgreSQL、MinIO、OpenSearch、Neo4j、Qdrant、OpenTelemetry collector，以及 OpenLineage/MLflow HTTP 占位端点，然后自动跑 staging 验收：
+
+```bash
+bash scripts/local_staging_stack.sh
+```
+
+通过口径包括 PostgreSQLStore、S3/MinIO、OpenSearch、模拟成交、图谱回溯、HTTP 容量基线和外部依赖可达性。如果当前机器没有 Docker 或 Podman，脚本会直接提示安装容器运行时；没有容器运行时就无法在本机真实启动这些依赖。
 
 生产部署、备份、恢复、回滚和月度运维步骤见 [docs/production-runbook.md](./docs/production-runbook.md)。环境变量模板见 [.env.example](./.env.example)。
 

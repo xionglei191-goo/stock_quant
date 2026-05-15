@@ -450,6 +450,31 @@ class ExecutionIntent:
 
 
 @dataclass(slots=True)
+class SimulatedExecution:
+    execution_id: str
+    intent_id: str
+    transaction_id: str
+    mode: str = "simulated"
+    status: str = "filled"
+    fill_price: float = 0.0
+    quantity: float = 0.0
+    notional: float = 0.0
+    slippage_bps: float = 0.0
+    fees: float = 0.0
+    account_id: str = ""
+    simulator_version: str = "sim-v1"
+    live_execution_allowed: bool = False
+    created_by: str = ""
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.mode, {"simulated"}, "mode")
+        _validate_choice(self.status, {"filled", "rejected"}, "status")
+        if self.live_execution_allowed:
+            raise ValidationError("simulated execution records cannot enable live execution")
+
+
+@dataclass(slots=True)
 class ReviewRecord:
     review_id: str
     decision_id: str
@@ -618,6 +643,29 @@ class LLMTaskRun:
 
 
 @dataclass(slots=True)
+class LLMBudgetApproval:
+    approval_id: str
+    escalation_id: str
+    requested_by: str
+    requested_budget: float
+    current_budget: float = 0.0
+    reason: str = ""
+    status: str = "pending"
+    approvers: list[dict[str, Any]] = field(default_factory=list)
+    linked_notification_ids: list[str] = field(default_factory=list)
+    expires_at: Any = None
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"pending", "approved", "rejected", "expired"}, "status")
+        if self.requested_budget <= 0:
+            raise ValidationError("requested_budget must be positive")
+        if self.current_budget < 0:
+            raise ValidationError("current_budget must be non-negative")
+
+
+@dataclass(slots=True)
 class WorkflowDefinition:
     dag_id: str
     name: str
@@ -709,6 +757,7 @@ class ResearchAnswer:
     source_publicness: str = "unknown"
     citation_char_limit: int = 0
     citation_truncated: bool = False
+    citations: list[dict[str, Any]] = field(default_factory=list)
     human_review_status: str = "pending"
     reviewer: str = ""
     created_at: Any = field(default_factory=utcnow)
@@ -731,6 +780,10 @@ class ResearchReportAsset:
     content_sha256: str = ""
     rights_tag: RightsTag = field(default_factory=lambda: RightsTag("local_research_reference", False, False, "restricted", "restricted", "restricted"))
     document_id: str = ""
+    issuer_id: str = ""
+    security_id: str = ""
+    industry: str = ""
+    event_ids: list[str] = field(default_factory=list)
     status: str = "indexed"
     indexed_at: Any = field(default_factory=utcnow)
 
@@ -751,6 +804,10 @@ class ResearchReportAsset:
             content_sha256=str(data.get("content_sha256", "")),
             rights_tag=RightsTag.from_dict(data.get("rights_tag", {"license_class": "local_research_reference", "display_use": "restricted"})),
             document_id=str(data.get("document_id", "")),
+            issuer_id=str(data.get("issuer_id", "")),
+            security_id=str(data.get("security_id", "")),
+            industry=str(data.get("industry", "")),
+            event_ids=[str(item) for item in data.get("event_ids", [])],
             status=str(data.get("status", "indexed")),
             indexed_at=parse_datetime(data.get("indexed_at")),
         )
@@ -804,10 +861,13 @@ class DisclosureEvent:
     issuer_id: str
     security_id: str = ""
     event_type: str = "filing_update"
+    item_code: str = ""
+    item_title: str = ""
     severity: str = "low"
     summary: str = ""
     evidence_ids: list[str] = field(default_factory=list)
     source_id: str = ""
+    post_event_performance: dict[str, Any] = field(default_factory=dict)
     occurred_at: Any = field(default_factory=utcnow)
     created_at: Any = field(default_factory=utcnow)
 
@@ -939,6 +999,51 @@ class ReadinessCheckRecord:
 
 
 @dataclass(slots=True)
+class SecretRotationRecord:
+    rotation_id: str
+    secret_name: str
+    provider: str
+    owner: str
+    status: str = "rotated"
+    evidence_uri: str = ""
+    notes: str = ""
+    rotated_at: Any = field(default_factory=utcnow)
+    next_rotation_due_at: Any = None
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"scheduled", "rotated", "failed", "waived"}, "status")
+
+
+@dataclass(slots=True)
+class CacheRetentionRunRecord:
+    run_id: str
+    actor: str
+    status: str = "dry_run_recorded"
+    dry_run: bool = True
+    execute_requested: bool = False
+    reviewed_count: int = 0
+    retained_count: int = 0
+    due_soon_count: int = 0
+    expired_count: int = 0
+    no_cache_count: int = 0
+    deletion_required_count: int = 0
+    filters: dict[str, Any] = field(default_factory=dict)
+    records: list[dict[str, Any]] = field(default_factory=list)
+    usage_boundary: str = "cache_retention_records_are_governance_evidence_not_physical_delete"
+    execution_evidence_uri: str = ""
+    execution_provider: str = ""
+    external_deleted_count: int = 0
+    execution_notes: str = ""
+    executed_at: Any = None
+    as_of: Any = field(default_factory=utcnow)
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"dry_run_recorded", "approval_required", "executed_outside_app"}, "status")
+
+
+@dataclass(slots=True)
 class BenchmarkResult:
     result_id: str
     benchmark_id: str
@@ -989,6 +1094,9 @@ class EntityMapping:
     isin: str = ""
     ticker: str = ""
     market: str = ""
+    confidence: float = 0.0
+    source: str = "entity_mapping_registry"
+    version: str = "v1"
     created_at: Any = field(default_factory=utcnow)
 
 
@@ -1011,3 +1119,7 @@ class DrillSchedule:
     owner: str
     next_run_at: Any = field(default_factory=utcnow)
     notes: str = ""
+    last_run_at: Any = None
+    last_result: str = ""
+    rca_summary: str = ""
+    action_items: list[str] = field(default_factory=list)

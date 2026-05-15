@@ -1,14 +1,48 @@
 services:
   ai-quant-org:
     build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      opensearch:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      otel-collector:
+        condition: service_started
     ports:
       - "8000:8000"
     environment:
-      AI_QUANT_DB: /data/state.db
-      AI_QUANT_OBJECT_STORE_BACKEND: local
-      AI_QUANT_OBJECT_STORE: /data/objects
-      AI_QUANT_SEARCH_BACKEND: local
+      AI_QUANT_POSTGRES_DSN: ${AI_QUANT_POSTGRES_DSN:-postgresql://ai_quant:ai_quant_dev_password@postgres:5432/ai_quant}
+      AI_QUANT_DB: ${AI_QUANT_DB:-}
+      AI_QUANT_HOST: ${AI_QUANT_HOST:-0.0.0.0}
+      AI_QUANT_OBJECT_STORE_BACKEND: ${AI_QUANT_OBJECT_STORE_BACKEND:-s3}
+      AI_QUANT_OBJECT_STORE: ${AI_QUANT_OBJECT_STORE:-/data/objects}
+      AI_QUANT_S3_ENDPOINT: ${AI_QUANT_S3_ENDPOINT:-http://minio:9000}
+      AI_QUANT_S3_BUCKET: ${AI_QUANT_S3_BUCKET:-ai-quant-local}
+      AI_QUANT_S3_REGION: ${AI_QUANT_S3_REGION:-us-east-1}
+      AI_QUANT_S3_ACCESS_KEY: ${AI_QUANT_S3_ACCESS_KEY:-ai_quant_minio}
+      AI_QUANT_S3_SECRET_KEY: ${AI_QUANT_S3_SECRET_KEY:-ai_quant_minio_secret}
+      AI_QUANT_S3_PREFIX: ${AI_QUANT_S3_PREFIX:-raw}
+      AI_QUANT_SEARCH_BACKEND: ${AI_QUANT_SEARCH_BACKEND:-opensearch}
       AI_QUANT_SEARCH_FALLBACK: "true"
+      AI_QUANT_OPENSEARCH_URL: ${AI_QUANT_OPENSEARCH_URL:-http://opensearch:9200}
+      AI_QUANT_OPENSEARCH_INDEX: ${AI_QUANT_OPENSEARCH_INDEX:-ai_quant_research}
+      AI_QUANT_OPENSEARCH_USER: ${AI_QUANT_OPENSEARCH_USER:-}
+      AI_QUANT_OPENSEARCH_PASSWORD: ${AI_QUANT_OPENSEARCH_PASSWORD:-}
+      AI_QUANT_STAGING_URL: ${AI_QUANT_STAGING_URL:-http://127.0.0.1:8000}
+      AI_QUANT_STAGING_ARTIFACT_PREFIX: ${AI_QUANT_STAGING_ARTIFACT_PREFIX:-artifact://staging-acceptance}
+      AI_QUANT_OTEL_EXPORTER_OTLP_ENDPOINT: ${AI_QUANT_OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318/v1/logs}
+      AI_QUANT_NEO4J_SYNC_TARGET: ${AI_QUANT_NEO4J_SYNC_TARGET:-http://neo4j:7474/db/neo4j/tx/commit}
+      AI_QUANT_NEO4J_HTTP_URL: ${AI_QUANT_NEO4J_HTTP_URL:-http://neo4j:7474}
+      AI_QUANT_QDRANT_SYNC_TARGET: ${AI_QUANT_QDRANT_SYNC_TARGET:-http://qdrant:6333}
+      AI_QUANT_OPENLINEAGE_TARGET: ${AI_QUANT_OPENLINEAGE_TARGET:-http://openlineage:5000}
+      AI_QUANT_MLFLOW_TRACKING_URI: ${AI_QUANT_MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      AI_QUANT_SECRET_MANAGER_PROVIDER: ${AI_QUANT_SECRET_MANAGER_PROVIDER:-local-development-metadata-only}
       AI_QUANT_SEC_USER_AGENT: ai-native-quant-org/0.1 contact@example.com
       AI_QUANT_LLM_BASE_URL: ${AI_QUANT_LLM_BASE_URL:-https://llm.nananobanana.cn}
       AI_QUANT_LLM_API_KEY: ${AI_QUANT_LLM_API_KEY:-}
@@ -31,3 +65,119 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ai_quant
+      POSTGRES_USER: ai_quant
+      POSTGRES_PASSWORD: ai_quant_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_quant -d ai_quant"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ai_quant_minio
+      MINIO_ROOT_PASSWORD: ai_quant_minio_secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      - minio
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "until mc alias set local http://minio:9000 ai_quant_minio ai_quant_minio_secret; do sleep 2; done &&
+       mc mb --ignore-existing local/ai-quant-local &&
+       mc version enable local/ai-quant-local"
+
+  opensearch:
+    image: opensearchproject/opensearch:2.15.0
+    environment:
+      discovery.type: single-node
+      plugins.security.disabled: "true"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: localAdmin123!
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200 >/dev/null"]
+      interval: 20s
+      timeout: 10s
+      retries: 20
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/localneo4jpassword
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.11.5
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    volumes:
+      - ./infra/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+
+  openlineage:
+    image: python:3.12-alpine
+    command: ["python", "-m", "http.server", "5000"]
+    ports:
+      - "5001:5000"
+
+  mlflow:
+    image: python:3.12-alpine
+    command: ["python", "-m", "http.server", "5000"]
+    ports:
+      - "5002:5000"
+
+volumes:
+  postgres-data:
+  minio-data:
+  opensearch-data:
+  neo4j-data:
+  neo4j-logs:
+  qdrant-data:

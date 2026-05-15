@@ -23,6 +23,223 @@ ROLE_ALIASES = {
     "overseas_research": "海外研究负责人",
 }
 
+CANONICAL_ROLES = [
+    "system",
+    "CEO",
+    "CIO",
+    "PM",
+    "风险/合规",
+    "平台负责人",
+    "分析师",
+    "数据工程",
+    "NLP/ML 负责人",
+    "海外研究负责人",
+]
+
+PERMISSION_POLICY_CATALOG: list[dict[str, Any]] = [
+    {
+        "rule_id": "system_health",
+        "path_prefixes": ["/api/health", "/api/metrics"],
+        "sample_paths": {"GET": "/api/health"},
+        "methods": ["GET"],
+        "actions": {"GET": "read"},
+        "data_domains": ["system_health", "ops_metrics"],
+        "sensitivity": "green",
+    },
+    {
+        "rule_id": "observability",
+        "path_prefixes": ["/api/observability"],
+        "sample_paths": {"GET": "/api/observability/logs/export", "POST": "/api/observability/otel/submit"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "execute"},
+        "data_domains": ["observability", "ops_logs", "telemetry"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "dashboard",
+        "path_prefixes": ["/api/dashboard"],
+        "sample_paths": {"GET": "/api/dashboard/ceo"},
+        "methods": ["GET"],
+        "actions": {"GET": "read"},
+        "data_domains": ["dashboard", "risk_dashboard"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "readiness",
+        "path_prefixes": ["/api/readiness"],
+        "sample_paths": {"GET": "/api/readiness/checklist", "POST": "/api/readiness/checklist"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["readiness", "production_governance"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "governance_security",
+        "path_prefixes": ["/api/governance"],
+        "sample_paths": {"GET": "/api/governance/data-security-report", "POST": "/api/governance/secret-rotations"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["source_governance", "audit", "security", "secrets"],
+        "sensitivity": "red",
+    },
+    {
+        "rule_id": "demo_seed",
+        "path_prefixes": ["/api/demo"],
+        "sample_paths": {"POST": "/api/demo/full-flow"},
+        "methods": ["POST"],
+        "actions": {"POST": "execute"},
+        "data_domains": ["demo"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "market_data",
+        "path_prefixes": ["/api/market-data"],
+        "sample_paths": {"GET": "/api/market-data", "POST": "/api/market-data/points"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["public_market_data"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "corporate_actions",
+        "path_prefixes": ["/api/corporate-actions"],
+        "sample_paths": {"GET": "/api/corporate-actions", "POST": "/api/corporate-actions"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["corporate_actions"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "institutional_holdings",
+        "path_prefixes": ["/api/13f"],
+        "sample_paths": {"GET": "/api/13f/holdings", "POST": "/api/13f/holdings"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["institutional_holdings"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "disclosure_events",
+        "path_prefixes": ["/api/disclosure-events"],
+        "sample_paths": {"GET": "/api/disclosure-events", "POST": "/api/disclosure-events"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["public_disclosures", "event_wall"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "data_ingestion",
+        "path_prefixes": ["/api/ingestion", "/api/entity-mappings", "/api/connectors"],
+        "sample_paths": {"POST": "/api/ingestion/documents"},
+        "methods": ["POST"],
+        "actions": {"POST": "write"},
+        "data_domains": ["ingestion", "source_registry", "entity_mapping", "connectors"],
+        "sensitivity": "red",
+    },
+    {
+        "rule_id": "benchmark_prompt_governance",
+        "path_prefixes": ["/api/benchmarks", "/api/prompts/changes", "/api/scorecards"],
+        "sample_paths": {"GET": "/api/benchmarks/bm_default/samples", "POST": "/api/benchmarks"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["benchmark", "prompt_governance", "scoring"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "research_workbench",
+        "path_prefixes": [
+            "/api/templates",
+            "/api/research-cards",
+            "/api/research-reports",
+            "/api/research/manual-references",
+            "/api/research/answers",
+            "/api/crowding",
+            "/api/challenger",
+            "/api/playbooks",
+            "/api/incident-reports",
+            "/api/drill-schedules",
+            "/api/alerts",
+        ],
+        "sample_paths": {"GET": "/api/research-reports", "POST": "/api/research/answers"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["research", "manual_reference", "alerts", "incidents"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "llm_gateway",
+        "path_prefixes": ["/api/llm"],
+        "sample_paths": {"GET": "/api/llm/tasks/runs", "POST": "/api/llm/tasks/run"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "execute"},
+        "data_domains": ["llm_gateway", "prompt_templates", "model_usage"],
+        "sensitivity": "red",
+    },
+    {
+        "rule_id": "orchestration_lineage_models",
+        "path_prefixes": ["/api/orchestration", "/api/lineage", "/api/model-versions"],
+        "sample_paths": {"GET": "/api/orchestration/runs", "POST": "/api/orchestration/dags"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "execute"},
+        "data_domains": ["orchestration", "lineage", "model_registry"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "document_parsing",
+        "path_prefixes": ["/api/document-parsing"],
+        "sample_paths": {"POST": "/api/document-parsing/paddleocr"},
+        "methods": ["POST"],
+        "actions": {"POST": "execute"},
+        "data_domains": ["document_parsing", "ocr"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "evidence_research_facts",
+        "path_prefixes": ["/api/evidence", "/api/extractions", "/api/thesis", "/api/scoring"],
+        "sample_paths": {"GET": "/api/evidence/manual-reviews", "POST": "/api/evidence/extract"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["evidence", "structured_extraction", "thesis"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "investment_committee",
+        "path_prefixes": ["/api/decision-packs", "/api/approvals", "/api/exceptions"],
+        "sample_paths": {"GET": "/api/decision-packs/dec_sample", "POST": "/api/decision-packs/build"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "approve"},
+        "data_domains": ["investment_decisions", "approvals", "exceptions"],
+        "sensitivity": "red",
+    },
+    {
+        "rule_id": "execution_intents",
+        "path_prefixes": ["/api/execution-intents", "/api/simulated-executions"],
+        "sample_paths": {"GET": "/api/execution-intents/intent_sample", "POST": "/api/execution-intents"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "approve"},
+        "data_domains": ["execution_intent", "simulated_execution"],
+        "sensitivity": "red",
+    },
+    {
+        "rule_id": "portfolio_research",
+        "path_prefixes": ["/api/portfolio"],
+        "sample_paths": {"GET": "/api/portfolio/proposals", "POST": "/api/portfolio/optimize"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["portfolio_research", "paper_portfolio", "risk_budget"],
+        "sensitivity": "yellow",
+    },
+    {
+        "rule_id": "operating_reviews_graph_search",
+        "path_prefixes": ["/api/reviews", "/api/operating-reports", "/api/strategy-replays", "/api/graph", "/api/search"],
+        "sample_paths": {"GET": "/api/graph/query", "POST": "/api/operating-reports"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["operating_reports", "strategy_replay", "knowledge_graph", "search"],
+        "sensitivity": "yellow",
+    },
+]
+
 
 @dataclass(slots=True)
 class ApiResponse:
@@ -94,15 +311,34 @@ class ApiRouter:
             ("POST", r"^/api/governance/audit-report$", self._audit_completeness_report),
             ("GET", r"^/api/governance/data-security-report$", self._data_security_report),
             ("POST", r"^/api/governance/data-security-report$", self._data_security_report),
+            ("GET", r"^/api/governance/permission-matrix$", self._permission_matrix),
+            ("POST", r"^/api/governance/permission-matrix$", self._permission_matrix),
+            ("GET", r"^/api/governance/storage-policy-templates$", self._storage_policy_templates),
+            ("POST", r"^/api/governance/storage-policy-templates$", self._storage_policy_templates),
+            ("GET", r"^/api/governance/secret-rotations$", self._secret_rotations),
+            ("POST", r"^/api/governance/secret-rotations$", self._record_secret_rotation),
+            ("GET", r"^/api/governance/cache-retention-report$", self._cache_retention_report),
+            ("POST", r"^/api/governance/cache-retention-report$", self._cache_retention_report),
+            ("GET", r"^/api/governance/cache-retention-runs$", self._cache_retention_runs),
+            ("POST", r"^/api/governance/cache-retention-runs/(?P<run_id>[^/]+)/execute$", self._execute_cache_retention_run),
+            ("POST", r"^/api/governance/cache-retention-runs/(?P<run_id>[^/]+)/execution-evidence$", self._record_cache_retention_execution_evidence),
             ("POST", r"^/api/governance/sources/(?P<source_id>[^/]+)$", self._update_source_governance),
             ("POST", r"^/api/governance/sources/(?P<source_id>[^/]+)/reviews$", self._record_source_review),
             ("GET", r"^/api/governance/source-reviews$", self._list_source_reviews),
             ("POST", r"^/api/governance/source-reviews$", self._list_source_reviews),
             ("GET", r"^/api/governance/source-review-reminders$", self._source_review_reminders),
             ("POST", r"^/api/governance/source-review-reminders$", self._source_review_reminders),
+            ("GET", r"^/api/governance/source-review-escalations$", self._source_review_sla_escalations),
+            ("POST", r"^/api/governance/source-review-escalations$", self._source_review_sla_escalations),
+            ("POST", r"^/api/governance/source-review-escalations/notify$", self._notify_source_review_escalations),
             ("POST", r"^/api/demo/full-flow$", self._seed_demo_full_flow),
             ("GET", r"^/api/health$", self._health),
             ("GET", r"^/api/metrics$", self._metrics),
+            ("GET", r"^/api/observability/logs/export$", self._structured_logs_export),
+            ("POST", r"^/api/observability/logs/export$", self._structured_logs_export),
+            ("GET", r"^/api/observability/otel/export$", self._opentelemetry_logs_export),
+            ("POST", r"^/api/observability/otel/export$", self._opentelemetry_logs_export),
+            ("POST", r"^/api/observability/otel/submit$", self._submit_opentelemetry_logs),
             ("POST", r"^/api/issuers$", self._register_issuer),
             ("POST", r"^/api/securities$", self._register_security),
             ("POST", r"^/api/market-data/points$", self._register_market_data_point),
@@ -119,9 +355,15 @@ class ApiRouter:
             ("POST", r"^/api/corporate-actions$", self._register_corporate_action),
             ("GET", r"^/api/corporate-actions$", self._list_corporate_actions),
             ("POST", r"^/api/13f/holdings$", self._register_13f_holding),
+            ("GET", r"^/api/13f/holdings/changes$", self._institutional_holding_changes),
+            ("POST", r"^/api/13f/holdings/changes$", self._institutional_holding_changes),
+            ("GET", r"^/api/13f/candidate-pool$", self._institutional_candidate_pool),
+            ("POST", r"^/api/13f/candidate-pool$", self._institutional_candidate_pool),
             ("GET", r"^/api/13f/holdings$", self._list_13f_holdings),
             ("POST", r"^/api/13f/crowding/update$", self._update_crowding_from_13f),
             ("POST", r"^/api/disclosure-events$", self._create_disclosure_event),
+            ("GET", r"^/api/disclosure-events/performance$", self._disclosure_event_performance_report),
+            ("POST", r"^/api/disclosure-events/performance$", self._disclosure_event_performance_writeback),
             ("GET", r"^/api/disclosure-events$", self._list_disclosure_events),
             ("POST", r"^/api/disclosure-events/classify$", self._classify_disclosure_event),
             ("POST", r"^/api/entity-mappings$", self._register_entity_mapping),
@@ -161,6 +403,14 @@ class ApiRouter:
             ("POST", r"^/api/scorecards$", self._register_scorecard),
             ("POST", r"^/api/research-cards$", self._create_research_card),
             ("POST", r"^/api/research-reports/scan$", self._scan_research_reports),
+            ("GET", r"^/api/research-reports/extraction-queue$", self._research_report_extraction_queue),
+            ("POST", r"^/api/research-reports/extraction-queue$", self._research_report_extraction_queue),
+            ("GET", r"^/api/research-reports/governance-report$", self._research_report_governance_report),
+            ("POST", r"^/api/research-reports/governance-report$", self._research_report_governance_report),
+            ("GET", r"^/api/research-reports/mapping-report$", self._research_report_mapping_report),
+            ("POST", r"^/api/research-reports/mapping-report$", self._research_report_mapping_report),
+            ("GET", r"^/api/research-reports/viewpoint-report$", self._research_report_viewpoint_report),
+            ("POST", r"^/api/research-reports/viewpoint-report$", self._research_report_viewpoint_report),
             ("GET", r"^/api/research-reports$", self._list_research_reports),
             ("POST", r"^/api/research-reports$", self._list_research_reports),
             ("POST", r"^/api/research-reports/(?P<report_id>[^/]+)/ingest$", self._ingest_research_report),
@@ -169,6 +419,8 @@ class ApiRouter:
             ("POST", r"^/api/research/answers$", self._create_research_answer),
             ("GET", r"^/api/research/answers/quality-report$", self._research_answer_quality_report),
             ("POST", r"^/api/research/answers/quality-report$", self._research_answer_quality_report),
+            ("GET", r"^/api/research/answers/summary-benchmark$", self._research_answer_summary_benchmark),
+            ("POST", r"^/api/research/answers/summary-benchmark$", self._research_answer_summary_benchmark),
             ("POST", r"^/api/research/answers/(?P<answer_id>[^/]+)/review$", self._review_research_answer),
             ("GET", r"^/api/research/answers/(?P<answer_id>[^/]+)$", self._get_research_answer),
             ("POST", r"^/api/extractions/run$", self._extract_structured_facts),
@@ -185,12 +437,14 @@ class ApiRouter:
             ("POST", r"^/api/playbooks/seed$", self._seed_default_playbooks),
             ("POST", r"^/api/playbooks$", self._register_playbook),
             ("POST", r"^/api/drill-schedules$", self._register_drill_schedule),
+            ("POST", r"^/api/drill-schedules/(?P<schedule_id>[^/]+)/result$", self._record_drill_result),
             ("POST", r"^/api/incident-reports$", self._create_incident_report),
             ("POST", r"^/api/alerts/rules$", self._register_alert_rule),
             ("POST", r"^/api/alerts/rules/seed$", self._seed_default_alert_rules),
             ("POST", r"^/api/alerts/evaluate$", self._evaluate_alerts),
             ("POST", r"^/api/alerts/incidents/create$", self._create_incidents_from_alerts),
             ("POST", r"^/api/alerts/notify$", self._notify_alerts),
+            ("POST", r"^/api/alerts/notifications/deliver$", self._deliver_alert_notifications),
             ("GET", r"^/api/alerts/notifications$", self._list_alert_notifications),
             ("GET", r"^/api/alerts$", self._list_alerts),
             ("POST", r"^/api/llm/task-templates/seed$", self._seed_llm_task_templates),
@@ -198,6 +452,15 @@ class ApiRouter:
             ("GET", r"^/api/llm/task-templates$", self._list_llm_task_templates),
             ("POST", r"^/api/llm/task-templates/query$", self._list_llm_task_templates),
             ("POST", r"^/api/llm/tasks/run$", self._run_llm_task),
+            ("GET", r"^/api/llm/tasks/review-queue$", self._llm_task_review_queue),
+            ("POST", r"^/api/llm/tasks/review-queue$", self._llm_task_review_queue),
+            ("GET", r"^/api/llm/tasks/escalations$", self._llm_task_escalation_report),
+            ("POST", r"^/api/llm/tasks/escalations$", self._llm_task_escalation_report),
+            ("POST", r"^/api/llm/tasks/escalations/notify$", self._notify_llm_task_escalations),
+            ("GET", r"^/api/llm/budget-approvals$", self._llm_budget_approvals),
+            ("POST", r"^/api/llm/budget-approvals$", self._request_llm_budget_approval),
+            ("POST", r"^/api/llm/budget-approvals/(?P<approval_id>[^/]+)/decide$", self._decide_llm_budget_approval),
+            ("POST", r"^/api/llm/budget-approvals/(?P<approval_id>[^/]+)/sync$", self._sync_llm_budget_approval),
             ("GET", r"^/api/llm/tasks/runs$", self._list_llm_task_runs),
             ("POST", r"^/api/llm/tasks/runs$", self._list_llm_task_runs),
             ("GET", r"^/api/llm/tasks/metrics$", self._llm_task_metrics),
@@ -206,13 +469,27 @@ class ApiRouter:
             ("POST", r"^/api/orchestration/dags$", self._register_workflow_definition),
             ("GET", r"^/api/orchestration/dags$", self._list_workflow_definitions),
             ("POST", r"^/api/orchestration/dags/query$", self._list_workflow_definitions),
+            ("POST", r"^/api/orchestration/dags/(?P<dag_id>[^/]+)/execute$", self._execute_workflow_definition),
             ("POST", r"^/api/orchestration/dags/(?P<dag_id>[^/]+)/run$", self._run_workflow_definition),
             ("POST", r"^/api/orchestration/runs/(?P<run_id>[^/]+)/retry$", self._retry_workflow_run),
+            ("GET", r"^/api/orchestration/sla-report$", self._workflow_sla_report),
+            ("POST", r"^/api/orchestration/sla-report$", self._workflow_sla_report),
+            ("POST", r"^/api/orchestration/incidents/create$", self._create_workflow_incidents),
+            ("GET", r"^/api/orchestration/schedule-calendar$", self._workflow_schedule_calendar),
+            ("POST", r"^/api/orchestration/schedule-calendar$", self._workflow_schedule_calendar),
+            ("GET", r"^/api/orchestration/dependency-graph$", self._workflow_dependency_graph),
+            ("POST", r"^/api/orchestration/dependency-graph$", self._workflow_dependency_graph),
+            ("GET", r"^/api/orchestration/openlineage/export$", self._workflow_openlineage_export),
+            ("POST", r"^/api/orchestration/openlineage/export$", self._workflow_openlineage_export),
+            ("POST", r"^/api/orchestration/openlineage/submit$", self._submit_openlineage_export),
             ("GET", r"^/api/orchestration/runs$", self._list_workflow_runs),
             ("POST", r"^/api/orchestration/runs$", self._list_workflow_runs),
             ("POST", r"^/api/lineage/events$", self._record_lineage_event),
             ("GET", r"^/api/lineage/events$", self._list_lineage_events),
             ("POST", r"^/api/lineage/events/query$", self._list_lineage_events),
+            ("GET", r"^/api/model-versions/mlflow/export$", self._mlflow_model_registry_export),
+            ("POST", r"^/api/model-versions/mlflow/export$", self._mlflow_model_registry_export),
+            ("POST", r"^/api/model-versions/mlflow/register$", self._submit_mlflow_model_registry_export),
             ("POST", r"^/api/model-versions$", self._register_model_version),
             ("GET", r"^/api/model-versions$", self._list_model_versions),
             ("POST", r"^/api/model-versions/query$", self._list_model_versions),
@@ -222,6 +499,9 @@ class ApiRouter:
             ("POST", r"^/api/approvals/(?P<decision_id>[^/]+)/sign$", self._sign_decision),
             ("POST", r"^/api/execution-intents$", self._create_execution_intent),
             ("GET", r"^/api/execution-intents/(?P<intent_id>[^/]+)$", self._get_execution_intent),
+            ("POST", r"^/api/execution-intents/(?P<intent_id>[^/]+)/simulate$", self._simulate_execution_intent),
+            ("GET", r"^/api/simulated-executions$", self._list_simulated_executions),
+            ("POST", r"^/api/simulated-executions/query$", self._list_simulated_executions),
             ("POST", r"^/api/exceptions$", self._create_exception),
             ("POST", r"^/api/reviews/create$", self._create_review),
             ("GET", r"^/api/reviews/(?P<review_id>[^/]+)$", self._get_review),
@@ -229,9 +509,12 @@ class ApiRouter:
             ("GET", r"^/api/operating-reports/red-flag-reminders$", self._operating_report_red_flag_reminders),
             ("POST", r"^/api/operating-reports/red-flag-reminders$", self._operating_report_red_flag_reminders),
             ("POST", r"^/api/operating-reports/(?P<report_id>[^/]+)/publish$", self._publish_operating_report),
+            ("POST", r"^/api/operating-reports/(?P<report_id>[^/]+)/board-pack$", self._export_operating_report_board_pack),
             ("POST", r"^/api/operating-reports/(?P<report_id>[^/]+)/red-flags/(?P<red_flag_id>[^/]+)/resolve$", self._resolve_operating_report_red_flag),
             ("GET", r"^/api/operating-reports/(?P<report_id>[^/]+)$", self._get_operating_report),
             ("POST", r"^/api/strategy-replays$", self._create_strategy_replay),
+            ("GET", r"^/api/strategy-replays/compare$", self._compare_strategy_replays),
+            ("POST", r"^/api/strategy-replays/compare$", self._compare_strategy_replays),
             ("GET", r"^/api/strategy-replays$", self._list_strategy_replays),
             ("GET", r"^/api/strategy-replays/(?P<replay_id>[^/]+)$", self._get_strategy_replay),
             ("POST", r"^/api/portfolio/optimize$", self._run_portfolio_optimizer),
@@ -244,7 +527,22 @@ class ApiRouter:
             ("POST", r"^/api/portfolio/positions$", self._portfolio_positions_from_transactions),
             ("GET", r"^/api/portfolio/proposals$", self._list_portfolio_proposals),
             ("GET", r"^/api/portfolio/proposals/(?P<proposal_id>[^/]+)$", self._get_portfolio_proposal),
+            ("GET", r"^/api/graph/traceability-report$", self._graph_traceability_report),
+            ("POST", r"^/api/graph/traceability-report$", self._graph_traceability_report),
+            ("GET", r"^/api/graph/edge-quality-report$", self._graph_edge_quality_report),
+            ("POST", r"^/api/graph/edge-quality-report$", self._graph_edge_quality_report),
+            ("GET", r"^/api/graph/neo4j/export$", self._graph_neo4j_export),
+            ("POST", r"^/api/graph/neo4j/export$", self._graph_neo4j_export),
+            ("POST", r"^/api/graph/neo4j/sync$", self._sync_graph_neo4j),
             ("GET", r"^/api/graph/query$", self._query_graph),
+            ("GET", r"^/api/search/qdrant/export$", self._qdrant_vector_export),
+            ("POST", r"^/api/search/qdrant/export$", self._qdrant_vector_export),
+            ("POST", r"^/api/search/qdrant/sync$", self._sync_qdrant_vectors),
+            ("GET", r"^/api/search/adapter-sync/retry$", self._adapter_sync_retry_drill),
+            ("POST", r"^/api/search/adapter-sync/retry$", self._adapter_sync_retry_drill),
+            ("POST", r"^/api/search/rebuild$", self._rebuild_search_indexes),
+            ("GET", r"^/api/search/semantic/rerank$", self._semantic_rerank),
+            ("POST", r"^/api/search/semantic/rerank$", self._semantic_rerank),
             ("GET", r"^/api/search/semantic$", self._semantic_search),
             ("POST", r"^/api/search/semantic$", self._semantic_search),
             ("POST", r"^/api/search/semantic/benchmark$", self._semantic_search_benchmark),
@@ -253,8 +551,14 @@ class ApiRouter:
             ("GET", r"^/api/dashboard/ceo$", self._dashboard_ceo),
             ("GET", r"^/api/dashboard/risk$", self._dashboard_risk),
             ("GET", r"^/api/readiness/checklist$", self._readiness_checklist),
+            ("POST", r"^/api/readiness/capacity-baseline$", self._record_capacity_baseline),
             ("POST", r"^/api/readiness/checklist$", self._record_readiness_check),
             ("POST", r"^/api/readiness/checklist/(?P<check_id>[^/]+)$", self._record_readiness_check),
+            ("GET", r"^/api/readiness/evidence-package$", self._readiness_evidence_package),
+            ("POST", r"^/api/readiness/evidence-package$", self._readiness_evidence_package),
+            ("POST", r"^/api/readiness/evidence-package/notify$", self._notify_readiness_evidence_package),
+            ("GET", r"^/api/readiness/remediation-report$", self._readiness_remediation_report),
+            ("POST", r"^/api/readiness/remediation-report$", self._readiness_remediation_report),
             ("GET", r"^/api/readiness/vision-gate$", self._vision_acceptance_report),
             ("GET", r"^/api/incidents/calendar$", self._incident_calendar),
         ]
@@ -269,6 +573,8 @@ class ApiRouter:
         safe_roles = {"system", "CEO", "CIO", "PM", "风险/合规", "平台负责人", "分析师", "数据工程", "NLP/ML 负责人", "海外研究负责人"}
         if role not in safe_roles:
             return False
+        if path.startswith("/api/observability"):
+            return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人", "数据工程", "NLP/ML 负责人"}
         if path.startswith("/api/dashboard"):
             return True
         if path.startswith("/api/readiness"):
@@ -301,7 +607,7 @@ class ApiRouter:
             return role in {"system", "分析师", "海外研究负责人", "CIO", "PM", "平台负责人", "NLP/ML 负责人", "风险/合规"}
         if path.startswith("/api/decision-packs") or path.startswith("/api/approvals") or path.startswith("/api/exceptions"):
             return role in {"system", "CEO", "CIO", "风险/合规"}
-        if path.startswith("/api/execution-intents"):
+        if path.startswith("/api/execution-intents") or path.startswith("/api/simulated-executions"):
             return role in {"system", "CEO", "CIO", "PM", "风险/合规"}
         if path.startswith("/api/portfolio"):
             return role in {"system", "CEO", "CIO", "PM", "风险/合规", "分析师", "平台负责人"}
@@ -332,11 +638,139 @@ class ApiRouter:
     def _source_review_reminders(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.source_review_reminders_payload(body)
 
+    def _source_review_sla_escalations(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.source_review_sla_escalation_report(body)
+
+    def _notify_source_review_escalations(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_source_review_escalation_notifications(body, actor=actor)
+
     def _audit_completeness_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.audit_completeness_report(body)
 
     def _data_security_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.data_security_report(body)
+
+    def _record_secret_rotation(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.record_secret_rotation(body, actor=actor))
+
+    def _secret_rotations(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.secret_rotations_payload(body)
+
+    def _permission_matrix(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        _ = actor
+        return self.permission_matrix_payload(body)
+
+    def _storage_policy_templates(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        _ = actor
+        return self.service.storage_policy_templates_payload(body)
+
+    def _cache_retention_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.cache_retention_report(body, actor=actor)
+
+    def _cache_retention_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        _ = actor
+        return self.service.cache_retention_runs_payload(body)
+
+    def _record_cache_retention_execution_evidence(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/governance/cache-retention-runs/(?P<run_id>[^/]+)/execution-evidence$", path)
+        return to_plain(self.service.record_cache_retention_execution_evidence(match["run_id"], body, actor=actor))
+
+    def _execute_cache_retention_run(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/governance/cache-retention-runs/(?P<run_id>[^/]+)/execute$", path)
+        return self.service.execute_cache_retention_run(match["run_id"], body, actor=actor)
+
+    def permission_matrix_payload(self, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        role_filter = self._normalize_role(str(filters.get("role", "")).strip()) if filters.get("role") else ""
+        domain_filter = str(filters.get("data_domain", "")).strip()
+        action_filter = str(filters.get("action", "")).strip()
+        method_filter = str(filters.get("method", "")).strip().upper()
+        include_role_matrix = bool(filters.get("include_role_matrix", True))
+        roles = list(CANONICAL_ROLES)
+        if role_filter and role_filter not in roles:
+            roles.append(role_filter)
+        rules: list[dict[str, Any]] = []
+        role_matrix: list[dict[str, Any]] = []
+        summary_by_role = {
+            role: {"role": role, "allowed": 0, "denied": 0, "public_allowed": 0, "red_allowed": 0}
+            for role in roles
+        }
+        for rule in PERMISSION_POLICY_CATALOG:
+            data_domains = [str(item) for item in rule["data_domains"]]
+            if domain_filter and domain_filter not in data_domains:
+                continue
+            for method in rule["methods"]:
+                method = str(method).upper()
+                if method_filter and method_filter != method:
+                    continue
+                action = str(rule.get("actions", {}).get(method, "execute"))
+                if action_filter and action_filter != action:
+                    continue
+                sample_path = str(rule.get("sample_paths", {}).get(method, rule["path_prefixes"][0]))
+                public = self._authorize(method, sample_path, "__unauthenticated__")
+                allowed_roles = ["*"] if public else [role for role in CANONICAL_ROLES if self._authorize(method, sample_path, role)]
+                denied_roles = [] if public else [role for role in CANONICAL_ROLES if role not in allowed_roles]
+                if role_filter and not public and role_filter not in allowed_roles and role_filter not in denied_roles:
+                    denied_roles.append(role_filter)
+                if role_filter:
+                    role_allowed = public or self._authorize(method, sample_path, role_filter)
+                    if not role_allowed and not filters.get("include_denied", True):
+                        continue
+                rules.append(
+                    {
+                        "rule_id": rule["rule_id"],
+                        "method": method,
+                        "action": action,
+                        "data_domains": data_domains,
+                        "path_prefixes": [str(item) for item in rule["path_prefixes"]],
+                        "sample_path": sample_path,
+                        "allowed_roles": allowed_roles,
+                        "denied_roles": denied_roles,
+                        "public": public,
+                        "sensitivity": rule.get("sensitivity", "yellow"),
+                    }
+                )
+                for role in roles:
+                    allowed = public or self._authorize(method, sample_path, role)
+                    summary_by_role[role]["allowed" if allowed else "denied"] += 1
+                    if public and allowed:
+                        summary_by_role[role]["public_allowed"] += 1
+                    if allowed and rule.get("sensitivity") == "red":
+                        summary_by_role[role]["red_allowed"] += 1
+                    if not include_role_matrix:
+                        continue
+                    if role_filter and role != role_filter:
+                        continue
+                    for data_domain in data_domains:
+                        role_matrix.append(
+                            {
+                                "role": role,
+                                "data_domain": data_domain,
+                                "method": method,
+                                "action": action,
+                                "rule_id": rule["rule_id"],
+                                "sample_path": sample_path,
+                                "allowed": allowed,
+                                "sensitivity": rule.get("sensitivity", "yellow"),
+                            }
+                        )
+        summary_rows = list(summary_by_role.values())
+        if role_filter:
+            summary_rows = [row for row in summary_rows if row["role"] == role_filter]
+        return {
+            "roles": roles,
+            "role_aliases": ROLE_ALIASES,
+            "rules": rules,
+            "role_matrix": role_matrix,
+            "summary_by_role": summary_rows,
+            "coverage": {
+                "rules": len(rules),
+                "role_decisions": len(role_matrix),
+                "data_domains": len({domain for rule in rules for domain in rule["data_domains"]}),
+                "public_rules": sum(1 for rule in rules if rule["public"]),
+                "source": "api_gateway_authorization_rules",
+            },
+        }
 
     def _seed_demo_full_flow(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.seed_demo_full_flow(actor=actor)
@@ -346,6 +780,15 @@ class ApiRouter:
 
     def _metrics(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.metrics()
+
+    def _structured_logs_export(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.structured_logs_export(body, actor=actor)
+
+    def _opentelemetry_logs_export(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.opentelemetry_logs_export(body, actor=actor)
+
+    def _submit_opentelemetry_logs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_opentelemetry_log_notifications(body, actor=actor)
 
     def _register_issuer(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.register_issuer(body, actor=actor))
@@ -389,6 +832,12 @@ class ApiRouter:
     def _list_13f_holdings(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.institutional_holdings_payload(body)
 
+    def _institutional_holding_changes(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.institutional_holding_changes_payload(body)
+
+    def _institutional_candidate_pool(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.institutional_candidate_pool(body)
+
     def _update_crowding_from_13f(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.update_crowding_from_13f(body, actor=actor))
 
@@ -397,6 +846,12 @@ class ApiRouter:
 
     def _list_disclosure_events(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.disclosure_events_payload(body)
+
+    def _disclosure_event_performance_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.disclosure_event_performance_payload(body, actor=actor, write_back=False)
+
+    def _disclosure_event_performance_writeback(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.disclosure_event_performance_payload(body, actor=actor, write_back=True)
 
     def _classify_disclosure_event(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.classify_disclosure_event(body, actor=actor))
@@ -517,6 +972,18 @@ class ApiRouter:
     def _list_research_reports(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.research_reports_payload(body)
 
+    def _research_report_extraction_queue(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.research_report_extraction_queue(body, actor=actor)
+
+    def _research_report_governance_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.research_report_governance_report(body)
+
+    def _research_report_mapping_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.research_report_mapping_report(body)
+
+    def _research_report_viewpoint_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.research_report_viewpoint_report(body)
+
     def _ingest_research_report(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/research-reports/(?P<report_id>[^/]+)/ingest$", path)
         return self.service.ingest_research_report(match["report_id"], body, actor=actor)
@@ -533,6 +1000,9 @@ class ApiRouter:
 
     def _research_answer_quality_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.research_answer_quality_report(body)
+
+    def _research_answer_summary_benchmark(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.research_answer_summary_benchmark(body)
 
     def _review_research_answer(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/research/answers/(?P<answer_id>[^/]+)/review$", path)
@@ -592,6 +1062,10 @@ class ApiRouter:
     def _register_drill_schedule(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.register_drill_schedule(body, actor=actor))
 
+    def _record_drill_result(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/drill-schedules/(?P<schedule_id>[^/]+)/result$", path)
+        return to_plain(self.service.record_drill_result(match["schedule_id"], body, actor=actor))
+
     def _create_incident_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.create_incident_report(body, actor=actor))
 
@@ -609,6 +1083,9 @@ class ApiRouter:
 
     def _notify_alerts(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.notify_alerts(body, actor=actor)
+
+    def _deliver_alert_notifications(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.deliver_alert_notifications(body, actor=actor)
 
     def _list_alert_notifications(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.alert_notifications_payload(body)
@@ -631,6 +1108,29 @@ class ApiRouter:
     def _list_llm_task_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.llm_task_runs_payload(body)
 
+    def _llm_task_review_queue(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.llm_task_review_queue(body)
+
+    def _llm_task_escalation_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.llm_task_escalation_report(body)
+
+    def _notify_llm_task_escalations(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_llm_task_escalation_notifications(body, actor=actor)
+
+    def _llm_budget_approvals(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.llm_budget_approvals_payload(body)
+
+    def _request_llm_budget_approval(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.request_llm_budget_approval(body, actor=actor))
+
+    def _decide_llm_budget_approval(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/llm/budget-approvals/(?P<approval_id>[^/]+)/decide$", path)
+        return to_plain(self.service.decide_llm_budget_approval(match["approval_id"], body, actor=actor))
+
+    def _sync_llm_budget_approval(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/llm/budget-approvals/(?P<approval_id>[^/]+)/sync$", path)
+        return self.service.sync_llm_budget_approval(match["approval_id"], body, actor=actor)
+
     def _llm_task_metrics(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.llm_task_metrics()
 
@@ -650,12 +1150,34 @@ class ApiRouter:
         match = re.fullmatch(r"^/api/orchestration/dags/(?P<dag_id>[^/]+)/run$", path)
         return to_plain(self.service.run_workflow_definition(match["dag_id"], body, actor=actor))
 
+    def _execute_workflow_definition(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/orchestration/dags/(?P<dag_id>[^/]+)/execute$", path)
+        return self.service.execute_workflow_definition(match["dag_id"], body, actor=actor)
+
     def _retry_workflow_run(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/orchestration/runs/(?P<run_id>[^/]+)/retry$", path)
         return to_plain(self.service.retry_workflow_run(match["run_id"], body, actor=actor))
 
     def _list_workflow_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.workflow_runs_payload(body)
+
+    def _workflow_sla_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.workflow_sla_report(body)
+
+    def _create_workflow_incidents(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_workflow_incidents_from_sla(body, actor=actor)
+
+    def _workflow_schedule_calendar(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.workflow_schedule_calendar(body)
+
+    def _workflow_dependency_graph(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.workflow_dependency_graph(body)
+
+    def _workflow_openlineage_export(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.workflow_openlineage_export(body, actor=actor)
+
+    def _submit_openlineage_export(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_openlineage_submission_notifications(body, actor=actor)
 
     def _record_lineage_event(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.record_lineage_event(body, actor=actor))
@@ -668,6 +1190,12 @@ class ApiRouter:
 
     def _list_model_versions(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.model_versions_payload(body)
+
+    def _mlflow_model_registry_export(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.mlflow_model_registry_export(body, actor=actor)
+
+    def _submit_mlflow_model_registry_export(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_mlflow_registration_notifications(body, actor=actor)
 
     def _get_signal(self, path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/signals/(?P<signal_id>[^/]+)$", path)
@@ -691,6 +1219,13 @@ class ApiRouter:
         match = re.fullmatch(r"^/api/execution-intents/(?P<intent_id>[^/]+)$", path)
         return self.service.execution_intent_payload(match["intent_id"])
 
+    def _simulate_execution_intent(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/execution-intents/(?P<intent_id>[^/]+)/simulate$", path)
+        return self.service.simulate_execution_intent(match["intent_id"], body, actor=actor)
+
+    def _list_simulated_executions(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.simulated_executions_payload(body)
+
     def _create_exception(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.create_exception(body, actor=actor)
 
@@ -711,6 +1246,10 @@ class ApiRouter:
         match = re.fullmatch(r"^/api/operating-reports/(?P<report_id>[^/]+)/publish$", path)
         return to_plain(self.service.publish_operating_report(match["report_id"], body, actor=actor))
 
+    def _export_operating_report_board_pack(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/operating-reports/(?P<report_id>[^/]+)/board-pack$", path)
+        return self.service.export_operating_report_board_pack(match["report_id"], body, actor=actor)
+
     def _resolve_operating_report_red_flag(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/operating-reports/(?P<report_id>[^/]+)/red-flags/(?P<red_flag_id>[^/]+)/resolve$", path)
         return to_plain(self.service.resolve_operating_report_red_flag(match["report_id"], match["red_flag_id"], body, actor=actor))
@@ -724,6 +1263,9 @@ class ApiRouter:
 
     def _list_strategy_replays(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.list_strategy_replays(body)
+
+    def _compare_strategy_replays(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.strategy_replay_compare_report(body)
 
     def _get_strategy_replay(self, path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/strategy-replays/(?P<replay_id>[^/]+)$", path)
@@ -757,11 +1299,38 @@ class ApiRouter:
     def _query_graph(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.query_graph(body)
 
+    def _graph_traceability_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.graph_traceability_report(body)
+
+    def _graph_edge_quality_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.graph_edge_quality_report(body)
+
+    def _graph_neo4j_export(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.graph_neo4j_export(body, actor=actor)
+
+    def _sync_graph_neo4j(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_graph_adapter_sync_notifications(body, actor=actor)
+
     def _search(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.search(body)
 
+    def _qdrant_vector_export(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.qdrant_vector_export(body, actor=actor)
+
+    def _sync_qdrant_vectors(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_qdrant_sync_notifications(body, actor=actor)
+
+    def _adapter_sync_retry_drill(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.adapter_sync_retry_drill(body, actor=actor)
+
+    def _rebuild_search_indexes(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.rebuild_search_indexes(body, actor=actor)
+
     def _semantic_search(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.semantic_search(body)
+
+    def _semantic_rerank(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.semantic_rerank(body)
 
     def _semantic_search_benchmark(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.semantic_search_benchmark(body)
@@ -775,6 +1344,9 @@ class ApiRouter:
     def _readiness_checklist(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.readiness_checklist_payload(body)
 
+    def _record_capacity_baseline(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.record_capacity_baseline_result(body, actor=actor)
+
     def _record_readiness_check(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/readiness/checklist/(?P<check_id>[^/]+)$", path)
         check_id = match["check_id"] if match else str(body.get("check_id", ""))
@@ -782,6 +1354,15 @@ class ApiRouter:
 
     def _vision_acceptance_report(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.vision_acceptance_report()
+
+    def _readiness_evidence_package(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.readiness_evidence_package(body, actor=actor)
+
+    def _notify_readiness_evidence_package(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_readiness_evidence_notifications(body, actor=actor)
+
+    def _readiness_remediation_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.readiness_remediation_report(body)
 
     def _incident_calendar(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.incident_calendar()

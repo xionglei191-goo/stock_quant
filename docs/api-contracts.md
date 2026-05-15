@@ -44,6 +44,18 @@
 
 返回核心对象计数、审计事件数量、未处理例外、pending prompt 变更数量、对象存储 adapter 和检索 adapter。
 
+#### `GET|POST /api/observability/logs/export`
+
+导出结构化 JSON 日志 payload，覆盖 audit、alerts、workflow 和 notifications 来源。接口只返回 payload，不写外部日志系统；可用 `sources`、`level`、`action_prefix`、`resource_type`、`status`、`trace_id` 和 `limit` 过滤。传 `record_export=true` 时会写审计事件 `export_structured_logs`。
+
+#### `GET|POST /api/observability/otel/export`
+
+把结构化日志转换为 OpenTelemetry OTLP logs JSON payload，包含 `resourceLogs`、`scopeLogs`、`logRecords`、service/resource attributes、severity、body、attributes 和 hash 化 traceId。支持同结构化日志过滤字段，以及 `service_name`、`service_namespace`、`environment`、`schema_url`；接口不直接连接 collector。传 `record_export=true` 时会写审计事件 `export_opentelemetry_logs`。
+
+#### `POST /api/observability/otel/submit`
+
+把 OTLP logs JSON payload 写入 `AlertNotification` outbox，默认 `channel=opentelemetry_logs_outbox`、`target=otel://collector/v1/logs`。可覆盖 `target`、`channel`、`provider`、`notification_id`、`force`、`mark_sent`、`max_delivery_attempts` 和 `delivery_backoff`，后续由 `/api/alerts/notifications/deliver` dry-run、HTTP(S) webhook 或 state-only sender 推进发送状态。
+
 #### `POST /api/llm/openai/chat/completions`
 
 调用配置的 OpenAI 兼容上游 `/v1/chat/completions`。默认上游由 `AI_QUANT_LLM_BASE_URL` 指定，默认模型由 `AI_QUANT_LLM_DEFAULT_MODEL` 指定。请求必须配置 `AI_QUANT_LLM_API_KEY`；服务端只记录模型和 endpoint 审计，不记录请求正文。
@@ -67,7 +79,7 @@
 
 #### `POST /api/llm/task-templates/seed`
 
-写入默认生产 LLM 任务模板和对应 baseline prompt 审批记录，覆盖研究摘要、filing 问答、challenger 和事故 RCA。
+写入默认生产 LLM 任务模板和对应 baseline prompt 审批记录，覆盖研究摘要、研报摘要、filing 问答、challenger、red team 和事故 RCA。模板在 `input_schema` / `output_schema.acceptance_thresholds` 中记录来源边界、必填输出和人工复核阈值。
 
 #### `POST /api/llm/task-templates`
 
@@ -116,9 +128,37 @@
 
 按 `task_type`、`status`、`limit` 查询 LLM 任务运行记录。
 
+#### `GET /api/llm/tasks/review-queue`
+
+返回 LLM 任务结果人工复核队列。队列由 `LLMTaskRun` 派生，覆盖高风险模板、失败/待复核状态、fallback、上游错误、延迟 SLA breach 和成本阈值 breach。支持 `task_type`、`status`、`reason`、`min_severity`、`limit` 过滤，返回 `review_severity`、`reasons`、`reviewer_role` 和 reason 聚合计数。
+
 #### `GET /api/llm/tasks/metrics`
 
-返回 LLM 任务模板数、已审批模板数、运行数、失败数、错误率、回退数、人工复核数、平均延迟、成本估算、成本预算和预算使用率。默认告警 `alert_llm_cost_budget` 和 `alert_llm_error_rate` 消费该指标。
+返回 LLM 任务模板数、已审批模板数、运行数、失败数、错误率、回退数、人工复核数、平均延迟、成本估算、成本预算和预算使用率。`cost_budget` 使用环境配置预算与已批准、未过期的 `/api/llm/budget-approvals` 预算上限中的较大值，并额外返回 `configured_cost_budget`、`approved_cost_budget`、`approved_budget_active`。默认告警 `alert_llm_cost_budget` 和 `alert_llm_error_rate` 消费该指标。
+
+#### `GET /api/llm/tasks/escalations`
+
+返回 LLM SLA / 预算升级报告。报告基于成本预算使用率、错误率、fallback 率、人工复核 backlog 和逐 run 复核原因生成升级项；每条包含 severity、owner_role、channel、target、recommended_action 和外部 sender 接入边界。支持 `budget_warning_threshold`、`budget_critical_threshold`、`error_rate_threshold`、`fallback_rate_threshold`、`review_backlog_threshold`、`channels`、`targets`、`limit`。
+
+#### `POST /api/llm/tasks/escalations/notify`
+
+把 LLM SLA / 预算升级项写入 `AlertNotification` outbox，默认状态为 `pending`，供 `/api/alerts/notifications/deliver` dry-run、HTTP(S) webhook、SMTP email 或 Slack webhook sender 发送。支持同报告接口的阈值和 channel/target 配置，并支持 `force` 覆盖幂等通知、`mark_sent` 标记已发送。
+
+#### `GET /api/llm/budget-approvals`
+
+查询 LLM 预算升级审批记录，支持 `status`、`escalation_id`、`requested_by`、`limit`。返回 pending/approved 计数、当前有效成本预算和审批列表。
+
+#### `POST /api/llm/budget-approvals`
+
+基于当前 LLM 预算升级报告创建预算审批。可传 `escalation_id` 指定 `cost_budget_critical` / `cost_budget_warning` / `cost_threshold_breach` 升级项；未传时自动选取当前报告中的预算类升级项。`requested_budget` 或 `requested_cost_budget` 必须大于当前有效预算；也可用 `budget_multiplier` 自动放大。审批初始状态为 `pending`，并写入审计。
+
+#### `POST /api/llm/budget-approvals/{approval_id}/decide`
+
+由 `CEO`、`CIO`、`风险/合规` 或 `NLP/ML 负责人` 角色做出 `approved` / `rejected` 决策。批准后，该 `requested_budget` 会作为未过期的有效预算候选进入 `/api/llm/tasks/metrics`。
+
+#### `POST /api/llm/budget-approvals/{approval_id}/sync`
+
+把已批准的 LLM 预算审批写入外部财务/云预算系统同步 outbox。默认 `channel=budget_sync_outbox`、`target=budget://finance_cloud_budget`；也可传 `channel`、`target`、`external_system`、`max_delivery_attempts`、`delivery_backoff` 和 `metadata`，后续由 `/api/alerts/notifications/deliver` 复用 webhook/email/slack 发送状态机推进。
 
 #### `POST /api/orchestration/dags`
 
@@ -148,6 +188,26 @@
 - `status`
 - `error`
 - `force`
+- `started_at`
+- `completed_at`
+
+#### `POST /api/orchestration/dags/{dag_id}/execute`
+
+使用内置轻量 DAG 执行器按拓扑顺序运行白名单本地任务，并将每步结果写入 `WorkflowRun.task_statuses`、`inputs.task_results`、`output_refs` 和 `LineageEvent`。当前支持 `ingest_document`、`extract_evidence`、`structured_extraction` / `extract_structured_facts`、`search_rebuild`、`benchmark_sample_register`、`benchmark_run`、`document_parse` / `paddleocr` 和 `noop`。任务 payload 支持 `${inputs.foo}`、`${task_id.output_ids.0}`、`${task_id.output_refs.0}` 占位符，用于把上游产物传给下游任务。接口仍是单进程内置执行器；分布式队列、外部 sensor、任务级 retry 和 backfill 达到阈值后应切换 Airflow/Dagster。
+
+请求字段：
+
+- `run_id`
+- `inputs`
+- `idempotency_key`
+- `task_payloads`
+- `code_version`
+- `model_versions`
+- `prompt_versions`
+- `force`
+- `continue_on_error`
+- `allow_inactive`
+- `allow_unresolved_dependencies`
 
 #### `POST /api/orchestration/runs/{run_id}/retry`
 
@@ -166,6 +226,30 @@
 
 按 `dag_id`、`status`、`limit` 查询工作流运行记录。
 
+#### `GET /api/orchestration/sla-report`
+
+按 DAG/run 运行状态和任务级 `sla_minutes` 输出调度 SLA 报告。`failed`、`needs_review` 和超过 SLA 的 `queued/running` 会进入 `breach_count`，并返回 owner、失败 task、错误、是否可重试和是否需要建单。支持 `dag_id`、`status`、`as_of`、`default_sla_minutes`、`include_all`、`limit`。
+
+#### `GET /api/orchestration/schedule-calendar`
+
+按 DAG `cadence` 和历史 run 推导未来调度窗口，支持 `hourly`、`daily`、`business_daily`、`weekly`、`monthly` 和 `manual`。返回每个 workflow 的 last run、next run、upcoming runs、owner、任务数和是否需要外部调度器，并给出 Airflow/Dagster 触发阈值建议。支持 `dag_id`、`status`、`as_of`、`horizon_days`、`per_workflow_limit`、`include_manual`、`include_paused`、`limit`。
+
+#### `POST /api/orchestration/schedule-calendar`
+
+同 `GET /api/orchestration/schedule-calendar`，用于复杂过滤 payload。
+
+#### `GET /api/orchestration/dependency-graph`
+
+输出轻量 DAG 的任务依赖可视化报告，支持 task 字段 `depends_on` / `dependencies` / `upstream`。返回每个 workflow 的节点、边、拓扑顺序、未解析依赖、ready/blocked task、latest run 状态和 lineage 摘要。该接口仅用于可视化和排障，不替代生产调度器；响应中的 adapter recommendation 给出 Airflow/Dagster 与 OpenLineage adapter 的触发条件。支持 `dag_id`、`status`、`include_paused`、`include_runs`、`include_lineage`、`limit`。
+
+#### `POST /api/orchestration/dependency-graph`
+
+同 `GET /api/orchestration/dependency-graph`，用于复杂过滤 payload。
+
+#### `POST /api/orchestration/incidents/create`
+
+基于 SLA 报告为未建单的 failed、needs_review 或 runtime SLA breach run 自动创建 `IncidentReport`，默认使用 `pb_workflow_sla_breach`，幂等 report id 为 `ir_workflow_{run_id}`，避免重复建单。
+
 #### `POST /api/lineage/events`
 
 记录数据血缘事件，将任务运行、输入、输出、代码版本、模型版本和 prompt 版本关联起来。
@@ -180,6 +264,18 @@
 - `code_version`
 - `model_versions`
 - `prompt_versions`
+
+#### `GET /api/orchestration/openlineage/export`
+
+把轻量 workflow run、lineage event、模型版本和 prompt 版本整理为 OpenLineage-compatible payload。当前接口只做 dry-run payload export，不直接提交外部 lineage service；返回 `adapter.external_submission_required=true`。支持 `dag_id`、`run_id`、`status`、`namespace`、`producer`、`schema_url`、`include_model_facets`、`record_export`、`limit`。
+
+#### `POST /api/orchestration/openlineage/export`
+
+同 `GET /api/orchestration/openlineage/export`，用于复杂过滤 payload。`record_export=true` 时写入导出审计事件。
+
+#### `POST /api/orchestration/openlineage/submit`
+
+把 OpenLineage-compatible export payload 写入 `AlertNotification` outbox，默认 channel 为 `openlineage_submission_outbox`，默认 target 为 `openlineage://lineage-service`。接口不直接访问外部 lineage service；后续可由 `/api/alerts/notifications/deliver` dry-run 或通用 HTTP(S) webhook sender 推进 `pending/sent/failed` 状态，协议级 OpenLineage client 仍由生产适配器接入。支持 export 过滤字段，以及 `channel`、`target`、`force`、`mark_sent`、`max_delivery_attempts`、`delivery_backoff`。
 
 #### `POST /api/model-versions`
 
@@ -197,6 +293,18 @@
 - `metrics`
 - `status`
 
+#### `GET /api/model-versions/mlflow/export`
+
+把内置模型版本记录转换为 MLflow Model Registry-compatible payload，包含 registered model、model version、stage/alias、tags、metrics/params 和 lineage 回链。当前接口只做 dry-run payload export，不直接调用外部 MLflow registry；返回 `adapter.external_registration_required=true`。支持 `model_name`、`model_version_id`、`status`、`registered_model_prefix`、`include_metrics`、`record_export`、`limit`。
+
+#### `POST /api/model-versions/mlflow/export`
+
+同 `GET /api/model-versions/mlflow/export`，用于复杂过滤 payload。`record_export=true` 时写入导出审计事件。
+
+#### `POST /api/model-versions/mlflow/register`
+
+把 MLflow Model Registry-compatible export payload 写入 `AlertNotification` outbox，默认 channel 为 `mlflow_registry_outbox`，默认 target 为 `mlflow://model-registry`。接口不直接访问外部 MLflow registry；后续可由 `/api/alerts/notifications/deliver` dry-run 或通用 HTTP(S) webhook sender 推进 `pending/sent/failed` 状态，协议级 MLflow client 仍由生产适配器接入。支持 export 过滤字段，以及 `channel`、`target`、`force`、`mark_sent`、`max_delivery_attempts`、`delivery_backoff`。
+
 #### `POST /api/search/semantic`
 
 使用本地语义检索 adapter 对已入库 SearchRecord 执行轻量向量化排序。当前实现为 term-frequency cosine，用于固定 Qdrant/reranker 替换前的 API 契约，并继承原始记录的权限边界。默认过滤 restricted 结果；可用 `include_restricted=true` 显式纳入本地参考/受限结果，返回项会标记 `source_boundary`、`rights_tag` 和 `risk_level`。
@@ -209,13 +317,21 @@
 - `include_restricted`
 - `limit`
 
+#### `POST /api/search/semantic/rerank`
+
+复用语义召回候选并执行本地可解释重排，作为 Qdrant/专用 reranker 接入前的 pipeline 契约。当前重排分由 `semantic_score`、query term coverage、资源权重和 restricted boundary penalty 组成；restricted 结果会标记 `requires_manual_boundary_review`。返回 `embedding_backend`、`reranker`、`score_components`、`matched_terms` 和 adapter trigger，便于后续替换向量库或 reranker 模型。支持 `q`、`issuer_id`、`resource_types`、`include_restricted`、`candidate_limit`、`limit`。
+
+#### `GET /api/search/semantic/rerank`
+
+同 `POST /api/search/semantic/rerank`，用于简单查询参数。
+
 #### `POST /api/search/semantic/benchmark`
 
 对语义检索样本计算 `recall_at_k`。每个样本包含 `q`、`issuer_id`、`resource_types`、`include_restricted` 和 `expected_resource_ids`，用于回归检索质量和权限过滤行为。
 
 #### `GET /api/readiness/vision-gate`
 
-返回项目愿景上线闸门报告，按证据覆盖率、研究结论原文回链率、pending prompt、红区训练记录、高风险 challenger 覆盖率、source governance 覆盖率、审计完整性、实体映射准确率、benchmark 指标、季度事故演练覆盖率和 readiness checklist 覆盖率计算 `ready` / `not_ready`，并列出仍需人工验收的真实数据 smoke、UI、容量、备份恢复、权限红队、合规复核和上线 checklist 清单。
+返回项目愿景上线闸门报告，按证据覆盖率、研究结论原文回链率、pending prompt、红区训练记录、高风险 challenger 覆盖率、source governance 覆盖率、审计完整性、图谱回溯率、实体映射准确率、benchmark 指标、季度事故演练覆盖率和 readiness checklist 覆盖率计算 `ready` / `not_ready`，并列出仍需人工验收的真实数据 smoke、UI、容量、备份恢复、权限红队、合规复核和上线 checklist 清单。
 
 #### `GET /api/readiness/checklist`
 
@@ -234,6 +350,40 @@
 - `metrics`
 - `measured_at`
 - `expires_at`
+
+#### `POST /api/readiness/capacity-baseline`
+
+接收 `scripts/capacity_baseline.py` 或真实环境容量/延迟基线结果，按 `max_ms` 与阈值自动判定 `capacity_latency_report` 为 `passed` / `failed` 并回填 readiness checklist。返回 readiness check、阈值 breach 列表和 passed 布尔值。
+
+#### `GET /api/readiness/evidence-package`
+
+生成上线验收证据包 manifest，汇总 readiness checklist、vision gate 未通过项、owner 修复计划和外部 adapter 验证矩阵。该接口只产出审计清单，不把未执行的真实环境测试标记为通过；真实 smoke、UI 截图、容量、备份恢复、权限红队和合规复核仍必须通过 checklist 回填 evidence URI。支持 `include_passed`、`record_export`、`limit`。
+
+#### `POST /api/readiness/evidence-package`
+
+同 `GET /api/readiness/evidence-package`，用于复杂过滤 payload。
+
+#### `POST /api/readiness/evidence-package/notify`
+
+根据证据包中缺失或未通过的必填 checklist 项写入 readiness notification outbox。支持 `owner_targets`、`owner_channels`、`channel`、`target`、`force`、`mark_sent`；通知仍需通过 `/api/alerts/notifications/deliver` 或外部发送器推进。
+
+#### `GET /api/readiness/remediation-report`
+
+基于 `/api/readiness/vision-gate` 和 readiness checklist 生成上线修复计划。返回未通过 gate、pending/expired checklist 的 owner、priority、当前值、阈值、建议动作和是否需要 evidence URI，并按 owner 汇总。支持 `owner_role`、`include_passed`、`limit`。
+
+#### `POST /api/readiness/remediation-report`
+
+同 `GET /api/readiness/remediation-report`，用于复杂过滤 payload。
+
+请求字段：
+
+- `result`
+- `thresholds`
+- `default_threshold_ms`
+- `evidence_uri`
+- `measured_at`
+- `expires_at`
+- `owner`
 
 #### `POST /api/governance/sources/{source_id}`
 
@@ -285,6 +435,14 @@
 
 返回季度来源复核提醒和 owner 看板，覆盖从未复核、已逾期和未来窗口内到期的来源，并保留阻断原因供治理看板展示。可用 `as_of`、`due_before`、`due_within_days`、`owner`、`owner_role`、`source_type`、`risk_level`、`include_blocked`、`limit` 过滤。系统治理 UI 消费该接口；默认告警规则 `alert_source_review_overdue` 使用 `source_review_overdue` 指标触发，可通过 `/api/alerts/notify` 写入来源复核通知 outbox。
 
+#### `GET /api/governance/source-review-escalations`
+
+返回来源复核 SLA 升级报告。报告复用 source review reminders，按逾期天数、红/黄区来源、缺失复核、TOS/robots/publicness/usage blocker 计算 severity、owner、channel、target 和 recommended_action，并返回外部发送边界。支持 `as_of`、`due_before`、`due_within_days`、`owner`、`owner_role`、`source_type`、`risk_level`、`include_blocked`、`include_due_soon`、`include_missing_review`、`min_severity`、`critical_days_overdue`、`high_days_overdue`、`due_soon_high_risk_days`、`channels`、`targets`、`limit`。
+
+#### `POST /api/governance/source-review-escalations/notify`
+
+把来源复核 SLA 升级项写入 `AlertNotification` outbox，默认状态为 `pending`，供 `/api/alerts/notifications/deliver` dry-run、HTTP(S) webhook、SMTP email 或 Slack webhook sender 发送。支持同报告接口的过滤与策略字段，并支持 `force` 覆盖幂等通知、`mark_sent` 标记已发送、`max_delivery_attempts` 和 `delivery_backoff`。
+
 #### `GET /api/governance/audit-report`
 
 返回审计日志字段完整性报告，检查关键动作是否具备 `event_id`、`actor`、`action`、`resource_type`、`resource_id`、`source` 和 `timestamp`。可用 `action_prefix` 过滤。
@@ -292,6 +450,62 @@
 #### `GET /api/governance/data-security-report`
 
 扫描已入湖 document、evidence 和 research answer 中的邮箱、手机号、身份证样式和 secret/API key 字面量，返回脱敏 snippet、按类型/来源/严重级别聚合的统计，并用于 `sensitive_findings` 默认告警。可用 `resource_type`、`finding_type`、`issuer_id`、`source_id`、`scan_char_limit`、`limit` 过滤。越权 API 访问会被拦截并以 `permission_denied` 审计事件留痕，默认告警 `alert_permission_denied_events` 使用 `permission_denied_events` 指标触发。
+
+#### `GET /api/governance/permission-matrix`
+
+返回 API 网关授权规则派生的角色 + 数据域 + 动作级权限矩阵。每条规则包含 `rule_id`、`method`、`action`、`data_domains`、`path_prefixes`、`sample_path`、`allowed_roles`、`denied_roles`、`public` 和 `sensitivity`；`role_matrix` 展开到单个角色/数据域/动作决策，`summary_by_role` 汇总 allowed/denied/red domain 数量。支持 `role`、`data_domain`、`action`、`method`、`include_role_matrix` 过滤，用于权限红队、UI 权限态和最小权限复核。
+
+#### `POST /api/governance/permission-matrix`
+
+同 `GET /api/governance/permission-matrix`，用于复杂过滤 payload。
+
+#### `GET /api/governance/storage-policy-templates`
+
+返回生产对象存储、检索和状态库的最小权限/生命周期模板。输出包含 `s3_iam_policy`、`s3_lifecycle_policy`、`opensearch_role`、`postgres_grants` 和 `ddl_rollback_approval`，并给出 scoped prefix、禁止 app role 删除对象、禁止 S3 full access、PostgreSQL app role 不授予 DROP 等检查项。支持 `environment`、`bucket`、`prefix`、`opensearch_index`、`postgres_schema`、`app_role`、`migration_role`、`transition_after_days`、`archive_after_days`、`delete_after_days`。
+
+#### `POST /api/governance/storage-policy-templates`
+
+同 `GET /api/governance/storage-policy-templates`，用于复杂过滤 payload。
+
+#### `GET /api/governance/secret-rotations`
+
+查询密钥轮换 metadata 台账。只记录 secret 名称、外部密钥管理系统/provider、owner、轮换状态、证据 URI、轮换时间和下次到期时间，不保存任何密钥值。返回 overdue / due_soon 聚合，并驱动默认告警 `alert_secret_rotation_overdue`。
+
+#### `POST /api/governance/secret-rotations`
+
+写入密钥轮换记录。请求中如包含 `secret_value`、`api_key`、`token`、`password`、`private_key` 等真实密钥字段会被拒绝。
+
+请求字段：
+
+- `rotation_id`
+- `secret_name`
+- `provider`
+- `owner`
+- `status`
+- `rotated_at`
+- `next_rotation_due_at`
+- `evidence_uri`
+- `notes`
+
+#### `GET /api/governance/cache-retention-report`
+
+返回公开来源、本地研报和 PaddleOCR 运行时缓存的保留期/删除策略 dry-run 报告。每条记录包含 resource type/id、source、risk level、retention policy、cache TTL、cached/expires 时间、action、deletion_required、manual_approval_required 和 source governance gaps。支持 `as_of`、`source_id`、`source_type`、`risk_level`、`resource_type`、`action`、`include_retained`、`include_runtime_cache`、`due_within_days`、`limit` 过滤。
+
+#### `POST /api/governance/cache-retention-report`
+
+同 `GET /api/governance/cache-retention-report`，并支持 `record_run=true` 写入 `CacheRetentionRunRecord` 和 `record_cache_retention_run` 审计事件。`execute=true` 只把需要外部生命周期/KMS/DLP 执行的记录标为 `approval_required`，不会在应用内物理删除文档、研报或运行时缓存；响应中的 `usage_boundary` 固定说明该记录是治理证据而非删除动作本身。
+
+#### `GET /api/governance/cache-retention-runs`
+
+查询缓存保留/删除策略执行记录，支持 `status`、`actor`、`execute_requested`、`limit` 过滤，并返回 `approval_required` 与 `executed_outside_app` 聚合计数。
+
+#### `POST /api/governance/cache-retention-runs/{run_id}/execute`
+
+执行已记录的缓存保留 run。默认 `execute=false` 只返回待执行任务清单；`execute=true` 仅对 `document_parse_cache` 运行时缓存执行本进程清理，并把 document / research report / search index 删除列为 `external_handoff`，等待对象存储生命周期、OpenSearch/Qdrant 清理或 DLP/KMS 工具回填证据。响应包含 `runtime_deleted_count`、`external_handoff_count`、`tasks` 和 usage boundary；不会删除对象存储文件或研报资产。
+
+#### `POST /api/governance/cache-retention-runs/{run_id}/execution-evidence`
+
+回填外部对象存储生命周期、搜索索引清理、KMS/DLP 或运行时缓存清理 executor 的执行证据。请求需要 `evidence_uri`，可选 `provider`、`deleted_count`、`executed_at`、`notes`。接口只把 run 状态更新为 `executed_outside_app` 并写 `record_cache_retention_execution_evidence` 审计事件，不在应用内执行物理删除。
 
 #### `POST /api/connectors/astock/seed`
 
@@ -340,13 +554,14 @@
 
 #### `POST /api/document-parsing/paddleocr`
 
-调用配置的 PaddleOCR-VL 文档解析备用接口。请求必须配置 `AI_QUANT_PADDLEOCR_TOKEN`；服务端只记录 provider、job id 和模型审计，不记录 token。
+调用配置的 PaddleOCR-VL 文档解析备用接口。请求必须配置 `AI_QUANT_PADDLEOCR_TOKEN`；服务端只记录 provider、job id、模型、缓存命中、耗时和估算成本审计，不记录 token。结果按文档/URL、content hash/source URI、模型和 optional payload 缓存在运行时内存中，可用 `use_cache=false` 强制重跑。
 
 请求字段：
 
 - `document_id` 可选；解析已入湖文档的 `object_uri`，如无本地对象且 `source_uri` 是 HTTP(S)，则提交 URL
 - `file_url` 可选；直接提交远程文件 URL
 - `optional_payload` 可选；覆盖 PaddleOCR 可选参数，例如 `useChartRecognition`
+- `use_cache` 可选；默认 `true`
 
 返回字段：
 
@@ -358,6 +573,9 @@
 - `page_count`
 - `pages`
 - `text`
+- `cache_hit`
+- `elapsed_ms`
+- `estimated_cost`
 
 #### `POST /api/ingestion/sources`
 
@@ -502,7 +720,7 @@
 
 #### `POST /api/entity-mappings`
 
-写入 A/H/U 主体映射。
+写入 A/H/U 主体映射。可显式传入 `confidence`、`source`、`version`；如未传 confidence，系统会基于 LEI/CIK/FIGI/ISIN/ticker/market 标识符完整度给出可解释默认置信度。
 
 #### `POST /api/entity-mappings/batch`
 
@@ -510,7 +728,7 @@
 
 #### `GET /api/entity-mappings/quality-report`
 
-根据人工标签样本计算主体映射覆盖率、市场分布、准确率和不匹配样例。
+根据人工标签样本计算主体映射覆盖率、市场分布、准确率、不匹配样例、平均消歧置信度和低置信映射清单。支持 `issuer_id`、`labels`、`low_confidence_threshold`、`limit`。
 
 #### `GET /api/market-data`
 
@@ -551,6 +769,14 @@
 - `report_period`
 - `limit`
 
+#### `GET /api/13f/holdings/changes`
+
+按 filer/issuer/security 计算 13F 持仓变化时间序列，返回新建、增持、减持、清仓和不变记录，以及 shares/value 的绝对和百分比变化。可用 `issuer_id`、`security_id`、`filer_cik`、`report_period`、`include_new`、`min_abs_value_delta`、`limit` 过滤。
+
+#### `GET /api/13f/candidate-pool`
+
+基于最新或指定报告期的 13F 持仓生成研究候选池和风控展示。按 issuer/security 聚合持仓价值、filer 数、净增减持、crowding score、FIGI/ISIN/ticker 映射和映射置信度，并输出 `candidate_score`、`score_components` 与 `risk_tags`。该接口固定 `automation_allowed=false`，只用于中低频研究候选和拥挤度风险，不生成交易信号。支持 `issuer_id`、`security_id`、`report_period`、`min_value_usd`、`max_crowding_score`、`limit`。
+
 #### `POST /api/13f/crowding/update`
 
 根据指定主体和报告期的 13F 持仓生成 `CrowdingSnapshot`。
@@ -563,13 +789,15 @@
 
 #### `POST /api/disclosure-events/classify`
 
-从 8-K、6-K、20-F 等披露文件生成事件标签、严重性、摘要和证据链接。
+从 8-K、6-K、20-F 等披露文件生成事件标签、SEC item code/title、严重性、摘要和证据链接。8-K 支持常见 Item 1.01、2.02、2.05、5.02、7.01、8.01 的规则识别。
 
 请求字段：
 
 - `document_id`
 - `event_id`
 - `event_type`
+- `item_code`
+- `item_title`
 - `severity`
 
 #### `POST /api/disclosure-events`
@@ -578,7 +806,15 @@
 
 #### `GET /api/disclosure-events`
 
-按 `issuer_id`、`security_id`、`event_type`、`severity` 查询披露事件墙。
+按 `event_id`、`issuer_id`、`security_id`、`event_type`、`severity` 查询披露事件墙。已回写的 `post_event_performance` 会随事件返回。
+
+#### `GET /api/disclosure-events/performance`
+
+按事件和公开 EOD 行情计算披露后的后验表现，不写回事件记录。支持 `event_id` / `event_ids`、`issuer_id`、`security_id`、`event_type`、`severity`、`windows`、`benchmark_security_id`、`source_id`、`data_type`、`adjustment_mode`、`price_field` 和 `limit`。默认窗口为 1/5/20 天，默认来源为 `public_eod_market_data`。
+
+#### `POST /api/disclosure-events/performance`
+
+同上，但会把事件窗口收益、基准收益、超额收益、缺失行情问题、计算参数和 `computed_at` 回写到 `DisclosureEvent.post_event_performance`，用于事件墙、图谱和后续复盘。
 
 #### `POST /api/connectors/sec/recent`
 
@@ -812,6 +1048,26 @@
 
 按 broker、source、status 或关键词查询研报 manifest。
 
+#### `GET /api/research-reports/governance-report`
+
+输出本地研报治理报告，用于“研报只能作为外部观点/本地参考”的边界控制。报告按 broker/source 统计集中度，按研报年月和 `as_of` 判断过期，按已登记 Document 回链 issuer/security，并返回 `stale_research_report`、`missing_document_link`、`single_broker_concentration_breach`、`single_source_concentration_breach` 等问题。支持 `issuer_id`、`security_id`、`broker`、`source_id`、`status`、`as_of`、`stale_after_days`、`max_single_source_share`、`limit`。
+
+#### `GET /api/research-reports/mapping-report`
+
+输出本地研报到公司、证券、行业和披露事件的映射报告。映射来自研报 ingest payload 中的 `issuer_id`、`security_id`、`industry`、`event_ids`，并可按同一 issuer/security 查找候选披露事件。报告固定返回 `automation_allowed=false` 和本地参考用途边界，研报不会升级为事实真相源或训练数据。支持 `issuer_id`、`security_id`、`broker`、`source_id`、`industry`、`event_id`、`status`、`include_candidate_events`、`limit`。
+
+#### `GET /api/research-reports/viewpoint-report`
+
+输出本地研报观点对比和偏见提示。报告按 issuer/security/broker/topic 过滤，基于题名、文件名和已登记 Document 文本里的主题词与情绪词，汇总同主题 broker 分布、情绪分布、单一 broker 占比，并返回 `single_broker_viewpoint`、`broker_concentration_bias`、`missing_negative_counterview`、`missing_positive_counterview` 等告警。报告固定 `automation_allowed=false`，只作为本地参考观点层。
+
+#### `GET /api/research-reports/extraction-queue`
+
+返回本地研报文本抽取/OCR 队列 dry-run。每个条目包含 `report_id`、`document_id`、broker/source、文件类型、当前状态、`action`、`reason`、`parser_version` 和使用边界；动作包括 `ingest_first`、`ready_text_extract`、`ocr_required`、`skip_already_indexed`、`repair_document_link`。响应带 `cache_policy`，固定 raw text 和 citation index 的保留期口径。支持 `broker`、`source_id`、`status`、`file_type`、`force`、`limit`、`citation_char_limit`、`parser_version`、`raw_text_cache_ttl_days`、`citation_index_ttl_days`。
+
+#### `POST /api/research-reports/extraction-queue`
+
+同 `GET /api/research-reports/extraction-queue`；当 `execute=true` 时会批量调用单份抽取逻辑。可抽取文本会生成 citation evidence；无文本 PDF/扫描件会批量创建 `research_report_text_extraction_required` 人工复核项。
+
 #### `POST /api/research-reports/{report_id}/ingest`
 
 将单份研报按需登记为 `Document`，保留本地 `object_uri` 和 restricted rights tag，供 OCR、证据抽取和人工引用使用。
@@ -821,6 +1077,8 @@
 - `issuer_id`
 - `security_id`
 - `document_id`
+- `industry`
+- `event_ids`
 - `language`
 
 #### `POST /api/research-reports/{report_id}/extract`
@@ -851,7 +1109,7 @@
 
 #### `POST /api/research/answers`
 
-创建英文 evidence 优先的研究问答与中文摘要审计记录。接口会保留英文原文 evidence、中文摘要、summary 版本、prompt 版本、模型版本、来源公开性和人工覆核状态，并写入审计日志。对非公开或本地参考来源，`english_source_text` 会按 `citation_char_limit` 截断并标记 `citation_truncated`，避免长片段外泄。
+创建英文 evidence 优先的研究问答与中文摘要审计记录。接口会保留英文原文 evidence、标准化 `citations`（evidence/document/page/bbox/source URI/quote/format）、中文摘要、summary 版本、prompt 版本、模型版本、来源公开性和人工覆核状态，并写入审计日志。对非公开或本地参考来源，`english_source_text` 会按 `citation_char_limit` 截断并标记 `citation_truncated`，避免长片段外泄。
 
 请求字段：
 
@@ -873,6 +1131,14 @@
 #### `GET /api/research/answers/quality-report`
 
 返回答案级质量和人工复核队列报告，检查 evidence/document 回链、英文原文保留、受限来源引用截断、人工复核状态、summary/prompt/model 版本，并输出 `source_link_rate`、`review_coverage`、`pending_review` 和逐答案 `issues`。可用 `issuer_id`、`human_review_status`、`limit` 过滤；默认告警 `alert_research_answer_pending_review` 使用 `research_answer_pending_reviews` 指标触发。
+
+#### `GET /api/research/answers/summary-benchmark`
+
+返回研究答案中文摘要质量 benchmark。规则基线会检查 evidence/document 回链、英文原文保留、中文摘要长度、summary/prompt/model 版本、受限来源引用边界、人工复核状态、过度确定性措辞和英文 anchor term 覆盖率，输出 `score`、`passed`、`blocking_issues`、`warnings`、`pass_rate`、`average_score` 和逐答案明细。支持 `issuer_id`、`answer_id`、`human_review_status`、`min_score`、`min_summary_chars`、`max_summary_chars`、`min_anchor_coverage`、`require_review`、`limit` 过滤。
+
+#### `POST /api/research/answers/summary-benchmark`
+
+同 `GET /api/research/answers/summary-benchmark`，用于复杂过滤 payload。
 
 #### `POST /api/research/answers/{answer_id}/review`
 
@@ -937,6 +1203,27 @@
 
 返回执行意图。
 
+#### `POST /api/execution-intents/{intent_id}/simulate`
+
+对已审批决策生成的执行意图做模拟成交，并同步写入 `PortfolioTransaction` ledger。接口只接受 `mode=simulated`，拒绝 live/broker 模式；无 `fill_price` 时可使用 intent 标的在 `trade_date` 前最近公开 EOD 收盘价。返回 `SimulatedExecution`、对应交易流水、更新后的 intent，以及 `live_execution_allowed=false`。
+
+请求字段：
+
+- `execution_id`
+- `transaction_id`
+- `mode`
+- `trade_date`
+- `quantity`
+- `fill_price`
+- `slippage_bps`
+- `fees`
+- `account_id`
+- `strategy_id`
+
+#### `GET /api/simulated-executions`
+
+按 `intent_id`、`account_id`、`status` 查询模拟成交记录。该接口只暴露模拟成交，不代表真实券商订单。
+
 #### `POST /api/exceptions`
 
 创建例外事项。
@@ -981,6 +1268,17 @@
 - `user`
 - `comment`
 
+#### `POST /api/operating-reports/{report_id}/board-pack`
+
+导出已发布月报的 Board pack 制品，支持 `format=markdown` 或 `format=pdf`，写入对象存储并返回 `object_uri`、`sha256`、`size_bytes`、`content_type` 和源 markdown 内容。PDF 由 markdown 源内容生成，适合作为可哈希、可归档的董事会包附件。默认要求 `status=published`；如确需草稿预览，可显式传 `allow_draft=true`。导出动作会写入审计日志，不会生成 execution intent 或绕过投委会审批。
+
+请求字段：
+
+- `format`
+- `object_id`
+- `include_content`
+- `allow_draft`
+
 #### `POST /api/operating-reports/{report_id}/red-flags/{red_flag_id}/resolve`
 
 逐条关闭月报红灯项，写入处理结论、责任人、时间戳和审计事件。
@@ -996,6 +1294,10 @@
 #### `GET /api/strategy-replays`
 
 按 `decision_id`、`version`、`actual_outcome`、`created_from`、`created_to` 筛选策略回放。
+
+#### `GET /api/strategy-replays/compare`
+
+按 `decision_id`、`version` 或 `replay_ids` 对比多个策略回放批次，返回最新 replay、版本分布、实际结果分布、variance 数量、下一步动作桶和逐 replay 对比行。该报告只用于投后复盘和策略实验室 UI，不会生成交易意图。
 
 #### `POST /api/strategy-replays`
 
@@ -1016,17 +1318,23 @@
 
 #### `POST /api/portfolio/optimize`
 
-生成纸面组合候选方案。当前实现为可解释的对角 Black-Litterman 原型：由市场权重和波动率得到均衡先验，由 research view 的 `confidence` 绑定 `Omega`，再应用禁投清单、单证券上限、市场预算、行业预算，输出候选权重、风险贡献、换手、压力测试和 walk-forward 诊断。该接口不会创建 execution intent。
+生成纸面组合候选方案。当前实现为可解释的 Black-Litterman 原型：由市场权重和波动率得到均衡先验，由 research view 的 `confidence` 绑定 `Omega`，再应用禁投清单、单证券上限、市场预算、行业预算，输出候选权重、风险贡献、换手、约束影子价格、压力测试、walk-forward 诊断，以及基于 `return_history` 的样本协方差、相关矩阵和对角 shrinkage 协方差。该接口不会创建 execution intent。
 
 请求字段：
 
 - `proposal_id`
 - `securities`
 - `views`
+- `benchmark_id`
+- `require_benchmark_passed_evidence`
 - `risk_aversion`
 - `tau`
 - `constraints`
 - `risk_budget`
+- `return_history`
+- `covariance_shrinkage`
+
+当 `require_benchmark_passed_evidence=true` 时，每个 view 的 `evidence_ids` 必须已有通过的结构化抽取/benchmark 结果；否则返回合规闸门错误，避免未通过证据链直接进入组合候选权重。
 - `stress_scenarios`
 - `return_history`
 
@@ -1050,7 +1358,7 @@
 
 #### `POST /api/portfolio/valuation`
 
-基于公开/已提供行情做组合持仓估值。输入持仓股数和现金后，按 `as_of_date` 前最近行情价格计算市值、权重、现金权重和缺失价格清单。该接口只用于研究、回测、估值和风险展示，不代表可交易价格。
+基于公开/已提供行情做组合持仓估值。输入持仓股数和现金后，按 `as_of_date` 前最近行情价格计算市值、权重、现金权重和缺失价格清单，并返回 `risk_decomposition`，按 `market`、`currency`、`industry`、`style` 汇总市值/权重、外币权重、现金权重和集中度。`industry` / `style` 可通过 `groups[security_id]` 或 holdings 行内字段注入。该接口只用于研究、回测、估值和风险展示，不代表可交易价格。
 
 请求字段：
 
@@ -1058,13 +1366,14 @@
 - `holdings`
 - `cash`
 - `currency`
+- `groups`
 - `source_id`
 - `data_type`
 - `price_field`
 
 #### `POST /api/portfolio/transactions`
 
-登记真实或回测交易流水，作为持仓、月报绩效和归因的输入层。当前仅支持 long-only buy/sell，写入时校验证券、日期、数量、价格、费用和来源边界。
+登记人工录入、模拟或回测交易流水，作为持仓、月报绩效和归因的输入层。当前仅支持 long-only buy/sell，写入时校验证券、日期、数量、价格、费用和来源边界；模拟执行推荐通过 `/api/execution-intents/{intent_id}/simulate` 写入，避免绕过审批链。
 
 请求字段：
 
@@ -1107,7 +1416,29 @@
 - `thesis_id`
 - `decision_id`
 
-返回字段包含 `issuers`、`securities`、`market_data`、`corporate_actions`、`documents`、`evidence`、`manual_reviews`、`theses`、`signals`、`decisions`、`execution_intents`、`reviews`、`strategy_replays`、`exceptions`、`entity_mappings`、`research_cards`、`crowding`、`institutional_holdings`、`disclosure_events`、`challengers`、`portfolio_proposals`、`portfolio_positions` 和 `edges`。其中 `portfolio_positions` 由已审批或待审批的 execution intent 派生，`portfolio_proposals` 是纸面组合候选方案，二者都不代表自动交易。
+返回字段包含 `issuers`、`securities`、`market_data`、`corporate_actions`、`documents`、`evidence`、`manual_reviews`、`theses`、`signals`、`decisions`、`execution_intents`、`reviews`、`strategy_replays`、`exceptions`、`entity_mappings`、`research_cards`、`crowding`、`institutional_holdings`、`disclosure_events`、`challengers`、`portfolio_proposals`、`portfolio_positions` 和 `edges`。每条 edge 默认包含 `source`、`timestamp`、`version`、`confidence` 元数据。其中 `portfolio_positions` 由已审批或待审批的 execution intent 派生，`portfolio_proposals` 是纸面组合候选方案，二者都不代表自动交易。
+
+#### `GET /api/graph/traceability-report`
+
+返回观点、决策和研究问答到 evidence/document 的回溯率报告，用于检查结论是否能沿图谱回到原始证据。可用 `issuer_id`、`include_details`、`limit` 过滤。报告会标记缺失 evidence、缺失 document、decision signal 断链和 research answer 英文原文缺失等问题。
+
+#### `GET /api/graph/edge-quality-report`
+
+检查图谱 edge 元数据覆盖率，要求每条边具备 `source`、`timestamp`、`version`、`confidence`。返回 `edge_metadata_coverage`、`missing_counts` 和逐边缺失明细。支持 `issuer_id`、`security_id`、`evidence_id`、`thesis_id`、`decision_id`、`limit`。
+
+请求字段：
+
+- `issuer_id`
+- `include_details`
+- `limit`
+
+#### `GET /api/graph/neo4j/export`
+
+把当前本地图谱导出为 Neo4j bulk upsert-compatible payload，包含 `nodes`、`relationships`、labels、relationship type、properties、node/relationship key 和 `content_sha256`。接口只生成 adapter payload，不直接连接 Neo4j。支持 `issuer_id`、`security_id`、`evidence_id`、`thesis_id`、`decision_id`、`record_export`。
+
+#### `POST /api/graph/neo4j/sync`
+
+把 Neo4j 导出 payload 写入 `AlertNotification` outbox，默认 `channel=neo4j_graph_sync_outbox`、`target=neo4j://graph-db`，可覆盖 `channel`、`target`、`provider`、`max_delivery_attempts`、`delivery_backoff`、`force` 和 `mark_sent`，后续由 `/api/alerts/notifications/deliver` 推进。
 
 #### `GET /api/search`
 
@@ -1122,6 +1453,26 @@
 #### `POST /api/search`
 
 同 `GET /api/search`，用于复杂查询体。
+
+#### `POST /api/search/rebuild`
+
+从当前事实层重新生成混合 `SearchRecord`，并同步全文索引和语义索引。支持 `targets=["keyword","semantic"]`、`issuer_id`、`resource_types`、`include_restricted`；外部全文索引失败且启用 fallback 时会同步本地索引并返回 `fallback_from` / `fallback_error`，同时写入审计日志。返回 `record_count`、`resource_counts`、各目标 `sync` 结果和错误列表。
+
+#### `GET /api/search/qdrant/export`
+
+把混合 `SearchRecord` 导出为 Qdrant points upsert-compatible payload，包含 collection、vector name、64 维本地 hashed term-frequency 向量、payload 权限边界、rights tag 和 `content_sha256`。接口只生成 adapter payload，不直接连接 Qdrant。支持 `issuer_id`、`resource_types`、`include_restricted`、`collection`、`record_export`。
+
+#### `POST /api/search/qdrant/sync`
+
+把 Qdrant points payload 写入 `AlertNotification` outbox，默认 `channel=qdrant_vector_sync_outbox`、`target=qdrant://vector-store`，可覆盖 `channel`、`target`、`provider`、`max_delivery_attempts`、`delivery_backoff`、`force` 和 `mark_sent`，后续由 `/api/alerts/notifications/deliver` 推进。
+
+#### `GET /api/search/adapter-sync/retry`
+
+对 Neo4j / Qdrant adapter sync outbox 做失败重试演练。默认扫描 `neo4j_graph_sync_outbox` 和 `qdrant_vector_sync_outbox` 中 `status=failed` 的通知，也可用 `channels`、`notification_ids`、`status` 过滤；返回候选通知、尝试次数、最大尝试次数、最近错误和 `retryable` 判断。默认 dry-run，不直接调用外部 Neo4j/Qdrant client。
+
+#### `POST /api/search/adapter-sync/retry`
+
+同 `GET`，传 `execute=true` 时复用 `/api/alerts/notifications/deliver` 状态机对可重试通知再次发送。可传 `provider`、`max_delivery_attempts`、`timeout_ms` 覆盖本次演练参数，并写入审计日志。
 
 ### 4.6 Dashboard
 
@@ -1178,7 +1529,20 @@
 
 #### `POST /api/alerts/notify`
 
-把当前开放告警写入通知记录，可指定 `channel`、`target`、`alert_ids`。当前为内部/外部通道适配前的可靠 outbox，不直接调用第三方服务。
+把当前开放告警写入通知记录，可指定 `channel`、`target`、`alert_ids`。传 `route_failures=true` 或 `failure_routes` 时，会按 `playbook_id` / `rule_id` / `metric` 把采集、检索、LLM、OCR 和 workflow 失败路由到专属 channel/target，并把 provider、max attempts 和 backoff 写入 notification delivery policy；后续由 `/api/alerts/notifications/deliver` 执行。
+
+请求字段：
+
+- `channel`
+- `target`
+- `alert_ids`
+- `mark_sent`
+- `route_failures`
+- `failure_routes`
+
+#### `POST /api/alerts/notifications/deliver`
+
+发送告警通知 outbox。默认 `execute=false` 只做 dry-run；`execute=true` 时按 `notification_ids`、`channel`、`status` 过滤通知并标记为 `sent` 或 `failed`，把 `delivery_provider`、`delivery_attempts`、`delivered_at`、`delivery_response` 和错误写回 notification payload，并遵守通知 payload 内的 `delivery_policy.max_attempts` 或请求级 `max_delivery_attempts`。当 `provider` 为 `webhook`、`http` 或 `https` 时，会对 HTTP(S) `target` 发起 JSON POST；当 `provider=email|smtp` 时使用请求或环境变量中的 SMTP 配置发送 EmailMessage；当 `provider=slack` 时向 Slack webhook URL 发送 JSON payload。非 HTTP(S) webhook/slack target、缺失 SMTP host、缺失 email 收件人等会失败并记录错误；其他 provider 保持 state-only 模式。
 
 #### `GET /api/alerts/notifications`
 
@@ -1202,6 +1566,20 @@
 
 - `create_schedules`
 - `limit`
+
+#### `POST /api/drill-schedules/{schedule_id}/result`
+
+回写事故演练结果，更新 `last_run_at`、`last_result`、`rca_summary`、`action_items`，并按 `cadence` 推进 `next_run_at`。`result` 支持 `passed`、`failed`、`partial`、`skipped`，回写动作进入审计日志并会出现在 `/api/incidents/calendar`。
+
+请求字段：
+
+- `result`
+- `run_at`
+- `next_run_at`
+- `rca_summary`
+- `action_items`
+- `owner`
+- `notes`
 
 ## 5. 接口权限
 

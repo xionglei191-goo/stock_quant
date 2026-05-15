@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -45,6 +46,27 @@ def main() -> None:
     demo = request("POST", "/api/demo/full-flow", {}, role="platform", actor="platform_smoke")
     assert demo["data"]["decision_id"] == "dec_demo"
     assert demo["data"]["intent_id"] == "intent_demo"
+
+    suffix = str(int(time.time() * 1000))
+    simulated = request(
+        "POST",
+        f"/api/execution-intents/{demo['data']['intent_id']}/simulate",
+        {
+            "execution_id": f"simexec_smoke_{suffix}",
+            "transaction_id": f"ptxn_simexec_smoke_{suffix}",
+            "quantity": 10,
+            "fill_price": 100.0,
+            "account_id": f"smoke_paper_{suffix}",
+        },
+        role="pm",
+        actor="pm_smoke",
+    )
+    assert simulated["data"]["mode"] == "simulated"
+    assert simulated["data"]["live_execution_allowed"] is False
+    assert simulated["data"]["transaction"]["source_id"] == "simulated_trade_execution"
+
+    executions = request("GET", f"/api/simulated-executions?account_id=smoke_paper_{suffix}", role="pm", actor="pm_smoke")
+    assert executions["data"]["total"] == 1
 
     metrics = request("GET", "/api/metrics", role="unknown")
     assert metrics["data"]["counts"]["documents"] >= 1
