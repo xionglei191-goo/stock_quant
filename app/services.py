@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from .errors import ComplianceGateError, ConflictError, NotFoundError, PermissionDenied, ValidationError
 from .connectors import ConnectorRegistry
+from .llm_gateway import LLMGateway
 from .models import (
     AuditEvent,
     AlertNotification,
@@ -76,6 +77,7 @@ class SystemService:
     def __init__(self, store: InMemoryStore | None = None):
         self.store = store or InMemoryStore()
         self.connectors = ConnectorRegistry()
+        self.llm_gateway = LLMGateway()
         self.object_store = create_object_store_from_env(Path.cwd() / "data" / "objects")
         self.search_index = create_search_index_from_env()
         self.local_search_index = LocalSearchIndex()
@@ -85,6 +87,16 @@ class SystemService:
 
     def set_trace_id(self, trace_id: str) -> None:
         self.trace_id = trace_id
+
+    def llm_openai_chat_completions(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        result = self.llm_gateway.openai_chat_completions(payload)
+        self._audit(actor, "llm_openai_chat_completions", "llm_gateway", result["endpoint"], source="llm_gateway", model_version=result["model"])
+        return result
+
+    def llm_anthropic_messages(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        result = self.llm_gateway.anthropic_messages(payload)
+        self._audit(actor, "llm_anthropic_messages", "llm_gateway", result["endpoint"], source="llm_gateway", model_version=result["model"])
+        return result
 
     def _audit(
         self,

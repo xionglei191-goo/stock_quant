@@ -10,6 +10,7 @@ import zlib
 from app.api import ApiRouter
 from app.connectors import AShareConnector, ConnectorDocument
 from app.errors import ConflictError, PermissionDenied
+from app.llm_gateway import LLMGateway
 from app.object_store import S3CompatibleObjectStore
 from app.search import OpenSearchIndex, SearchRecord
 from app.services import SystemService
@@ -831,6 +832,72 @@ class SystemServiceTests(unittest.TestCase):
         self.assertFalse(response.success)
         self.assertEqual(response.status_code, 403)
         self.assertTrue(response.trace_id.startswith("trace_"))
+
+    def test_llm_gateway_routes_forward_openai_and_anthropic_payloads(self) -> None:
+        sent = []
+
+        def fake_send(request, timeout):
+            sent.append(
+                {
+                    "url": request.full_url,
+                    "timeout": timeout,
+                    "headers": {key.lower(): value for key, value in request.header_items()},
+                    "body": json.loads(request.data.decode("utf-8")),
+                }
+            )
+            if request.full_url.endswith("/v1/messages"):
+                return b'{"id":"msg_1","content":[{"type":"text","text":"pong"}]}'
+            return b'{"id":"chatcmpl_1","choices":[{"message":{"content":"pong"}}]}'
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            timeout=12,
+            http_send=fake_send,
+        )
+
+        openai_response = self.router.dispatch(
+            "POST",
+            "/api/llm/openai/chat/completions",
+            {"messages": [{"role": "user", "content": "ping"}]},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(openai_response.success)
+        self.assertEqual(openai_response.data["model"], "qwen3.6-plus")
+        self.assertEqual(openai_response.data["response"]["id"], "chatcmpl_1")
+        self.assertEqual(sent[0]["url"], "https://llm.example.test/v1/chat/completions")
+        self.assertEqual(sent[0]["body"]["model"], "qwen3.6-plus")
+        self.assertEqual(sent[0]["headers"]["authorization"], "Bearer test-key")
+
+        anthropic_response = self.router.dispatch(
+            "POST",
+            "/api/llm/anthropic/messages",
+            {"max_tokens": 256, "messages": [{"role": "user", "content": "ping"}]},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(anthropic_response.success)
+        self.assertEqual(anthropic_response.data["response"]["id"], "msg_1")
+        self.assertEqual(sent[1]["url"], "https://llm.example.test/v1/messages")
+        self.assertEqual(sent[1]["headers"]["authorization"], "Bearer test-key")
+        self.assertEqual(sent[1]["headers"]["x-api-key"], "test-key")
+        self.assertEqual(sent[1]["headers"]["anthropic-version"], "2023-06-01")
+        self.assertEqual(self.service.store.audit_log[-1].action, "llm_anthropic_messages")
+
+    def test_llm_gateway_requires_api_key(self) -> None:
+        self.service.llm_gateway = LLMGateway(api_key="", http_send=lambda _request, _timeout: b"{}")
+        response = self.router.dispatch(
+            "POST",
+            "/api/llm/openai/chat/completions",
+            {"messages": [{"role": "user", "content": "ping"}]},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertFalse(response.success)
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("AI_QUANT_LLM_API_KEY", response.error["message"])
 
     def test_health_and_metrics_endpoints(self) -> None:
         health = self.router.dispatch("GET", "/api/health", {}, role="unknown")

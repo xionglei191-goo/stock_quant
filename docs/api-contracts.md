@@ -44,6 +44,27 @@
 
 返回核心对象计数、审计事件数量、未处理例外、pending prompt 变更数量、对象存储 adapter 和检索 adapter。
 
+#### `POST /api/llm/openai/chat/completions`
+
+调用配置的 OpenAI 兼容上游 `/v1/chat/completions`。默认上游由 `AI_QUANT_LLM_BASE_URL` 指定，默认模型由 `AI_QUANT_LLM_DEFAULT_MODEL` 指定。请求必须配置 `AI_QUANT_LLM_API_KEY`；服务端只记录模型和 endpoint 审计，不记录请求正文。
+
+请求字段：
+
+- `model` 可选；默认 `qwen3.6-plus`
+- `messages`
+- 其他字段会原样转发给上游
+
+#### `POST /api/llm/anthropic/messages`
+
+调用配置的 Anthropic 兼容上游 `/v1/messages`。服务端会同时发送 `Authorization: Bearer ...`、`x-api-key` 和 `anthropic-version`，以兼容常见中转服务。
+
+请求字段：
+
+- `model` 可选；默认 `qwen3.6-plus`
+- `messages`
+- `max_tokens`
+- 其他字段会原样转发给上游
+
 #### `POST /api/ingestion/sources`
 
 创建或更新数据源定义。

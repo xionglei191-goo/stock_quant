@@ -136,6 +136,34 @@ docker compose up --build
 | 全文检索 | `AI_QUANT_SEARCH_BACKEND=local` | `AI_QUANT_SEARCH_BACKEND=opensearch`，配置 `AI_QUANT_OPENSEARCH_*` |
 | 检索降级 | 本地检索 | `AI_QUANT_SEARCH_FALLBACK=true` 时外部检索失败会回退本地 |
 
+## 大模型中转站
+
+服务提供 OpenAI / Anthropic 兼容上游的内部中转接口。默认模型为 `qwen3.6-plus`，默认上游地址为 `https://llm.nananobanana.cn`。API key 不应写入仓库，请通过环境变量注入：
+
+```bash
+export AI_QUANT_LLM_BASE_URL=https://llm.nananobanana.cn
+export AI_QUANT_LLM_API_KEY=...
+export AI_QUANT_LLM_DEFAULT_MODEL=qwen3.6-plus
+```
+
+OpenAI 兼容入口：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/llm/openai/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: analyst' \
+  -d '{"messages":[{"role":"user","content":"用一句话说明今天的研究重点"}]}'
+```
+
+Anthropic 兼容入口：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/llm/anthropic/messages \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: analyst' \
+  -d '{"max_tokens":256,"messages":[{"role":"user","content":"用一句话说明今天的研究重点"}]}'
+```
+
 ## A 股公告接入
 
 预览 A 股交易所最近公告元数据；`exchange=auto` 会按证券代码选择上交所或深交所：

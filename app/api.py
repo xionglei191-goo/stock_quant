@@ -153,6 +153,8 @@ class ApiRouter:
             ("POST", r"^/api/alerts/notify$", self._notify_alerts),
             ("GET", r"^/api/alerts/notifications$", self._list_alert_notifications),
             ("GET", r"^/api/alerts$", self._list_alerts),
+            ("POST", r"^/api/llm/openai/chat/completions$", self._llm_openai_chat_completions),
+            ("POST", r"^/api/llm/anthropic/messages$", self._llm_anthropic_messages),
             ("GET", r"^/api/signals/(?P<signal_id>[^/]+)$", self._get_signal),
             ("POST", r"^/api/decision-packs/build$", self._build_decision_pack),
             ("GET", r"^/api/decision-packs/(?P<decision_id>[^/]+)$", self._get_decision_pack),
@@ -208,6 +210,8 @@ class ApiRouter:
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO"}
         if path.startswith("/api/templates") or path.startswith("/api/research-cards") or path.startswith("/api/research/answers") or path.startswith("/api/crowding") or path.startswith("/api/challenger") or path.startswith("/api/playbooks") or path.startswith("/api/incident-reports") or path.startswith("/api/drill-schedules") or path.startswith("/api/alerts"):
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO", "PM", "分析师", "海外研究负责人"}
+        if path.startswith("/api/llm"):
+            return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人", "分析师", "NLP/ML 负责人", "海外研究负责人"}
         if path.startswith("/api/evidence") or path.startswith("/api/extractions") or path.startswith("/api/thesis") or path.startswith("/api/scoring"):
             return role in {"system", "分析师", "海外研究负责人", "CIO", "PM", "平台负责人", "NLP/ML 负责人", "风险/合规"}
         if path.startswith("/api/decision-packs") or path.startswith("/api/approvals") or path.startswith("/api/exceptions"):
@@ -441,6 +445,12 @@ class ApiRouter:
 
     def _list_alerts(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.alerts_payload(body)
+
+    def _llm_openai_chat_completions(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.llm_openai_chat_completions(body, actor=actor)
+
+    def _llm_anthropic_messages(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.llm_anthropic_messages(body, actor=actor)
 
     def _get_signal(self, path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/signals/(?P<signal_id>[^/]+)$", path)
