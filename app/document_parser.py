@@ -178,15 +178,108 @@ class PaddleOCRParser:
                 text = markdown.get("text", "") if isinstance(markdown, Mapping) else ""
                 markdown_images = markdown.get("images", {}) if isinstance(markdown, Mapping) else {}
                 output_images = layout.get("outputImages", {})
+                layout_items = self._layout_items(layout)
+                tables = self._table_items(layout)
                 pages.append(
                     {
                         "page_no": len(pages) + 1,
                         "markdown": str(text),
                         "markdown_images": dict(markdown_images) if isinstance(markdown_images, Mapping) else {},
                         "output_images": dict(output_images) if isinstance(output_images, Mapping) else {},
+                        "layout_items": layout_items,
+                        "tables": tables,
+                        "assets": self._page_assets(markdown_images, output_images),
                     }
                 )
         return pages
+
+    def _layout_items(self, layout: Mapping[str, Any]) -> list[dict[str, Any]]:
+        pruned = layout.get("prunedResult", {})
+        if not isinstance(pruned, Mapping):
+            pruned = {}
+        candidates = layout.get("layoutDetections") or layout.get("layoutParsingResults") or pruned.get("layoutDetections", [])
+        if not isinstance(candidates, list):
+            candidates = []
+        items: list[dict[str, Any]] = []
+        for index, item in enumerate(candidates, start=1):
+            if not isinstance(item, Mapping):
+                continue
+            bbox = self._normalize_bbox(item.get("bbox") or item.get("box") or item.get("coordinate") or item.get("poly") or item.get("points"))
+            text = str(item.get("text") or item.get("content") or item.get("label") or "").strip()
+            item_type = str(item.get("type") or item.get("label") or item.get("category") or "layout").strip() or "layout"
+            if bbox or text:
+                items.append({"index": index, "type": item_type, "bbox": bbox, "text": text, "confidence": float(item.get("score", item.get("confidence", 0.0)) or 0.0)})
+        return items
+
+    def _table_items(self, layout: Mapping[str, Any]) -> list[dict[str, Any]]:
+        pruned = layout.get("prunedResult", {})
+        if not isinstance(pruned, Mapping):
+            pruned = {}
+        candidates = layout.get("tables") or layout.get("tableResults") or pruned.get("tables", [])
+        if not isinstance(candidates, list):
+            candidates = []
+        tables: list[dict[str, Any]] = []
+        for table_index, table in enumerate(candidates, start=1):
+            if not isinstance(table, Mapping):
+                continue
+            cells = []
+            for cell_index, cell in enumerate(table.get("cells", []) if isinstance(table.get("cells", []), list) else [], start=1):
+                if not isinstance(cell, Mapping):
+                    continue
+                cells.append(
+                    {
+                        "cell_index": cell_index,
+                        "row": int(cell.get("row", cell.get("row_index", 0)) or 0),
+                        "col": int(cell.get("col", cell.get("column", cell.get("col_index", 0))) or 0),
+                        "rowspan": int(cell.get("rowspan", 1) or 1),
+                        "colspan": int(cell.get("colspan", 1) or 1),
+                        "text": str(cell.get("text") or cell.get("content") or "").strip(),
+                        "bbox": self._normalize_bbox(cell.get("bbox") or cell.get("box") or cell.get("coordinate") or cell.get("poly") or cell.get("points")),
+                    }
+                )
+            tables.append(
+                {
+                    "table_index": table_index,
+                    "bbox": self._normalize_bbox(table.get("bbox") or table.get("box") or table.get("coordinate") or table.get("poly") or table.get("points")),
+                    "cells": cells,
+                }
+            )
+        return tables
+
+    def _page_assets(self, markdown_images: Any, output_images: Any) -> list[dict[str, Any]]:
+        assets: list[dict[str, Any]] = []
+        for source, images in (("markdown", markdown_images), ("output", output_images)):
+            if not isinstance(images, Mapping):
+                continue
+            for name, uri in images.items():
+                assets.append({"asset_type": "image", "source": source, "name": str(name), "uri": str(uri)})
+        return assets
+
+    def _normalize_bbox(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, Mapping):
+            if {"x", "y", "width", "height"}.issubset(value.keys()):
+                return {key: float(value[key]) for key in ("x", "y", "width", "height")}
+            if {"left", "top", "right", "bottom"}.issubset(value.keys()):
+                left = float(value["left"])
+                top = float(value["top"])
+                right = float(value["right"])
+                bottom = float(value["bottom"])
+                return {"x": left, "y": top, "width": max(0.0, right - left), "height": max(0.0, bottom - top)}
+        if isinstance(value, (list, tuple)) and len(value) >= 4:
+            numbers: list[float] = []
+            for item in value:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    numbers.extend([float(item[0]), float(item[1])])
+                elif isinstance(item, (int, float)):
+                    numbers.append(float(item))
+            if len(numbers) == 4:
+                x1, y1, x2, y2 = numbers
+                return {"x": x1, "y": y1, "width": max(0.0, x2 - x1), "height": max(0.0, y2 - y1)}
+            if len(numbers) >= 8:
+                xs = numbers[0::2]
+                ys = numbers[1::2]
+                return {"x": min(xs), "y": min(ys), "width": max(xs) - min(xs), "height": max(ys) - min(ys)}
+        return {}
 
     def _send_json_request(self, request: Request, error_prefix: str) -> dict[str, Any]:
         if not self.token:

@@ -2,7 +2,7 @@
 
 ## Scope
 
-This note tracks US-market compliance questions that must be answered before the system moves from research assistance to external asset management, broker connectivity, derivatives trading, or automated execution.
+This note tracks US-market compliance questions for a research and simulated-portfolio system. Broker connectivity, derivatives trading, automated execution, and external asset management are explicit non-goals for the current project; the questions below are retained as boundary reminders, not as near-term implementation requirements.
 
 ## Reg FD
 
@@ -31,14 +31,14 @@ This note tracks US-market compliance questions that must be answered before the
 | Are performance reports marketed externally? | Not allowed without review of adviser, advertising, and recordkeeping rules | CEO + Legal |
 | Are model changes and prompts books-and-records material? | Treat as audit-retained governance records | Compliance |
 
-## Broker Interfaces And Execution
+## Broker Interfaces And Execution Boundary
 
 | Question | Current Stance | Owner |
 |---|---|---|
-| Can `ExecutionIntent` connect directly to a broker? | No; it is a paper/manual intent in MVP | CIO |
-| What approvals are required before order routing? | DecisionPack approval, execution policy, kill switch, broker review | CEO + CIO |
-| Are duplicate or stale intents blocked? | Required before broker integration | Platform |
-| Is best execution policy documented? | Open item before any live routing | Compliance |
+| Can `ExecutionIntent` connect directly to a broker? | No; it is a paper/simulation object only | CIO |
+| Is order routing in scope? | No; do not implement live routing in this system | CEO + CIO |
+| Are duplicate or stale intents blocked? | Useful for simulation hygiene; not a broker requirement | Platform |
+| Is best execution policy documented? | Not required for current simulated-only scope; revisit only if the project scope changes | Compliance |
 
 ## Derivatives And Cross-Border
 
@@ -49,7 +49,7 @@ This note tracks US-market compliance questions that must be answered before the
 | Are currency controls, tax withholding, and short-sale rules covered? | Not yet; require separate workstream | Legal + Operations |
 | Can ADR/A/H linked securities be traded as one exposure? | Research mapping only until legal and broker rules are reviewed | CIO |
 
-## Required Before Live US Execution
+## If Scope Ever Changes Toward Live US Execution
 
 1. Written data-license matrix for SEC, market data, transcript, and research sources.
 2. Reg FD source checklist attached to event and decision workflows.
@@ -57,4 +57,4 @@ This note tracks US-market compliance questions that must be answered before the
 4. Adviser, broker, best-execution, derivatives, and cross-border legal review.
 5. Kill switch, duplicate-order guard, stale-intent guard, and incident playbook drill.
 
-Until these are complete, US-market functionality remains research, evidence, paper portfolio, and human committee workflow only.
+Until the project is explicitly re-scoped and these are complete, US-market functionality remains research, evidence, simulated portfolio, and human review workflow only.

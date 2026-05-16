@@ -252,7 +252,38 @@
   "bbox": "string",
   "span_text": "string",
   "canonical_text": "string",
-  "confidence": 0.0
+  "confidence": 0.0,
+  "locator": {
+    "scheme": "page_chunk_v1|ocr_bbox_span_v1",
+    "page_no": 1,
+    "chunk_index": 1,
+    "span": {
+      "start": 0,
+      "end": 120,
+      "length": 120,
+      "matched": true,
+      "text_sha256": "string"
+    },
+    "bbox": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 0.0,
+      "height": 0.0
+    },
+    "tables": [
+      {
+        "table_index": 1,
+        "bbox": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0},
+        "cells": [
+          {"row": 1, "col": 1, "text": "string", "bbox": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0}}
+        ]
+      }
+    ],
+    "legacy_bbox": "page=1;chunk=1"
+  },
+  "assets": [
+    {"asset_type": "image", "source": "markdown|output", "name": "string", "uri": "string"}
+  ]
 }
 ```
 
@@ -461,6 +492,8 @@
 
 ### 4.12 ExecutionIntent
 
+纸面/模拟执行意图，仅用于把已审批研究决策转成模拟持仓和复盘反馈输入；不代表真实订单、券商委托或自动调仓。
+
 ```json
 {
   "intent_id": "string",
@@ -631,7 +664,7 @@
 | `GENERATES_SIGNAL` | ThesisCard | ResearchSignal | 研究结论转成信号 |
 | `INCLUDED_IN_DECISION` | ResearchSignal | DecisionPack | 信号进入决策包 |
 | `APPROVES` | User | DecisionPack | 人工签字 |
-| `CREATES_INTENT` | DecisionPack | ExecutionIntent | 已审批决策形成执行意图 |
+| `CREATES_INTENT` | DecisionPack | ExecutionIntent | 已审批决策形成纸面/模拟执行意图 |
 | `INTENT_ON` | ExecutionIntent | Security | 纸面执行意图关联证券和目标权重 |
 | `REVIEW_OF` | ReviewRecord | DecisionPack | 决策形成复盘 |
 | `REPLAY_OF` | StrategyReplay | DecisionPack | 决策形成策略回放 |

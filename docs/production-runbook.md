@@ -52,6 +52,11 @@ python3 scripts/ui_static_check.py
 python3 scripts/capacity_baseline.py --records 100
 python3 scripts/full_run_acceptance.py --capacity-records 10
 python3 scripts/smoke_test.py http://127.0.0.1:8000
+python3 scripts/staging_governance_acceptance.py http://127.0.0.1:8000 --record-readiness
+python3 scripts/staging_security_acceptance.py http://127.0.0.1:8000 --secret-manager-provider local-development-metadata-only
+python3 scripts/staging_otel_acceptance.py http://127.0.0.1:8000 --otel-endpoint http://127.0.0.1:4318/v1/logs --record-readiness
+python3 scripts/staging_lineage_registry_acceptance.py http://127.0.0.1:8000 --openlineage-target http://127.0.0.1:5001/openlineage --mlflow-target http://127.0.0.1:5002/mlflow
+python3 scripts/staging_vision_gate_acceptance.py http://127.0.0.1:8000 --record-launch-checklist
 ```
 
 进入 staging 后，对真实部署地址执行 HTTP 验收。该脚本只会使用模拟成交，不会开启真实券商或自动下单：
@@ -66,13 +71,13 @@ AI_QUANT_OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.internal/v1/logs \
 python3 scripts/staging_acceptance.py --record-readiness --notify-missing
 ```
 
-本机全量 staging 栈可直接用 Compose 启动 PostgreSQL、MinIO、OpenSearch、Neo4j、Qdrant、OpenTelemetry collector，以及 OpenLineage/MLflow HTTP 占位端点并自动跑验收：
+本机全量 staging 栈可直接用 Compose 启动 PostgreSQL、MinIO、OpenSearch、Neo4j、Qdrant、OpenTelemetry collector，以及 OpenLineage/MLflow HTTP sink 并自动跑验收：
 
 ```bash
 bash scripts/local_staging_stack.sh
 ```
 
-本机 staging 已验证的通过口径：`/api/health` 返回 `PostgreSQLStore`；对象存储为 S3/MinIO；检索为 OpenSearch；模拟成交通过且 `live_execution_allowed=false`；图谱回溯率 100%；HTTP 容量基线无 breach；PostgreSQL、S3/MinIO、OpenSearch、OTel、Neo4j、Qdrant、OpenLineage 和 MLflow 均可达；Neo4j/Qdrant/OpenLineage/MLflow outbox 演练通过。最近一次本机复验 `p95=114ms`。若机器未安装 Docker/Podman，该脚本会退出并提示安装容器运行时；没有容器运行时无法在本机真实启动上述依赖。
+本机 staging 已验证的通过口径：`/api/health` 返回 `PostgreSQLStore`；对象存储为 S3/MinIO；检索为 OpenSearch；模拟成交通过且 `live_execution_allowed=false`；图谱回溯率 100%；HTTP 容量基线无 breach；PostgreSQL、S3/MinIO、OpenSearch、OTel、Neo4j、Qdrant、OpenLineage 和 MLflow 均可达；Neo4j/Qdrant/OpenLineage/MLflow outbox 演练通过；`scripts/local_backup_restore_drill.py` 会对 PostgreSQL 执行 `pg_dump/pg_restore` 到临时库并回填 `backup_restore_drill`；`scripts/staging_governance_acceptance.py` 会执行权限红队 403/audit 验证、来源合规复核并回填 `permission_red_team_test` 和 `compliance_review_record`；`scripts/staging_security_acceptance.py` 会验证密钥轮换 metadata-only、真实密钥值拒绝入库、公开来源 provenance 台账、最小权限存储模板、cache retention run、runtime cache executor 和外部 lifecycle/search/KMS-DLP executor 证据回填；`scripts/staging_otel_acceptance.py` 会直连 OpenTelemetry collector `/v1/logs`、`/v1/metrics` 和 `/v1/traces`，并触发 workflow 告警、通知 outbox 和发送状态机后回填 `otel_collector_drill`；`scripts/staging_lineage_registry_acceptance.py` 会把 OpenLineage/MLflow outbox 通过本地 HTTP sink 发送，验证 webhook sender 的 POST、响应记录和失败重试演练；在 Compose 内运行时该脚本使用 `http://openlineage:5000/openlineage` 和 `http://mlflow:5000/mlflow` 作为应用容器可访问的发送目标，并用宿主机端口 `5001/5002` 做健康检查；`scripts/staging_graph_vector_acceptance.py` 会把 `/api/graph/neo4j/export` payload 直写 Neo4j、把 `/api/search/qdrant/export` points 直写 Qdrant collection，并执行失败 outbox 重试演练；`scripts/staging_vision_gate_acceptance.py` 会登记 A/H/U 主体映射金标、运行双语 benchmark、回写季度事故演练，并在所有非 launch gate 通过后记录 `launch_checklist`。本机 Compose 链路默认用 `AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS=2000` 作为 HTTP 验收基线余量；生产/预发可把该变量或 `scripts/staging_acceptance.py --capacity-default-threshold-ms` 调回 1000 或更严格阈值。若机器未安装 Docker/Podman，该脚本会退出并提示安装容器运行时；没有容器运行时无法在本机真实启动上述依赖。
 
 可选外部 adapter 目标：
 

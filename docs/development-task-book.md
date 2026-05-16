@@ -170,11 +170,11 @@
 - Evidence extraction 支持分页文本定位；`\f` 分页会写入 `page_no` 和 `page=...;chunk=...` locator。
 - 解析失败分级和人工复核队列；空文本/扫描件类文档会生成 `ManualReviewItem`，并可通过 evidence quality report 查看定位覆盖率、平均置信度和解析失败率。
 - 英文 evidence 优先的研究问答与中文摘要审计；`ResearchAnswer` 保留英文原文、中文摘要、summary 版本、prompt 版本、模型版本、来源公开性和人工覆核状态。
-- Black-Litterman 纸面组合原型；`PortfolioProposal` 保留均衡先验、后验收益、候选权重、观点置信度/Omega、风险预算、禁投清单、压力测试和 walk-forward 诊断，且不会绕过投委会生成 execution intent。
+- Black-Litterman 纸面组合原型；`PortfolioProposal` 保留均衡先验、后验收益、候选权重、观点置信度/Omega、风险预算、禁投清单、压力测试和 walk-forward 诊断，只生成投研候选方案，不绕过投委会生成纸面执行意图或模拟持仓流水。
 - `/ui` 静态单页界面，覆盖目标运营台总览、CEO Dashboard、主体页、投委会页、A/H/U 预览、结构化抽取、采集调度和事故日历；左侧信息架构和顶部市场/风险/冲突状态已按 `pic/UI.png` 补齐。
 - UI 静态验收脚本；`scripts/ui_static_check.py` 检查目标信息架构、顶部状态、关键面板 ID 和前端脚本语法。
 - `/api/demo/full-flow` 可生成一套端到端展示数据。
-- 月度经营报告和策略回放记录，覆盖治理指标、研究质量指标、真实收益绩效指标、红灯项、发布审批、偏差原因、版本和后续动作。
+- 月度经营报告和策略回放记录，覆盖治理指标、研究质量指标、公开行情驱动的模拟组合绩效指标、红灯项、发布审批、偏差原因、版本和后续动作。
 - 检索 adapter；默认内置全文检索 fallback，可跨 Document、Evidence、Thesis、Research Card 搜索，`AI_QUANT_SEARCH_BACKEND=opensearch` 时可写入和查询 OpenSearch 兼容后端。
 - 最小部署健康检查和运行指标接口，覆盖 `/api/health` 与 `/api/metrics`。
 - 告警规则和系统告警闭环；`/api/alerts/rules/seed` 写入默认规则，`/api/alerts/evaluate` 基于当前 metrics/dashboard 触发或恢复告警，`/api/alerts` 查询开放告警。
@@ -186,4 +186,4 @@
 - 复杂版式/OCR PDF 解析、真实 bbox 定位、复杂跨页表格读取和大样本双语抽取 benchmark 真正执行。
 - PostgreSQL schema 版本迁移/回滚脚本、向量库、图谱数据库生产适配；S3 兼容对象存储和 OpenSearch 兼容检索已有最小 adapter，仍需真实环境压测、权限策略和运维 runbook。
 - 前端总览已按目标运营台形态重排，左侧信息架构和顶部状态条已有静态验收；桌面/移动截图、跨浏览器视觉验收、复杂错误恢复、权限细节和真实数据量分页/过滤仍待完成。
-- 月报/回放已补齐发布审批、真实收益绩效指标和版本筛选；OpenTelemetry、生产部署自动化和外部告警通道仍待接入。
+- 月报/回放已补齐发布审批、模拟组合绩效指标和版本筛选；OpenTelemetry、生产部署自动化和外部告警通道仍待接入。

@@ -30,37 +30,41 @@ class TDXMarketDataAdapter:
             "provider": "tdx",
             "path": self.path,
             "configured": Path(self.path).exists(),
-            "table": "daily_kline",
+            "table": "auto",
         }
 
     def summary(self) -> dict[str, Any]:
+        schema = self._detect_schema()
         rows = self._query(
-            """
+            f"""
             SELECT
                 COUNT(*) AS rows,
-                COUNT(DISTINCT symbol) AS symbols,
-                MIN(trade_date) AS start_date,
-                MAX(trade_date) AS end_date
-            FROM daily_kline
+                COUNT(DISTINCT {schema['symbol']}) AS symbols,
+                MIN({schema['date']}) AS start_date,
+                MAX({schema['date']}) AS end_date
+            FROM {schema['table']}
             """,
             (),
         )
-        return rows[0] if rows else {"rows": 0, "symbols": 0, "start_date": "", "end_date": ""}
+        result = rows[0] if rows else {"rows": 0, "symbols": 0, "start_date": "", "end_date": ""}
+        result["schema"] = schema
+        return result
 
     def symbols(self, *, prefix: str = "", limit: int = 100) -> list[str]:
+        schema = self._detect_schema()
         limit = self._limit(limit)
         params: list[Any] = []
         where = ""
         if prefix:
-            where = "WHERE symbol LIKE ?"
+            where = f"WHERE {schema['symbol']} LIKE ?"
             params.append(f"{self._normalize_symbol(prefix)}%")
         rows = self._query(
             f"""
-            SELECT symbol
-            FROM daily_kline
+            SELECT {schema['symbol']} AS symbol
+            FROM {schema['table']}
             {where}
-            GROUP BY symbol
-            ORDER BY symbol
+            GROUP BY {schema['symbol']}
+            ORDER BY {schema['symbol']}
             LIMIT ?
             """,
             (*params, limit),
@@ -80,21 +84,169 @@ class TDXMarketDataAdapter:
             raise ValidationError("TDX query requires at least one symbol")
         self._validate_date(start_date, "start_date")
         self._validate_date(end_date, "end_date")
+        schema = self._detect_schema()
         limit = self._limit(limit)
-        placeholders = ",".join("?" for _ in clean_symbols)
+        symbol_variants = self._symbol_variants(clean_symbols)
+        placeholders = ",".join("?" for _ in symbol_variants)
+        date_expr = schema["date"]
         rows = self._query(
             f"""
-            SELECT symbol, trade_date, open, close, high, low, volume, amount, turnover
-            FROM daily_kline
-            WHERE symbol IN ({placeholders})
-              AND trade_date >= ?
-              AND trade_date <= ?
-            ORDER BY symbol ASC, trade_date ASC
+            SELECT
+                {schema['symbol']} AS symbol,
+                {date_expr} AS trade_date,
+                {schema['open']} AS open,
+                {schema['close']} AS close,
+                {schema['high']} AS high,
+                {schema['low']} AS low,
+                {schema['volume']} AS volume,
+                {schema['amount']} AS amount,
+                {schema['turnover']} AS turnover
+            FROM {schema['table']}
+            WHERE {schema['symbol']} IN ({placeholders})
+              AND {date_expr} >= ?
+              AND {date_expr} <= ?
+            ORDER BY {schema['symbol']} ASC, {date_expr} ASC
             LIMIT ?
             """,
-            (*clean_symbols, start_date, end_date, limit),
+            (*symbol_variants, start_date, end_date, limit),
         )
-        return rows
+        return [self._normalize_row(row) for row in rows]
+
+    def _detect_schema(self) -> dict[str, str]:
+        try:
+            tables = self._query(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+                ORDER BY CASE WHEN table_name = 'daily_kline' THEN 0 ELSE 1 END, table_name
+                """,
+                (),
+            )
+            candidates = [str(row["table_name"]) for row in tables]
+        except Exception:
+            rows = self._query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY CASE WHEN name = 'daily_kline' THEN 0 ELSE 1 END, name", ())
+            candidates = [str(row["name"]) for row in rows]
+        if not candidates:
+            raise ValidationError("TDX DuckDB file does not contain user tables")
+        for table in candidates:
+            columns = self._table_columns(table)
+            try:
+                return self._schema_for_table(table, columns)
+            except ValidationError:
+                continue
+        raise ValidationError(f"TDX DuckDB schema not recognized in tables: {', '.join(candidates[:10])}")
+
+    def _table_columns(self, table: str) -> list[str]:
+        try:
+            rows = self._query(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = ?
+                ORDER BY ordinal_position
+                """,
+                (table,),
+            )
+            return [str(row["column_name"]) for row in rows]
+        except Exception:
+            rows = self._query(f"PRAGMA table_info({self._quote_identifier(table)})", ())
+            return [str(row["name"]) for row in rows]
+
+    def _schema_for_table(self, table: str, columns: Sequence[str]) -> dict[str, str]:
+        lowered = {column.lower(): column for column in columns}
+        symbol = self._column(lowered, "symbol", "code", "ticker", "ts_code", "security_code", "stock_code")
+        date = self._column(lowered, "trade_date", "date", "datetime", "time", "交易日期")
+        open_col = self._column(lowered, "open", "open_price", "开盘", "开盘价")
+        close_col = self._column(lowered, "close", "close_price", "收盘", "收盘价")
+        high_col = self._column(lowered, "high", "high_price", "最高", "最高价")
+        low_col = self._column(lowered, "low", "low_price", "最低", "最低价")
+        volume = self._column(lowered, "volume", "vol", "成交量", required=False) or "0"
+        amount = self._column(lowered, "amount", "amt", "成交额", required=False) or "0"
+        turnover = self._column(lowered, "turnover", "turnover_rate", "换手率", required=False) or "NULL"
+        return {
+            "table": self._quote_identifier(table),
+            "raw_table": table,
+            "symbol": self._normalize_symbol_sql(symbol),
+            "raw_symbol": symbol,
+            "date": self._normalize_date_sql(date),
+            "raw_date": date,
+            "open": self._numeric_sql(open_col),
+            "close": self._numeric_sql(close_col),
+            "high": self._numeric_sql(high_col),
+            "low": self._numeric_sql(low_col),
+            "volume": self._numeric_sql(volume),
+            "amount": self._numeric_sql(amount),
+            "turnover": self._numeric_sql(turnover, nullable=True),
+        }
+
+    def _column(self, columns: Mapping[str, str], *names: str, required: bool = True) -> str:
+        for name in names:
+            if name.lower() in columns:
+                return self._quote_identifier(columns[name.lower()])
+        if required:
+            raise ValidationError(f"TDX DuckDB schema missing required column, expected one of: {', '.join(names)}")
+        return ""
+
+    def _quote_identifier(self, value: str) -> str:
+        return '"' + str(value).replace('"', '""') + '"'
+
+    def _normalize_symbol_sql(self, column: str) -> str:
+        raw = f"lower(CAST({column} AS VARCHAR))"
+        return (
+            "replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace("
+            f"{raw}, 'xshg', ''), 'xshe', ''), 'xbei', ''), 'szse', ''), 'sse', ''), "
+            "'shg', ''), 'sze', ''), 'ss', ''), 'sh', ''), 'sz', ''), 'bj', ''), '.', '')"
+        )
+
+    def _normalize_date_sql(self, column: str) -> str:
+        raw = f"CAST({column} AS VARCHAR)"
+        digits = f"replace(replace(replace(substr({raw}, 1, 10), '-', ''), '/', ''), '.', '')"
+        return f"CASE WHEN length({digits}) = 8 THEN substr({digits}, 1, 4) || '-' || substr({digits}, 5, 2) || '-' || substr({digits}, 7, 2) ELSE substr({raw}, 1, 10) END"
+
+    def _numeric_sql(self, column: str, *, nullable: bool = False) -> str:
+        if not column:
+            return "NULL" if nullable else "0"
+        return f"CAST({column} AS DOUBLE)"
+
+    def _normalize_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "symbol": self._normalize_symbol(str(row.get("symbol", ""))),
+            "trade_date": str(row.get("trade_date", ""))[:10],
+            "open": float(row.get("open") or 0.0),
+            "close": float(row.get("close") or 0.0),
+            "high": float(row.get("high") or 0.0),
+            "low": float(row.get("low") or 0.0),
+            "volume": float(row.get("volume") or 0.0),
+            "amount": float(row.get("amount") or 0.0),
+            "turnover": None if row.get("turnover") is None else float(row.get("turnover") or 0.0),
+        }
+
+    def _symbol_variants(self, symbols: Sequence[str]) -> list[str]:
+        variants: list[str] = []
+        for symbol in symbols:
+            clean = self._normalize_symbol(symbol)
+            if not clean:
+                continue
+            market_prefixes = ["sh"] if clean.startswith(("5", "6", "9")) else ["sz"] if clean.startswith(("0", "2", "3")) else ["bj"] if clean.startswith(("4", "8")) else ["sh", "sz", "bj"]
+            values = [clean, clean.upper()]
+            for prefix in market_prefixes:
+                values.extend(
+                    [
+                        f"{prefix}{clean}",
+                        f"{prefix.upper()}{clean}",
+                        f"{clean}.{prefix}",
+                        f"{clean}.{prefix.upper()}",
+                    ]
+                )
+            if "sh" in market_prefixes:
+                values.extend([f"{clean}.SS", f"{clean}.SHG", f"{clean}.XSHG"])
+            if "sz" in market_prefixes:
+                values.extend([f"{clean}.SZE", f"{clean}.XSHE"])
+            if "bj" in market_prefixes:
+                values.extend([f"{clean}.XBEI"])
+            variants.extend(values)
+        return list(dict.fromkeys(variants))
 
     def _query(self, sql: str, params: Sequence[Any]) -> list[dict[str, Any]]:
         path = Path(self.path)

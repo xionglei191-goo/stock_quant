@@ -543,3 +543,446 @@ class ConnectorRegistry:
             file_type=file_type,
             language=language,
         )
+
+
+# ---------------------------------------------------------------------------
+# A-share supplemental connectors (T-416)
+# ---------------------------------------------------------------------------
+# All supplemental connectors are for PUBLIC web API / page access only.
+# Results are annotated with rights_tag=candidate_astock_reference,
+# allowed_use=["manual_reference", "supplemental_research"], and must NOT
+# enter the fact/truth layer or automated decision chain without explicit
+# source governance review and verification.
+# ---------------------------------------------------------------------------
+
+
+class AStockSupplementalConnector(BaseConnector):
+    """Base class for A-share supplemental public web connectors."""
+
+    source_type = "third_party_connector"
+    language = "zh"
+    rights_tag_class = "candidate_astock_reference"
+    allowed_use: list[str] = ["manual_reference", "supplemental_research"]
+
+    def fetch_samples(
+        self,
+        *,
+        user_agent: str,
+        limit: int = 10,
+        **kwargs: Any,
+    ) -> list[ConnectorDocument]:
+        """Fetch sample rows from the public endpoint.
+
+        Subclasses override this method. All returned documents carry
+        ``source_uri`` sanitised to remove tokens/secrets and are annotated
+        with ``allowed_use`` metadata.
+        """
+        raise NotImplementedError
+
+    def _sanitize_uri(self, uri: str) -> str:
+        """Strip known secret query parameters from a URI."""
+        import re as _re
+        secret_params = re.compile(
+            r"[?&](?:token|api_key|access_token|signature|secret|apikey|key)=[^&]*",
+            flags=re.IGNORECASE,
+        )
+        return secret_params.sub("", uri).rstrip("?&")
+
+    def _get_json(self, url: str, *, user_agent: str, headers: dict[str, str] | None = None) -> Any:
+        req_headers = {"User-Agent": user_agent, "Accept": "application/json"}
+        if headers:
+            req_headers.update(headers)
+        request = Request(url, headers=req_headers)
+        with urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8", errors="replace"))
+
+    def _get_text(self, url: str, *, user_agent: str, headers: dict[str, str] | None = None) -> str:
+        req_headers = {"User-Agent": user_agent}
+        if headers:
+            req_headers.update(headers)
+        request = Request(url, headers=req_headers)
+        with urlopen(request, timeout=15) as response:
+            return response.read().decode("utf-8", errors="replace")
+
+
+class EastMoneyResearchConnector(AStockSupplementalConnector):
+    """East Money (东方财富) public research report discovery.
+
+    Uses the publicly accessible research report search API.
+    Endpoint: https://reportapi.eastmoney.com/report/list
+    Rights: public web, manual_reference only, no redistribution.
+    """
+
+    source_id = "eastmoney_research"
+    base_url = "https://reportapi.eastmoney.com/report/list"
+
+    def normalize(self, raw: dict[str, Any]) -> ConnectorDocument:
+        report_id = str(raw.get("infoCode") or raw.get("id") or "")
+        title = str(raw.get("title") or "")
+        published_at = str(raw.get("publishDate") or raw.get("time") or "")
+        org_name = str(raw.get("orgName") or raw.get("orgSName") or "")
+        stock_code = str(raw.get("stockCode") or raw.get("scode") or "")
+        source_uri = self._sanitize_uri(
+            raw.get("encryptUrl") or raw.get("pdfUrl") or
+            f"https://data.eastmoney.com/report/{report_id}.html"
+        )
+        return ConnectorDocument(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            document_type="research",
+            source_uri=source_uri,
+            language=self.language,
+            title=title,
+            body="",
+            published_at=published_at,
+            metadata={
+                "report_id": report_id,
+                "org_name": org_name,
+                "stock_code": stock_code,
+                "rating": raw.get("emRatingName") or raw.get("rating"),
+                "industry": raw.get("industryName"),
+                "allowed_use": self.allowed_use,
+                "rights_tag_class": self.rights_tag_class,
+                "automation_allowed": False,
+                "source_boundary": "manual_reference_or_supplemental_research_only",
+            },
+        )
+
+    def fetch_samples(
+        self,
+        *,
+        user_agent: str,
+        limit: int = 10,
+        stock_code: str = "",
+        industry: str = "",
+        report_type: str = "",
+        **kwargs: Any,
+    ) -> list[ConnectorDocument]:
+        limit = max(1, min(50, int(limit)))
+        params: dict[str, Any] = {
+            "pageSize": limit,
+            "pageNo": 1,
+            "fields": "",
+        }
+        if stock_code:
+            params["scode"] = stock_code
+        if industry:
+            params["industryCode"] = industry
+        if report_type:
+            params["reportType"] = report_type
+        url = f"{self.base_url}?{urlencode(params)}"
+        try:
+            data = self._get_json(url, user_agent=user_agent, headers={
+                "Referer": "https://data.eastmoney.com/report/",
+            })
+        except Exception as exc:
+            return [ConnectorDocument(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                document_type="research",
+                source_uri=self._sanitize_uri(url),
+                language=self.language,
+                title=f"[fetch_error] {exc}",
+                body="",
+                metadata={
+                    "error": str(exc),
+                    "allowed_use": self.allowed_use,
+                    "automation_allowed": False,
+                    "source_boundary": "manual_reference_or_supplemental_research_only",
+                },
+            )]
+        rows = data if isinstance(data, list) else (
+            data.get("data", {}).get("list") or
+            data.get("data") or
+            data.get("result") or []
+        )
+        if isinstance(rows, dict):
+            rows = rows.get("list") or rows.get("data") or []
+        documents: list[ConnectorDocument] = []
+        for item in rows[:limit]:
+            if isinstance(item, dict):
+                documents.append(self.normalize(item))
+        return documents
+
+
+class CninfoAnnouncementConnector(AStockSupplementalConnector):
+    """Cninfo / 巨潮资讯 supplemental announcement discovery.
+
+    Uses the publicly accessible announcement query API.
+    Endpoint: https://www.cninfo.com.cn/new/hisAnnouncement/query
+    Rights: public web, manual_reference only.
+    """
+
+    source_id = "cninfo_announcements"
+    query_url = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
+
+    def normalize(self, raw: dict[str, Any]) -> ConnectorDocument:
+        ann_id = str(raw.get("announcementId") or "")
+        title = str(raw.get("announcementTitle") or "")
+        published_at = str(raw.get("announcementTime") or raw.get("publishTime") or "")
+        # Parse epoch ms to ISO date if numeric
+        if published_at.isdigit() and len(published_at) > 8:
+            try:
+                from datetime import timezone as _tz
+                ts = datetime.fromtimestamp(int(published_at) / 1000, tz=_tz.utc)
+                published_at = ts.date().isoformat()
+            except Exception:
+                pass
+        security_code = str(raw.get("secCode") or raw.get("stockCode") or "")
+        source_uri = self._sanitize_uri(
+            raw.get("adjunctUrl") or
+            f"https://www.cninfo.com.cn/new/disclosure/detail?announcementId={ann_id}&orgId="
+        )
+        return ConnectorDocument(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            document_type="announcement",
+            source_uri=source_uri,
+            language=self.language,
+            title=title,
+            body="",
+            published_at=published_at,
+            metadata={
+                "announcement_id": ann_id,
+                "security_code": security_code,
+                "security_name": raw.get("secName"),
+                "orgId": raw.get("orgId"),
+                "allowed_use": self.allowed_use,
+                "automation_allowed": False,
+                "source_boundary": "manual_reference_or_supplemental_research_only",
+            },
+        )
+
+    def fetch_samples(
+        self,
+        *,
+        user_agent: str,
+        limit: int = 10,
+        stock_code: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        category: str = "",
+        **kwargs: Any,
+    ) -> list[ConnectorDocument]:
+        limit = max(1, min(50, int(limit)))
+        body_parts = [
+            f"pageNum=1&pageSize={limit}&tabName=fulltext&column=szse&category=",
+            f"plate=&seDate={start_date}%7E{end_date}",
+        ]
+        if stock_code:
+            body_parts.append(f"&stock={stock_code}%2C")
+        if category:
+            body_parts.append(f"&category={category}")
+        form_body = "&".join(body_parts).encode("utf-8")
+        request = Request(
+            self.query_url,
+            data=form_body,
+            headers={
+                "User-Agent": user_agent,
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Referer": "https://www.cninfo.com.cn/new/commonUrl/pageOfSearch?url=data/sse/disclosure",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                data = json.loads(response.read().decode("utf-8", errors="replace"))
+        except Exception as exc:
+            return [ConnectorDocument(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                document_type="announcement",
+                source_uri=self.query_url,
+                language=self.language,
+                title=f"[fetch_error] {exc}",
+                body="",
+                metadata={
+                    "error": str(exc),
+                    "allowed_use": self.allowed_use,
+                    "automation_allowed": False,
+                    "source_boundary": "manual_reference_or_supplemental_research_only",
+                },
+            )]
+        rows = (
+            data.get("announcements") or
+            data.get("data", {}).get("list") or
+            data.get("result") or []
+        )
+        documents: list[ConnectorDocument] = []
+        for item in rows[:limit]:
+            if isinstance(item, dict):
+                documents.append(self.normalize(item))
+        return documents
+
+
+class TencentValuationConnector(AStockSupplementalConnector):
+    """Tencent Stock (腾讯股票) public valuation snapshot connector.
+
+    Endpoint: https://qt.gtimg.cn/q={symbol_list}
+    Returns basic valuation fields: PE/PB/market_cap, close, etc.
+    Rights: public web, manual_reference only, no redistribution.
+    """
+
+    source_id = "tencent_valuation_snapshot"
+    base_url = "https://qt.gtimg.cn/q="
+
+    _FIELD_MAP = {
+        1: "security_name",
+        2: "open",
+        3: "close_prev",
+        4: "close",
+        5: "high",
+        6: "low",
+        7: "bid",
+        8: "ask",
+        9: "volume",
+        10: "turnover",
+        38: "pe_ttm",
+        39: "market_cap_b",   # 亿元
+        40: "pb",
+        41: "total_market_cap_b",
+    }
+
+    def normalize(self, raw: dict[str, Any]) -> ConnectorDocument:
+        symbol = str(raw.get("symbol") or "")
+        security_name = str(raw.get("security_name") or "")
+        source_uri = self._sanitize_uri(
+            f"https://gu.qq.com/{symbol}/gp"
+        )
+        return ConnectorDocument(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            document_type="valuation_snapshot",
+            source_uri=source_uri,
+            language=self.language,
+            title=f"{security_name}（{symbol}）估值快照",
+            body="",
+            published_at=str(raw.get("update_time") or ""),
+            metadata={
+                "symbol": symbol,
+                "security_name": security_name,
+                "close": raw.get("close"),
+                "pe_ttm": raw.get("pe_ttm"),
+                "pb": raw.get("pb"),
+                "market_cap_b": raw.get("market_cap_b"),
+                "total_market_cap_b": raw.get("total_market_cap_b"),
+                "allowed_use": self.allowed_use,
+                "automation_allowed": False,
+                "source_boundary": "manual_reference_or_supplemental_research_only",
+            },
+        )
+
+    def fetch_samples(
+        self,
+        *,
+        user_agent: str,
+        limit: int = 10,
+        symbols: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[ConnectorDocument]:
+        limit = max(1, min(20, int(limit)))
+        symbols = list(symbols or [])[:limit]
+        if not symbols:
+            return []
+        # Tencent symbols use prefixes: sz000001, sh600000
+        normalized: list[str] = []
+        for sym in symbols:
+            s = sym.strip().lower()
+            if not s:
+                continue
+            if not s.startswith(("sh", "sz", "bj")):
+                bare = re.sub(r"\D", "", s)
+                if bare.startswith(("5", "6", "9")):
+                    s = f"sh{bare}"
+                elif bare.startswith(("8", "4")):
+                    s = f"bj{bare}"
+                else:
+                    s = f"sz{bare}"
+            normalized.append(s)
+        if not normalized:
+            return []
+        url = self.base_url + ",".join(normalized)
+        try:
+            text = self._get_text(url, user_agent=user_agent, headers={
+                "Referer": "https://gu.qq.com/",
+            })
+        except Exception as exc:
+            return [ConnectorDocument(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                document_type="valuation_snapshot",
+                source_uri=self._sanitize_uri(url),
+                language=self.language,
+                title=f"[fetch_error] {exc}",
+                body="",
+                metadata={
+                    "error": str(exc),
+                    "allowed_use": self.allowed_use,
+                    "automation_allowed": False,
+                    "source_boundary": "manual_reference_or_supplemental_research_only",
+                },
+            )]
+        documents: list[ConnectorDocument] = []
+        # Parse lines: v_sz000001="44~平安银行~000001~..." semicolon-terminated
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            sym_key, _, value_raw = line.partition("=")
+            sym_key = sym_key.strip().removeprefix("v_")
+            value = value_raw.strip().strip("\"").rstrip(";")
+            if not value:
+                continue
+            fields = value.split("~")
+            parsed: dict[str, Any] = {"symbol": sym_key}
+            for idx, field_name in self._FIELD_MAP.items():
+                if idx < len(fields) and fields[idx]:
+                    try:
+                        parsed[field_name] = float(fields[idx]) if any(
+                            k in field_name for k in ("pe", "pb", "cap", "close", "high", "low", "open", "vol", "turn")
+                        ) else fields[idx]
+                    except ValueError:
+                        parsed[field_name] = fields[idx]
+            if len(fields) > 30:
+                # field 30/31 usually contains date/time
+                parsed["update_time"] = fields[30] if 30 < len(fields) else ""
+            documents.append(self.normalize(parsed))
+        return documents[:limit]
+
+
+class AStockSupplementalRegistry:
+    """Registry of A-share supplemental public connectors (T-416).
+
+    These connectors provide PUBLIC web data only and are classified as
+    manual_reference / supplemental_research boundary. They must NOT be
+    used in automated decision chains without explicit source governance
+    approval and verification.
+    """
+
+    def __init__(self) -> None:
+        self._connectors: dict[str, AStockSupplementalConnector] = {
+            "eastmoney_research": EastMoneyResearchConnector(),
+            "cninfo_announcements": CninfoAnnouncementConnector(),
+            "tencent_valuation_snapshot": TencentValuationConnector(),
+        }
+
+    def get(self, connector_id: str) -> AStockSupplementalConnector | None:
+        return self._connectors.get(connector_id)
+
+    def list_ids(self) -> list[str]:
+        return list(self._connectors)
+
+    def fetch_samples(
+        self,
+        connector_id: str,
+        *,
+        user_agent: str,
+        limit: int = 10,
+        **kwargs: Any,
+    ) -> list[ConnectorDocument]:
+        connector = self._connectors.get(connector_id)
+        if connector is None:
+            raise KeyError(f"supplemental connector not found: {connector_id}")
+        return connector.fetch_samples(user_agent=user_agent, limit=limit, **kwargs)

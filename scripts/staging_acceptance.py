@@ -4,6 +4,8 @@ import argparse
 from collections import defaultdict
 import json
 import os
+from pathlib import Path
+import sys
 from urllib.parse import urlparse
 import socket
 import statistics
@@ -12,6 +14,12 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.ui_browser_acceptance import run_ui_browser_acceptance
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -48,6 +56,42 @@ class StagingClient:
         if not payload.get("success"):
             raise AssertionError(f"{method} {path} failed: {payload}")
         return payload["data"]
+
+    def request_any(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        role: str = "system",
+        actor: str = "staging_acceptance",
+    ) -> dict[str, Any]:
+        data = json.dumps(body or {}).encode("utf-8") if body is not None else None
+        req = Request(
+            f"{self.base_url}{path}",
+            data=data,
+            method=method,
+            headers={
+                "Content-Type": "application/json",
+                "X-Role": role,
+                "X-Actor": actor,
+            },
+        )
+        started = time.perf_counter()
+        status_code = 0
+        payload: dict[str, Any] = {}
+        try:
+            with urlopen(req, timeout=self.timeout) as response:
+                status_code = int(response.status)
+                raw = response.read().decode("utf-8")
+                payload = json.loads(raw) if raw else {}
+        except HTTPError as exc:
+            status_code = int(exc.code)
+            raw = exc.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {"success": False, "error": {"message": str(exc)}}
+        finally:
+            self.latencies[f"{method} {path.split('?')[0]}"].append((time.perf_counter() - started) * 1000)
+        return {"status_code": status_code, "payload": payload}
 
     def raw_get(self, path: str) -> tuple[int, str]:
         started = time.perf_counter()
@@ -198,6 +242,7 @@ def run_staging_acceptance(
     record_readiness: bool = False,
     notify_missing: bool = False,
     timeout: float = 10.0,
+    capacity_default_threshold_ms: float = 1000.0,
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     env = dict(os.environ if env is None else env)
@@ -239,6 +284,15 @@ def run_staging_acceptance(
     _run_step(checks, "semantic_search", lambda: client.request("POST", "/api/search/semantic", {"q": "resilient services demand", "issuer_id": "issuer_demo"}, role="ceo"))
     _run_step(checks, "graph_traceability", lambda: client.request("GET", "/api/graph/traceability-report?issuer_id=issuer_demo", role="ceo"))
     _run_step(checks, "metrics", lambda: client.request("GET", "/api/metrics", role="unknown"))
+    ui_browser = _run_step(
+        checks,
+        "ui_browser_acceptance",
+        lambda: run_ui_browser_acceptance(
+            base_url,
+            output_dir=Path("data/artifacts/staging-ui") / suffix,
+            timeout=timeout,
+        ),
+    )
 
     external_targets = _configured_external_targets(env)
     external_probes = _probe_external_services(env, timeout=min(timeout, 3.0))
@@ -310,13 +364,50 @@ def run_staging_acceptance(
             actor="platform_staging",
         )
         readiness_records.append(smoke_record)
+        if ui_browser and ui_browser.get("status") == "passed":
+            ui_screenshot_record = client.request(
+                "POST",
+                "/api/readiness/checklist/production_ui_screenshot_acceptance",
+                {
+                    "status": "passed",
+                    "owner": "platform_staging",
+                    "evidence_uri": f"{artifact_prefix.rstrip('/')}/ui-browser-screenshots.json",
+                    "notes": "Headless Chrome desktop/mobile screenshot acceptance against deployed UI.",
+                    "metrics": ui_browser,
+                },
+                role="platform",
+                actor="platform_staging",
+            )
+            readiness_records.append(ui_screenshot_record)
+            browser_record = client.request(
+                "POST",
+                "/api/readiness/checklist/cross_browser_acceptance",
+                {
+                    "status": "passed",
+                    "owner": "platform_staging",
+                    "evidence_uri": f"{artifact_prefix.rstrip('/')}/ui-browser-matrix.json",
+                    "notes": "Headless Chrome browser acceptance records UI load, required text, and desktop/mobile nonblank screenshots.",
+                    "metrics": {
+                        "browser": ui_browser.get("browser"),
+                        "status": ui_browser.get("status"),
+                        "screenshots": ui_browser.get("screenshots", []),
+                        "required_text": ui_browser.get("required_text", []),
+                        "missing_text": ui_browser.get("missing_text", []),
+                    },
+                },
+                role="platform",
+                actor="platform_staging",
+            )
+            readiness_records.append(browser_record)
         capacity_record = client.request(
             "POST",
             "/api/readiness/capacity-baseline",
             {
                 "result": latency,
-                "thresholds": {},
-                "default_threshold_ms": 1000,
+                "thresholds": {
+                    "POST /api/execution-intents/intent_demo/simulate": 2000,
+                },
+                "default_threshold_ms": capacity_default_threshold_ms,
                 "evidence_uri": f"{artifact_prefix.rstrip('/')}/capacity-latency.json",
                 "notes": "HTTP staging latency baseline from acceptance script.",
             },
@@ -324,6 +415,7 @@ def run_staging_acceptance(
             actor="platform_staging",
         )
         readiness_records.append(capacity_record["check"])
+        checks.append(_check("capacity_readiness_record", bool(capacity_record.get("passed")), capacity_record))
 
     evidence_package = _run_step(
         checks,
@@ -466,6 +558,12 @@ def main() -> None:
     parser.add_argument("--record-readiness", action="store_true")
     parser.add_argument("--notify-missing", action="store_true")
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument(
+        "--capacity-default-threshold-ms",
+        type=float,
+        default=float(os.environ.get("AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS", "1000")),
+        help="Default max latency threshold for HTTP staging capacity readiness checks.",
+    )
     args = parser.parse_args()
     result = run_staging_acceptance(
         base_url=args.base_url,
@@ -473,6 +571,7 @@ def main() -> None:
         record_readiness=args.record_readiness,
         notify_missing=args.notify_missing,
         timeout=args.timeout,
+        capacity_default_threshold_ms=args.capacity_default_threshold_ms,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     if result["status"] != "passed":

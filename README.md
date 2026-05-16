@@ -1,6 +1,6 @@
 # AI Native Quant Org
 
-一个基于项目文档实现的最小可运行后端原型，覆盖三市场数据接入骨架、证据链、评分、决策治理、审计、challenger、知识图谱查询和事故剧本管理。
+一个基于项目文档实现的最小可运行投研后端原型，覆盖三市场数据接入骨架、证据链、评分、决策治理、模拟持仓反馈、审计、challenger、知识图谱查询和事故剧本管理。系统用于投资分析和复盘，不连接真实券商，不做自动下单。
 
 ## 目录
 
@@ -74,7 +74,7 @@ python3 -m app.server
 python3 scripts/smoke_test.py http://127.0.0.1:8000
 ```
 
-本地全链路验收可直接运行，不需要真实券商或外部生产环境；交易环节固定使用模拟成交：
+本地全链路验收可直接运行，不需要真实券商或外部生产环境；组合反馈环节固定使用模拟成交/模拟持仓 ledger：
 
 ```bash
 python3 scripts/full_run_acceptance.py --capacity-records 10
@@ -113,6 +113,8 @@ bash scripts/local_staging_stack.sh
 ```
 
 通过口径包括 PostgreSQLStore、S3/MinIO、OpenSearch、模拟成交、图谱回溯、HTTP 容量基线和外部依赖可达性。如果当前机器没有 Docker 或 Podman，脚本会直接提示安装容器运行时；没有容器运行时就无法在本机真实启动这些依赖。
+宿主机 PostgreSQL 默认暴露在 `15432`，可用 `AI_QUANT_POSTGRES_HOST_PORT=5433` 覆盖，避免和本机已有 PostgreSQL 冲突。
+当前 staging 验收会同时演练 Neo4j、Qdrant、OpenTelemetry、OpenLineage 和 MLflow 的外部配置与 outbox 通道，但仍固定为模拟交易，不连接真实券商。
 
 生产部署、备份、恢复、回滚和月度运维步骤见 [docs/production-runbook.md](./docs/production-runbook.md)。环境变量模板见 [.env.example](./.env.example)。
 
@@ -129,6 +131,7 @@ bash scripts/local_staging_stack.sh
 - `/api/document-parsing/paddleocr` PaddleOCR-VL 文档解析备用接口，证据抽取在本地解析无文本且配置 token 时会自动兜底
 - `/api/market-data/tdx/preview` 与 `/api/market-data/tdx/import` 读取本地通达信 DuckDB 日线库并导入公开/已提供 EOD 行情
 - `/api/research-reports/scan` 本地研报 manifest 索引，研报默认作为本地参考观点层维护
+- 宏观主题、热点扩散和产业链公司定位将作为知识图谱一等能力：从热点词扩展到上下游节点、相关公司、数据槽位、证据缺口和后续研究任务
 - 术语、数值、期间和规则表格读取基线抽取，并可按中英 benchmark 样本集运行阈值、定位、表格和低置信度拦截评估
 - Issuer / Security / MarketDataPoint / Document / Evidence / Thesis / Signal / Decision / Review
 - CorporateAction 用于拆股、分红、代码变更等复权和估值链路
@@ -140,10 +143,10 @@ bash scripts/local_staging_stack.sh
 - 英文 evidence 优先的研究问答与中文摘要审计，保留 summary/prompt/model 版本、人工覆核状态和答案级质量/复核队列报告
 - benchmark、prompt 审批、scorecard、research card
 - Reg FD / non-display 合规闸门
-- approved decision 到 execution intent 的审批闸门
+- approved decision 到纸面执行意图和模拟持仓反馈的审批闸门
 - 13F institutional holding、crowding、8-K/6-K/20-F disclosure event、challenger、playbook、incident report、drill schedule
 - Black-Litterman 纸面组合原型，支持观点置信度/Omega、风险预算、禁投清单、压力测试和 walk-forward 诊断
-- dashboard、graph/evidence/portfolio query、review query
+- dashboard、graph/evidence/portfolio query、macro theme / industry chain / company positioning query、review query
 - 可选 SQLite / PostgreSQL 持久化，覆盖核心对象、审批签字和审计日志
 - `/ui` 静态单页界面，覆盖目标运营台总览、CEO Dashboard、主体页、投委会页、A/H/U 预览、结构化抽取、采集调度和事故日历
 - UI 静态验收脚本，覆盖 `pic/UI.png` 对应的左侧信息架构、顶部市场/风险/冲突状态和关键控件存在性

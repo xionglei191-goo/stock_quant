@@ -16,7 +16,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from .errors import ComplianceGateError, ConflictError, NotFoundError, PermissionDenied, ValidationError
-from .connectors import ConnectorRegistry
+from .connectors import AStockSupplementalRegistry, ConnectorRegistry
 from .document_parser import PaddleOCRParser
 from .llm_gateway import LLMGateway
 from .research_reports import cheap_fingerprint, content_sha256, infer_report_metadata, iter_report_files, report_id_for_path, safe_source_part
@@ -31,10 +31,12 @@ from .models import (
     BenchmarkRun,
     BenchmarkSample,
     CacheRetentionRunRecord,
+    CompanyPosition,
     CorporateAction,
     DrillSchedule,
     DisclosureEvent,
     EntityMapping,
+    EntityMappingLabel,
     ChallengerResult,
     CrowdingSnapshot,
     DecisionPack,
@@ -49,13 +51,16 @@ from .models import (
     IncidentPlaybook,
     IncidentReport,
     InstitutionalHolding,
+    IndustryChain,
     Issuer,
+    HotspotLexicon,
     LineageEvent,
     LLMBudgetApproval,
     LLMTaskRun,
     LLMTaskTemplate,
     ManualReviewItem,
     MarketDataPoint,
+    MacroTheme,
     ModelVersionRecord,
     OperatingReport,
     PortfolioProposal,
@@ -65,6 +70,7 @@ from .models import (
     ResearchAnswer,
     ResearchCard,
     ResearchReportAsset,
+    ResearchTask,
     ResearchTemplate,
     ResearchSignal,
     ReviewRecord,
@@ -148,6 +154,12 @@ READINESS_CHECKLIST_ITEMS = [
         "required": True,
     },
     {
+        "check_id": "otel_collector_drill",
+        "label": "OpenTelemetry collector 演练",
+        "owner_role": "平台负责人",
+        "required": True,
+    },
+    {
         "check_id": "permission_red_team_test",
         "label": "权限红队测试",
         "owner_role": "风险/合规",
@@ -172,6 +184,7 @@ class SystemService:
     def __init__(self, store: InMemoryStore | None = None):
         self.store = store or InMemoryStore()
         self.connectors = ConnectorRegistry()
+        self.supplemental_connectors = AStockSupplementalRegistry()
         self.llm_gateway = LLMGateway()
         self.document_parser = PaddleOCRParser()
         self.tdx_market_data = TDXMarketDataAdapter()
@@ -2806,6 +2819,7 @@ class SystemService:
             "challenger_id",
             "review_id",
             "exception_id",
+            "task_id",
         ]
         for key in candidates:
             value = str(row.get(key, "")).strip()
@@ -4822,6 +4836,64 @@ class SystemService:
         self._audit(actor, "fetch_astock_connector_sample", "astock_connector", connector.connector_id, source=connector.provider, approval_state=connector.last_check_status)
         return result
 
+    def fetch_astock_supplemental_samples(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        """Fetch real HTTP sample rows from an A-share supplemental public connector (T-416).
+
+        This method calls the real public web endpoint for the given connector_id and returns
+        normalised sample rows. All results are classified as manual_reference /
+        supplemental_research and must NOT enter the automated decision chain.
+
+        Supported connector_ids: eastmoney_research, cninfo_announcements,
+        tencent_valuation_snapshot.
+        """
+        connector_id = str(payload.get("connector_id", ""))
+        if not connector_id:
+            raise ValidationError("connector_id is required")
+        connector = self.supplemental_connectors.get(connector_id)
+        if connector is None:
+            raise NotFoundError(
+                f"supplemental connector {connector_id!r} not found; "
+                f"available: {self.supplemental_connectors.list_ids()}"
+            )
+        # Check registered astock connector for compliance gate
+        registered = self.store.astock_connectors.get(connector_id)
+        if registered is not None and registered.status == "blocked":
+            raise ComplianceGateError(f"A-stock supplemental connector {connector_id} is blocked")
+        limit = self._bounded_limit(payload.get("limit", 10), 50)
+        user_agent = str(payload.get("user_agent", "") or DEFAULT_SEC_USER_AGENT)
+        fetch_kwargs: dict[str, Any] = {k: v for k, v in payload.items()
+                                         if k not in {"connector_id", "limit", "user_agent"}}
+        try:
+            documents = connector.fetch_samples(user_agent=user_agent, limit=limit, **fetch_kwargs)
+        except Exception as exc:
+            self._audit(
+                actor, "fetch_astock_supplemental_samples", "astock_connector", connector_id,
+                source=connector_id, approval_state=f"error:{type(exc).__name__}",
+            )
+            return {
+                "connector_id": connector_id,
+                "source_id": connector.source_id,
+                "documents": [],
+                "count": 0,
+                "error": str(exc),
+                "automation_allowed": False,
+                "source_boundary": "manual_reference_or_supplemental_research_only",
+                "usage_boundary": "supplemental_public_connector_for_manual_reference_only",
+            }
+        self._audit(
+            actor, "fetch_astock_supplemental_samples", "astock_connector", connector_id,
+            source=connector_id, approval_state=f"fetched:{len(documents)}",
+        )
+        return {
+            "connector_id": connector_id,
+            "source_id": connector.source_id,
+            "documents": [to_plain(doc) for doc in documents],
+            "count": len(documents),
+            "automation_allowed": False,
+            "source_boundary": "manual_reference_or_supplemental_research_only",
+            "usage_boundary": "supplemental_public_connector_for_manual_reference_only",
+        }
+
     def preview_connector_document(self, market: str, raw: Mapping[str, Any]) -> dict[str, Any]:
         normalized = self.connectors.normalize(market, dict(raw))
         return to_plain(normalized)
@@ -5678,13 +5750,70 @@ class SystemService:
         self._audit(actor, "register_entity_mapping_batch", "mapping", str(payload.get("batch_id", "batch")), approval_state=f"created={len(created)};failed={len(errors)}")
         return {"created": [to_plain(item) for item in created], "errors": errors, "created_count": len(created), "failed_count": len(errors)}
 
+    def record_entity_mapping_label(self, payload: Mapping[str, Any], *, actor: str = "system") -> EntityMappingLabel:
+        mapping_id = str(payload["mapping_id"])
+        mapping = self.store.entity_mappings.get(mapping_id)
+        if mapping is None:
+            raise NotFoundError(f"entity mapping {mapping_id} not found")
+        label_id = str(payload.get("label_id", f"emlbl_{self._safe_identifier(mapping_id)}"))
+        if label_id in self.store.entity_mapping_labels:
+            raise ConflictError(f"entity mapping label {label_id} already exists")
+        label = EntityMappingLabel(
+            label_id=label_id,
+            mapping_id=mapping_id,
+            issuer_id=str(payload.get("issuer_id", mapping.issuer_id)),
+            ticker=str(payload.get("ticker", mapping.ticker)),
+            market=str(payload.get("market", mapping.market)),
+            reviewer=str(payload.get("reviewer", actor)),
+            source=str(payload.get("source", "manual_gold_label")),
+            notes=str(payload.get("notes", "")),
+        )
+        self.store.entity_mapping_labels[label.label_id] = label
+        self._audit(actor, "record_entity_mapping_label", "mapping_label", label.label_id, approval_state="labeled")
+        return label
+
+    def record_entity_mapping_label_batch(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        items = payload.get("items", [])
+        if not isinstance(items, list):
+            raise ValidationError("entity mapping label batch requires items list")
+        created: list[EntityMappingLabel] = []
+        errors: list[dict[str, Any]] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, Mapping):
+                errors.append({"index": index, "error": "item must be an object"})
+                continue
+            try:
+                created.append(self.record_entity_mapping_label(item, actor=actor))
+            except (ValidationError, NotFoundError, ConflictError) as exc:
+                errors.append({"index": index, "error": str(exc)})
+        self._audit(actor, "record_entity_mapping_label_batch", "mapping_label", str(payload.get("batch_id", "batch")), approval_state=f"created={len(created)};failed={len(errors)}")
+        return {"created": [to_plain(item) for item in created], "errors": errors, "created_count": len(created), "failed_count": len(errors)}
+
+    def entity_mapping_labels_payload(self, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        mapping_id = str(payload.get("mapping_id", "")).strip()
+        issuer_id = str(payload.get("issuer_id", "")).strip()
+        limit = self._bounded_limit(payload.get("limit", 100), 1000)
+        labels = list(self.store.entity_mapping_labels.values())
+        if mapping_id:
+            labels = [item for item in labels if item.mapping_id == mapping_id]
+        if issuer_id:
+            labels = [item for item in labels if item.issuer_id == issuer_id]
+        labels.sort(key=lambda item: (item.created_at, item.label_id), reverse=True)
+        return {"total": len(labels), "labels": [to_plain(item) for item in labels[:limit]]}
+
     def entity_mapping_quality_report(self, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = payload or {}
         issuer_id = str(payload.get("issuer_id", "")).strip()
         mappings = list(self.store.entity_mappings.values())
         if issuer_id:
             mappings = [item for item in mappings if item.issuer_id == issuer_id]
-        labels = payload.get("labels", [])
+        labels = payload.get("labels")
+        if labels is None:
+            stored_labels = list(self.store.entity_mapping_labels.values())
+            if issuer_id:
+                stored_labels = [item for item in stored_labels if item.issuer_id == issuer_id]
+            labels = [to_plain(item) for item in stored_labels]
         checked = 0
         correct = 0
         mismatches: list[dict[str, Any]] = []
@@ -5837,6 +5966,268 @@ class SystemService:
             approval_state=f"indexed={len(reports)}",
         )
         return {"root_path": str(root), "indexed_count": len(reports), "reports": [to_plain(item) for item in reports]}
+
+    def research_report_incremental_schedule(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        """T-417: 研报大目录增量调度框架.
+
+        为本地研报资产库生成增量处理调度计划，解决 22G/11742 文件的批量 OCR 成本控制问题。
+        支持：
+        - 增量扫描（只处理 fingerprint 变更或尚未入库的文件）
+        - OCR 成本预估和 ocr_budget_mb 限额控制
+        - batch_size 分批窗口，适配 Airflow/Cron/DAG 分批触发
+        - dry_run=True 时只输出 schedule_plan，不执行任何提取
+        - execute=True 时按计划执行首批（batch_size 内）
+        - 输出 schedule_plan 供外部调度器接入
+        """
+        raw_root = str(payload.get("root_path") or os.environ.get("AI_QUANT_RESEARCH_REPORT_ROOT") or "").strip()
+        if not raw_root:
+            raise ValidationError("incremental schedule requires root_path or AI_QUANT_RESEARCH_REPORT_ROOT")
+        root = Path(raw_root).expanduser()
+        if not root.exists() or not root.is_dir():
+            raise ValidationError(f"research report root not found: {root}")
+
+        extensions = payload.get("extensions", [".pdf"])
+        if isinstance(extensions, str):
+            extensions = [item.strip() for item in extensions.split(",")]
+        extensions = {str(item).lower() for item in extensions}
+
+        dry_run = self._truthy(payload.get("dry_run", True))
+        execute = self._truthy(payload.get("execute", False)) and not dry_run
+        batch_size = self._bounded_limit(payload.get("batch_size", 50), 500)
+        ocr_budget_mb = float(payload.get("ocr_budget_mb", 200.0))
+        scan_limit = self._bounded_limit(payload.get("scan_limit", 5000), 20000)
+        citation_char_limit = self._bounded_limit(payload.get("citation_char_limit", 1200), 4000)
+        parser_version = str(payload.get("parser_version", "research-report-incremental-v1"))
+        broker_filter = str(payload.get("broker", "")).strip().lower()
+        year_filter = str(payload.get("year", "")).strip()
+
+        # Phase 1: filesystem scan (incremental — only new or changed fingerprints)
+        new_count = 0
+        changed_count = 0
+        skipped_count = 0
+        total_scanned = 0
+        batch_candidates: list[dict[str, Any]] = []
+        ocr_budget_used_mb = 0.0
+
+        try:
+            files = iter_report_files(root, extensions=extensions, limit=scan_limit)
+        except Exception as exc:
+            raise ValidationError(f"cannot iterate research report root: {exc}") from exc
+
+        per_broker_sources = self._truthy(payload.get("per_broker_sources", True))
+        for path in files:
+            total_scanned += 1
+            metadata = infer_report_metadata(path, root)
+            broker = str(metadata["broker"])
+            if broker_filter and broker_filter not in broker.lower():
+                skipped_count += 1
+                continue
+            year = str(metadata["year"])
+            if year_filter and year_filter != year:
+                skipped_count += 1
+                continue
+
+            report_id = report_id_for_path(path)
+            fp = cheap_fingerprint(path, root)
+            existing = self.store.research_reports.get(report_id)
+            is_new = existing is None
+            is_changed = not is_new and existing.fingerprint != fp
+
+            if not is_new and not is_changed:
+                skipped_count += 1
+                continue
+
+            if is_new:
+                new_count += 1
+            else:
+                changed_count += 1
+
+            # OCR budget control
+            size_mb = path.stat().st_size / (1024 * 1024)
+            if ocr_budget_used_mb + size_mb > ocr_budget_mb:
+                # Over budget — still record in schedule_plan but skip from batch_candidates
+                batch_candidates.append({
+                    "report_id": report_id,
+                    "file_path": str(path),
+                    "file_name": path.name,
+                    "broker": broker,
+                    "year": year,
+                    "month": str(metadata["month"]),
+                    "size_mb": round(size_mb, 3),
+                    "is_new": is_new,
+                    "is_changed": is_changed,
+                    "status": "ocr_budget_exceeded",
+                    "batch": "deferred",
+                })
+                continue
+
+            ocr_budget_used_mb += size_mb
+
+            if not dry_run:
+                # Register/update the report asset in the store only when the
+                # operator has moved from planning into an executable schedule.
+                source_id = self._research_report_source_id(broker) if per_broker_sources else LOCAL_RESEARCH_REPORT_SOURCE_ID
+                self._ensure_research_report_source(source_id, broker, actor=actor)
+                report = ResearchReportAsset(
+                    report_id=report_id,
+                    source_id=source_id,
+                    broker=broker,
+                    file_path=str(path),
+                    file_name=path.name,
+                    title=str(metadata["title"]),
+                    year=year,
+                    month=str(metadata["month"]),
+                    file_type=path.suffix.lower().lstrip(".") or "unknown",
+                    size_bytes=path.stat().st_size,
+                    fingerprint=fp,
+                    content_sha256="",
+                    rights_tag=self.store.sources[source_id].rights_tag,
+                )
+                if existing:
+                    report.document_id = existing.document_id
+                    report.issuer_id = existing.issuer_id
+                    report.security_id = existing.security_id
+                    report.industry = existing.industry
+                    report.event_ids = list(existing.event_ids)
+                    report.status = existing.status
+                self.store.research_reports[report.report_id] = report
+
+            batch_candidates.append({
+                "report_id": report_id,
+                "file_path": str(path),
+                "file_name": path.name,
+                "broker": broker,
+                "year": year,
+                "month": str(metadata["month"]),
+                "size_mb": round(size_mb, 3),
+                "is_new": is_new,
+                "is_changed": is_changed,
+                "status": "ready_for_extraction",
+                "batch": "current",
+            })
+
+        # Phase 2: generate schedule_plan — batch assignments for Airflow/Cron
+        current_batch = [item for item in batch_candidates if item["batch"] == "current"]
+        deferred_batch = [item for item in batch_candidates if item["batch"] == "deferred"]
+        schedule_plan = []
+        for batch_start in range(0, len(current_batch), batch_size):
+            batch_items = current_batch[batch_start:batch_start + batch_size]
+            schedule_plan.append({
+                "batch_index": batch_start // batch_size,
+                "batch_size": len(batch_items),
+                "report_ids": [item["report_id"] for item in batch_items],
+                "brokers": sorted({item["broker"] for item in batch_items}),
+                "estimated_size_mb": round(sum(item["size_mb"] for item in batch_items), 2),
+                "trigger_suggestion": "cron_or_airflow_daily_batch",
+            })
+
+        # Phase 3: optionally execute the first batch
+        executed_results: list[dict[str, Any]] = []
+        if execute and current_batch:
+            first_batch_ids = [item["report_id"] for item in current_batch[:batch_size]]
+            for report_id in first_batch_ids:
+                try:
+                    report = self.store.research_reports.get(report_id)
+                    if report is not None and not report.document_id:
+                        document_id = f"doc_{report.report_id}"
+                        source = self.store.sources.get(report.source_id)
+                        if source is None:
+                            raise NotFoundError(f"source {report.source_id} not found")
+                        document = self.store.documents.get(document_id)
+                        if document is None:
+                            document = Document(
+                                document_id=document_id,
+                                issuer_id="",
+                                security_id="",
+                                document_type="research",
+                                source_id=report.source_id,
+                                source_type="local_reference",
+                                source_uri=f"research-report://{report.report_id}",
+                                object_uri=report.file_path,
+                                content_sha256=report.content_sha256,
+                                body="",
+                                title=report.title,
+                                rights_tag=report.rights_tag,
+                                language=str(payload.get("language", "zh")),
+                                version=str(payload.get("version", "incremental-v1")),
+                            )
+                            if source.allowed_document_types and document.document_type not in source.allowed_document_types:
+                                raise ValidationError(f"document_type {document.document_type} is not allowed for source {source.source_id}")
+                            if not source.rights_tag.allows(document.rights_tag):
+                                raise PermissionDenied("document rights exceed source rights")
+                            self.store.documents[document.document_id] = document
+                            self._audit(
+                                actor,
+                                "register_research_report_reference_document",
+                                "document",
+                                document.document_id,
+                                source=source.source_type,
+                                approval_state="local_reference_only",
+                            )
+                        report.document_id = document.document_id
+                        report.status = "ingested"
+                        self.store.research_reports[report.report_id] = report
+                        self._audit(
+                            actor,
+                            "link_research_report_reference_document",
+                            "research_report",
+                            report.report_id,
+                            source=report.source_id,
+                            approval_state=report.status,
+                        )
+                    result = self.extract_research_report_text(
+                        report_id,
+                        {"citation_char_limit": citation_char_limit, "parser_version": parser_version},
+                        actor=actor,
+                    )
+                    executed_results.append({
+                        "report_id": report_id,
+                        "status": result["status"],
+                        "evidence_count": len(result.get("evidence", [])),
+                        "manual_review": bool(result.get("manual_review")),
+                    })
+                except (ValidationError, NotFoundError, PermissionDenied, ConflictError) as exc:
+                    executed_results.append({
+                        "report_id": report_id,
+                        "status": "failed",
+                        "error": str(exc),
+                    })
+
+        self._audit(
+            actor,
+            "research_report_incremental_schedule",
+            "research_report",
+            str(root),
+            source="research_report_manifest",
+            approval_state=(
+                f"dry_run={dry_run};execute={execute};"
+                f"new={new_count};changed={changed_count};"
+                f"skipped={skipped_count};batches={len(schedule_plan)}"
+            ),
+        )
+        return {
+            "root_path": str(root),
+            "dry_run": dry_run,
+            "execute": execute,
+            "total_scanned": total_scanned,
+            "new_count": new_count,
+            "changed_count": changed_count,
+            "skipped_count": skipped_count,
+            "ocr_budget_mb": ocr_budget_mb,
+            "ocr_budget_used_mb": round(ocr_budget_used_mb, 3),
+            "deferred_count": len(deferred_batch),
+            "batch_size": batch_size,
+            "batch_count": len(schedule_plan),
+            "schedule_plan": schedule_plan,
+            "candidates": batch_candidates,
+            "executed_results": executed_results,
+            "usage_boundary": "local_reference_only_not_training_or_fact_source",
+            "airflow_dagster_trigger_suggestion": (
+                "Register schedule_plan batches as Airflow/Dagster tasks; "
+                "trigger one batch per daily DAG run; check ocr_budget_mb before each batch."
+            ),
+        }
+
 
     def research_reports_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -6276,11 +6667,15 @@ class SystemService:
         source_text = document.body or self._document_object_text(document)
         chunks = chunk_text_by_page(source_text)
         fallback_error = ""
+        parsed_pages: list[dict[str, Any]] = []
+        locator_source = "rule_text"
         if not chunks and self.document_parser.configured():
             try:
                 parsed = self._parse_document_with_paddleocr(document)
                 source_text = str(parsed.get("text", ""))
                 chunks = chunk_text_by_page(source_text)
+                parsed_pages = [dict(page) for page in parsed.get("pages", []) if isinstance(page, Mapping)]
+                locator_source = "paddleocr"
                 if chunks:
                     parser_version = f"{parser_version}+paddleocr-vl"
                     model_version = str(parsed.get("model") or model_version)
@@ -6312,16 +6707,27 @@ class SystemService:
             )
             raise ValidationError("document body is empty")
         created: list[Evidence] = []
+        source_pages = self._evidence_source_pages(source_text, parsed_pages)
         for index, (page_no, chunk_index, chunk) in enumerate(chunks, start=1):
+            locator = self._evidence_locator(
+                document_id=document_id,
+                page_no=page_no,
+                chunk_index=chunk_index,
+                chunk=chunk,
+                source_pages=source_pages,
+                locator_source=locator_source,
+            )
             evidence = Evidence(
                 evidence_id=new_id("evi"),
                 document_id=document_id,
                 section=f"page_{page_no}_paragraph_{chunk_index}",
                 page_no=page_no,
-                bbox=f"page={page_no};chunk={chunk_index}",
+                bbox=self._locator_bbox_string(locator, page_no=page_no, chunk_index=chunk_index),
                 span_text=chunk,
                 canonical_text=chunk.strip(),
                 confidence=0.9 if index == 1 else 0.8,
+                locator=locator,
+                assets=[dict(item) for item in locator.get("assets", []) if isinstance(item, Mapping)],
             )
             self.store.evidence[evidence.evidence_id] = evidence
             created.append(evidence)
@@ -6334,6 +6740,122 @@ class SystemService:
             model_version=model_version,
         )
         return created
+
+    def _evidence_source_pages(self, source_text: str, parsed_pages: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+        pages: dict[int, dict[str, Any]] = {}
+        for index, page_text in enumerate(source_text.split("\f"), start=1):
+            pages[index] = {"page_no": index, "markdown": page_text, "layout_items": [], "tables": [], "assets": []}
+        for page in parsed_pages:
+            page_no = int(page.get("page_no") or len(pages) + 1)
+            merged = dict(pages.get(page_no, {"page_no": page_no, "markdown": ""}))
+            merged.update(page)
+            pages[page_no] = merged
+        return pages
+
+    def _evidence_locator(
+        self,
+        *,
+        document_id: str,
+        page_no: int,
+        chunk_index: int,
+        chunk: str,
+        source_pages: Mapping[int, Mapping[str, Any]],
+        locator_source: str,
+    ) -> dict[str, Any]:
+        page = source_pages.get(page_no, {})
+        page_text = str(page.get("markdown", ""))
+        layout_item = self._best_layout_item(chunk, page.get("layout_items", []), chunk_index=chunk_index)
+        bbox = dict(layout_item.get("bbox", {})) if isinstance(layout_item.get("bbox"), Mapping) else {}
+        tables = self._matching_locator_tables(chunk, page.get("tables", []))
+        assets = [dict(item) for item in page.get("assets", []) if isinstance(item, Mapping)]
+        scheme = "ocr_bbox_span_v1" if bbox or tables or assets else "page_chunk_v1"
+        return {
+            "scheme": scheme,
+            "document_id": document_id,
+            "page_no": page_no,
+            "chunk_index": chunk_index,
+            "source": locator_source,
+            "span": self._chunk_span(page_text, chunk),
+            "bbox": bbox,
+            "layout_type": str(layout_item.get("type", "")) if layout_item else "",
+            "layout_confidence": float(layout_item.get("confidence", 0.0) or 0.0) if layout_item else 0.0,
+            "tables": tables,
+            "assets": assets,
+            "legacy_bbox": f"page={page_no};chunk={chunk_index}",
+        }
+
+    def _chunk_span(self, page_text: str, chunk: str) -> dict[str, Any]:
+        start = page_text.find(chunk) if page_text else -1
+        if start < 0:
+            compact_page = re.sub(r"\s+", " ", page_text)
+            compact_chunk = re.sub(r"\s+", " ", chunk).strip()
+            start = compact_page.find(compact_chunk) if compact_page and compact_chunk else -1
+            return {
+                "start": max(0, start),
+                "end": max(0, start) + len(compact_chunk) if start >= 0 else len(chunk),
+                "length": len(chunk),
+                "matched": start >= 0,
+                "text_sha256": hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
+            }
+        return {
+            "start": start,
+            "end": start + len(chunk),
+            "length": len(chunk),
+            "matched": True,
+            "text_sha256": hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
+        }
+
+    def _best_layout_item(self, chunk: str, layout_items: Any, *, chunk_index: int) -> dict[str, Any]:
+        if not isinstance(layout_items, list):
+            return {}
+        candidates = [dict(item) for item in layout_items if isinstance(item, Mapping)]
+        if not candidates:
+            return {}
+        scored = [(self._text_overlap_score(chunk, str(item.get("text", ""))), item) for item in candidates]
+        scored.sort(key=lambda item: item[0], reverse=True)
+        if scored and scored[0][0] > 0:
+            return scored[0][1]
+        if 0 <= chunk_index - 1 < len(candidates):
+            return candidates[chunk_index - 1]
+        return {}
+
+    def _text_overlap_score(self, left: str, right: str) -> float:
+        left_norm = re.sub(r"\s+", " ", left).strip().lower()
+        right_norm = re.sub(r"\s+", " ", right).strip().lower()
+        if not left_norm or not right_norm:
+            return 0.0
+        if left_norm in right_norm or right_norm in left_norm:
+            return min(len(left_norm), len(right_norm)) / max(1, max(len(left_norm), len(right_norm)))
+        left_terms = set(re.findall(r"[\w\u4e00-\u9fff]+", left_norm))
+        right_terms = set(re.findall(r"[\w\u4e00-\u9fff]+", right_norm))
+        return len(left_terms & right_terms) / max(1, len(left_terms | right_terms))
+
+    def _matching_locator_tables(self, chunk: str, tables: Any) -> list[dict[str, Any]]:
+        if not isinstance(tables, list):
+            return []
+        matched: list[dict[str, Any]] = []
+        for table in tables:
+            if not isinstance(table, Mapping):
+                continue
+            table_copy = dict(table)
+            cells = [dict(cell) for cell in table_copy.get("cells", []) if isinstance(cell, Mapping)] if isinstance(table_copy.get("cells", []), list) else []
+            cell_text = " ".join(str(cell.get("text", "")) for cell in cells)
+            if cells and (self._text_overlap_score(chunk, cell_text) > 0 or len(tables) == 1):
+                table_copy["cells"] = cells
+                matched.append(table_copy)
+        return matched
+
+    def _locator_bbox_string(self, locator: Mapping[str, Any], *, page_no: int, chunk_index: int) -> str:
+        bbox = locator.get("bbox", {})
+        if isinstance(bbox, Mapping) and bbox:
+            coords = [bbox.get("x", 0), bbox.get("y", 0), bbox.get("width", 0), bbox.get("height", 0)]
+            formatted = ",".join(self._format_locator_number(value) for value in coords)
+            return f"page={page_no};chunk={chunk_index};bbox={formatted}"
+        return f"page={page_no};chunk={chunk_index}"
+
+    def _format_locator_number(self, value: Any) -> str:
+        number = float(value or 0)
+        return str(int(number)) if number.is_integer() else f"{number:.4f}".rstrip("0").rstrip(".")
 
     def manual_review_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -6420,25 +6942,67 @@ class SystemService:
         document_ids = {document.document_id for document in documents}
         evidence = [item for item in self.store.evidence.values() if item.document_id in document_ids]
         located = [item for item in evidence if item.page_no > 0 and bool(item.bbox)]
+        structured_located = [item for item in evidence if self._evidence_has_structured_locator(item)]
+        bbox_located = [item for item in evidence if self._evidence_has_real_bbox(item)]
+        table_cell_total = sum(self._evidence_table_cell_count(item) for item in evidence)
+        table_cell_with_bbox = sum(self._evidence_table_cell_bbox_count(item) for item in evidence)
+        asset_refs = sum(len(item.assets) for item in evidence)
         manual_reviews = [item for item in self.store.manual_reviews.values() if item.document_id in document_ids]
         open_reviews = [item for item in manual_reviews if item.status == "open"]
         issue_counts: dict[str, int] = {}
         for item in manual_reviews:
             issue_counts[item.issue_type] = issue_counts.get(item.issue_type, 0) + 1
-        documents_with_evidence = len({item.document_id for item in evidence})
+        document_ids_with_evidence = {item.document_id for item in evidence}
+        documents_with_evidence = len(document_ids_with_evidence)
         avg_confidence = sum(item.confidence for item in evidence) / len(evidence) if evidence else 0.0
         return {
             "issuer_id": issuer_id,
             "documents": len(documents),
             "documents_with_evidence": documents_with_evidence,
+            "missing_document_ids": sorted(document_ids - document_ids_with_evidence),
             "evidence": len(evidence),
             "locator_coverage": round(len(located) / max(1, len(evidence)), 4) if evidence else 0.0,
+            "structured_locator_coverage": round(len(structured_located) / max(1, len(evidence)), 4) if evidence else 0.0,
+            "bbox_coverage": round(len(bbox_located) / max(1, len(evidence)), 4) if evidence else 0.0,
+            "table_cell_count": table_cell_total,
+            "table_cell_bbox_coverage": round(table_cell_with_bbox / max(1, table_cell_total), 4) if table_cell_total else 0.0,
+            "asset_reference_count": asset_refs,
             "avg_confidence": round(avg_confidence, 4),
             "manual_reviews": len(manual_reviews),
             "open_manual_reviews": len(open_reviews),
             "parse_failure_rate": round(len({item.document_id for item in open_reviews}) / max(1, len(documents)), 4) if documents else 0.0,
             "issue_counts": issue_counts,
         }
+
+    def _evidence_has_structured_locator(self, evidence: Evidence) -> bool:
+        return isinstance(evidence.locator, Mapping) and bool(evidence.locator.get("scheme"))
+
+    def _evidence_has_real_bbox(self, evidence: Evidence) -> bool:
+        bbox = evidence.locator.get("bbox", {}) if isinstance(evidence.locator, Mapping) else {}
+        return isinstance(bbox, Mapping) and {"x", "y", "width", "height"}.issubset(bbox.keys())
+
+    def _evidence_table_cell_count(self, evidence: Evidence) -> int:
+        tables = evidence.locator.get("tables", []) if isinstance(evidence.locator, Mapping) else []
+        if not isinstance(tables, list):
+            return 0
+        return sum(len(table.get("cells", [])) for table in tables if isinstance(table, Mapping) and isinstance(table.get("cells", []), list))
+
+    def _evidence_table_cell_bbox_count(self, evidence: Evidence) -> int:
+        tables = evidence.locator.get("tables", []) if isinstance(evidence.locator, Mapping) else []
+        if not isinstance(tables, list):
+            return 0
+        count = 0
+        for table in tables:
+            if not isinstance(table, Mapping):
+                continue
+            cells = table.get("cells", [])
+            if not isinstance(cells, list):
+                continue
+            for cell in cells:
+                bbox = cell.get("bbox", {}) if isinstance(cell, Mapping) else {}
+                if isinstance(bbox, Mapping) and bbox:
+                    count += 1
+        return count
 
     def _create_manual_review(
         self,
@@ -7677,6 +8241,193 @@ class SystemService:
         self._audit(actor, "run_portfolio_optimizer", "portfolio_proposal", proposal.proposal_id, approval_state=proposal.status)
         return proposal
 
+    def portfolio_attribution_backfill(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        """Backfill simulated portfolio performance attribution to operating reports (T-408).
+
+        Reads portfolio returns for a given period, computes attribution by market/currency/
+        industry/style, and attaches the result as a JSON annotation on existing operating
+        reports within the covered period. All data is simulation/public-EOD-market-data only.
+        No real trading account is accessed.
+
+        Payload fields:
+            proposal_id: optional PortfolioProposal to use as holdings source
+            holdings: list of {security_id, weight} (alternative to proposal_id)
+            start_date, end_date: ISO date range for returns computation
+            source_id: market data source (default: public_eod_market_data)
+            groups: {security_id: {market, industry, style}} overrides
+            target_report_ids: list of operating report IDs to annotate (optional)
+            dry_run: if true, compute but do not write (default: false)
+        """
+        proposal_id = str(payload.get("proposal_id", ""))
+        holdings = payload.get("holdings", [])
+        if proposal_id:
+            proposal = self.store.portfolio_proposals.get(proposal_id)
+            if proposal is None:
+                raise NotFoundError(f"portfolio proposal {proposal_id} not found")
+            if proposal.status not in {"approved", "paper"}:
+                raise ComplianceGateError(
+                    f"attribution backfill requires an approved/paper proposal; got status={proposal.status}"
+                )
+            holdings = [
+                {"security_id": sec_id, "weight": weight}
+                for sec_id, weight in (proposal.candidate_weights or {}).items()
+            ]
+        if not holdings:
+            raise ValidationError("portfolio_attribution_backfill requires holdings or a valid proposal_id")
+        dry_run = self._truthy(payload.get("dry_run", False))
+        returns_payload = dict(payload)
+        returns_payload["holdings"] = holdings
+        attribution_result = self.portfolio_returns_payload(returns_payload)
+        target_report_ids: list[str] = list(payload.get("target_report_ids") or [])
+        covered_start = str(payload.get("start_date", ""))
+        covered_end = str(payload.get("end_date", ""))
+        annotated: list[str] = []
+        if not dry_run:
+            for report in self.store.operating_reports.values():
+                report_id = report.report_id
+                if target_report_ids and report_id not in target_report_ids:
+                    continue
+                report_period = getattr(report, "period", "")
+                if covered_start and report_period and report_period < covered_start[:7]:
+                    continue
+                if covered_end and report_period and report_period > covered_end[:7]:
+                    continue
+                attribution_annotation = {
+                    "attribution_source": "portfolio_attribution_backfill",
+                    "proposal_id": proposal_id,
+                    "start_date": covered_start,
+                    "end_date": covered_end,
+                    "total_return": attribution_result.get("total_return"),
+                    "volatility": attribution_result.get("volatility"),
+                    "max_drawdown": attribution_result.get("max_drawdown"),
+                    "attribution": attribution_result.get("attribution"),
+                    "simulation_only": True,
+                    "live_execution_allowed": False,
+                }
+                if hasattr(report, "annotations") and isinstance(getattr(report, "annotations", None), dict):
+                    report.annotations["portfolio_attribution"] = attribution_annotation  # type: ignore[attr-defined]
+                annotated.append(report_id)
+            self._audit(
+                actor, "portfolio_attribution_backfill", "operating_report", "batch",
+                source=str(payload.get("source_id", PUBLIC_EOD_MARKET_DATA_SOURCE_ID)),
+                approval_state=f"annotated={len(annotated)};dry_run=false",
+            )
+        else:
+            self._audit(
+                actor, "portfolio_attribution_backfill", "operating_report", "batch",
+                source=str(payload.get("source_id", PUBLIC_EOD_MARKET_DATA_SOURCE_ID)),
+                approval_state="dry_run=true",
+            )
+        return {
+            "proposal_id": proposal_id,
+            "start_date": covered_start,
+            "end_date": covered_end,
+            "dry_run": dry_run,
+            "total_return": attribution_result.get("total_return"),
+            "volatility": attribution_result.get("volatility"),
+            "max_drawdown": attribution_result.get("max_drawdown"),
+            "attribution": attribution_result.get("attribution"),
+            "annotated_report_ids": annotated,
+            "annotated_count": len(annotated),
+            "simulation_only": True,
+            "live_execution_allowed": False,
+        }
+
+    def portfolio_simulated_feedback(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        """Investment committee UI approval entry and simulated portfolio feedback (T-409).
+
+        Provides a structured approval entry for the investment committee to review a
+        PortfolioProposal, optionally update its status to 'approved' or 'rejected',
+        and produce a simulated-position feedback summary driven by public EOD market data.
+
+        This is for PAPER/SIMULATION portfolios ONLY. It does NOT connect to any real
+        broker, does NOT execute real trades, and must NOT be used to initiate real orders.
+
+        Payload fields:
+            proposal_id: required - PortfolioProposal to review
+            decision: 'approved' | 'rejected' | 'pending' (default 'pending')
+            rationale: free-text decision rationale (max 2000 chars)
+            committee_member: actor identifier for the committee member
+            feedback_start_date, feedback_end_date: date range for position feedback
+            source_id: market data source for feedback valuation
+            include_valuation: if true, compute simulated position valuation
+        """
+        proposal_id = str(payload.get("proposal_id", ""))
+        if not proposal_id:
+            raise ValidationError("portfolio_simulated_feedback requires proposal_id")
+        proposal = self.store.portfolio_proposals.get(proposal_id)
+        if proposal is None:
+            raise NotFoundError(f"portfolio proposal {proposal_id} not found")
+        decision = str(payload.get("decision", "pending")).strip().lower()
+        if decision not in {"approved", "rejected", "pending", "needs_revision"}:
+            raise ValidationError("decision must be one of: approved, rejected, pending, needs_revision")
+        rationale = str(payload.get("rationale", ""))[:2000]
+        committee_member = str(payload.get("committee_member", actor)).strip()
+        # Record the committee decision on the proposal
+        if decision == "approved":
+            proposal.status = "paper"
+        elif decision == "rejected":
+            proposal.status = "rejected"
+        # Produce simulated valuation feedback if requested
+        valuation_result: dict[str, Any] = {}
+        include_valuation = self._truthy(payload.get("include_valuation", True))
+        candidate_weights = proposal.candidate_weights or {}
+        if include_valuation and candidate_weights:
+            holdings = [
+                {"security_id": sec_id, "shares": float(weight * 1_000_000)}
+                for sec_id, weight in candidate_weights.items()
+                if sec_id in self.store.securities
+            ]
+            if holdings:
+                try:
+                    valuation_result = self.portfolio_valuation_payload({
+                        "holdings": holdings,
+                        "as_of_date": str(payload.get("feedback_end_date", "9999-12-31")),
+                        "source_id": str(payload.get("source_id", PUBLIC_EOD_MARKET_DATA_SOURCE_ID)),
+                        "cash": 0.0,
+                    })
+                except (ValidationError, NotFoundError) as exc:
+                    valuation_result = {"error": str(exc)}
+        # Compute returns feedback if start/end dates are provided
+        returns_feedback: dict[str, Any] = {}
+        feedback_start = str(payload.get("feedback_start_date", ""))
+        feedback_end = str(payload.get("feedback_end_date", ""))
+        if feedback_start and feedback_end and candidate_weights:
+            holdings_for_returns = [
+                {"security_id": sec_id, "weight": weight}
+                for sec_id, weight in candidate_weights.items()
+                if sec_id in self.store.securities
+            ]
+            if holdings_for_returns:
+                try:
+                    returns_feedback = self.portfolio_returns_payload({
+                        "holdings": holdings_for_returns,
+                        "start_date": feedback_start,
+                        "end_date": feedback_end,
+                        "source_id": str(payload.get("source_id", PUBLIC_EOD_MARKET_DATA_SOURCE_ID)),
+                    })
+                except (ValidationError, NotFoundError) as exc:
+                    returns_feedback = {"error": str(exc)}
+        self._audit(
+            actor, "portfolio_simulated_feedback", "portfolio_proposal", proposal_id,
+            source="investment_committee",
+            approval_state=f"decision={decision};member={committee_member}",
+        )
+        return {
+            "proposal_id": proposal_id,
+            "proposal_status": proposal.status,
+            "decision": decision,
+            "committee_member": committee_member,
+            "rationale": rationale,
+            "candidate_weights": candidate_weights,
+            "simulated_valuation": valuation_result,
+            "returns_feedback": returns_feedback,
+            "simulation_only": True,
+            "live_execution_allowed": False,
+            "automation_allowed": False,
+            "usage_boundary": "paper_portfolio_simulation_and_feedback_only",
+        }
+
     def portfolio_returns_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         holdings = payload.get("holdings", payload.get("weights", []))
         if isinstance(holdings, Mapping):
@@ -8031,6 +8782,173 @@ class SystemService:
         ]
         proposals.sort(key=lambda item: item.created_at, reverse=True)
         return {"count": len(proposals), "proposals": [to_plain(item) for item in proposals]}
+
+    def macro_themes_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        trigger_type = str(filters.get("trigger_type", "")).strip()
+        query = str(filters.get("q", "")).strip().lower()
+        limit = self._bounded_limit(filters.get("limit", 100), 1000)
+        rows = list(self.store.macro_themes.values())
+        if trigger_type:
+            rows = [item for item in rows if item.trigger_type == trigger_type]
+        if query:
+            rows = [
+                item
+                for item in rows
+                if query in item.name.lower()
+                or query in item.description.lower()
+                or any(query in value.lower() for value in item.macro_drivers)
+            ]
+        rows.sort(key=lambda item: item.created_at, reverse=True)
+        return {"count": len(rows), "themes": [to_plain(item) for item in rows[:limit]]}
+
+    def industry_chains_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        root_theme_id = str(filters.get("root_theme_id", "")).strip()
+        query = str(filters.get("q", "")).strip().lower()
+        limit = self._bounded_limit(filters.get("limit", 100), 1000)
+        rows = list(self.store.industry_chains.values())
+        if root_theme_id:
+            rows = [item for item in rows if item.root_theme_id == root_theme_id]
+        if query:
+            rows = [
+                item
+                for item in rows
+                if query in item.name.lower()
+                or any(query in str(node.get("name", "")).lower() or query in " ".join(str(value).lower() for value in node.get("keywords", [])) for node in item.nodes)
+            ]
+        rows.sort(key=lambda item: item.created_at, reverse=True)
+        return {"count": len(rows), "chains": [to_plain(item) for item in rows[:limit]]}
+
+    def company_positions_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        chain_id = str(filters.get("chain_id", "")).strip()
+        issuer_id = str(filters.get("issuer_id", "")).strip()
+        security_id = str(filters.get("security_id", "")).strip()
+        node_id = str(filters.get("node_id", "")).strip()
+        role = str(filters.get("role", "")).strip().lower()
+        limit = self._bounded_limit(filters.get("limit", 100), 1000)
+        rows = list(self.store.company_positions.values())
+        if chain_id:
+            rows = [item for item in rows if item.chain_id == chain_id]
+        if issuer_id:
+            rows = [item for item in rows if item.issuer_id == issuer_id]
+        if security_id:
+            rows = [item for item in rows if item.security_id == security_id]
+        if node_id:
+            rows = [item for item in rows if node_id in item.node_ids]
+        if role:
+            rows = [item for item in rows if role in item.role.lower()]
+        rows.sort(key=lambda item: item.created_at, reverse=True)
+        return {"count": len(rows), "positions": [to_plain(item) for item in rows[:limit]]}
+
+    def company_positions_schema_payload(self, _filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        fields = [
+            {"field": "issuer_id", "type": "string", "required": True, "meaning": "mapped company / issuer identifier"},
+            {"field": "security_id", "type": "string", "required": False, "meaning": "listed security identifier when available"},
+            {"field": "chain_id", "type": "string", "required": True, "meaning": "industry chain identifier"},
+            {"field": "node_ids", "type": "list[string]", "required": True, "meaning": "one or more chain nodes where the company participates"},
+            {"field": "role", "type": "string", "required": True, "meaning": "company role in the chain node, such as supplier, foundry, equipment vendor, or demand beneficiary"},
+            {"field": "positioning_summary", "type": "string", "required": True, "meaning": "short explainable positioning statement"},
+            {"field": "revenue_exposure", "type": "object", "required": True, "meaning": "revenue percentage, segment, trend, or qualitative exposure to the node"},
+            {"field": "profit_exposure", "type": "object", "required": True, "meaning": "profit or margin sensitivity to the node"},
+            {"field": "capacity", "type": "object", "required": True, "meaning": "capacity, shipment, utilization, or expansion signal"},
+            {"field": "customers", "type": "list[string]", "required": True, "meaning": "downstream customers, customer groups, or end markets"},
+            {"field": "suppliers", "type": "list[string]", "required": True, "meaning": "upstream suppliers, materials, equipment, or critical inputs"},
+            {"field": "competitors", "type": "list[string]", "required": False, "meaning": "peer companies competing in the same chain node"},
+            {"field": "technology_tags", "type": "list[string]", "required": False, "meaning": "technology route, product family, or capability tags"},
+            {"field": "valuation_metrics", "type": "object", "required": True, "meaning": "valuation, financial, or market metrics relevant for simulated portfolio analysis"},
+            {"field": "event_refs", "type": "list[string]", "required": False, "meaning": "related disclosure events, policy events, product launches, or supply shocks"},
+            {"field": "evidence_ids", "type": "list[string]", "required": True, "meaning": "evidence records backing the positioning card"},
+            {"field": "data_quality", "type": "string", "required": True, "meaning": "verified, complete, partial, needs_review, or stale"},
+        ]
+        return {
+            "schema_id": "company-position-v1",
+            "required_data_slots": [field["field"] for field in fields if field["required"]],
+            "data_quality_values": ["verified", "complete", "partial", "needs_review", "stale"],
+            "fields": fields,
+            "usage_boundary": "research_positioning_schema_not_trade_instruction",
+        }
+
+    def company_positions_coverage_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        required_slots = [
+            str(item)
+            for item in filters.get(
+                "required_data_slots",
+                self.company_positions_schema_payload({})["required_data_slots"],
+            )
+        ]
+        base = self.company_positions_payload(filters)
+        rows = list(base["positions"])
+        issues: list[dict[str, Any]] = []
+        research_tasks: list[dict[str, Any]] = []
+        completed_slots = 0
+        total_slots = max(1, len(rows) * max(1, len(required_slots)))
+        evidence_linked = 0
+        by_chain: dict[str, dict[str, Any]] = {}
+        by_node: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            present_slots = [slot for slot in required_slots if row.get(slot)]
+            missing_slots = [slot for slot in required_slots if not row.get(slot)]
+            completed_slots += len(present_slots)
+            linked_evidence_ids = [item for item in row.get("evidence_ids", []) if item in self.store.evidence]
+            if linked_evidence_ids:
+                evidence_linked += 1
+            if missing_slots or not linked_evidence_ids:
+                issue = {
+                    "position_id": row["position_id"],
+                    "issuer_id": row["issuer_id"],
+                    "chain_id": row["chain_id"],
+                    "node_ids": row.get("node_ids", []),
+                    "missing_slots": missing_slots,
+                    "missing_evidence": not bool(linked_evidence_ids),
+                    "data_quality": row.get("data_quality", ""),
+                }
+                issues.append(issue)
+                research_tasks.append(
+                        {
+                            "task_id": f"coverage_{row['position_id']}",
+                            "type": "company_position_backfill",
+                            "position_id": row["position_id"],
+                            "issuer_id": row["issuer_id"],
+                            "chain_id": row["chain_id"],
+                            "node_ids": row.get("node_ids", []),
+                        "required_slots": missing_slots,
+                        "reason": "missing data slots or missing evidence linkage",
+                    }
+                )
+            chain_bucket = by_chain.setdefault(row["chain_id"], {"chain_id": row["chain_id"], "positions": 0, "with_evidence": 0, "slots_completed": 0, "slots_total": 0})
+            chain_bucket["positions"] += 1
+            chain_bucket["with_evidence"] += 1 if linked_evidence_ids else 0
+            chain_bucket["slots_completed"] += len(present_slots)
+            chain_bucket["slots_total"] += len(required_slots)
+            for node_id in row.get("node_ids", []):
+                node_bucket = by_node.setdefault(node_id, {"node_id": node_id, "positions": 0, "with_evidence": 0, "slots_completed": 0, "slots_total": 0})
+                node_bucket["positions"] += 1
+                node_bucket["with_evidence"] += 1 if linked_evidence_ids else 0
+                node_bucket["slots_completed"] += len(present_slots)
+                node_bucket["slots_total"] += len(required_slots)
+        for bucket in by_chain.values():
+            bucket["slot_coverage"] = round(bucket["slots_completed"] / max(1, bucket["slots_total"]), 4)
+            bucket["evidence_coverage"] = round(bucket["with_evidence"] / max(1, bucket["positions"]), 4)
+        for bucket in by_node.values():
+            bucket["slot_coverage"] = round(bucket["slots_completed"] / max(1, bucket["slots_total"]), 4)
+            bucket["evidence_coverage"] = round(bucket["with_evidence"] / max(1, bucket["positions"]), 4)
+        return {
+            "count": len(rows),
+            "required_data_slots": required_slots,
+            "coverage": {
+                "slot_coverage": round(completed_slots / total_slots, 4) if rows else 1.0,
+                "evidence_coverage": round(evidence_linked / max(1, len(rows)), 4) if rows else 1.0,
+                "positions_with_issues": len(issues),
+                "positions_total": len(rows),
+            },
+            "issues": issues,
+            "research_tasks": research_tasks,
+            "by_chain": sorted(by_chain.values(), key=lambda item: (item["slot_coverage"], item["evidence_coverage"])),
+            "by_node": sorted(by_node.values(), key=lambda item: (item["slot_coverage"], item["evidence_coverage"])),
+        }
 
     def register_benchmark(self, payload: Mapping[str, Any], *, actor: str = "system") -> BenchmarkConfig:
         benchmark = BenchmarkConfig(
@@ -8435,6 +9353,76 @@ class SystemService:
                 },
                 actor=actor,
             )
+        if "theme_demo_ai_supply_chain" not in self.store.macro_themes:
+            self.register_macro_theme(
+                {
+                    "theme_id": "theme_demo_ai_supply_chain",
+                    "name": "AI terminal electronics supply chain",
+                    "description": "Demo macro theme for hotspot diffusion and company positioning.",
+                    "trigger_type": "hotspot",
+                    "as_of_date": str(utcnow().date()),
+                    "source_refs": ["demo://hotspot/ai-terminal"],
+                    "macro_drivers": ["AI terminal shipment growth", "edge compute demand"],
+                    "risk_factors": ["inventory cycle reversal", "pricing pressure"],
+                    "confidence": 0.72,
+                },
+                actor=actor,
+            )
+        if "lex_demo_ai_hardware" not in self.store.hotspot_lexicons:
+            self.register_hotspot_lexicon(
+                {
+                    "lexicon_id": "lex_demo_ai_hardware",
+                    "name": "Demo AI hardware lexicon",
+                    "terms": ["GPU", "AI accelerator", "edge compute"],
+                    "synonyms": {"GPU": ["graphics processor", "AI chip"], "封装": ["advanced packaging"]},
+                    "related_chain_nodes": [
+                        {"node_id": "node_gpu", "name": "GPU", "level": 1, "category": "compute", "keywords": ["gpu", "ai"]},
+                        {"node_id": "node_packaging", "name": "封装", "level": 2, "category": "packaging", "keywords": ["先进封装"]},
+                        {"node_id": "node_materials", "name": "材料", "level": 3, "category": "materials", "keywords": ["电子材料"]},
+                    ],
+                    "source_refs": ["demo://lexicon/ai-hardware"],
+                },
+                actor=actor,
+            )
+        if "chain_demo_electronics" not in self.store.industry_chains:
+            self.register_industry_chain(
+                {
+                    "chain_id": "chain_demo_electronics",
+                    "name": "Demo electronics component chain",
+                    "root_theme_id": "theme_demo_ai_supply_chain",
+                    "nodes": [
+                        {"node_id": "node_gpu", "name": "GPU", "level": 1, "category": "compute", "keywords": ["gpu", "ai"]},
+                        {"node_id": "node_packaging", "name": "封装", "level": 2, "category": "packaging", "keywords": ["先进封装"]},
+                        {"node_id": "node_materials", "name": "材料", "level": 3, "category": "materials", "keywords": ["电子材料"]},
+                    ],
+                    "edges": [
+                        {"source_node_id": "node_materials", "target_node_id": "node_packaging", "relation_type": "SUPPLIED_TO", "strength": "medium"},
+                        {"source_node_id": "node_packaging", "target_node_id": "node_gpu", "relation_type": "ENABLED_BY", "strength": "high"},
+                    ],
+                },
+                actor=actor,
+            )
+        if "pos_demo_gpu" not in self.store.company_positions:
+            self.register_company_position(
+                "chain_demo_electronics",
+                {
+                    "position_id": "pos_demo_gpu",
+                    "issuer_id": "issuer_demo",
+                    "security_id": "security_demo_us",
+                    "node_ids": ["node_gpu"],
+                    "role": "GPU workload beneficiary",
+                    "positioning_summary": "Demo issuer positioned on GPU-demand growth node.",
+                    "revenue_exposure": {"gpu_related": 0.33},
+                    "profit_exposure": {"gpu_related": 0.28},
+                    "capacity": {"trend": "expanding"},
+                    "customers": ["hyperscaler_cluster"],
+                    "suppliers": ["advanced_packaging_vendor"],
+                    "technology_tags": ["accelerated_compute"],
+                    "valuation_metrics": {"pe_ttm": 24.8},
+                    "data_quality": "partial",
+                },
+                actor=actor,
+            )
         if "dec_demo" not in self.store.decisions:
             self.build_decision_pack(
                 {
@@ -8536,6 +9524,10 @@ class SystemService:
             "review_id": "rev_demo",
             "replay_id": "replay_demo",
             "report_id": report_id,
+            "theme_id": "theme_demo_ai_supply_chain",
+            "chain_id": "chain_demo_electronics",
+            "position_id": "pos_demo_gpu",
+            "lexicon_id": "lex_demo_ai_hardware",
             "dashboard": self.dashboard(),
         }
 
@@ -10387,6 +11379,857 @@ class SystemService:
             "issues": issues,
         }
 
+    def register_macro_theme(self, payload: Mapping[str, Any], *, actor: str = "system") -> MacroTheme:
+        theme_id = str(payload.get("theme_id") or new_id("theme")).strip()
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            raise ValidationError("macro theme requires name")
+        if theme_id in self.store.macro_themes:
+            raise ConflictError(f"macro theme {theme_id} already exists")
+        theme = MacroTheme(
+            theme_id=theme_id,
+            name=name,
+            description=str(payload.get("description", "")),
+            trigger_type=str(payload.get("trigger_type", "manual")),
+            as_of_date=str(payload.get("as_of_date", "")),
+            source_refs=[str(item) for item in payload.get("source_refs", [])],
+            macro_drivers=[str(item) for item in payload.get("macro_drivers", [])],
+            risk_factors=[str(item) for item in payload.get("risk_factors", [])],
+            confidence=float(payload.get("confidence", 0.5) or 0.0),
+        )
+        self.store.macro_themes[theme.theme_id] = theme
+        self._audit(actor, "register_macro_theme", "macro_theme", theme.theme_id)
+        return theme
+
+    def register_industry_chain(self, payload: Mapping[str, Any], *, actor: str = "system") -> IndustryChain:
+        chain_id = str(payload.get("chain_id") or new_id("chain")).strip()
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            raise ValidationError("industry chain requires name")
+        if chain_id in self.store.industry_chains:
+            raise ConflictError(f"industry chain {chain_id} already exists")
+        root_theme_id = str(payload.get("root_theme_id", "")).strip()
+        if root_theme_id and root_theme_id not in self.store.macro_themes:
+            raise NotFoundError(f"macro theme {root_theme_id} not found")
+        nodes = [dict(item) for item in payload.get("nodes", [])]
+        edges = [dict(item) for item in payload.get("edges", [])]
+        if not nodes:
+            nodes = self._default_chain_nodes_for_query(name)
+        node_ids = {str(item.get("node_id", "")).strip() for item in nodes}
+        for edge in edges:
+            source_node_id = str(edge.get("source_node_id", "")).strip()
+            target_node_id = str(edge.get("target_node_id", "")).strip()
+            if source_node_id not in node_ids or target_node_id not in node_ids:
+                raise ValidationError("industry chain edge references unknown node")
+        chain = IndustryChain(
+            chain_id=chain_id,
+            name=name,
+            root_theme_id=root_theme_id,
+            nodes=nodes,
+            edges=edges,
+            taxonomy_version=str(payload.get("taxonomy_version", "industry-chain-v1")),
+            source_refs=[str(item) for item in payload.get("source_refs", [])],
+        )
+        self.store.industry_chains[chain.chain_id] = chain
+        self._audit(actor, "register_industry_chain", "industry_chain", chain.chain_id)
+        return chain
+
+    def register_company_position(self, chain_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> CompanyPosition:
+        chain = self.store.industry_chains.get(chain_id)
+        if chain is None:
+            raise NotFoundError(f"industry chain {chain_id} not found")
+        issuer_id = str(payload.get("issuer_id", "")).strip()
+        if issuer_id not in self.store.issuers:
+            raise NotFoundError(f"issuer {issuer_id} not found")
+        security_id = str(payload.get("security_id", "")).strip()
+        if security_id and security_id not in self.store.securities:
+            raise NotFoundError(f"security {security_id} not found")
+        node_ids = [str(item) for item in payload.get("node_ids", [])]
+        chain_node_ids = {str(item.get("node_id", "")) for item in chain.nodes}
+        unknown_nodes = [item for item in node_ids if item not in chain_node_ids]
+        if unknown_nodes:
+            raise ValidationError(f"company position references unknown chain nodes: {unknown_nodes}")
+        evidence_ids = [str(item) for item in payload.get("evidence_ids", [])]
+        missing_evidence = [item for item in evidence_ids if item not in self.store.evidence]
+        if missing_evidence and bool(payload.get("require_evidence_records", False)):
+            raise NotFoundError(f"evidence records not found: {missing_evidence}")
+        position_id = str(payload.get("position_id") or f"pos_{chain_id}_{issuer_id}_{len(self.store.company_positions) + 1}").strip()
+        if position_id in self.store.company_positions:
+            raise ConflictError(f"company position {position_id} already exists")
+        position = CompanyPosition(
+            position_id=position_id,
+            issuer_id=issuer_id,
+            security_id=security_id,
+            chain_id=chain_id,
+            node_ids=node_ids,
+            role=str(payload.get("role", "")),
+            positioning_summary=str(payload.get("positioning_summary", "")),
+            revenue_exposure=dict(payload.get("revenue_exposure", {})),
+            profit_exposure=dict(payload.get("profit_exposure", {})),
+            capacity=dict(payload.get("capacity", {})),
+            customers=[str(item) for item in payload.get("customers", [])],
+            suppliers=[str(item) for item in payload.get("suppliers", [])],
+            competitors=[str(item) for item in payload.get("competitors", [])],
+            technology_tags=[str(item) for item in payload.get("technology_tags", [])],
+            valuation_metrics=dict(payload.get("valuation_metrics", {})),
+            event_refs=[str(item) for item in payload.get("event_refs", [])],
+            evidence_ids=evidence_ids,
+            data_quality=str(payload.get("data_quality", "needs_review")),
+        )
+        self.store.company_positions[position.position_id] = position
+        self._audit(actor, "register_company_position", "company_position", position.position_id)
+        return position
+
+    def register_hotspot_lexicon(self, payload: Mapping[str, Any], *, actor: str = "system") -> HotspotLexicon:
+        lexicon_id = str(payload.get("lexicon_id") or new_id("lex")).strip()
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            raise ValidationError("hotspot lexicon requires name")
+        if lexicon_id in self.store.hotspot_lexicons:
+            raise ConflictError(f"hotspot lexicon {lexicon_id} already exists")
+        lexicon = HotspotLexicon(
+            lexicon_id=lexicon_id,
+            name=name,
+            terms=[str(item) for item in payload.get("terms", [])],
+            synonyms={str(key): [str(item) for item in value] for key, value in dict(payload.get("synonyms", {})).items()},
+            related_chain_nodes=[dict(item) for item in payload.get("related_chain_nodes", [])],
+            default_data_slots=[str(item) for item in payload.get("default_data_slots", ["revenue_exposure", "profit_exposure", "capacity", "customers", "suppliers", "valuation_metrics"])],
+            source_refs=[str(item) for item in payload.get("source_refs", [])],
+            taxonomy_version=str(payload.get("taxonomy_version", "hotspot-lexicon-v1")),
+        )
+        self.store.hotspot_lexicons[lexicon.lexicon_id] = lexicon
+        self._audit(actor, "register_hotspot_lexicon", "hotspot_lexicon", lexicon.lexicon_id)
+        return lexicon
+
+    def hotspot_lexicons_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        query = str(filters.get("q", "")).strip().lower()
+        limit = self._bounded_limit(filters.get("limit", 100), 1000)
+        rows = list(self.store.hotspot_lexicons.values())
+        if query:
+            rows = [item for item in rows if self._hotspot_lexicon_matches(item, query)]
+        rows.sort(key=lambda item: item.created_at, reverse=True)
+        return {"count": len(rows), "lexicons": [to_plain(item) for item in rows[:limit]]}
+
+    def register_research_task(self, payload: Mapping[str, Any], *, actor: str = "system") -> ResearchTask:
+        task_id = str(payload.get("task_id") or new_id("rtask")).strip()
+        task_type = str(payload.get("task_type", payload.get("type", ""))).strip()
+        if not task_type:
+            raise ValidationError("research task requires task_type")
+        if task_id in self.store.research_tasks:
+            raise ConflictError(f"research task {task_id} already exists")
+        task = self._build_research_task(task_id, task_type, payload)
+        self.store.research_tasks[task.task_id] = task
+        self._audit(actor, "register_research_task", "research_task", task.task_id)
+        return task
+
+    def research_tasks_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        status = str(filters.get("status", "")).strip()
+        task_type = str(filters.get("task_type", filters.get("type", ""))).strip()
+        issuer_id = str(filters.get("issuer_id", "")).strip()
+        security_id = str(filters.get("security_id", "")).strip()
+        chain_id = str(filters.get("chain_id", "")).strip()
+        node_id = str(filters.get("node_id", "")).strip()
+        position_id = str(filters.get("position_id", "")).strip()
+        source = str(filters.get("source", "")).strip()
+        limit = self._bounded_limit(filters.get("limit", 100), 1000)
+        rows = list(self.store.research_tasks.values())
+        if status:
+            rows = [item for item in rows if item.status == status]
+        if task_type:
+            rows = [item for item in rows if item.task_type == task_type]
+        if issuer_id:
+            rows = [item for item in rows if item.issuer_id == issuer_id]
+        if security_id:
+            rows = [item for item in rows if item.security_id == security_id]
+        if chain_id:
+            rows = [item for item in rows if item.chain_id == chain_id]
+        if node_id:
+            rows = [item for item in rows if node_id in item.node_ids]
+        if position_id:
+            rows = [item for item in rows if item.position_id == position_id]
+        if source:
+            rows = [item for item in rows if item.source == source]
+        rows.sort(key=lambda item: (item.status != "open", -item.priority, item.updated_at), reverse=False)
+        return {"count": len(rows), "tasks": [to_plain(item) for item in rows[:limit]]}
+
+    def update_research_task_status(self, task_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> ResearchTask:
+        task = self.store.research_tasks.get(task_id)
+        if task is None:
+            raise NotFoundError(f"research task {task_id} not found")
+        status = str(payload.get("status", "")).strip()
+        if not status:
+            raise ValidationError("research task status update requires status")
+        updated = ResearchTask(
+            task_id=task.task_id,
+            task_type=task.task_type,
+            source=task.source,
+            issuer_id=task.issuer_id,
+            security_id=task.security_id,
+            chain_id=task.chain_id,
+            node_ids=list(task.node_ids),
+            position_id=task.position_id,
+            required_slots=list(task.required_slots),
+            reason=str(payload.get("reason", task.reason)),
+            status=status,
+            priority=int(payload.get("priority", task.priority)),
+            assignee=str(payload.get("assignee", task.assignee)),
+            evidence_ids=[str(item) for item in payload.get("evidence_ids", task.evidence_ids)],
+            metadata={**task.metadata, **dict(payload.get("metadata", {}))},
+            created_at=task.created_at,
+            updated_at=utcnow(),
+        )
+        self.store.research_tasks[task_id] = updated
+        self._audit(actor, "update_research_task_status", "research_task", task_id)
+        return updated
+
+    def create_research_tasks_from_hotspot(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        expansion = self.hotspot_expansion(payload, actor=actor)
+        created: list[dict[str, Any]] = []
+        existing: list[dict[str, Any]] = []
+        for raw_task in expansion.get("research_tasks", []):
+            normalized = self._normalize_hotspot_research_task(raw_task, payload, expansion)
+            task_id = normalized["task_id"]
+            if task_id in self.store.research_tasks:
+                existing_task = self.store.research_tasks[task_id]
+                refreshed = ResearchTask(
+                    task_id=existing_task.task_id,
+                    task_type=existing_task.task_type,
+                    source=existing_task.source,
+                    issuer_id=existing_task.issuer_id,
+                    security_id=existing_task.security_id,
+                    chain_id=existing_task.chain_id,
+                    node_ids=list(existing_task.node_ids),
+                    position_id=existing_task.position_id,
+                    required_slots=sorted(set(existing_task.required_slots) | set(normalized.get("required_slots", []))),
+                    reason=existing_task.reason or str(normalized.get("reason", "")),
+                    status=existing_task.status,
+                    priority=max(existing_task.priority, int(normalized.get("priority", existing_task.priority))),
+                    assignee=existing_task.assignee,
+                    evidence_ids=list(existing_task.evidence_ids),
+                    metadata={**existing_task.metadata, **dict(normalized.get("metadata", {}))},
+                    created_at=existing_task.created_at,
+                    updated_at=utcnow(),
+                )
+                self.store.research_tasks[task_id] = refreshed
+                existing.append(to_plain(refreshed))
+                continue
+            task = self._build_research_task(task_id, str(normalized["task_type"]), normalized)
+            self.store.research_tasks[task.task_id] = task
+            created.append(to_plain(task))
+            self._audit(actor, "create_research_task_from_hotspot", "research_task", task.task_id)
+        return {
+            "query": expansion["query"],
+            "created_count": len(created),
+            "existing_count": len(existing),
+            "created_tasks": created,
+            "existing_tasks": existing,
+            "source_research_task_count": len(expansion.get("research_tasks", [])),
+            "usage_boundary": "research_task_queue_for_public_analysis_and_simulated_feedback_only",
+        }
+
+    def _build_research_task(self, task_id: str, task_type: str, payload: Mapping[str, Any]) -> ResearchTask:
+        if task_type == "company_position_backfill":
+            position_id = str(payload.get("position_id", "")).strip()
+            if position_id and position_id not in self.store.company_positions:
+                raise NotFoundError(f"company position {position_id} not found")
+        chain_id = str(payload.get("chain_id", "")).strip()
+        if chain_id and chain_id not in self.store.industry_chains and not chain_id.startswith("chain_synthetic_"):
+            raise NotFoundError(f"industry chain {chain_id} not found")
+        issuer_id = str(payload.get("issuer_id", "")).strip()
+        if issuer_id and issuer_id not in self.store.issuers:
+            raise NotFoundError(f"issuer {issuer_id} not found")
+        evidence_ids = [str(item) for item in payload.get("evidence_ids", [])]
+        missing_evidence = [item for item in evidence_ids if item not in self.store.evidence]
+        if missing_evidence:
+            raise NotFoundError(f"evidence records not found: {missing_evidence}")
+        return ResearchTask(
+            task_id=task_id,
+            task_type=task_type,
+            source=str(payload.get("source", "manual")),
+            issuer_id=issuer_id,
+            security_id=str(payload.get("security_id", "")).strip(),
+            chain_id=chain_id,
+            node_ids=[str(item) for item in payload.get("node_ids", [payload.get("node_id")]) if item],
+            position_id=str(payload.get("position_id", "")).strip(),
+            required_slots=[str(item) for item in payload.get("required_slots", [])],
+            reason=str(payload.get("reason", "")),
+            status=str(payload.get("status", "open")),
+            priority=int(payload.get("priority", 50)),
+            assignee=str(payload.get("assignee", "")),
+            evidence_ids=evidence_ids,
+            metadata=dict(payload.get("metadata", {})),
+        )
+
+    def _normalize_hotspot_research_task(self, raw_task: Mapping[str, Any], request: Mapping[str, Any], expansion: Mapping[str, Any]) -> dict[str, Any]:
+        task_type = str(raw_task.get("task_type", raw_task.get("type", "hotspot_research_backfill"))).strip()
+        chain_id = str(raw_task.get("chain_id", request.get("seed_chain_id", ""))).strip()
+        node_ids = [str(item) for item in raw_task.get("node_ids", [raw_task.get("node_id")]) if item]
+        position_id = str(raw_task.get("position_id", "")).strip()
+        issuer_id = str(raw_task.get("issuer_id", "")).strip()
+        basis = "|".join([task_type, chain_id, position_id, issuer_id, ",".join(node_ids), str(expansion.get("query", ""))])
+        task_id = str(raw_task.get("task_id") or f"rtask_{safe_source_part(basis)}").strip()
+        return {
+            "task_id": task_id,
+            "task_type": task_type,
+            "source": "hotspot_expansion",
+            "issuer_id": issuer_id,
+            "chain_id": chain_id,
+            "node_ids": node_ids,
+            "position_id": position_id,
+            "required_slots": [str(item) for item in raw_task.get("required_slots", [])],
+            "reason": str(raw_task.get("reason", "")),
+            "status": "open",
+            "priority": int(raw_task.get("priority", 70 if task_type == "company_position_backfill" else 55)),
+            "metadata": {
+                "query": expansion.get("query", ""),
+                "seed_theme_id": request.get("seed_theme_id", ""),
+                "seed_chain_id": request.get("seed_chain_id", ""),
+                "usage_boundary": "macro_industry_chain_research_only_not_trade_signal",
+            },
+        }
+
+    def _matching_hotspot_lexicons(self, query: str) -> list[HotspotLexicon]:
+        lowered = query.lower()
+        return [item for item in self.store.hotspot_lexicons.values() if self._hotspot_lexicon_matches(item, lowered)]
+
+    def _hotspot_lexicon_matches(self, lexicon: HotspotLexicon, query: str) -> bool:
+        terms = [lexicon.name, *lexicon.terms]
+        for key, values in lexicon.synonyms.items():
+            terms.append(key)
+            terms.extend(values)
+        lowered_terms = [str(item).lower() for item in terms]
+        return any(query in item or item in query for item in lowered_terms if item)
+
+    def hotspot_expansion(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        query = str(payload.get("query", "")).strip()
+        if not query:
+            raise ValidationError("hotspot expansion requires query")
+        max_depth = max(1, int(payload.get("max_depth", 3) or 3))
+        seed_chain_id = str(payload.get("seed_chain_id", "")).strip()
+        seed_theme_id = str(payload.get("seed_theme_id", "")).strip()
+        include_restricted = self._truthy(payload.get("include_restricted", False))
+        recall_limit = self._bounded_limit(payload.get("recall_limit", 20), 100)
+        matched_lexicons = self._matching_hotspot_lexicons(query)
+        default_slots = matched_lexicons[0].default_data_slots if matched_lexicons else ["revenue_exposure", "profit_exposure", "capacity", "customers", "suppliers", "valuation_metrics"]
+        required_slots = [str(item) for item in payload.get("required_data_slots", default_slots)]
+
+        theme = self.store.macro_themes.get(seed_theme_id) if seed_theme_id else None
+        matching_chains = [self.store.industry_chains[seed_chain_id]] if seed_chain_id and seed_chain_id in self.store.industry_chains else []
+        if not matching_chains:
+            lowered = query.lower()
+            matching_chains = [
+                chain for chain in self.store.industry_chains.values()
+                if lowered in chain.name.lower()
+                or any(lowered in str(node.get("name", "")).lower() or lowered in " ".join(str(item).lower() for item in node.get("keywords", [])) for node in chain.nodes)
+            ]
+        if not matching_chains:
+            nodes = matched_lexicons[0].related_chain_nodes if matched_lexicons and matched_lexicons[0].related_chain_nodes else self._default_chain_nodes_for_query(query)
+            matching_chains = [IndustryChain(chain_id=f"chain_synthetic_{safe_source_part(query)}", name=f"{query} industry chain", nodes=[dict(item) for item in nodes], taxonomy_version="industry-chain-rule-template")]
+
+        chain_nodes: list[dict[str, Any]] = []
+        chain_edges: list[dict[str, Any]] = []
+        company_positions: list[dict[str, Any]] = []
+        data_coverage: list[dict[str, Any]] = []
+        missing_evidence: list[dict[str, Any]] = []
+        research_tasks: list[dict[str, Any]] = []
+        for chain in matching_chains:
+            allowed_nodes = [node for node in chain.nodes if int(node.get("level", 1) or 1) <= max_depth]
+            allowed_node_ids = {str(node.get("node_id")) for node in allowed_nodes}
+            chain_nodes.extend([{**node, "chain_id": chain.chain_id} for node in allowed_nodes])
+            chain_edges.extend([{**edge, "chain_id": chain.chain_id} for edge in chain.edges if str(edge.get("source_node_id")) in allowed_node_ids and str(edge.get("target_node_id")) in allowed_node_ids])
+            for position in self.store.company_positions.values():
+                if position.chain_id != chain.chain_id or not (set(position.node_ids) & allowed_node_ids):
+                    continue
+                row = to_plain(position)
+                company_positions.append(row)
+                present_slots = [slot for slot in required_slots if row.get(slot)]
+                missing_slots = [slot for slot in required_slots if not row.get(slot)]
+                linked_evidence = [evidence_id for evidence_id in position.evidence_ids if evidence_id in self.store.evidence]
+                coverage = {
+                    "position_id": position.position_id,
+                    "issuer_id": position.issuer_id,
+                    "node_ids": position.node_ids,
+                    "present_slots": present_slots,
+                    "missing_slots": missing_slots,
+                    "linked_evidence_ids": linked_evidence,
+                    "coverage_ratio": round((len(present_slots) + (1 if linked_evidence else 0)) / max(1, len(required_slots) + 1), 4),
+                }
+                data_coverage.append(coverage)
+                if missing_slots or not linked_evidence:
+                    missing_evidence.append({"position_id": position.position_id, "issuer_id": position.issuer_id, "missing_slots": missing_slots, "missing_evidence": not linked_evidence})
+                    research_tasks.append(
+                        {
+                            "task_id": f"research_{position.position_id}",
+                            "type": "company_position_backfill",
+                            "position_id": position.position_id,
+                            "issuer_id": position.issuer_id,
+                            "chain_id": chain.chain_id,
+                            "node_ids": position.node_ids,
+                            "required_slots": missing_slots,
+                            "reason": "missing company positioning data or evidence link",
+                        }
+                    )
+        node_ids_with_company = {node_id for row in company_positions for node_id in row.get("node_ids", [])}
+        for node in chain_nodes:
+            node_id = str(node.get("node_id", ""))
+            if node_id and node_id not in node_ids_with_company:
+                research_tasks.append(
+                    {
+                        "task_id": f"research_node_{node_id}",
+                        "type": "chain_node_company_mapping",
+                        "chain_id": node.get("chain_id", ""),
+                        "node_id": node_id,
+                        "required_slots": required_slots,
+                        "reason": "no mapped company position for chain node",
+                    }
+                )
+        retrieval_recall = self._hotspot_retrieval_recall(query, include_restricted=include_restricted, limit=recall_limit)
+        evidence_layers = self._hotspot_evidence_layers(
+            theme=theme,
+            chain_nodes=chain_nodes,
+            chain_edges=chain_edges,
+            company_positions=company_positions,
+            data_coverage=data_coverage,
+            missing_evidence=missing_evidence,
+            research_tasks=research_tasks,
+            matched_lexicons=matched_lexicons,
+            retrieval_recall=retrieval_recall,
+        )
+        ranked_candidates = self._hotspot_rank_candidates(
+            query=query,
+            company_positions=company_positions,
+            data_coverage=data_coverage,
+            retrieval_recall=retrieval_recall,
+            matched_lexicons=matched_lexicons,
+        )
+        return {
+            "query": query,
+            "theme": to_plain(theme) if theme else {"name": query, "source": "ad_hoc_hotspot", "seed_theme_id": seed_theme_id},
+            "matched_lexicons": [to_plain(item) for item in matched_lexicons],
+            "chain_nodes": chain_nodes,
+            "chain_edges": chain_edges,
+            "company_positions": company_positions,
+            "data_coverage": data_coverage,
+            "retrieval_recall": retrieval_recall,
+            "ranked_candidates": ranked_candidates,
+            "missing_evidence": missing_evidence,
+            "counter_theses": [{"type": "supply_chain_overreach", "question": "Does the hotspot materially affect this node's revenue/profit exposure?"}],
+            "research_tasks": research_tasks,
+            "evidence_layers": evidence_layers,
+            "automation_allowed": False,
+            "usage_boundary": "macro_industry_chain_research_only_not_trade_signal",
+        }
+
+    def _hotspot_evidence_layers(
+        self,
+        *,
+        theme: MacroTheme | None,
+        chain_nodes: list[dict[str, Any]],
+        chain_edges: list[dict[str, Any]],
+        company_positions: list[dict[str, Any]],
+        data_coverage: list[dict[str, Any]],
+        missing_evidence: list[dict[str, Any]],
+        research_tasks: list[dict[str, Any]],
+        matched_lexicons: list[HotspotLexicon],
+        retrieval_recall: dict[str, list[dict[str, Any]]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        facts: list[dict[str, Any]] = []
+        opinions: list[dict[str, Any]] = []
+        inferences: list[dict[str, Any]] = []
+        for position in company_positions:
+            linked_evidence = [evidence_id for evidence_id in position.get("evidence_ids", []) if evidence_id in self.store.evidence]
+            layer = facts if linked_evidence else inferences
+            layer.append(
+                {
+                    "resource_type": "company_position",
+                    "resource_id": position.get("position_id", ""),
+                    "issuer_id": position.get("issuer_id", ""),
+                    "statement": position.get("positioning_summary", "") or position.get("role", ""),
+                    "evidence_ids": linked_evidence,
+                    "confidence": 0.85 if linked_evidence else 0.45,
+                }
+            )
+        for node in chain_nodes:
+            source = "lexicon" if any(node.get("node_id") in {str(item.get("node_id", "")) for item in lexicon.related_chain_nodes} for lexicon in matched_lexicons) else "chain_registry"
+            inferences.append(
+                {
+                    "resource_type": "chain_node",
+                    "resource_id": node.get("node_id", ""),
+                    "statement": f"{node.get('name', '')} is part of the hotspot diffusion map",
+                    "source": source,
+                    "confidence": 0.6 if source == "lexicon" else 0.7,
+                }
+            )
+        if theme is not None:
+            opinions.append(
+                {
+                    "resource_type": "macro_theme",
+                    "resource_id": theme.theme_id,
+                    "statement": theme.description or theme.name,
+                    "source_refs": list(theme.source_refs),
+                    "confidence": theme.confidence,
+                }
+            )
+        for coverage in data_coverage:
+            if coverage.get("missing_slots") or not coverage.get("linked_evidence_ids"):
+                inferences.append(
+                    {
+                        "resource_type": "data_gap",
+                        "resource_id": coverage.get("position_id", ""),
+                        "statement": "Company positioning is incomplete and must be backfilled before use as a conclusion",
+                        "missing_slots": coverage.get("missing_slots", []),
+                        "confidence": 0.4,
+                    }
+                )
+        for row in retrieval_recall.get("public_facts", []):
+            facts.append(
+                {
+                    "resource_type": row.get("resource_type", ""),
+                    "resource_id": row.get("resource_id", ""),
+                    "statement": row.get("snippet", ""),
+                    "source_uri": row.get("source_uri", ""),
+                    "confidence": 0.75,
+                }
+            )
+        for row in retrieval_recall.get("research_opinions", []):
+            opinions.append(
+                {
+                    "resource_type": row.get("resource_type", ""),
+                    "resource_id": row.get("resource_id", ""),
+                    "statement": row.get("snippet", ""),
+                    "source_boundary": row.get("source_boundary", ""),
+                    "confidence": 0.55,
+                }
+            )
+        for row in retrieval_recall.get("market_signals", []):
+            if not isinstance(row, dict):
+                continue
+            inferences.append(
+                {
+                    "resource_type": row.get("resource_type", ""),
+                    "resource_id": row.get("resource_id", ""),
+                    "statement": row.get("snippet", ""),
+                    "confidence": 0.5,
+                }
+            )
+        # T-406A: thesis/signal inferences from retrieval_recall
+        for row in retrieval_recall.get("inferences", []):
+            if not isinstance(row, dict):
+                continue
+            inferences.append(
+                {
+                    "resource_type": row.get("resource_type", ""),
+                    "resource_id": row.get("resource_id", ""),
+                    "statement": row.get("snippet", ""),
+                    "source_boundary": row.get("source_boundary", "inference_derived_from_evidence_not_fact"),
+                    "needs_verification": True,
+                    "automation_allowed": False,
+                    "confidence": 0.4,
+                }
+            )
+        return {
+            "facts": facts,
+            "opinions": opinions,
+            "inferences": inferences,
+            "needs_verification": [*missing_evidence, *research_tasks],
+        }
+
+    def _hotspot_rank_candidates(
+        self,
+        *,
+        query: str,
+        company_positions: list[dict[str, Any]],
+        data_coverage: list[dict[str, Any]],
+        retrieval_recall: dict[str, list[dict[str, Any]]],
+        matched_lexicons: list[HotspotLexicon],
+    ) -> dict[str, Any]:
+        terms = {term.lower() for term in re.findall(r"[\w\u4e00-\u9fff]+", query)}
+        for lexicon in matched_lexicons:
+            terms.update(term.lower() for term in lexicon.terms)
+            for key, values in lexicon.synonyms.items():
+                terms.add(str(key).lower())
+                terms.update(str(value).lower() for value in values)
+        coverage_by_position = {row["position_id"]: row for row in data_coverage}
+        recall_by_issuer: dict[str, int] = {}
+        for bucket in retrieval_recall.values():
+            if not isinstance(bucket, list):
+                continue
+            for row in bucket:
+                issuer_id = str(row.get("issuer_id", ""))
+                if issuer_id:
+                    recall_by_issuer[issuer_id] = recall_by_issuer.get(issuer_id, 0) + 1
+
+        candidates: list[dict[str, Any]] = []
+        for position in company_positions:
+            text = " ".join(
+                [
+                    str(position.get("role", "")),
+                    str(position.get("positioning_summary", "")),
+                    " ".join(str(item) for item in position.get("technology_tags", [])),
+                ]
+            ).lower()
+            term_hits = sorted(term for term in terms if term and term in text)
+            term_score = min(1.0, len(term_hits) / max(1, min(len(terms), 6)))
+            coverage = coverage_by_position.get(position.get("position_id", ""), {})
+            coverage_score = float(coverage.get("coverage_ratio", 0.0) or 0.0)
+            evidence_score = 1.0 if coverage.get("linked_evidence_ids") else 0.0
+            recall_score = min(1.0, recall_by_issuer.get(str(position.get("issuer_id", "")), 0) / 3)
+            data_quality = str(position.get("data_quality", "needs_review"))
+            quality_score = {"verified": 1.0, "complete": 0.9, "partial": 0.55, "needs_review": 0.25}.get(data_quality, 0.35)
+            rank_score = round(term_score * 0.25 + coverage_score * 0.25 + evidence_score * 0.2 + recall_score * 0.2 + quality_score * 0.1, 6)
+            candidates.append(
+                {
+                    "position_id": position.get("position_id", ""),
+                    "issuer_id": position.get("issuer_id", ""),
+                    "security_id": position.get("security_id", ""),
+                    "chain_id": position.get("chain_id", ""),
+                    "node_ids": position.get("node_ids", []),
+                    "rank_score": rank_score,
+                    "score_components": {
+                        "term_score": round(term_score, 4),
+                        "coverage_score": round(coverage_score, 4),
+                        "evidence_score": round(evidence_score, 4),
+                        "recall_score": round(recall_score, 4),
+                        "quality_score": round(quality_score, 4),
+                    },
+                    "matched_terms": term_hits,
+                    "explanation": "term match + data coverage + evidence link + public recall + data quality",
+                }
+            )
+        candidates.sort(key=lambda item: item["rank_score"], reverse=True)
+        return {
+            "ranker": "local_hotspot_chain_coverage_evidence_score",
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+            "adapter_recommendation": {
+                "llm_rerank_trigger": "use LLM rerank only after public recall, evidence layers, and company positioning coverage are available",
+                "inputs": ["matched_lexicons", "retrieval_recall", "evidence_layers", "data_coverage"],
+            },
+        }
+
+    def _hotspot_retrieval_recall(self, query: str, *, include_restricted: bool, limit: int) -> dict[str, list[dict[str, Any]]]:
+        """T-406A: Enhanced hotspot retrieval recall.
+
+        Supports four recall layers:
+          - public_facts:      document / evidence facts from public filings
+          - research_opinions: research report and research answer opinion snippets
+          - inferences:        thesis / signal derived conclusions (not facts, must be labelled)
+          - market_signals:    EOD/adjusted market data price signals
+
+        Query expansion:
+          - Tokenizes the query (unicode word + CJK chars)
+          - Expands terms from matching HotspotLexicon.synonyms and keywords
+          - Computes a term_coverage score for downstream ranking
+        """
+        base_terms = [term for term in re.findall(r"[\w\u4e00-\u9fff]+", query.lower()) if term]
+
+        # Synonym / lexicon keyword expansion (T-406A requirement)
+        expanded_terms: set[str] = set(base_terms)
+        for lexicon in self.store.hotspot_lexicons.values():
+            for synonym_list in lexicon.synonyms.values() if isinstance(lexicon.synonyms, dict) else []:
+                for syn in (synonym_list if isinstance(synonym_list, list) else []):
+                    if any(base_term in str(syn).lower() for base_term in base_terms):
+                        expanded_terms.update(re.findall(r"[\w\u4e00-\u9fff]+", str(syn).lower()))
+            for node in lexicon.related_chain_nodes if isinstance(lexicon.related_chain_nodes, list) else []:
+                for kw in node.get("keywords", []) if isinstance(node, dict) else []:
+                    if any(base_term in str(kw).lower() for base_term in base_terms):
+                        expanded_terms.update(re.findall(r"[\w\u4e00-\u9fff]+", str(kw).lower()))
+
+        all_terms = list(expanded_terms)
+
+        def term_coverage(text: str) -> float:
+            lowered = text.lower()
+            hit = sum(1 for term in all_terms if term in lowered)
+            return round(hit / max(1, len(all_terms)), 4)
+
+        def matches(text: str) -> bool:
+            lowered = text.lower()
+            return any(term in lowered for term in all_terms)
+
+        def snippet(text: str) -> str:
+            compact = " ".join(text.split())
+            return compact[:240]
+
+        public_facts: list[dict[str, Any]] = []
+        research_opinions: list[dict[str, Any]] = []
+        inferences: list[dict[str, Any]] = []
+        market_signals: list[dict[str, Any]] = []
+
+        # Layer 1: documents (public filings → facts) and research reports (→ opinions)
+        for document in self.store.documents.values():
+            search_text = f"{document.title} {document.body} {document.document_type}"
+            if not matches(search_text):
+                continue
+            source = self.store.sources.get(document.source_id)
+            restricted = bool(source and source.risk_level == "red") or document.rights_tag.display_use == "restricted"
+            if restricted and not include_restricted:
+                continue
+            row = {
+                "resource_type": "document",
+                "resource_id": document.document_id,
+                "issuer_id": document.issuer_id,
+                "security_id": document.security_id,
+                "title": document.title,
+                "snippet": snippet(document.body or document.title),
+                "source_uri": document.source_uri,
+                "source_boundary": source.usage_scope if source else "",
+                "term_coverage": term_coverage(search_text),
+                "expanded_terms_used": len(expanded_terms) > len(base_terms),
+            }
+            if document.document_type == "research" or (source and source.source_id == LOCAL_RESEARCH_REPORT_SOURCE_ID):
+                research_opinions.append(row)
+            else:
+                public_facts.append(row)
+
+        # Layer 2: evidence (public facts with locators)
+        for evidence in self.store.evidence.values():
+            if not matches(evidence.text):
+                continue
+            public_facts.append(
+                {
+                    "resource_type": "evidence",
+                    "resource_id": evidence.evidence_id,
+                    "document_id": evidence.document_id,
+                    "snippet": snippet(evidence.text),
+                    "source_uri": evidence.source_uri,
+                    "source_boundary": "evidence_backed_public_or_governed_source",
+                    "term_coverage": term_coverage(evidence.text),
+                    "expanded_terms_used": len(expanded_terms) > len(base_terms),
+                }
+            )
+
+        # Layer 3: research reports (→ opinions)
+        for report in self.store.research_reports.values():
+            text = f"{report.title} {report.file_name} {report.broker} {report.industry}"
+            if not matches(text):
+                continue
+            research_opinions.append(
+                {
+                    "resource_type": "research_report",
+                    "resource_id": report.report_id,
+                    "title": report.title,
+                    "snippet": snippet(text),
+                    "source_uri": report.file_path,
+                    "source_boundary": "local_reference_research_report",
+                    "term_coverage": term_coverage(text),
+                    "expanded_terms_used": len(expanded_terms) > len(base_terms),
+                }
+            )
+
+        # Layer 4 (NEW T-406A): research answers → opinions
+        for answer in self.store.research_answers.values():
+            text = f"{answer.question} {answer.answer_text}"
+            if not matches(text):
+                continue
+            restricted = answer.source_public is False
+            if restricted and not include_restricted:
+                continue
+            research_opinions.append(
+                {
+                    "resource_type": "research_answer",
+                    "resource_id": answer.answer_id,
+                    "snippet": snippet(text),
+                    "source_boundary": "research_answer_opinion_not_fact" if not answer.source_public else "public_research_answer_opinion",
+                    "human_reviewed": answer.human_reviewed,
+                    "pending_review": answer.pending_review,
+                    "term_coverage": term_coverage(text),
+                    "expanded_terms_used": len(expanded_terms) > len(base_terms),
+                    "needs_verification": not answer.human_reviewed,
+                }
+            )
+
+        # Layer 5 (NEW T-406A): theses → inferences (must be labelled as derived, not fact)
+        for thesis in self.store.theses.values():
+            text = f"{thesis.summary} {thesis.detailed_analysis}"
+            if not matches(text):
+                continue
+            inferences.append(
+                {
+                    "resource_type": "thesis",
+                    "resource_id": thesis.thesis_id,
+                    "issuer_id": thesis.issuer_id,
+                    "snippet": snippet(text),
+                    "source_boundary": "inference_derived_from_evidence_not_fact",
+                    "evidence_ids": thesis.evidence_ids,
+                    "term_coverage": term_coverage(text),
+                    "expanded_terms_used": len(expanded_terms) > len(base_terms),
+                    "needs_verification": True,
+                    "automation_allowed": False,
+                }
+            )
+
+        # Layer 6 (NEW T-406A): signals → inferences
+        for signal in self.store.signals.values():
+            text = f"{signal.signal_type} {signal.summary}"
+            if not matches(text):
+                continue
+            inferences.append(
+                {
+                    "resource_type": "signal",
+                    "resource_id": signal.signal_id,
+                    "issuer_id": signal.issuer_id,
+                    "snippet": snippet(text),
+                    "source_boundary": "signal_inference_not_fact_not_tradeable",
+                    "thesis_id": signal.thesis_id,
+                    "term_coverage": term_coverage(text),
+                    "expanded_terms_used": len(expanded_terms) > len(base_terms),
+                    "needs_verification": True,
+                    "automation_allowed": False,
+                }
+            )
+
+        # Layer 7: market data signals
+        for point in self.store.market_data.values():
+            security = self.store.securities.get(point.security_id)
+            text = f"{point.security_id} {security.ticker if security else ''} {point.data_type}"
+            if matches(text):
+                market_signals.append(
+                    {
+                        "resource_type": "market_data",
+                        "resource_id": point.data_id,
+                        "security_id": point.security_id,
+                        "snippet": f"{point.as_of_date} {point.data_type} close={point.close} volume={point.volume}",
+                        "source_boundary": "public_or_provided_market_data_signal_not_fact_conclusion",
+                        "term_coverage": term_coverage(text),
+                    }
+                )
+
+        # Sort each layer by term_coverage desc for higher quality recall at top
+        def _sort_layer(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return sorted(items, key=lambda r: r.get("term_coverage", 0.0), reverse=True)
+
+        return {
+            "public_facts": _sort_layer(public_facts)[:limit],
+            "research_opinions": _sort_layer(research_opinions)[:limit],
+            "inferences": _sort_layer(inferences)[:limit],
+            "market_signals": _sort_layer(market_signals)[:limit],
+            "query_expansion": {
+                "base_terms": base_terms,
+                "expanded_terms_count": len(expanded_terms),
+                "synonyms_applied": len(expanded_terms) > len(base_terms),
+            },
+        }
+
+
+    def _default_chain_nodes_for_query(self, query: str) -> list[dict[str, Any]]:
+        names = ["U盘", "硬盘", "内存条", "CPU", "GPU", "蓝牙", "射频", "WiFi", "电源", "IGBT", "封装", "设备", "材料", "电子化学", "代工", "硅晶", "金属新材料", "非金属材料"]
+        categories = ["storage", "storage", "memory", "compute", "compute", "connectivity", "connectivity", "connectivity", "power", "power_semiconductor", "packaging", "equipment", "materials", "electronic_chemicals", "foundry", "wafer", "advanced_materials", "non_metal_materials"]
+        return [
+            {
+                "node_id": f"node_{index + 1}_{safe_source_part(name)}",
+                "name": name,
+                "level": 1 + index // 6,
+                "category": categories[index],
+                "parent_id": "",
+                "keywords": [name, query],
+                "supply_demand_factors": [],
+                "data_slots": ["revenue_exposure", "profit_exposure", "capacity", "customers", "suppliers", "valuation_metrics"],
+            }
+            for index, name in enumerate(names)
+        ]
+
     def query_graph(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         issuer_id = str(filters.get("issuer_id", "")).strip()
@@ -10394,6 +12237,9 @@ class SystemService:
         evidence_id = str(filters.get("evidence_id", "")).strip()
         security_id = str(filters.get("security_id", "")).strip()
         decision_id = str(filters.get("decision_id", "")).strip()
+        theme_id = str(filters.get("theme_id", "")).strip()
+        chain_id = str(filters.get("chain_id", "")).strip()
+        chain_node_id = str(filters.get("chain_node_id", "")).strip()
         data = {
             "issuers": [],
             "securities": [],
@@ -10411,6 +12257,11 @@ class SystemService:
             "exceptions": [],
             "entity_mappings": [],
             "research_cards": [],
+            "macro_themes": [],
+            "industry_chains": [],
+            "chain_nodes": [],
+            "company_positions": [],
+            "research_tasks": [],
             "crowding": [],
             "institutional_holdings": [],
             "disclosure_events": [],
@@ -10538,6 +12389,91 @@ class SystemService:
                     add_node("exceptions", exception.exception_id, exception)
                     add_edge("HAS_EXCEPTION", decision.decision_id, exception.exception_id, severity=exception.severity, status=exception.status)
 
+        def add_research_task_graph(task: ResearchTask) -> None:
+            add_node("research_tasks", task.task_id, task)
+            if task.chain_id:
+                add_edge("CHAIN_HAS_RESEARCH_TASK", task.chain_id, task.task_id, task_type=task.task_type, status=task.status, priority=task.priority)
+            for node_id in task.node_ids:
+                if task.chain_id:
+                    add_edge("TASK_FOR_CHAIN_NODE", task.task_id, f"{task.chain_id}:{node_id}", task_type=task.task_type, status=task.status)
+            if task.position_id:
+                position = self.store.company_positions.get(task.position_id)
+                if position is not None:
+                    add_node("company_positions", position.position_id, position)
+                    add_edge("TASK_FOR_COMPANY_POSITION", task.task_id, position.position_id, task_type=task.task_type, status=task.status)
+            if task.issuer_id:
+                issuer = self.store.issuers.get(task.issuer_id)
+                if issuer is not None:
+                    add_node("issuers", issuer.issuer_id, issuer)
+                    add_edge("ISSUER_HAS_RESEARCH_TASK", issuer.issuer_id, task.task_id, task_type=task.task_type, status=task.status)
+            for evidence_id in task.evidence_ids:
+                evidence = self.store.evidence.get(evidence_id)
+                if evidence is not None:
+                    add_node("evidence", evidence.evidence_id, evidence)
+                    add_edge("TASK_BACKED_BY_EVIDENCE", task.task_id, evidence.evidence_id, confidence=evidence.confidence)
+
+        def add_chain_graph(chain: IndustryChain, *, only_node_id: str = "") -> None:
+            add_node("industry_chains", chain.chain_id, chain)
+            if chain.root_theme_id:
+                theme = self.store.macro_themes.get(chain.root_theme_id)
+                if theme is not None:
+                    add_node("macro_themes", theme.theme_id, theme)
+                    add_edge("HAS_INDUSTRY_CHAIN", theme.theme_id, chain.chain_id, source="industry_chain_registry", confidence=theme.confidence)
+            node_ids: set[str] = set()
+            for node in chain.nodes:
+                node_id = str(node.get("node_id", "")).strip()
+                if only_node_id and node_id != only_node_id:
+                    continue
+                if not node_id:
+                    continue
+                node_payload = {**node, "chain_id": chain.chain_id}
+                add_node("chain_nodes", f"{chain.chain_id}:{node_id}", node_payload)
+                add_edge("HAS_CHAIN_NODE", chain.chain_id, f"{chain.chain_id}:{node_id}", level=node.get("level", ""), category=node.get("category", ""))
+                node_ids.add(node_id)
+            for edge in chain.edges:
+                source_node_id = str(edge.get("source_node_id", "")).strip()
+                target_node_id = str(edge.get("target_node_id", "")).strip()
+                if source_node_id in node_ids and target_node_id in node_ids:
+                    add_edge(
+                        str(edge.get("relation_type", "CHAIN_LINK")),
+                        f"{chain.chain_id}:{source_node_id}",
+                        f"{chain.chain_id}:{target_node_id}",
+                        direction=edge.get("direction", ""),
+                        strength=edge.get("strength", ""),
+                        source="industry_chain_registry",
+                        confidence=float(edge.get("confidence", 0.7) or 0.0),
+                    )
+            for position in self.store.company_positions.values():
+                if position.chain_id != chain.chain_id:
+                    continue
+                if only_node_id and only_node_id not in position.node_ids:
+                    continue
+                add_node("company_positions", position.position_id, position)
+                add_edge("HAS_COMPANY_POSITION", chain.chain_id, position.position_id, role=position.role, data_quality=position.data_quality)
+                issuer = self.store.issuers.get(position.issuer_id)
+                if issuer is not None:
+                    add_node("issuers", issuer.issuer_id, issuer)
+                    add_edge("POSITIONED_AS", issuer.issuer_id, position.position_id, role=position.role, data_quality=position.data_quality)
+                if position.security_id:
+                    security = self.store.securities.get(position.security_id)
+                    if security is not None:
+                        add_node("securities", security.security_id, security)
+                        add_edge("SECURITY_FOR_POSITION", position.position_id, security.security_id)
+                for node_id in position.node_ids:
+                    if not only_node_id or node_id == only_node_id:
+                        add_edge("POSITION_IN_CHAIN_NODE", position.position_id, f"{chain.chain_id}:{node_id}", role=position.role, confidence=0.8)
+                for linked_evidence_id in position.evidence_ids:
+                    evidence = self.store.evidence.get(linked_evidence_id)
+                    if evidence is not None:
+                        add_node("evidence", evidence.evidence_id, evidence)
+                        add_edge("POSITION_EVIDENCE", linked_evidence_id, position.position_id, confidence=evidence.confidence)
+            for task in self.store.research_tasks.values():
+                if task.chain_id != chain.chain_id:
+                    continue
+                if only_node_id and only_node_id not in task.node_ids:
+                    continue
+                add_research_task_graph(task)
+
         def add_issuer_graph(issuer: Issuer) -> None:
             add_node("issuers", issuer.issuer_id, issuer)
             for mapping in self.store.entity_mappings.values():
@@ -10609,6 +12545,14 @@ class SystemService:
                     for proposal_security_id, weight in proposal.candidate_weights.items():
                         if proposal_security_id in issuer_security_ids:
                             add_edge("PROPOSES_WEIGHT", proposal.proposal_id, proposal_security_id, weight=weight)
+            for position in self.store.company_positions.values():
+                if position.issuer_id == issuer.issuer_id:
+                    chain = self.store.industry_chains.get(position.chain_id)
+                    if chain is not None:
+                        add_chain_graph(chain)
+            for task in self.store.research_tasks.values():
+                if task.issuer_id == issuer.issuer_id:
+                    add_research_task_graph(task)
 
         if issuer_id:
             issuer = self.store.issuers.get(issuer_id)
@@ -10669,6 +12613,17 @@ class SystemService:
             decision = self.store.decisions.get(decision_id)
             if decision:
                 add_decision_graph(decision)
+        if theme_id:
+            theme = self.store.macro_themes.get(theme_id)
+            if theme:
+                add_node("macro_themes", theme.theme_id, theme)
+                for chain in self.store.industry_chains.values():
+                    if chain.root_theme_id == theme.theme_id:
+                        add_chain_graph(chain, only_node_id=chain_node_id)
+        if chain_id:
+            chain = self.store.industry_chains.get(chain_id)
+            if chain:
+                add_chain_graph(chain, only_node_id=chain_node_id)
         return data
 
     def graph_neo4j_export(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
@@ -11490,7 +13445,7 @@ class SystemService:
             {
                 "adapter": "OpenTelemetry collector",
                 "scope": "metrics_logs_traces",
-                "check_id": "real_data_smoke_test",
+                "check_id": "otel_collector_drill",
                 "required_for": ["T-411"],
                 "evidence": "collector 连通性、metrics/traces 端到端采集和告警联动演练",
             },
@@ -11584,6 +13539,7 @@ class SystemService:
             "cross_browser_acceptance": "Run supported browser acceptance and attach result matrix.",
             "capacity_latency_report": "Run capacity baseline, record thresholds, and attach latency report.",
             "backup_restore_drill": "Complete backup restore drill and attach recovery evidence.",
+            "otel_collector_drill": "Submit logs, metrics, and traces to the OpenTelemetry collector and attach alert-linkage evidence.",
             "permission_red_team_test": "Run permission red-team attempts and attach audit evidence.",
             "compliance_review_record": "Record compliance sign-off with publicness/TOS/robots review evidence.",
             "launch_checklist": "Complete launch checklist and record CEO approval artifact.",
@@ -11768,6 +13724,49 @@ class SystemService:
                     title=f"{proposal.proposal_id} {proposal.status}",
                     body=f"{proposal.universe} {proposal.candidate_weights} {proposal.diagnostics}",
                     weight=0.8,
+                )
+            )
+        for position in self.store.company_positions.values():
+            records.append(
+                SearchRecord(
+                    resource_type="company_position",
+                    resource_id=position.position_id,
+                    issuer_id=position.issuer_id,
+                    title=f"{position.chain_id} {position.role}",
+                    body=" ".join(
+                        [
+                            position.positioning_summary,
+                            " ".join(position.node_ids),
+                            " ".join(position.technology_tags),
+                            json.dumps(position.revenue_exposure, ensure_ascii=False, sort_keys=True),
+                            json.dumps(position.profit_exposure, ensure_ascii=False, sort_keys=True),
+                            json.dumps(position.capacity, ensure_ascii=False, sort_keys=True),
+                            " ".join(position.customers + position.suppliers + position.competitors),
+                            position.data_quality,
+                        ]
+                    ),
+                    weight=1.0,
+                )
+            )
+        for task in self.store.research_tasks.values():
+            records.append(
+                SearchRecord(
+                    resource_type="research_task",
+                    resource_id=task.task_id,
+                    issuer_id=task.issuer_id,
+                    title=f"{task.task_type} {task.status} {task.chain_id}",
+                    body=" ".join(
+                        [
+                            task.reason,
+                            task.position_id,
+                            " ".join(task.node_ids),
+                            " ".join(task.required_slots),
+                            task.source,
+                            task.assignee,
+                            json.dumps(task.metadata, ensure_ascii=False, sort_keys=True),
+                        ]
+                    ),
+                    weight=1.0 if task.status in {"open", "in_progress"} else 0.5,
                 )
             )
         for sample in self.store.benchmark_samples.values():
@@ -12832,22 +14831,83 @@ class SystemService:
         raise ValidationError("TDX source_format must be duckdb or vipdoc")
 
     def _resolve_tdx_security(self, symbol: str, security_map: Mapping[str, Any]) -> Security | None:
-        mapped = str(security_map.get(symbol) or security_map.get(self._normalize_tdx_symbol(symbol)) or "").strip()
-        if mapped and mapped in self.store.securities:
-            return self.store.securities[mapped]
-        normalized = self._normalize_tdx_symbol(symbol)
+        """Resolve a TDX symbol to a registered Security.
+
+        Supports multiple real-world schema variants (T-403):
+        - Direct security_id lookup (from explicit security_map)
+        - Bare 6-digit A-share codes (e.g. '000001')
+        - Prefixed codes: sh600000, sz000001, bj430047
+        - Dot-suffixed codes: 600000.SH, 000001.SZ, 430047.BJ,
+          600000.SS (Reuters/Refinitiv), 000001.SHG, 000001.SZE
+        - ticker match (exact or normalised)
+        - ISIN match (e.g. CN000000xxx)
+        - FIGI match
+        Matching order: explicit map → security_id → ticker → ISIN → FIGI
+        """
+        # Try explicit security_map first (both raw and normalised key)
+        raw_symbol = str(symbol).strip()
+        normalized = self._normalize_tdx_symbol(raw_symbol)
+        for key in (raw_symbol, normalized, raw_symbol.upper(), raw_symbol.lower()):
+            mapped = str(security_map.get(key, "")).strip()
+            if mapped and mapped in self.store.securities:
+                return self.store.securities[mapped]
+
+        # Direct security_id lookup
         if normalized in self.store.securities:
             return self.store.securities[normalized]
+
+        # Scan registered securities for multi-field match
         for security in self.store.securities.values():
+            # ticker match (normalised)
             if self._normalize_tdx_symbol(security.ticker) == normalized:
                 return security
+            # ISIN: Chinese A-share ISINs start with CN + 6-digit code at pos 4
+            if security.isin and len(security.isin) == 12:
+                isin_code = re.sub(r"\D", "", security.isin)[-6:]
+                if isin_code == normalized[-6:] if len(normalized) >= 6 else False:
+                    return security
+            # FIGI: last 6 chars sometimes encode exchange code
+            if security.figi and normalized in security.figi.lower():
+                return security
+
         return None
 
     def _normalize_tdx_symbol(self, symbol: str) -> str:
-        value = str(symbol).strip().lower()
-        value = re.sub(r"^(sh|sz|bj)", "", value)
-        value = re.sub(r"\.(sh|sz|bj|ss|szse|sse)$", "", value)
-        return re.sub(r"\D+", "", value)
+        """Normalize a TDX symbol to a bare 6-digit A-share code.
+
+        Handles these real-world formats (T-403):
+        - sh600000, sz000001, bj430047   (TDX internal prefix)
+        - 600000.SH, 000001.SZ           (common Chinese data vendor)
+        - 600000.SS, 000001.SHG, SZE     (Reuters/Refinitiv/Bloomberg variants)
+        - 600000.XSHG, 000001.XSHE       (ISO MIC suffix)
+        - CN0000000000 / CN000000xxx      (ISIN style — extract 6-digit code)
+        """
+        value = str(symbol).strip()
+        # Handle ISIN-style (12 chars starting with CN)
+        if re.match(r'^CN\d{10}$', value, re.IGNORECASE):
+            return value[-6:]
+        value = value.lower()
+        # Strip exchange prefixes: sh/sz/bj
+        value = re.sub(r'^(sh|sz|bj)', '', value)
+        # Strip common exchange suffixes
+        value = re.sub(r'\.(sh|sz|bj|ss|shg|sze|sse|szse|xshg|xshe|xbei)$', '', value)
+        # Keep only digits
+        return re.sub(r'\D+', '', value)
+
+    def _tdx_market_from_symbol(self, symbol: str) -> str:
+        """Infer the A-share market ('A', 'H', 'U') from a TDX symbol (T-403).
+
+        Returns 'A' for recognised A-share prefixes/patterns, otherwise empty string.
+        """
+        raw = str(symbol).strip().lower()
+        if raw.startswith(("sh", "sz", "bj")):
+            return "A"
+        if re.search(r'\.(sh|sz|bj|ss|shg|sze|sse|szse|xshg|xshe|xbei)$', raw):
+            return "A"
+        bare = re.sub(r'\D', '', raw)
+        if re.match(r'^[0-9]{6}$', bare):
+            return "A"
+        return ""
 
     def _research_report_source_id(self, broker: str) -> str:
         return f"local_research_{safe_source_part(broker)}"
@@ -13357,6 +15417,9 @@ class SystemService:
         return sorted(results, key=lambda item: item["start"])
 
     def _extract_tables(self, text: str, *, evidence: Evidence) -> list[dict[str, Any]]:
+        locator_tables = self._tables_from_locator(evidence)
+        if locator_tables:
+            return locator_tables
         rows = self._table_rows_from_text(text)
         if not rows:
             return []
@@ -13389,6 +15452,62 @@ class SystemService:
                 "confidence": 0.78,
             }
         ]
+
+    def _tables_from_locator(self, evidence: Evidence) -> list[dict[str, Any]]:
+        tables = evidence.locator.get("tables", []) if isinstance(evidence.locator, Mapping) else []
+        if not isinstance(tables, list):
+            return []
+        results: list[dict[str, Any]] = []
+        for table_index, table in enumerate(tables, start=1):
+            if not isinstance(table, Mapping):
+                continue
+            raw_cells = table.get("cells", [])
+            if not isinstance(raw_cells, list) or not raw_cells:
+                continue
+            cells: list[dict[str, Any]] = []
+            for raw_cell in raw_cells:
+                if not isinstance(raw_cell, Mapping):
+                    continue
+                row = int(raw_cell.get("row", 0) or 0)
+                col = int(raw_cell.get("col", raw_cell.get("column", 0)) or 0)
+                bbox = raw_cell.get("bbox", {})
+                cell_bbox = self._structured_bbox_string(bbox, prefix=f"{evidence.bbox};table={table_index};row={row};col={col}")
+                cells.append(
+                    {
+                        "row": row,
+                        "column": str(col or raw_cell.get("column", "")),
+                        "value": str(raw_cell.get("text", raw_cell.get("value", ""))),
+                        "page_no": evidence.page_no,
+                        "bbox": cell_bbox,
+                        "locator": {
+                            "scheme": "ocr_table_cell_v1",
+                            "table_index": int(table.get("table_index", table_index) or table_index),
+                            "row": row,
+                            "col": col,
+                            "bbox": bbox if isinstance(bbox, Mapping) else {},
+                        },
+                    }
+                )
+            results.append(
+                {
+                    "headers": [],
+                    "rows": [],
+                    "cells": cells,
+                    "row_count": max((int(cell.get("row", 0) or 0) for cell in cells), default=0),
+                    "column_count": max((int(str(cell.get("column", "0")).strip() or 0) for cell in cells if str(cell.get("column", "")).isdigit()), default=0),
+                    "page_no": evidence.page_no,
+                    "bbox": self._structured_bbox_string(table.get("bbox", {}), prefix=f"{evidence.bbox};table={table_index}"),
+                    "confidence": 0.82,
+                    "locator": {"scheme": "ocr_table_v1", "table_index": int(table.get("table_index", table_index) or table_index), "bbox": table.get("bbox", {})},
+                }
+            )
+        return results
+
+    def _structured_bbox_string(self, bbox: Any, *, prefix: str) -> str:
+        if isinstance(bbox, Mapping) and bbox:
+            coords = [bbox.get("x", 0), bbox.get("y", 0), bbox.get("width", 0), bbox.get("height", 0)]
+            return f"{prefix};bbox={','.join(self._format_locator_number(value) for value in coords)}"
+        return prefix
 
     def _table_rows_from_text(self, text: str) -> list[list[str]]:
         if looks_like_html(text):

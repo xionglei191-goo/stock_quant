@@ -18,9 +18,11 @@ from .models import (
     BenchmarkSample,
     CacheRetentionRunRecord,
     CorporateAction,
+    CompanyPosition,
     DrillSchedule,
     DisclosureEvent,
     EntityMapping,
+    EntityMappingLabel,
     ChallengerResult,
     CrowdingSnapshot,
     DecisionPack,
@@ -35,13 +37,16 @@ from .models import (
     IncidentPlaybook,
     IncidentReport,
     InstitutionalHolding,
+    IndustryChain,
     Issuer,
+    HotspotLexicon,
     LineageEvent,
     LLMBudgetApproval,
     LLMTaskRun,
     LLMTaskTemplate,
     ManualReviewItem,
     MarketDataPoint,
+    MacroTheme,
     ModelVersionRecord,
     OperatingReport,
     PortfolioProposal,
@@ -51,6 +56,7 @@ from .models import (
     ResearchAnswer,
     ResearchCard,
     ResearchReportAsset,
+    ResearchTask,
     ResearchTemplate,
     ResearchSignal,
     ReviewRecord,
@@ -95,12 +101,18 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("strategy_replays", "replay_id", StrategyReplay),
     ("portfolio_proposals", "proposal_id", PortfolioProposal),
     ("portfolio_transactions", "transaction_id", PortfolioTransaction),
+    ("macro_themes", "theme_id", MacroTheme),
+    ("industry_chains", "chain_id", IndustryChain),
+    ("company_positions", "position_id", CompanyPosition),
+    ("hotspot_lexicons", "lexicon_id", HotspotLexicon),
+    ("research_tasks", "task_id", ResearchTask),
     ("benchmarks", "benchmark_id", BenchmarkConfig),
     ("benchmark_samples", "sample_id", BenchmarkSample),
     ("benchmark_results", "result_id", BenchmarkResult),
     ("benchmark_runs", "run_id", BenchmarkRun),
     ("extraction_results", "extraction_id", ExtractionResult),
     ("entity_mappings", "mapping_id", EntityMapping),
+    ("entity_mapping_labels", "label_id", EntityMappingLabel),
     ("scorecards", "profile_id", ScorecardProfile),
     ("drill_schedules", "schedule_id", DrillSchedule),
     ("readiness_checks", "check_id", ReadinessCheckRecord),
@@ -150,12 +162,18 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     StrategyReplay: ("created_at",),
     PortfolioProposal: ("created_at",),
     PortfolioTransaction: ("created_at",),
+    MacroTheme: ("created_at",),
+    IndustryChain: ("created_at",),
+    CompanyPosition: ("created_at",),
+    HotspotLexicon: ("created_at",),
+    ResearchTask: ("created_at", "updated_at"),
     BenchmarkConfig: ("created_at",),
     BenchmarkSample: ("created_at",),
     BenchmarkResult: ("created_at",),
     BenchmarkRun: ("created_at",),
     ExtractionResult: ("created_at",),
     PromptChangeRequest: ("created_at",),
+    EntityMappingLabel: ("created_at",),
     ResearchTemplate: ("created_at",),
     ResearchAnswer: ("created_at", "updated_at"),
     ResearchCard: ("created_at",),
@@ -257,12 +275,18 @@ class InMemoryStore:
     strategy_replays: dict[str, StrategyReplay] = field(default_factory=dict)
     portfolio_proposals: dict[str, PortfolioProposal] = field(default_factory=dict)
     portfolio_transactions: dict[str, PortfolioTransaction] = field(default_factory=dict)
+    macro_themes: dict[str, MacroTheme] = field(default_factory=dict)
+    industry_chains: dict[str, IndustryChain] = field(default_factory=dict)
+    company_positions: dict[str, CompanyPosition] = field(default_factory=dict)
+    hotspot_lexicons: dict[str, HotspotLexicon] = field(default_factory=dict)
+    research_tasks: dict[str, ResearchTask] = field(default_factory=dict)
     benchmarks: dict[str, BenchmarkConfig] = field(default_factory=dict)
     benchmark_samples: dict[str, BenchmarkSample] = field(default_factory=dict)
     benchmark_results: dict[str, BenchmarkResult] = field(default_factory=dict)
     benchmark_runs: dict[str, BenchmarkRun] = field(default_factory=dict)
     extraction_results: dict[str, ExtractionResult] = field(default_factory=dict)
     entity_mappings: dict[str, EntityMapping] = field(default_factory=dict)
+    entity_mapping_labels: dict[str, EntityMappingLabel] = field(default_factory=dict)
     scorecards: dict[str, ScorecardProfile] = field(default_factory=dict)
     drill_schedules: dict[str, DrillSchedule] = field(default_factory=dict)
     readiness_checks: dict[str, ReadinessCheckRecord] = field(default_factory=dict)

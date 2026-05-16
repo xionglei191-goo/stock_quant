@@ -153,6 +153,11 @@ PERMISSION_POLICY_CATALOG: list[dict[str, Any]] = [
             "/api/research-reports",
             "/api/research/manual-references",
             "/api/research/answers",
+            "/api/research/tasks",
+            "/api/macro-themes",
+            "/api/industry-chains",
+            "/api/hotspot-lexicons",
+            "/api/hotspots",
             "/api/crowding",
             "/api/challenger",
             "/api/playbooks",
@@ -163,7 +168,7 @@ PERMISSION_POLICY_CATALOG: list[dict[str, Any]] = [
         "sample_paths": {"GET": "/api/research-reports", "POST": "/api/research/answers"},
         "methods": ["GET", "POST"],
         "actions": {"GET": "read", "POST": "write"},
-        "data_domains": ["research", "manual_reference", "alerts", "incidents"],
+        "data_domains": ["research", "macro_themes", "industry_chain", "manual_reference", "alerts", "incidents"],
         "sensitivity": "yellow",
     },
     {
@@ -368,6 +373,8 @@ class ApiRouter:
             ("POST", r"^/api/disclosure-events/classify$", self._classify_disclosure_event),
             ("POST", r"^/api/entity-mappings$", self._register_entity_mapping),
             ("POST", r"^/api/entity-mappings/batch$", self._register_entity_mapping_batch),
+            ("POST", r"^/api/entity-mappings/labels$", self._record_entity_mapping_label_batch),
+            ("GET", r"^/api/entity-mappings/labels$", self._entity_mapping_labels),
             ("GET", r"^/api/entity-mappings/quality-report$", self._entity_mapping_quality_report),
             ("POST", r"^/api/connectors/astock/seed$", self._seed_astock_connectors),
             ("POST", r"^/api/connectors/astock$", self._register_astock_connector),
@@ -375,6 +382,7 @@ class ApiRouter:
             ("POST", r"^/api/connectors/astock/query$", self._list_astock_connectors),
             ("POST", r"^/api/connectors/astock/verify$", self._verify_astock_connectors),
             ("POST", r"^/api/connectors/astock/fetch$", self._fetch_astock_connector_sample),
+            ("POST", r"^/api/connectors/astock/supplemental/fetch$", self._fetch_astock_supplemental_samples),
             ("POST", r"^/api/connectors/preview$", self._preview_connector_document),
             ("POST", r"^/api/connectors/ashare/recent$", self._fetch_ashare_recent_filings),
             ("POST", r"^/api/connectors/sec/recent$", self._fetch_sec_recent_filings),
@@ -405,6 +413,7 @@ class ApiRouter:
             ("POST", r"^/api/research-reports/scan$", self._scan_research_reports),
             ("GET", r"^/api/research-reports/extraction-queue$", self._research_report_extraction_queue),
             ("POST", r"^/api/research-reports/extraction-queue$", self._research_report_extraction_queue),
+            ("POST", r"^/api/research-reports/incremental-schedule$", self._research_report_incremental_schedule),
             ("GET", r"^/api/research-reports/governance-report$", self._research_report_governance_report),
             ("POST", r"^/api/research-reports/governance-report$", self._research_report_governance_report),
             ("GET", r"^/api/research-reports/mapping-report$", self._research_report_mapping_report),
@@ -423,6 +432,10 @@ class ApiRouter:
             ("POST", r"^/api/research/answers/summary-benchmark$", self._research_answer_summary_benchmark),
             ("POST", r"^/api/research/answers/(?P<answer_id>[^/]+)/review$", self._review_research_answer),
             ("GET", r"^/api/research/answers/(?P<answer_id>[^/]+)$", self._get_research_answer),
+            ("GET", r"^/api/research/tasks$", self._list_research_tasks),
+            ("POST", r"^/api/research/tasks$", self._register_research_task),
+            ("POST", r"^/api/research/tasks/from-hotspot$", self._create_research_tasks_from_hotspot),
+            ("POST", r"^/api/research/tasks/(?P<task_id>[^/]+)/status$", self._update_research_task_status),
             ("POST", r"^/api/extractions/run$", self._extract_structured_facts),
             ("GET", r"^/api/extractions/(?P<extraction_id>[^/]+)$", self._get_extraction_result),
             ("POST", r"^/api/evidence/extract$", self._extract_evidence),
@@ -527,6 +540,20 @@ class ApiRouter:
             ("POST", r"^/api/portfolio/positions$", self._portfolio_positions_from_transactions),
             ("GET", r"^/api/portfolio/proposals$", self._list_portfolio_proposals),
             ("GET", r"^/api/portfolio/proposals/(?P<proposal_id>[^/]+)$", self._get_portfolio_proposal),
+            ("POST", r"^/api/portfolio/attribution/backfill$", self._portfolio_attribution_backfill),
+            ("POST", r"^/api/portfolio/simulated-feedback$", self._portfolio_simulated_feedback),
+            ("GET", r"^/api/macro-themes$", self._list_macro_themes),
+            ("POST", r"^/api/macro-themes$", self._register_macro_theme),
+            ("GET", r"^/api/industry-chains$", self._list_industry_chains),
+            ("POST", r"^/api/industry-chains$", self._register_industry_chain),
+            ("GET", r"^/api/company-positions$", self._list_company_positions),
+            ("GET", r"^/api/company-positions/schema$", self._company_positions_schema),
+            ("GET", r"^/api/company-positions/coverage-report$", self._company_positions_coverage_report),
+            ("POST", r"^/api/company-positions/coverage-report$", self._company_positions_coverage_report),
+            ("GET", r"^/api/hotspot-lexicons$", self._list_hotspot_lexicons),
+            ("POST", r"^/api/hotspot-lexicons$", self._register_hotspot_lexicon),
+            ("POST", r"^/api/industry-chains/(?P<chain_id>[^/]+)/companies$", self._register_company_position),
+            ("POST", r"^/api/hotspots/expand$", self._hotspot_expansion),
             ("GET", r"^/api/graph/traceability-report$", self._graph_traceability_report),
             ("POST", r"^/api/graph/traceability-report$", self._graph_traceability_report),
             ("GET", r"^/api/graph/edge-quality-report$", self._graph_edge_quality_report),
@@ -595,7 +622,7 @@ class ApiRouter:
             return role in {"system", "风险/合规", "平台负责人", "数据工程"}
         if path.startswith("/api/benchmarks") or path.startswith("/api/prompts/changes") or path.startswith("/api/scorecards"):
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO"}
-        if path.startswith("/api/templates") or path.startswith("/api/research-cards") or path.startswith("/api/research-reports") or path.startswith("/api/research/manual-references") or path.startswith("/api/research/answers") or path.startswith("/api/crowding") or path.startswith("/api/challenger") or path.startswith("/api/playbooks") or path.startswith("/api/incident-reports") or path.startswith("/api/drill-schedules") or path.startswith("/api/alerts"):
+        if path.startswith("/api/templates") or path.startswith("/api/research-cards") or path.startswith("/api/research-reports") or path.startswith("/api/research/manual-references") or path.startswith("/api/research/answers") or path.startswith("/api/research/tasks") or path.startswith("/api/macro-themes") or path.startswith("/api/industry-chains") or path.startswith("/api/hotspot-lexicons") or path.startswith("/api/hotspots") or path.startswith("/api/crowding") or path.startswith("/api/challenger") or path.startswith("/api/playbooks") or path.startswith("/api/incident-reports") or path.startswith("/api/drill-schedules") or path.startswith("/api/alerts"):
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO", "PM", "分析师", "海外研究负责人", "数据工程"}
         if path.startswith("/api/llm"):
             return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人", "分析师", "NLP/ML 负责人", "海外研究负责人"}
@@ -862,6 +889,13 @@ class ApiRouter:
     def _register_entity_mapping_batch(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.register_entity_mapping_batch(body, actor=actor)
 
+    def _record_entity_mapping_label_batch(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.record_entity_mapping_label_batch(body, actor=actor)
+
+    def _entity_mapping_labels(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        _ = actor
+        return self.service.entity_mapping_labels_payload(body)
+
     def _entity_mapping_quality_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.entity_mapping_quality_report(body)
 
@@ -879,6 +913,16 @@ class ApiRouter:
 
     def _fetch_astock_connector_sample(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.fetch_astock_connector_sample(body, actor=actor)
+
+    def _fetch_astock_supplemental_samples(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        """POST /api/connectors/astock/supplemental/fetch  (T-416)
+
+        Fetches real HTTP sample rows from a public A-share supplemental
+        connector (eastmoney_research, cninfo_announcements,
+        tencent_valuation_snapshot). Results are manual_reference only
+        and must NOT enter the automated decision chain.
+        """
+        return self.service.fetch_astock_supplemental_samples(body, actor=actor)
 
     def _preview_connector_document(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.preview_connector_document(str(body["market"]), body["raw"])
@@ -974,6 +1018,15 @@ class ApiRouter:
 
     def _research_report_extraction_queue(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.research_report_extraction_queue(body, actor=actor)
+
+    def _research_report_incremental_schedule(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        """POST /api/research-reports/incremental-schedule  (T-417)
+
+        Generates an incremental OCR/extraction schedule for the local research report library.
+        Supports dry_run, ocr_budget_mb, batch_size and Airflow/Cron-ready schedule_plan output.
+        Restricted to local_reference use only; no training or fact-source boundary.
+        """
+        return self.service.research_report_incremental_schedule(body, actor=actor)
 
     def _research_report_governance_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.research_report_governance_report(body)
@@ -1295,6 +1348,70 @@ class ApiRouter:
     def _get_portfolio_proposal(self, path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/portfolio/proposals/(?P<proposal_id>[^/]+)$", path)
         return self.service.portfolio_proposal_payload(match["proposal_id"])
+
+    def _portfolio_attribution_backfill(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        """POST /api/portfolio/attribution/backfill  (T-408)
+
+        Computes simulated portfolio attribution for a date range and optionally
+        backfills the result to existing operating reports. Always simulation-only.
+        """
+        return self.service.portfolio_attribution_backfill(body, actor=actor)
+
+    def _portfolio_simulated_feedback(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        """POST /api/portfolio/simulated-feedback  (T-409)
+
+        Investment committee approval entry and simulated portfolio feedback.
+        Updates proposal status (approved/rejected) and returns valuation/returns
+        feedback driven by public EOD market data. Paper portfolio only.
+        """
+        return self.service.portfolio_simulated_feedback(body, actor=actor)
+
+    def _register_macro_theme(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_macro_theme(body, actor=actor))
+
+    def _list_macro_themes(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.macro_themes_payload(body)
+
+    def _register_industry_chain(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_industry_chain(body, actor=actor))
+
+    def _list_industry_chains(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.industry_chains_payload(body)
+
+    def _list_company_positions(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_positions_payload(body)
+
+    def _company_positions_schema(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_positions_schema_payload(body)
+
+    def _company_positions_coverage_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_positions_coverage_report(body)
+
+    def _register_hotspot_lexicon(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_hotspot_lexicon(body, actor=actor))
+
+    def _list_hotspot_lexicons(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.hotspot_lexicons_payload(body)
+
+    def _register_company_position(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/industry-chains/(?P<chain_id>[^/]+)/companies$", path)
+        return to_plain(self.service.register_company_position(match["chain_id"], body, actor=actor))
+
+    def _hotspot_expansion(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.hotspot_expansion(body, actor=actor)
+
+    def _register_research_task(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_research_task(body, actor=actor))
+
+    def _list_research_tasks(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.research_tasks_payload(body)
+
+    def _create_research_tasks_from_hotspot(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_research_tasks_from_hotspot(body, actor=actor)
+
+    def _update_research_task_status(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/research/tasks/(?P<task_id>[^/]+)/status$", path)
+        return to_plain(self.service.update_research_task_status(match["task_id"], body, actor=actor))
 
     def _query_graph(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.query_graph(body)

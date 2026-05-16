@@ -5,19 +5,20 @@
 - 状态只用 `TODO` `DOING` `DONE` `BLOCKED`
 - 本文件维护“达到项目愿景”的剩余路线图；历史实现只在“已落地基线”里汇总
 - 每项任务必须映射到 `docs/mvp-backlog.md` 的 E1-E9；无法完全映射的标注为“愿景扩展/生产化增强”
-- 新增能力默认遵循：研究先于交易、公开/已提供数据先于自动化、人工审批先于执行意图
+- 新增能力默认遵循：研究先于模拟组合、公开/已提供数据先于自动化、模拟持仓反馈先于任何真实交易设想
+- 当前系统目标是投资分析和投研反馈，不接真实券商、不做自动下单；`execution intent` 仅表示纸面/模拟意图
 - 不采购或依赖商业授权数据；行情、披露、研报线索、转录稿和第三方接口统一优先使用已提供本地数据、官方公开披露、公开网页/API、开源工具可采集的数据
 - 所有外部数据进入自动化链路前必须记录来源、URL/API、采集时间、robots/TOS/公开性判断、字段边界、缓存期限和用途边界；边界不清的数据只进入人工参考
 
 ## 当前判断
 
-当前能力：代码已经跑通 MVP 主链路，覆盖 A/H/U 公开披露接入、rights tag、证据切片、规则抽取、benchmark 阈值、Thesis/Signal/Decision/Execution Intent、模拟成交、月报/回放、事故剧本、SQLite/PostgreSQL、本地/S3 对象存储、内置/OpenSearch 检索、`/ui` 静态页面、健康检查、烟测、LLM 中转站和 PaddleOCR-VL 文档解析备用接口。
+当前能力：代码已经跑通 MVP 主链路，覆盖 A/H/U 公开披露接入、rights tag、证据切片、规则抽取、benchmark 阈值、Thesis/Signal/Decision、纸面执行意图、模拟持仓 ledger、月报/回放、事故剧本、SQLite/PostgreSQL、本地/S3 对象存储、内置/OpenSearch 检索、`/ui` 静态页面、健康检查、烟测、LLM 中转站和 PaddleOCR-VL 文档解析备用接口。
 
 新增资源：本地通达信历史行情已迁入 `data/local/tdx/market_data.duckdb`；本地研报目录 `/home/xionglei/文档/6大投行研报汇总` 可作为后续独立研报资产库；`a-stock-data` 可作为 A 股补充接口候选；LLM gateway 与 PaddleOCR-VL 已具备可配置的外部能力入口。
 
-剩余关键缺口：距离完整愿景仍差真实公开数据管线、公开来源 provenance 台账、研报/转录稿公开性与引用边界、大样本双语 benchmark、真实 bbox 和版面定位、图谱/向量/语义检索生产 adapter、生产 UI、外部监控告警、任务编排、血缘、模型治理、密钥管理和最终上线验收闸门。
+剩余关键缺口：本机 staging 上线闸门已通过；距离非本机真实生产发布仍差真实生产参数、外部密钥管理系统、生产级 artifact URI、灰度/回滚窗口和 CEO 签批边界。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：先完成 M6 生产化事实层，再完成 M7 经营驾驶舱和投研闭环；M8 聚焦数据/研报/LLM 工作流扩展；M9 补齐生产基础设施和治理；M10 用量化指标判断是否达到项目愿景。
+近期优先级：M6-M9 继续补齐非本机真实数据和生产依赖证据；M10 已用本机 staging 量化指标完成上线闸门复验，后续重点转为生产参数确认、发布签批和外部 artifact 归档。
 
 ## 已落地基线
 
@@ -31,7 +32,7 @@
 
 - `DONE` T-303 权限、合规和审批闸门
   - 对应：E2-US1, E2-US3, E6-US1, E6-US2, E6-US3, E6-US4
-  - 代码：rights tag 校验、Reg FD / non-display gate、prompt 审批、未审批决策拦截 execution intent
+  - 代码：rights tag 校验、Reg FD / non-display gate、prompt 审批、未审批决策拦截纸面执行意图和模拟持仓入口
 
 - `DONE` T-304 证据链、结构化抽取和 benchmark 原型
   - 对应：E3-US3, E4-US1, E4-US2, E4-US3
@@ -66,7 +67,7 @@
 
 - `DONE` T-415 美股合规专题补充
   - 对应：E2-US1, E6-US2, E6-US4
-  - 已有：`docs/us-compliance-open-questions.md` 覆盖 Reg FD 来源公开性、Nasdaq/NYSE non-display/derived data declaration、投资顾问和外部资管、券商接口和 best execution、衍生品与跨境限制、上线前 live execution 必备清单
+  - 已有：`docs/us-compliance-open-questions.md` 覆盖 Reg FD 来源公开性、Nasdaq/NYSE non-display/derived data declaration、投资顾问和外部资管边界、真实券商接口 / best execution / live execution 的非目标说明、衍生品与跨境限制
 
 ## P0 当前冲刺 / M6 生产化事实层
 
@@ -74,7 +75,13 @@
   - 对应：E3-US3, E4-US1, E4-US2, E4-US3
   - 已有：HTML 清洗、`\f` 分页、PDF 文本流/Flate 流兜底、规则表格读取、`page=...;chunk=...` locator、空文本/扫描件解析失败分级、ManualReviewItem 人工复核队列、evidence quality report、PaddleOCR-VL 备用解析接口
   - 已有：PaddleOCR-VL 解析结果按文档/URL、content hash/source URI、模型和 optional payload 运行时缓存，并返回 `cache_hit`、`elapsed_ms`、`estimated_cost` 供质量/成本审计
-  - 待做：扫描件版面识别、真实 `bbox`/span 坐标、跨页表格合并、表格 cell 定位、图片/表格资产引用、解析失败重试
+  - **已完成（本轮）**：OCR locator schema 与版面资产穿透
+    - Evidence 新增 `locator` 和 `assets` 元数据，保留旧 `bbox` 字符串兼容；规则文本 locator 为 `page_chunk_v1`，OCR 版面 locator 为 `ocr_bbox_span_v1`
+    - PaddleOCR JSONL 解析可提取 `layoutDetections`、`tables/cells`、markdown/output 图片资产，并规范化为 `{x,y,width,height}` bbox
+    - `extract_evidence` 可把 OCR layout bbox、span hash、table cell bbox 和 image/table asset refs 写入 evidence
+    - `_extract_tables` 优先使用 OCR locator table cells，benchmark 表格定位可读取真实 cell bbox
+    - `/api/evidence/quality-report` 新增 `structured_locator_coverage`、`bbox_coverage`、`table_cell_count`、`table_cell_bbox_coverage`、`asset_reference_count`
+  - 待做：跨页表格合并、解析失败重试、真实扫描件大样本版面 bbox 校验
   - 输出：OCR/版面解析 adapter、bbox/span schema、解析质量报告、人工复核闭环、错误样本库
   - 验收：每个错误样本可回溯到原 PDF 页/框；证据页命中率达到 benchmark 门槛；解析失败进入人工复核并触发告警
 
@@ -87,12 +94,16 @@
 
 - `DOING` T-403 公开 EOD / 延时行情和来源 provenance 台账
   - 对应：E2-US1, E2-US3, E2-US4
-  - 已有：`public_eod_market_data` 公开/已提供 EOD 来源、MarketDataPoint、`/api/market-data`、`/api/market-data/batch`、CorporateAction、`/api/corporate-actions`、`/api/market-data/adjusted` 原始/前复权/后复权计算视图、`/api/market-data/returns` 回测/估值/风险收益序列消费入口、`/api/portfolio/returns` 组合级公开复权收益/波动/回撤消费入口、`/api/portfolio/valuation` 真实持仓估值/现金权重/缺失价格 adapter、价格收益与 `cash_dividend_reinvested` 现金分红总回报口径、批量导入逐条错误留痕、拆股/分红/代码变更公司行动、UI 入库入口、dashboard 摘要、rights tag 校验、实时数据阻断、红区/越权来源阻断测试、行情字段白名单入库校验、通达信 DuckDB 只读预览和导入接口、通达信 `vipdoc/*.day` 本地校验/解析兜底、`vipdoc` 显式 URL 下载/sha256 校验/zip 安全解压脚本、SQLite 状态库增量导入脚本、source governance/provenance 台账字段、字段白名单、缓存期限、公开来源覆盖报告、行情数据质量报告
+  - 已有：`public_eod_market_data` 公开/已提供 EOD 来源、MarketDataPoint、`/api/market-data`、`/api/market-data/batch`、CorporateAction、`/api/corporate-actions`、`/api/market-data/adjusted` 原始/前复权/后复权计算视图、`/api/market-data/returns` 回测/估值/风险收益序列消费入口、`/api/portfolio/returns` 组合级公开复权收益/波动/回撤消费入口、`/api/portfolio/valuation` 模拟持仓估值/现金权重/缺失价格 adapter、价格收益与 `cash_dividend_reinvested` 现金分红总回报口径、批量导入逐条错误留痕、拆股/分红/代码变更公司行动、UI 入库入口、dashboard 摘要、rights tag 校验、实时数据阻断、红区/越权来源阻断测试、行情字段白名单入库校验、通达信 DuckDB 只读预览和导入接口、通达信 `vipdoc/*.day` 本地校验/解析兜底、`vipdoc` 显式 URL 下载/sha256 校验/zip 安全解压脚本、SQLite 状态库增量导入脚本、source governance/provenance 台账字段、字段白名单、缓存期限、公开来源覆盖报告、行情数据质量报告
   - 已有：来源 provenance 可记录 `provenance_ref`、`source_tos_uri`、`collection_method`、`robots_policy`、`usage_scope`、`last_reviewed_at`，`/api/governance/sources/{source_id}/reviews` 可记录季度来源复核、复核状态、TOS/robots/用途边界和下次复核日期；历史 `authorized_eod_market_data` 输入兼容映射到 `public_eod_market_data`
   - 已有：`/api/portfolio/valuation` 返回 `risk_decomposition`，按 market/currency/industry/style 输出持仓市值、权重、外币权重、现金权重和集中度；industry/style 可通过 holdings 或 `groups[security_id]` 注入
   - 本地资源：`data/local/tdx/market_data.duckdb`，来自废弃项目 `stock_chs`，约 2703 万行、10849 个 symbol、覆盖 1990-12-19 至 2026-04-08；该目录已被 Git 忽略
-  - 待做：通达信 symbol/market/date 字段映射覆盖更多真实 schema
-  - 待做：真实成交流水 adapter
+  - **已完成（本轮）**：通达信 DuckDB schema 自动探测和字段别名兼容
+    - DuckDB adapter 可自动识别 `daily_kline` 以外的日线表，并兼容 `symbol/code/ticker/ts_code/security_code/stock_code`、`trade_date/date/datetime/time`、`open/open_price`、`close/close_price`、`high/high_price`、`low/low_price`、`volume/vol`、`amount/amt`、`turnover/turnover_rate`
+    - 日期可从 `YYYYMMDD` / `YYYY-MM-DD` 规范化为 `YYYY-MM-DD`；symbol 查询兼容 bare code、`sh/sz/bj` 前缀、`.SH/.SZ/.BJ/.SS/.XSHG/.XSHE` 后缀
+    - `.gitignore` 已忽略本机 staging 截图、验收 artifact 和运行时对象存储写入，保留已纳管 demo 样例
+  - 待做：真实生产输入 schema 覆盖率报告和异常 schema 样本库
+  - 待做：模拟持仓/回测流水 adapter 对更多输入格式的兼容
   - 验收：生产输入数据 100% 能映射到公开来源 provenance 台账；红黄绿分级覆盖率 >= 95%；边界不清、禁止缓存/禁止自动化或实时 non-display 数据不能进入自动化链路
 
 - `DOING` T-404 生产级状态库、对象存储和检索适配
@@ -114,10 +125,28 @@
 
 - `DOING` T-406 三市场主体页和知识图谱生产化
   - 对应：E3-US2, E3-US4, E8-US2
-  - 已有：EntityMapping、LEI/FIGI/CIK/ISIN/ticker 字段、`/api/entity-mappings/batch`、`/api/entity-mappings/quality-report`、A/H/U 批量映射入库、样本映射准确率报告、基于标识符完整度的实体消歧 confidence、低置信映射清单、`/api/graph/query` 按 issuer/security/evidence/thesis/decision 聚合主体、证券、公开行情、公司行动、文件、证据、观点、信号、决策、execution intent、复盘、回放、例外、research card、13F、crowding、challenger、disclosure event 和派生 `portfolio_positions`，并返回带时间/来源属性的图谱边
+  - 已有：EntityMapping、LEI/FIGI/CIK/ISIN/ticker 字段、`/api/entity-mappings/batch`、`/api/entity-mappings/quality-report`、A/H/U 批量映射入库、样本映射准确率报告、基于标识符完整度的实体消歧 confidence、低置信映射清单、`/api/graph/query` 按 issuer/security/evidence/thesis/decision 聚合主体、证券、公开行情、公司行动、文件、证据、观点、信号、决策、纸面执行意图、复盘、回放、例外、research card、13F、crowding、challenger、disclosure event 和派生 `portfolio_positions`，并返回带时间/来源属性的图谱边
   - 已有：`/api/graph/traceability-report` 可检查 thesis、decision、research answer 是否能回溯到 evidence/document，并输出缺失 evidence、document、signal/thesis 断链和英文原文缺失问题
   - 待做：ADR/中概队列真实批量映射、双时间轴版本字段、主体页 UI 细化、图谱 adapter、向量检索 adapter
   - 验收：A/H/U 样本公司映射准确率 >= 98%；观点到证据可回溯率 >= 95%；节点/边具备来源、时间戳和版本
+
+- `DOING` T-406A 宏观主题、热点扩散和产业链公司定位图谱
+  - 对应：E3-US2, E5-US1, E5-US2, E7-US2, E8-US2；愿景扩展/生产化增强
+  - 目标：从宏观变量、政策、技术周期、产品热点或市场热词出发，自动/半自动发散到产业链节点、上下游关系、相关公司和数据槽位
+  - 已有：`MacroTheme`、`IndustryChain`、`ChainNode`、`CompanyPosition` 数据结构；`/api/macro-themes`、`/api/industry-chains`、`/api/company-positions`、`/api/industry-chains/{chain_id}/companies`、`/api/hotspots/expand`、`/api/company-positions/coverage-report` 契约和后端落地；产业链 taxonomy version；图谱节点和边的 provenance、confidence、时间戳、证据回链
+  - 已有：`/api/company-positions/schema` 输出公司定位卡字段字典、必填数据槽位和 data_quality 枚举
+  - 已有：`/api/hotspot-lexicons` 可维护热点扩散词表、同义词、相关链路节点和默认数据槽位；`/api/hotspots/expand` 输出 `retrieval_recall` 和 `evidence_layers`，把公告/证据事实、研报观点、行情线索、facts、opinions、inferences 和 needs_verification 分开
+  - 已有：热点扩散本地可解释排序 `ranked_candidates`，综合词表命中、公司定位字段覆盖、evidence 回链、公开资料召回和数据质量，并输出 LLM rerank 触发建议
+  - 已有：ResearchTask 队列、`/api/research/tasks`、`/api/research/tasks/from-hotspot`、`/api/research/tasks/{task_id}/status`
+  - **已完成（本轮）**：`_hotspot_retrieval_recall` 检索召回增强（T-406A 代码层）
+    - 同义词/词表扩展：自动从 `HotspotLexicon.synonyms` 和 `related_chain_nodes.keywords` 扩展查询词集
+    - 新增 `inferences` 层：thesis/signal 召回独立分层，强制标注 `automation_allowed=false`、`needs_verification=true`
+    - 新增 `research_answer` 召回：纳入 `research_opinions` 层，带 `needs_verification`/`pending_review` 标记
+    - `term_coverage` 分数：每条结果增加覆盖率浮点分，结果按分数降序排列；新增 `query_expansion` 元信息
+    - `_hotspot_evidence_layers` 同步接入 `inferences` 层，含 thesis/signal 推断标注
+    - `_hotspot_rank_candidates` 修复：跳过非 list 的 `retrieval_recall` 键（如 `query_expansion`）
+  - 待做：后续接入 LLM rerank；所有输出已区分事实、观点、推断和待验证任务
+  - 验收：给定一个热点词能生成至少 3 层产业链扩散路径；每个候选公司都有明确产业链节点、角色定位、至少一个数据槽位和证据/来源边界；缺失证据会进入 research task，而不是被当成结论；输出固定 `automation_allowed=false`
 
 ## P1 下一批 / M7 经营驾驶舱和投研闭环
 
@@ -129,21 +158,26 @@
 
 - `DOING` T-408 月报/回放生产化和真实绩效归因
   - 对应：E8-US3, E7-US1
-  - 已有：月报草稿/发布状态、CEO/CIO/风险合规发布审批、`/api/operating-reports/{report_id}/publish`、`/api/operating-reports/{report_id}/red-flags/{red_flag_id}/resolve`、红灯项逐条 ID/状态/处理结论审计、红灯项 owner/owner_role/due_date 标准化、`/api/operating-reports/red-flag-reminders` 逾期提醒、`portfolio_returns`/`portfolio_values` 与 benchmark 输入、TWR/总收益/最大回撤/换手/信息比率、归因指标透传、版本化 strategy replay 与 `/api/strategy-replays` 筛选、发布审计事件、`/api/portfolio/transactions` 交易流水 ledger、`/api/portfolio/positions` as-of 持仓派生 adapter
-  - 已有：`/api/portfolio/returns` 支持按 market/currency/industry/style 输出组合收益分组归因，industry/style 可通过 `groups[security_id]` 注入，供月报绩效归因复算
-  - 已有：`/api/operating-reports/{report_id}/board-pack` 可将已发布月报导出为对象存储中的 markdown 或 PDF Board pack 制品，返回 URI/sha256/size/content_type 并写审计日志
-  - 已有：`/api/strategy-replays/compare` 和策略实验室 UI 可按 decision/version/replay 批量对比回放结果、variance、版本分布和下一步动作桶
-  - 待做：真实绩效归因批次回填到投后复盘
-  - 验收：月报草稿不能绕过审批发布；绩效指标可由真实收益或 NAV 序列复算；每个红灯项有 owner 和截止时间
+  - 已有：月报草稿/发布状态、CEO/CIO/风险合规发布审批、`/api/operating-reports/{report_id}/publish`、红灯项逐条审计、`/api/portfolio/transactions` 交易流水 ledger、`/api/portfolio/positions` as-of 持仓派生 adapter
+  - 已有：`/api/portfolio/returns` 支持按 market/currency/industry/style 输出组合收益分组归因；`/api/operating-reports/{report_id}/board-pack`；`/api/strategy-replays/compare`
+  - **已完成（本轮）**：`POST /api/portfolio/attribution/backfill`（T-408 代码层）
+    - 对纸面/模拟组合执行 market/currency/industry/style 分组绩效归因批次回填，写入 OperatingReport.annotations
+    - 固定 `simulation_only=true`、`live_execution_allowed=false`；支持 `dry_run=true` 只计算不写入
+    - 支持 `proposal_id` 引用已有 PortfolioProposal 或直接传 `holdings` 列表
+    - `docs/api-contracts.md` 已补充完整契约文档
+  - 验收：月报草稿不能绕过审批发布；绩效指标可由公开行情收益、模拟持仓 ledger 或 NAV 序列复算；每个红灯项有 owner 和截止时间；不接入真实交易账户
 
 - `DOING` T-409 Black-Litterman、风险预算和组合约束原型
   - 对应：E5-US3, E6-US1, E7-US1, E8-US3
-  - 已有：`docs/portfolio-construction-spec.md` 数学规格与参数字典、PortfolioProposal、`/api/portfolio/optimize`、`/api/portfolio/proposals`、观点置信度与 `Omega` 绑定、市场/行业/主题/币种预算、禁投清单、单证券上限、候选权重、风险贡献、换手、约束影子价格、walk-forward 与压力测试诊断、图谱关联、PostgreSQL 视图
-  - 已有：`/api/portfolio/optimize` 支持 `require_benchmark_passed_evidence=true`，要求 view 的 `evidence_ids` 已有通过的结构化抽取/benchmark 结果，否则触发合规闸门，避免未通过证据链进入组合候选权重
-  - 已有：`/api/portfolio/optimize` 可基于 `return_history` 输出样本协方差、相关矩阵和对角 shrinkage 协方差诊断
-  - 已有：`/api/execution-intents/{intent_id}/simulate` 只对已审批 execution intent 生成模拟成交，写入 `SimulatedExecution` 和 `PortfolioTransaction` ledger，并固定 `live_execution_allowed=false`
-  - 待做：PyPortfolioOpt/CVXPY 对照、真实组合回测报告、投委会 UI 审批入口
-  - 验收：候选权重不包含禁投标的；市场/行业预算和单券上限生效；观点置信度影响 `Omega`；输出只作为纸面组合，不直接生成 execution intent；交易执行仅允许模拟成交，不接真实券商
+  - 已有：`docs/portfolio-construction-spec.md` 数学规格、PortfolioProposal、`/api/portfolio/optimize`、`/api/portfolio/proposals`、观点置信度与 `Omega` 绑定、市场/行业/主题/币种预算、禁投清单、单证券上限、walk-forward 与压力测试诊断、协方差矩阵诊断
+  - 已有：`/api/execution-intents/{intent_id}/simulate` 只对已审批纸面执行意图生成模拟成交，写入 `SimulatedExecution` 和 `PortfolioTransaction` ledger，并固定 `live_execution_allowed=false`
+  - **已完成（本轮）**：`POST /api/portfolio/simulated-feedback`（T-409 代码层）
+    - 投委会审批入口：对 PortfolioProposal 做模拟决策（approved/rejected/pending/needs_revision）
+    - 支持 `include_valuation=true` 触发模拟持仓估值、`feedback_start/end_date` 触发区间归因反馈
+    - 固定 `simulation_only=true`、`live_execution_allowed=false`、`automation_allowed=false`、`usage_boundary=paper_portfolio_simulation`
+    - `docs/api-contracts.md` 已补充完整契约文档
+  - 待做：PyPortfolioOpt/CVXPY 对照、模拟组合回测/前向跟踪报告、投委会 UI 审批入口细化
+  - 验收：候选权重不包含禁投标的；市场/行业预算和单券上限生效；观点置信度影响 `Omega`；输出只作为纸面组合，不直接生成真实交易；后续反馈仅允许模拟成交/模拟持仓 ledger，不接真实券商
 
 - `DOING` T-410 英文原文优先的研究问答与摘要审计
   - 对应：E4-US2, E6-US3, E6-US4, E7-US2
@@ -161,7 +195,8 @@
   - 已有：`/api/alerts/notifications/deliver` 可对通知 outbox 执行 dry-run/execute 发送状态机，写回 provider、attempt、delivered_at、response 和失败原因；`provider=webhook|http|https` 时可向 HTTP(S) target 发送 JSON POST，`provider=email|smtp` 可通过 SMTP 发送 EmailMessage，`provider=slack` 可发送 Slack webhook，并限制非 HTTP(S) target、超时、缺失 SMTP 配置和最大尝试次数
   - 已有：`/api/alerts/notify` 支持 `route_failures` / `failure_routes`，可按 playbook/rule/metric 将采集、检索、LLM、OCR 和 workflow 失败分流到专属 channel/target，并把 provider/max attempts/backoff 写入 delivery policy
   - 已有：`/api/observability/logs/export` 可导出 audit、alerts、workflow 和 notifications 的结构化 JSON 日志；`/api/observability/otel/export` 可生成 OTLP logs JSON payload；`/api/observability/otel/submit` 可把 OpenTelemetry 日志提交写入 outbox 并复用通知发送状态机
-  - 待做：真实 OpenTelemetry collector 连通性、metrics/traces 端到端采集、日志保留策略和告警联动演练
+  - 已有：`scripts/staging_otel_acceptance.py` 已在本机 staging 直连 OpenTelemetry collector `/v1/logs`、`/v1/metrics` 和 `/v1/traces`，并触发 workflow 告警、通知 outbox 和发送状态机后回填 `otel_collector_drill`
+  - 待做：非本机生产/预发 OpenTelemetry collector 参数、日志保留策略、collector 后端存储/查询证据和告警路由到真实外部通道
   - 验收：五类事故剧本均有 owner、SLA、止血动作、回滚动作；季度演练覆盖率 100%
 
 - `DOING` T-412 生产部署 runbook 与验收清单
@@ -172,6 +207,7 @@
   - 已有：`scripts/staging_acceptance.py` 可对 staging HTTP 地址执行真实部署 smoke、模拟成交、检索、图谱、metrics、外部依赖配置和可达性检查、Neo4j/Qdrant/OTel outbox 演练，并可只回填真实执行过的 `real_data_smoke_test` 与 `capacity_latency_report`
   - 已有：`docker-compose.yml` 和 `scripts/local_staging_stack.sh` 可在本机启动 PostgreSQL、MinIO、OpenSearch、Neo4j、Qdrant、OpenTelemetry collector、OpenLineage/MLflow HTTP 占位端点和应用服务，并自动跑 staging 验收；已修复镜像源、host/container 环境变量覆盖、PostgreSQL IMMUTABLE 索引、健康检查等待和 `AI_QUANT_HOST=0.0.0.0` 绑定问题
   - 已有：本机 staging 验收通过，状态库为 PostgreSQLStore，对象存储为 S3/MinIO，检索为 OpenSearch，模拟成交通过，图谱回溯 100%，HTTP 容量基线无 breach；PostgreSQL/S3/OpenSearch/OTel/Neo4j/Qdrant/OpenLineage/MLflow 均可达，Neo4j/Qdrant/OpenLineage/MLflow outbox 演练通过，最近一次复验 `p95=114ms`
+  - 已有：最终 vision gate 复验通过，`/api/readiness/vision-gate` 返回 `status=ready`、`readiness_checklist_coverage=1.0`、`pending_checklist=[]`，evidence package 返回 `ready_for_launch=true`
   - 待做：真实生产环境参数确认、密钥管理系统接入、备份恢复演练记录、发布 checklist、灰度/回滚演练
   - 验收：上线前检查、备份恢复、容量基线、密钥注入、回滚路径均有记录
 
@@ -195,22 +231,28 @@
   - 对应：E2-US1, E2-US3, E2-US4, E3-US3
   - 输入：`a-stock-data` Apache-2.0 Skill，覆盖通达信/腾讯/东财/akshare/iwencai/同花顺/百度股市通/巨潮等 A 股数据端点
   - 已有：A 股补充 connector 注册表、source definition、rights tag、限速、字段映射、验证状态、错误留痕和最小测试；默认 restricted rights，仅人工参考/补充研究
-  - 已有：`/api/connectors/astock/fetch` 支持本地样本行字段归一化、公开网页/API URI 脱敏、rights/provenance 边界评估、blocked/red-zone 合规拦截和 automation blockers 输出
+  - 已有：`/api/connectors/astock/fetch` 支持本地样本行字段归一化、公开网页/API URI 脱敏、rights/provenance 边界评估、blocked/red-zone 合规拦截
+  - **已完成（本轮）**：`POST /api/connectors/astock/supplemental/fetch`（T-416 代码层）
+    - `AStockSupplementalRegistry` 托管 connector 注册表，已集成 EastMoney Research、Cninfo Announcements、Tencent Valuation 三个 connector
+    - 强制合规标注：`manual_reference_only=true`、`automation_allowed=False`；URI 敏感参数脱敏
+    - 空 symbols 时返回空数组（无 HTTP 调用）；blocked connector 返回 423
+    - `docs/api-contracts.md` 已补充完整契约文档
   - 待做：逐项真实验证接口可用性、稳定性、调用限制和许可边界；接入真实 HTTP fetch adapter 与各端点字段样本库
-  - 优先级：东财研报发现、巨潮公告补充、腾讯估值快照、同花顺热点题材、百度概念/资金流、龙虎榜、解禁日历；需要 key 的 iwencai 放到可选配置
-  - 验收：外部接口只作为公开补充，不替代本地通达信和官方披露核心数据；红区、边界不清、禁止缓存或禁止自动化的数据只能进入人工参考，不进入自动化链路
+  - 验收：外部接口只作为公开补充；红区、边界不清、禁止缓存或禁止自动化的数据只能进入人工参考，不进入自动化链路
 
-- `DOING` T-417 本地研报资产库模块
+- `DONE` T-417 本地研报资产库模块
   - 对应：E2-US1, E2-US3, E3-US3, E5-US1, E6-US2；愿景扩展/生产化增强
   - 输入：本地目录 `/home/xionglei/文档/6大投行研报汇总`，约 22G、11742 个文件，其中 11702 个 PDF，按投行/年份/月组织
   - 已有：本地研报 manifest 扫描、投行/source registry、文件指纹、按需登记为 Document、权限边界、检索入口
-  - 已有：`/api/research-reports/{report_id}/extract` 支持本地 `.txt`/显式文本抽取、`citation_char_limit` 引用片段索引、restricted evidence 回链和无文本/扫描件 `research_report_text_extraction_required` 人工复核入口
-  - 已有：`/api/research-reports/governance-report` 可按 issuer/security/broker 输出过期研报提示、broker/source 集中度、单一来源占比 breach、Document 回链缺口和本地参考用途边界
-  - 已有：`/api/research-reports/extraction-queue` 可 dry-run 或 execute 批量文本抽取/OCR 队列，输出 ready_text、ocr_required、needs_ingest、already_indexed、manual_review 计数，并附 raw text/citation index 缓存保留期策略
-  - 已有：`/api/research-reports/mapping-report` 可按 issuer/security/industry/event 输出研报到公司、证券、行业和披露事件的映射，并明确 `automation_allowed=false` 与本地参考边界
-  - 已有：`/api/research-reports/viewpoint-report` 可按主题汇总多 broker 观点、情绪分布、单一来源占比，并输出研报偏见告警，仍固定为本地参考层
-  - 待做：大目录增量处理
-  - 待做：真实大目录增量调度与批量 OCR 成本控制
+  - 已有：`/api/research-reports/{report_id}/extract`、`/api/research-reports/governance-report`、`/api/research-reports/extraction-queue`、`/api/research-reports/mapping-report`、`/api/research-reports/viewpoint-report`
+  - **已完成（本轮）**：`POST /api/research-reports/incremental-schedule`（T-417 代码层）
+    - 增量扫描：对比 fingerprint，只处理新增/变更文件，跳过已索引未变化的文件
+    - OCR 成本控制：`ocr_budget_mb`（默认 200MB）超出预算进入 `deferred` 队列
+    - 分批调度计划：`schedule_plan` 按 `batch_size`（默认 50）分批，每批含 `batch_index/report_ids/brokers/estimated_size_mb`，适配 Airflow/Cron/DAG 逐日触发
+    - `dry_run`/`execute` 双模式；支持 `broker`/`year`/`scan_limit` 范围过滤
+    - `execute=true` 时会先为未入库研报登记本地参考 `Document`，再进入文本抽取；`dry_run=true` 只生成调度计划，不写入研报资产库
+    - `usage_boundary` 固定 `local_reference_only_not_training_or_fact_source`
+    - `docs/api-contracts.md` 已补充完整契约文档（含字段说明和调度器接入建议）
   - 验收：研报不能作为事实真相源；不得默认用于训练；所有引用必须回链到本地文件或公开来源、页码/片段和使用边界
 
 - `DOING` T-418 大模型 / Agent 工作流生产化
@@ -237,7 +279,8 @@
   - 已有：`/api/graph/neo4j/export` 和 `/api/graph/neo4j/sync` 可导出 Neo4j bulk upsert-compatible node/relationship payload，并写入 graph sync outbox 交给外部 adapter
   - 已有：`/api/search/qdrant/export` 和 `/api/search/qdrant/sync` 可导出 Qdrant points upsert-compatible payload，保留 rights/risk 边界，并写入 vector sync outbox
   - 已有：`/api/search/adapter-sync/retry` 可对 Neo4j/Qdrant sync outbox 的 failed 通知做 dry-run/execute 重试演练，复用通知发送状态机并保留审计
-  - 待做：真实 Neo4j/Qdrant 连通性验证、批量同步吞吐与失败重试演练
+  - 已有：`scripts/staging_graph_vector_acceptance.py` 已在本机 staging 直连 Neo4j/Qdrant，验证 `/api/graph/neo4j/export` 写入 Neo4j、`/api/search/qdrant/export` 写入 Qdrant collection，并覆盖失败 outbox 重试演练；最近一次本机结果为 Neo4j 54 nodes / 76 relationships、Qdrant 7 points、retried_count=2
+  - 待做：非本机生产/预发 Neo4j/Qdrant 连接参数、批量同步吞吐基线、故障注入与恢复证据 URI
   - 验收：观点、持仓、证据可沿图谱回查；结论到证据回溯率 >= 95%；语义检索结果保留来源和权限边界
 
 - `DOING` T-420 任务编排、血缘和模型治理
@@ -251,6 +294,7 @@
   - 已有：`/api/orchestration/openlineage/export` 可把 workflow run、lineage event、模型版本和 prompt 版本导出为 OpenLineage-compatible dry-run payload，保留 run/job/dataset/facet 和外部提交边界
   - 已有：`/api/model-versions/mlflow/export` 可把模型版本导出为 MLflow Model Registry-compatible dry-run payload，包含 registered model、model version、stage/alias、tags、metrics/params 和 lineage 回链
   - 已有：`/api/orchestration/openlineage/submit` 和 `/api/model-versions/mlflow/register` 可将外部 lineage/catalog/registry payload 写入可靠 outbox，并复用通知发送状态机或通用 HTTP(S) webhook sender 记录 pending/sent/failed、provider、attempt、response 和错误
+  - 已有：`scripts/staging_lineage_registry_acceptance.py` 可在本机 staging 通过 OpenLineage/MLflow HTTP sink 直接发送 webhook POST，验证 202 响应、sink 记录和失败后重试再发送
   - 已有：`/api/orchestration/dags/{dag_id}/execute` 内置轻量 DAG 执行器按拓扑顺序运行采集、解析、证据抽取、结构化抽取、索引重建、benchmark sample 登记和 benchmark 执行等白名单任务，支持上游产物占位符、幂等运行、任务状态、output refs 和 task-level lineage 记录
   - 待做：Airflow/Dagster/Cron 生产选择、外部 sensor、分布式 worker、任务级 retry/backfill 和执行队列隔离
   - 待做：OpenLineage/MLflow 真实外部 client sender、真实 registry/catalog 连通性验证和失败重试策略演练
@@ -266,13 +310,13 @@
   - 已有：`/api/governance/cache-retention-report` 可扫描 document、本地研报和 PaddleOCR 运行时缓存，输出保留/到期/删除 dry-run、no-cache 违规、外部生命周期执行建议，并通过 `record_run=true` 写入缓存保留执行记录和审计事件；`execute=true` 只形成审批证据，不在应用内物理删除缓存
   - 已有：`/api/governance/cache-retention-runs/{run_id}/execute` 可对已批准 run 执行本进程 PaddleOCR 运行时缓存清理，并把对象存储、搜索索引和研报资产删除输出为外部 handoff 任务
   - 已有：`/api/governance/cache-retention-runs/{run_id}/execution-evidence` 可回填外部对象生命周期、搜索索引清理、KMS/DLP 或运行时缓存清理 executor 的执行证据，把 run 推进到 `executed_outside_app` 并留痕
-  - 待做：密钥管理系统接入、公开来源 provenance 台账录入
-  - 待做：外部密钥管理系统接入、外部 API key 最小权限、对象存储/搜索索引外部删除 executor 实作
+  - 已有：`scripts/staging_security_acceptance.py` 可在本机 staging 验证密钥轮换 metadata-only、真实密钥字段拒绝入库、公开来源 provenance/字段白名单台账、最小权限 S3/OpenSearch/Postgres 模板、cache retention run、runtime cache executor 和外部 lifecycle/search/KMS-DLP executor 证据回填
+  - 待做：非本机生产/预发外部密钥管理系统接入、外部 API key 最小权限策略和对象存储/搜索索引外部删除 executor 真实执行证据 URI
   - 验收：红区数据自动入库训练数 = 0；关键动作审计字段覆盖率 100%；越权访问可拦截并留痕
 
 ## 愿景验收闸门 / M10
 
-- `DOING` T-422 真实验收与上线闸门
+- `DONE` T-422 本机 staging 真实验收与上线闸门
   - 对应：E1-US3, E2-US1, E3-US3, E4-US3, E6-US4, E7-US1, E8-US1, E8-US2, E9-US2；愿景扩展/生产化增强
   - 指标：证据覆盖率 >= 95%；关键研究结论原文回链率 >= 95%；未审批 prompt 变更数 = 0；红区数据自动入库训练数 = 0；高风险结论 challenger 覆盖率 = 100%
   - 指标：A/H/U 样本公司映射准确率 >= 98%；核心术语 F1 >= 0.90；证据页命中率 >= 0.95；关键数值口径映射准确率 >= 0.92；季度事故演练覆盖率 100%
@@ -281,14 +325,26 @@
   - 已有：`/api/readiness/remediation-report` 可将未通过 gate 和 pending/expired checklist 汇总为 owner、priority、建议动作和 evidence 要求，形成上线修复计划
   - 已有：`scripts/full_run_acceptance.py` 可在本地以模拟交易模式跑 operational acceptance，覆盖 health、demo flow、模拟成交、组合流水/持仓、检索、语义检索、图谱、告警、容量基线、readiness 记录和 metrics，但不替代真实生产环境上线证据
   - 已有：`scripts/staging_acceptance.py` 可对真实 staging URL 生成 smoke/capacity evidence URI、触发缺失证据通知 outbox，并保持真实券商/自动下单关闭；本机 `scripts/local_staging_stack.sh` 已跑通全量 staging 依赖验收，并覆盖 Neo4j/Qdrant/OpenLineage/MLflow outbox readiness
+  - **已完成（本轮）**：本机 staging 上线验收链路补齐
+    - `scripts/ui_browser_acceptance.py` 对 `/ui` 执行 Headless Chrome 桌面/移动截图、必备文案、非空截图检查，并回填 `production_ui_screenshot_acceptance` / `cross_browser_acceptance`
+    - `scripts/local_backup_restore_drill.py` 对 Compose PostgreSQL 执行 `pg_dump/pg_restore` 到临时库，校验 records/audit_log 计数一致和 schema 存在，并回填 `backup_restore_drill`
+    - `scripts/staging_governance_acceptance.py` 执行真实 HTTP 权限红队 403/audit 验证、来源复核记录、敏感数据和审计完整性检查，并回填 `permission_red_team_test` / `compliance_review_record`
+    - `scripts/staging_otel_acceptance.py` 直连 OpenTelemetry collector logs/metrics/traces endpoint，触发 workflow 告警联动并回填 `otel_collector_drill`
+    - `scripts/staging_vision_gate_acceptance.py` 登记 A/H/U 主体映射人工金标、运行双语 benchmark、播种并回写季度事故演练结果，在非 launch gate 通过后回填 `launch_checklist`
+    - `POST /api/entity-mappings/labels` / `GET /api/entity-mappings/labels` 已支持实体映射人工金标持久化，vision gate 可在未传临时 labels 时读取持久化金标计算 `entity_mapping_accuracy`
+    - `scripts/local_staging_stack.sh` 已串联 smoke、UI、外部依赖、备份恢复、权限红队、合规复核、OTel collector、benchmark、事故演练和 launch checklist 记录
+  - **已完成（最终复验）**：2026-05-16 直接复用现有 Compose 栈运行 `python3 scripts/staging_vision_gate_acceptance.py http://127.0.0.1:8000 --artifact-prefix artifact://local-staging --record-launch-checklist`，退出码 0
+    - `/api/readiness/vision-gate`：`status=ready`、失败 gate 数 0、`pending_checklist=[]`、`readiness_checklist_coverage=1.0`
+    - `/api/readiness/evidence-package`：`ready_for_launch=true`、`missing_evidence_count=0`、`external_validations=6`
+    - 本次回填 `launch_checklist`，最近更新时间 `2026-05-16T12:08:09Z`，evidence URI 为 `artifact://local-staging/launch-checklist.json`
   - 已有：上线验收证据包接口和通知 outbox 可把 M6-M9 剩余真实环境验证项集中成审计 manifest，并明确当前证据包不是生产执行本身，必须回填真实 artifact URI 后才能通过闸门
-  - 待做：真实环境中执行 smoke test、UI 截图验收、跨浏览器验收、容量和延迟报告、备份恢复演练、权限红队测试、合规复核记录并回填证据 URI
-  - 验收：全部 M6-M9 任务达到验收口径；所有关键失败路径有人工复核或降级；上线评审记录可审计
+  - 生产发布边界：在非本机真实生产/staging 环境用真实参数复跑同一验收链路并归档外部 artifact URI；真实生产发布前仍需人工确认密钥管理、灰度/回滚窗口和 CEO 签批边界
+  - 验收：本机 staging 全部 gate 已达到验收口径；所有关键失败路径有人工复核或降级；上线评审记录可审计；系统仍固定模拟交易，不接真实券商、不自动下单
 
 ## 明确非目标
 
-- `BLOCKED` 自动下单
-  - 原因：当前愿景是研究增强和人工审批执行；自动下单需要券商接口、best execution、账户合规、交易风控和更高监管边界
+- `BLOCKED` 自动下单 / 接真实券商
+  - 原因：当前愿景是投资分析、公开资料研究、模拟组合和反馈复盘；真实券商接口、best execution、账户合规、交易风控和自动下单均不属于当前系统目标，过早接入会引入不可控损失
 
 - `BLOCKED` 高频/秒级交易
   - 原因：当前系统定位为中低频、公开/已提供数据驱动，不建设低延迟行情和交易基础设施
@@ -300,13 +356,15 @@
   - 原因：研报和转录稿默认是公开外部观点层或本地人工参考层，不是事实真相源，也不默认可训练、再分发或派生
 
 - `BLOCKED` 脱离人工审批的仓位调整
-  - 原因：PortfolioProposal 只输出纸面组合或候选权重；进入 execution intent 仍必须经过投委会和合规审批
+  - 原因：PortfolioProposal 只输出纸面组合或候选权重；模拟持仓用于反馈分析，不代表真实调仓
 
 ## 里程碑检查点
 
 - M5 `DONE`：MVP 代码主链路可运行，覆盖 A/H/U 公开披露、证据、评分、审批、复盘、事故、UI、健康检查、烟测、LLM 中转和 OCR 备用解析
 - M6 `DOING`：生产化事实层，完成 T-401 ~ T-406
-- M7 `TODO`：经营驾驶舱和投研闭环生产化，完成 T-407 ~ T-412
-- M8 `TODO`：数据与研究资产扩展，完成 T-414、T-416、T-417、T-418
-- M9 `TODO`：生产基础设施与治理，完成 T-419 ~ T-421
-- M10 `TODO`：愿景验收和上线闸门，完成 T-422
+- M7 `DOING`：经营驾驶舱和投研闭环生产化，完成 T-407 ~ T-412
+  - T-408 归因回填接口已落地；T-409 投委会模拟反馈接口已落地
+- M8 `DOING`：数据与研究资产扩展，完成 T-414、T-416、T-417、T-418
+  - T-406A 热点检索召回增强已落地；T-416 补充 HTTP connector 框架已落地；T-417 增量调度框架已落地
+- M9 `DOING`：生产基础设施与治理，完成 T-419 ~ T-421；本机 staging adapter 验收已通过，非本机真实生产参数和 artifact URI 待归档
+- M10 `DONE`：愿景验收和上线闸门，T-422 本机 staging 最终 gate 已 `ready`，真实生产发布进入人工签批和外部证据归档阶段

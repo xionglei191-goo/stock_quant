@@ -33,6 +33,8 @@ from scripts.migrate_sqlite_to_postgres import migrate_sqlite_to_postgres
 from scripts.postgres_schema_migrate import BASELINE_VERSION, apply_postgres_schema, mark_last_migration_rolled_back
 from scripts.security_check import scan_repository
 from scripts.staging_acceptance import run_staging_acceptance
+from scripts.staging_lineage_registry_acceptance import run_staging_lineage_registry_acceptance
+from scripts.staging_security_acceptance import run_staging_security_acceptance
 from scripts.ui_static_check import validate_ui_html
 
 
@@ -579,6 +581,198 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(graph.success, graph.error)
         self.assertEqual(graph.data["portfolio_proposals"][0]["proposal_id"], "pfp_bl")
 
+    def test_hotspot_expansion_maps_industry_chain_and_company_position(self) -> None:
+        theme = self.router.dispatch(
+            "POST",
+            "/api/macro-themes",
+            {
+                "theme_id": "theme_ai_terminal",
+                "name": "AI terminal storage and compute",
+                "trigger_type": "hotspot",
+                "macro_drivers": ["AI endpoint shipment growth"],
+                "source_refs": ["manual://hotspot/ai-terminal"],
+                "confidence": 0.7,
+            },
+            role="analyst",
+        )
+        self.assertTrue(theme.success, theme.error)
+        chain = self.router.dispatch(
+            "POST",
+            "/api/industry-chains",
+            {
+                "chain_id": "chain_electronics",
+                "name": "Electronics component chain",
+                "root_theme_id": "theme_ai_terminal",
+                "nodes": [
+                    {"node_id": "node_memory", "name": "内存条", "level": 1, "category": "memory", "keywords": ["内存", "DRAM"]},
+                    {"node_id": "node_gpu", "name": "GPU", "level": 1, "category": "compute", "keywords": ["GPU", "AI"]},
+                    {"node_id": "node_packaging", "name": "封装", "level": 2, "category": "packaging", "keywords": ["先进封装"]},
+                ],
+                "edges": [
+                    {"source_node_id": "node_memory", "target_node_id": "node_packaging", "relation_type": "SUPPLIED_TO", "strength": "medium"},
+                    {"source_node_id": "node_gpu", "target_node_id": "node_packaging", "relation_type": "PACKAGED_BY", "strength": "high"},
+                ],
+            },
+            role="analyst",
+        )
+        self.assertTrue(chain.success, chain.error)
+        position = self.router.dispatch(
+            "POST",
+            "/api/industry-chains/chain_electronics/companies",
+            {
+                "position_id": "pos_demo_gpu",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "node_ids": ["node_gpu"],
+                "role": "GPU module supplier",
+                "positioning_summary": "Demo Corp is mapped to the GPU node for hotspot diffusion analysis.",
+                "revenue_exposure": {"gpu_related": 0.35},
+                "technology_tags": ["AI accelerator"],
+                "data_quality": "partial",
+            },
+            role="analyst",
+        )
+        self.assertTrue(position.success, position.error)
+        lexicon = self.router.dispatch(
+            "POST",
+            "/api/hotspot-lexicons",
+            {
+                "lexicon_id": "lex_ai_hardware",
+                "name": "AI hardware",
+                "terms": ["GPU", "AI accelerator"],
+                "synonyms": {"GPU": ["graphics processor", "AI chip"]},
+                "related_chain_nodes": [
+                    {"node_id": "node_gpu", "name": "GPU", "level": 1, "category": "compute", "keywords": ["GPU", "AI"]},
+                    {"node_id": "node_hbm", "name": "HBM", "level": 1, "category": "memory", "keywords": ["HBM", "高带宽内存"]},
+                ],
+                "default_data_slots": ["revenue_exposure", "profit_exposure", "capacity"],
+                "source_refs": ["manual://lexicon/ai-hardware"],
+            },
+            role="analyst",
+        )
+        self.assertTrue(lexicon.success, lexicon.error)
+        listed_lexicons = self.router.dispatch("GET", "/api/hotspot-lexicons", {"q": "AI chip"}, role="analyst")
+        self.assertTrue(listed_lexicons.success, listed_lexicons.error)
+        self.assertEqual(listed_lexicons.data["count"], 1)
+        self.service.ingest_document(
+            {
+                "document_id": "doc_gpu_hotspot",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "8-K",
+                "source_uri": "https://example.invalid/gpu-hotspot",
+                "title": "GPU capacity update",
+                "body": "GPU accelerator demand increased and capacity expansion is disclosed in this public filing.",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+
+        expanded = self.router.dispatch(
+            "POST",
+            "/api/hotspots/expand",
+            {"query": "GPU", "seed_chain_id": "chain_electronics", "max_depth": 2},
+            role="analyst",
+        )
+        self.assertTrue(expanded.success, expanded.error)
+        self.assertFalse(expanded.data["automation_allowed"])
+        self.assertEqual(expanded.data["matched_lexicons"][0]["lexicon_id"], "lex_ai_hardware")
+        self.assertEqual(expanded.data["company_positions"][0]["issuer_id"], "issuer_001")
+        self.assertTrue(expanded.data["retrieval_recall"]["public_facts"])
+        self.assertEqual(expanded.data["ranked_candidates"]["ranker"], "local_hotspot_chain_coverage_evidence_score")
+        self.assertEqual(expanded.data["ranked_candidates"]["candidate_count"], 1)
+        self.assertGreater(expanded.data["ranked_candidates"]["candidates"][0]["rank_score"], 0.0)
+        self.assertIn("coverage_score", expanded.data["ranked_candidates"]["candidates"][0]["score_components"])
+        self.assertIn("facts", expanded.data["evidence_layers"])
+        self.assertIn("opinions", expanded.data["evidence_layers"])
+        self.assertIn("inferences", expanded.data["evidence_layers"])
+        self.assertIn("needs_verification", expanded.data["evidence_layers"])
+        self.assertTrue(expanded.data["evidence_layers"]["facts"])
+        self.assertTrue(expanded.data["evidence_layers"]["inferences"])
+        self.assertTrue(expanded.data["research_tasks"])
+        graph = self.router.dispatch("GET", "/api/graph/query", {"chain_id": "chain_electronics"}, role="analyst")
+        self.assertTrue(graph.success, graph.error)
+        self.assertTrue(graph.data["macro_themes"])
+        self.assertTrue(graph.data["chain_nodes"])
+        self.assertIn("POSITION_IN_CHAIN_NODE", {edge["type"] for edge in graph.data["edges"]})
+        listed_themes = self.router.dispatch("GET", "/api/macro-themes", {"q": "terminal"}, role="analyst")
+        self.assertTrue(listed_themes.success, listed_themes.error)
+        self.assertEqual(listed_themes.data["count"], 1)
+        listed_chains = self.router.dispatch("GET", "/api/industry-chains", {"root_theme_id": "theme_ai_terminal"}, role="analyst")
+        self.assertTrue(listed_chains.success, listed_chains.error)
+        self.assertEqual(listed_chains.data["count"], 1)
+        listed_positions = self.router.dispatch("GET", "/api/company-positions", {"chain_id": "chain_electronics"}, role="analyst")
+        self.assertTrue(listed_positions.success, listed_positions.error)
+        self.assertEqual(listed_positions.data["count"], 1)
+        schema = self.router.dispatch("GET", "/api/company-positions/schema", {}, role="analyst")
+        self.assertTrue(schema.success, schema.error)
+        self.assertEqual(schema.data["schema_id"], "company-position-v1")
+        self.assertIn("revenue_exposure", schema.data["required_data_slots"])
+        self.assertIn("verified", schema.data["data_quality_values"])
+        coverage = self.router.dispatch(
+            "GET",
+            "/api/company-positions/coverage-report",
+            {"chain_id": "chain_electronics"},
+            role="analyst",
+        )
+        self.assertTrue(coverage.success, coverage.error)
+        self.assertEqual(coverage.data["count"], 1)
+        self.assertLess(coverage.data["coverage"]["slot_coverage"], 1.0)
+        self.assertEqual(coverage.data["coverage"]["evidence_coverage"], 0.0)
+        self.assertTrue(coverage.data["issues"])
+        self.assertTrue(coverage.data["research_tasks"])
+        queued = self.router.dispatch(
+            "POST",
+            "/api/research/tasks/from-hotspot",
+            {"query": "GPU", "seed_chain_id": "chain_electronics", "max_depth": 2},
+            role="analyst",
+        )
+        self.assertTrue(queued.success, queued.error)
+        self.assertEqual(queued.data["created_count"], len(expanded.data["research_tasks"]))
+        self.assertEqual(queued.data["usage_boundary"], "research_task_queue_for_public_analysis_and_simulated_feedback_only")
+        open_tasks = self.router.dispatch("GET", "/api/research/tasks", {"chain_id": "chain_electronics", "status": "open"}, role="analyst")
+        self.assertTrue(open_tasks.success, open_tasks.error)
+        self.assertEqual(open_tasks.data["count"], queued.data["created_count"])
+        backfill_tasks = [task for task in open_tasks.data["tasks"] if task["task_type"] == "company_position_backfill"]
+        self.assertTrue(backfill_tasks)
+        self.assertEqual(backfill_tasks[0]["position_id"], "pos_demo_gpu")
+        task_graph = self.router.dispatch("GET", "/api/graph/query", {"chain_id": "chain_electronics"}, role="analyst")
+        self.assertTrue(task_graph.success, task_graph.error)
+        self.assertEqual(len(task_graph.data["research_tasks"]), open_tasks.data["count"])
+        self.assertIn("CHAIN_HAS_RESEARCH_TASK", {edge["type"] for edge in task_graph.data["edges"]})
+        self.assertIn("TASK_FOR_COMPANY_POSITION", {edge["type"] for edge in task_graph.data["edges"]})
+        repeat_queue = self.router.dispatch(
+            "POST",
+            "/api/research/tasks/from-hotspot",
+            {"query": "GPU", "seed_chain_id": "chain_electronics", "max_depth": 2},
+            role="analyst",
+        )
+        self.assertTrue(repeat_queue.success, repeat_queue.error)
+        self.assertEqual(repeat_queue.data["created_count"], 0)
+        self.assertEqual(repeat_queue.data["existing_count"], open_tasks.data["count"])
+        updated_task = self.router.dispatch(
+            "POST",
+            f"/api/research/tasks/{backfill_tasks[0]['task_id']}/status",
+            {"status": "in_progress", "assignee": "analyst_001"},
+            role="analyst",
+        )
+        self.assertTrue(updated_task.success, updated_task.error)
+        self.assertEqual(updated_task.data["status"], "in_progress")
+        self.assertEqual(updated_task.data["assignee"], "analyst_001")
+        task_search = self.router.dispatch("GET", "/api/search", {"q": "missing evidence GPU", "issuer_id": "issuer_001"}, role="analyst")
+        self.assertTrue(task_search.success, task_search.error)
+        self.assertTrue(any(item["resource_type"] == "research_task" for item in task_search.data["results"]))
+
     def test_portfolio_optimizer_requires_benchmark_passed_evidence_when_configured(self) -> None:
         document = self.service.ingest_document(
             {
@@ -948,6 +1142,69 @@ class SystemServiceTests(unittest.TestCase):
             review = self.service.store.manual_reviews[pdf_row["manual_review_id"]]
             self.assertEqual(review.issue_type, "research_report_text_extraction_required")
 
+    def test_research_report_incremental_schedule_dry_run_budget_and_execute(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            report_dir = Path(temp_dir) / "Morgan" / "2026" / "05"
+            report_dir.mkdir(parents=True)
+            small_path = report_dir / "A small text report.txt"
+            small_path.write_text("Revenue catalyst and margin expansion view. " * 12, encoding="utf-8")
+            large_path = report_dir / "B deferred large report.txt"
+            large_path.write_text("large local reference report\n" * 200, encoding="utf-8")
+
+            dry_run = self.router.dispatch(
+                "POST",
+                "/api/research-reports/incremental-schedule",
+                {
+                    "root_path": temp_dir,
+                    "extensions": [".txt"],
+                    "batch_size": 1,
+                    "ocr_budget_mb": 0.001,
+                    "dry_run": True,
+                },
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(dry_run.success, dry_run.error)
+            self.assertTrue(dry_run.data["dry_run"])
+            self.assertFalse(dry_run.data["execute"])
+            self.assertEqual(dry_run.data["new_count"], 2)
+            self.assertEqual(dry_run.data["deferred_count"], 1)
+            self.assertEqual(dry_run.data["batch_count"], 1)
+            self.assertEqual(dry_run.data["schedule_plan"][0]["batch_size"], 1)
+            self.assertEqual(dry_run.data["usage_boundary"], "local_reference_only_not_training_or_fact_source")
+            self.assertFalse(self.service.store.research_reports)
+            deferred = [item for item in dry_run.data["candidates"] if item["batch"] == "deferred"]
+            self.assertEqual(deferred[0]["status"], "ocr_budget_exceeded")
+            self.assertEqual(deferred[0]["file_name"], large_path.name)
+
+            executed = self.router.dispatch(
+                "POST",
+                "/api/research-reports/incremental-schedule",
+                {
+                    "root_path": temp_dir,
+                    "extensions": [".txt"],
+                    "batch_size": 1,
+                    "ocr_budget_mb": 0.001,
+                    "dry_run": False,
+                    "execute": True,
+                    "citation_char_limit": 180,
+                },
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(executed.success, executed.error)
+            self.assertFalse(executed.data["dry_run"])
+            self.assertTrue(executed.data["execute"])
+            self.assertEqual(executed.data["deferred_count"], 1)
+            self.assertEqual(len(executed.data["executed_results"]), 1)
+            self.assertEqual(executed.data["executed_results"][0]["status"], "text_indexed")
+            self.assertEqual(len(self.service.store.research_reports), 1)
+            report = next(iter(self.service.store.research_reports.values()))
+            self.assertEqual(report.file_name, small_path.name)
+            self.assertEqual(report.status, "text_indexed")
+            self.assertFalse(report.rights_tag.training_allowed)
+            self.assertEqual(report.rights_tag.display_use, "restricted")
+
     def test_research_report_governance_report_flags_stale_and_single_source_bias(self) -> None:
         with TemporaryDirectory() as temp_dir:
             files = [
@@ -1236,6 +1493,102 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("estimated_cost", cached.data)
         self.assertEqual(len(sent), sent_count)
 
+    def test_extract_evidence_preserves_ocr_bbox_assets_and_table_cells(self) -> None:
+        sent = []
+        jsonl = json.dumps(
+            {
+                "result": {
+                    "layoutParsingResults": [
+                        {
+                            "markdown": {
+                                "text": "Revenue table\nRevenue 100\nOperating cash flow 20",
+                                "images": {"fig_1": "s3://ocr-assets/fig_1.png"},
+                            },
+                            "outputImages": {"table_1": "s3://ocr-assets/table_1.png"},
+                            "layoutDetections": [
+                                {
+                                    "type": "table",
+                                    "text": "Revenue table Revenue 100 Operating cash flow 20",
+                                    "bbox": [10, 20, 210, 120],
+                                    "confidence": 0.93,
+                                }
+                            ],
+                            "tables": [
+                                {
+                                    "bbox": [10, 20, 210, 120],
+                                    "cells": [
+                                        {"row": 1, "col": 1, "text": "Metric", "bbox": [10, 20, 80, 45]},
+                                        {"row": 1, "col": 2, "text": "Value", "bbox": [80, 20, 210, 45]},
+                                        {"row": 2, "col": 1, "text": "Revenue", "bbox": [10, 45, 80, 80]},
+                                        {"row": 2, "col": 2, "text": "100", "bbox": [80, 45, 210, 80]},
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        ).encode("utf-8")
+
+        def fake_send(request, timeout):
+            sent.append({"url": request.full_url, "method": request.get_method(), "timeout": timeout})
+            if request.full_url.endswith("/api/v2/ocr/jobs") and request.get_method() == "POST":
+                return b'{"data":{"jobId":"job_ocr_layout"}}'
+            if request.full_url.endswith("/api/v2/ocr/jobs/job_ocr_layout"):
+                return b'{"data":{"state":"done","resultUrl":{"jsonUrl":"https://result.example/layout.jsonl"}}}'
+            if request.full_url == "https://result.example/layout.jsonl":
+                return jsonl
+            return b"{}"
+
+        self.service.document_parser = PaddleOCRParser(token="ocr-test-token", poll_interval=0, max_polls=2, http_send=fake_send)
+        stored = self.service.object_store.put_bytes("src_sec", "doc_ocr_layout", b"%PDF-1.4\n%%EOF", suffix=".pdf")
+        self.addCleanup(lambda: Path(stored.uri).unlink(missing_ok=True))
+        self.service.ingest_document(
+            {
+                "document_id": "doc_ocr_layout",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "10-K",
+                "source_uri": "https://example.invalid/doc-ocr-layout.pdf",
+                "object_uri": stored.uri,
+                "content_sha256": stored.sha256,
+                "body": "",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+
+        evidences = self.service.extract_evidence("doc_ocr_layout", actor="analyst", parser_version="pdf-rule-1")
+        self.assertEqual(len(evidences), 1)
+        evidence = evidences[0]
+        self.assertEqual(evidence.locator["scheme"], "ocr_bbox_span_v1")
+        self.assertEqual(evidence.locator["bbox"], {"x": 10.0, "y": 20.0, "width": 200.0, "height": 100.0})
+        self.assertIn("bbox=10,20,200,100", evidence.bbox)
+        self.assertEqual(len(evidence.assets), 2)
+        self.assertEqual(evidence.locator["tables"][0]["cells"][0]["bbox"]["width"], 70.0)
+
+        report = self.router.dispatch("GET", "/api/evidence/quality-report", {"issuer_id": "issuer_001"}, role="risk_compliance")
+        self.assertTrue(report.success, report.error)
+        self.assertEqual(report.data["structured_locator_coverage"], 1.0)
+        self.assertEqual(report.data["bbox_coverage"], 1.0)
+        self.assertEqual(report.data["table_cell_count"], 4)
+        self.assertEqual(report.data["table_cell_bbox_coverage"], 1.0)
+        self.assertEqual(report.data["asset_reference_count"], 2)
+
+        tables = self.service._extract_tables(evidence.canonical_text, evidence=evidence)
+        self.assertEqual(tables[0]["cells"][0]["locator"]["scheme"], "ocr_table_cell_v1")
+        self.assertIn("row=1;col=1;bbox=10,20,70,25", tables[0]["cells"][0]["bbox"])
+
     def test_extract_evidence_routes_empty_or_scanned_document_to_manual_review(self) -> None:
         self.service.ingest_document(
             {
@@ -1277,6 +1630,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(report.success)
         self.assertEqual(report.data["open_manual_reviews"], 1)
         self.assertEqual(report.data["issue_counts"]["empty_or_scanned_document"], 1)
+        self.assertIn("doc_scanned", report.data["missing_document_ids"])
         self.assertGreater(report.data["parse_failure_rate"], 0)
 
     def test_alert_rules_evaluate_metrics_and_resolve(self) -> None:
@@ -4073,6 +4427,47 @@ class SystemServiceTests(unittest.TestCase):
             self.assertEqual(duplicate.data["created_count"], 0)
             self.assertEqual(duplicate.data["skipped_count"], 2)
 
+    def test_tdx_market_data_adapter_detects_real_schema_aliases(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "market_data_alias.duckdb"
+            connection = sqlite3.connect(db_path)
+            connection.execute(
+                """
+                CREATE TABLE ashare_daily (
+                    ts_code TEXT,
+                    date INTEGER,
+                    open_price REAL,
+                    high_price REAL,
+                    low_price REAL,
+                    close_price REAL,
+                    vol REAL,
+                    amt REAL,
+                    turnover_rate REAL
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO ashare_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("SH600000", 20260514, 10.0, 10.8, 9.9, 10.5, 1200.0, 12600.0, 1.2),
+            )
+            connection.commit()
+            connection.close()
+
+            adapter = TDXMarketDataAdapter(path=db_path, connect=lambda path, _read_only: sqlite3.connect(path))
+            rows = adapter.query_daily(symbols=["600000.SH"], start_date="2026-05-14", end_date="2026-05-14", limit=10)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["symbol"], "600000")
+            self.assertEqual(rows[0]["trade_date"], "2026-05-14")
+            self.assertEqual(rows[0]["close"], 10.5)
+            self.assertEqual(rows[0]["volume"], 1200.0)
+            self.assertEqual(rows[0]["amount"], 12600.0)
+            self.assertEqual(rows[0]["turnover"], 1.2)
+            summary = adapter.summary()
+            self.assertEqual(summary["rows"], 1)
+            self.assertEqual(summary["schema"]["raw_table"], "ashare_daily")
+            self.assertEqual(summary["schema"]["raw_symbol"], '"ts_code"')
+            self.assertEqual(adapter.symbols(prefix="sh600", limit=5), ["600000"])
+
     def test_tdx_vipdoc_preview_and_import_fallback(self) -> None:
         with TemporaryDirectory() as temp_dir:
             vipdoc_root = Path(temp_dir) / "vipdoc"
@@ -4488,6 +4883,26 @@ class SystemServiceTests(unittest.TestCase):
         self.assertGreaterEqual(report.data["average_confidence"], 0.7)
         self.assertEqual(report.data["low_confidence_count"], 1)
         self.assertEqual(report.data["low_confidence_mappings"][0]["mapping_id"], "map_u")
+
+        labels = self.router.dispatch(
+            "POST",
+            "/api/entity-mappings/labels",
+            {
+                "batch_id": "label_batch",
+                "items": [
+                    {"label_id": "emlbl_map_a", "mapping_id": "map_a", "issuer_id": "issuer_001", "ticker": "600000", "market": "A"},
+                    {"label_id": "emlbl_map_u", "mapping_id": "map_u", "issuer_id": "issuer_001", "ticker": "DEMO", "market": "U"},
+                ],
+            },
+            role="platform",
+        )
+        self.assertTrue(labels.success, labels.error)
+        self.assertEqual(labels.data["created_count"], 2)
+        listed_labels = self.router.dispatch("GET", "/api/entity-mappings/labels", {"issuer_id": "issuer_001"}, role="platform")
+        self.assertEqual(listed_labels.data["total"], 2)
+        persisted_report = self.router.dispatch("GET", "/api/entity-mappings/quality-report", {"issuer_id": "issuer_001"}, role="platform")
+        self.assertEqual(persisted_report.data["checked_labels"], 2)
+        self.assertEqual(persisted_report.data["accuracy"], 1.0)
 
     def test_compliance_gate_blocks_private_or_non_display_decision_pack(self) -> None:
         self.service.ingest_document(
@@ -5801,6 +6216,10 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(response.data["decision_id"], "dec_demo")
         self.assertEqual(response.data["intent_id"], "intent_demo")
         self.assertEqual(response.data["replay_id"], "replay_demo")
+        self.assertEqual(response.data["theme_id"], "theme_demo_ai_supply_chain")
+        self.assertEqual(response.data["chain_id"], "chain_demo_electronics")
+        self.assertEqual(response.data["position_id"], "pos_demo_gpu")
+        self.assertEqual(response.data["lexicon_id"], "lex_demo_ai_hardware")
         self.assertTrue(response.data["report_id"].startswith("opr_"))
         self.assertEqual(response.data["dashboard"]["counts"]["documents"], 1)
         self.assertEqual(response.data["dashboard"]["counts"]["execution_intents"], 1)
@@ -5817,6 +6236,12 @@ class SystemServiceTests(unittest.TestCase):
         replay = self.router.dispatch("GET", "/api/strategy-replays/replay_demo", {}, role="CIO")
         self.assertTrue(replay.success)
         self.assertEqual(replay.data["decision_id"], "dec_demo")
+        chain_graph = self.router.dispatch("GET", "/api/graph/query", {"chain_id": "chain_demo_electronics"}, role="CIO")
+        self.assertTrue(chain_graph.success)
+        self.assertTrue(chain_graph.data["company_positions"])
+        demo_lexicons = self.router.dispatch("GET", "/api/hotspot-lexicons", {"q": "AI chip"}, role="CIO")
+        self.assertTrue(demo_lexicons.success)
+        self.assertEqual(demo_lexicons.data["lexicons"][0]["lexicon_id"], "lex_demo_ai_hardware")
         search = self.router.dispatch("GET", "/api/search", {"q": "services resilience", "issuer_id": "issuer_demo"}, role="CEO")
         self.assertTrue(search.success)
         self.assertGreaterEqual(len(search.data["results"]), 1)
@@ -5981,6 +6406,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("readiness_checklist_coverage", gate_names)
         self.assertIn("real_data_smoke_test", gate.data["pending_checklist"])
         self.assertIn("production_ui_screenshot_acceptance", gate.data["pending_checklist"])
+        self.assertIn("otel_collector_drill", gate.data["pending_checklist"])
         self.assertEqual(gate.data["counts"]["readiness_checks"], 0)
         remediation = self.router.dispatch("GET", "/api/readiness/remediation-report", {}, role="risk_compliance")
         self.assertTrue(remediation.success, remediation.error)
@@ -6031,15 +6457,16 @@ class SystemServiceTests(unittest.TestCase):
 
         checklist = self.router.dispatch("GET", "/api/readiness/checklist", {}, role="risk_compliance")
         self.assertTrue(checklist.success)
-        self.assertEqual(checklist.data["required"], 8)
+        self.assertEqual(checklist.data["required"], 9)
         self.assertEqual(checklist.data["passed"], 2)
-        self.assertEqual(checklist.data["coverage"], 0.25)
+        self.assertEqual(checklist.data["coverage"], 0.2222)
 
         updated_gate = self.router.dispatch("GET", "/api/readiness/vision-gate", {}, role="CEO")
         self.assertTrue(updated_gate.success)
         self.assertNotIn("production_ui_screenshot_acceptance", updated_gate.data["pending_checklist"])
         self.assertNotIn("capacity_latency_report", updated_gate.data["pending_checklist"])
         self.assertIn("real_data_smoke_test", updated_gate.data["pending_checklist"])
+        self.assertIn("otel_collector_drill", updated_gate.data["pending_checklist"])
         self.assertEqual(updated_gate.data["counts"]["readiness_checks"], 2)
 
     def test_readiness_evidence_package_tracks_external_validation_and_outbox(self) -> None:
@@ -6058,6 +6485,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertGreaterEqual(package.data["required_evidence_count"], 8)
         required_ids = {item["check_id"] for item in package.data["required_evidence"]}
         self.assertIn("real_data_smoke_test", required_ids)
+        self.assertIn("otel_collector_drill", required_ids)
         self.assertIn("permission_red_team_test", required_ids)
         adapter_scopes = {item["scope"] for item in package.data["external_validations"]}
         self.assertIn("lineage_model_registry", adapter_scopes)
@@ -6741,6 +7169,7 @@ class SystemServiceTests(unittest.TestCase):
             "scripts/smoke_test.py",
             "scripts/staging_acceptance.py",
             "scripts/local_staging_stack.sh",
+            "scripts/staging_security_acceptance.py",
             "scripts/capacity_baseline.py",
             "scripts/ui_static_check.py",
         ]:
@@ -6827,10 +7256,94 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(checks["qdrant_sync_outbox"]["passed"])
         self.assertTrue(checks["otel_submit_outbox"]["passed"])
         self.assertTrue(checks["lineage_model_registry_outbox"]["passed"])
-        self.assertGreaterEqual(len(result["readiness_records"]), 2)
-        self.assertIn("real_data_smoke_test", {item["check_id"] for item in result["readiness_records"] if "check_id" in item})
+        self.assertTrue(checks["ui_browser_acceptance"]["passed"])
+        self.assertEqual(checks["ui_browser_acceptance"]["evidence"]["status"], "passed")
+        self.assertTrue(all(item["nonblank"] for item in checks["ui_browser_acceptance"]["evidence"]["screenshots"]))
+        self.assertGreaterEqual(len(result["readiness_records"]), 4)
+        readiness_ids = {item["check_id"] for item in result["readiness_records"] if "check_id" in item}
+        self.assertIn("real_data_smoke_test", readiness_ids)
+        self.assertIn("production_ui_screenshot_acceptance", readiness_ids)
+        self.assertIn("cross_browser_acceptance", readiness_ids)
         self.assertIsNotNone(result["notifications"])
         self.assertEqual(result["production_boundary"], "does_not_enable_live_broker_or_automatic_order_execution")
+
+    def test_staging_lineage_registry_acceptance_posts_to_local_sinks(self) -> None:
+        import app.server as server_module
+
+        server_module.ROUTER = ApiRouter(SystemService())
+        app_server = ThreadingHTTPServer(("127.0.0.1", 0), server_module.Handler)
+        app_thread = threading.Thread(target=app_server.serve_forever, daemon=True)
+        app_thread.start()
+
+        class _SinkServer(ThreadingHTTPServer):
+            pass
+
+        from scripts.local_http_sink import make_handler, SinkStore
+        openlineage_store = SinkStore(name="openlineage")
+        mlflow_store = SinkStore(name="mlflow")
+        openlineage_server = _SinkServer(("127.0.0.1", 0), make_handler(openlineage_store))
+        mlflow_server = _SinkServer(("127.0.0.1", 0), make_handler(mlflow_store))
+        openlineage_thread = threading.Thread(target=openlineage_server.serve_forever, daemon=True)
+        mlflow_thread = threading.Thread(target=mlflow_server.serve_forever, daemon=True)
+        openlineage_thread.start()
+        mlflow_thread.start()
+        try:
+            result = run_staging_lineage_registry_acceptance(
+                base_url=f"http://127.0.0.1:{app_server.server_port}",
+                openlineage_target=f"http://127.0.0.1:{openlineage_server.server_port}/openlineage",
+                mlflow_target=f"http://127.0.0.1:{mlflow_server.server_port}/mlflow",
+                artifact_prefix="artifact://staging-test",
+                timeout=5,
+            )
+        finally:
+            openlineage_server.shutdown()
+            mlflow_server.shutdown()
+            app_server.shutdown()
+            openlineage_server.server_close()
+            mlflow_server.server_close()
+            app_server.server_close()
+            openlineage_thread.join(timeout=5)
+            mlflow_thread.join(timeout=5)
+            app_thread.join(timeout=5)
+        self.assertEqual(result["status"], "passed")
+        checks = {item["check"]: item for item in result["checks"]}
+        self.assertTrue(checks["lineage_model_seed"]["passed"])
+        self.assertTrue(checks["openlineage_failed_delivery_recorded"]["passed"])
+        self.assertTrue(checks["openlineage_webhook_sender"]["passed"])
+        self.assertTrue(checks["mlflow_failed_delivery_recorded"]["passed"])
+        self.assertTrue(checks["mlflow_webhook_sender"]["passed"])
+        self.assertGreaterEqual(len(openlineage_store.records), 1)
+        self.assertGreaterEqual(len(mlflow_store.records), 1)
+        self.assertEqual(openlineage_store.records[0]["service"], "openlineage")
+        self.assertEqual(mlflow_store.records[0]["service"], "mlflow")
+
+    def test_staging_security_acceptance_records_kms_and_lifecycle_evidence(self) -> None:
+        import app.server as server_module
+
+        server_module.ROUTER = ApiRouter(SystemService())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), server_module.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            result = run_staging_security_acceptance(
+                base_url=f"http://127.0.0.1:{server.server_port}",
+                artifact_prefix="artifact://staging-test",
+                secret_manager_provider="local-development-metadata-only",
+                timeout=5,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(result["status"], "passed")
+        checks = {item["check"]: item for item in result["checks"]}
+        self.assertTrue(checks["secret_rotation_metadata_only"]["passed"])
+        self.assertTrue(checks["source_provenance_ledger"]["passed"])
+        self.assertTrue(checks["least_privilege_storage_policy"]["passed"])
+        self.assertTrue(checks["cache_retention_external_delete_evidence"]["passed"])
+        self.assertEqual(checks["cache_retention_external_delete_evidence"]["evidence"]["evidence"]["status"], "executed_outside_app")
+        self.assertTrue(checks["audit_completeness"]["passed"])
+        self.assertTrue(checks["data_security_no_findings"]["passed"])
 
     def test_feast_kafka_decision_memo_documents_triggers_and_costs(self) -> None:
         memo = Path("docs/feast-kafka-decision-memo.md").read_text(encoding="utf-8")
@@ -6853,9 +7366,271 @@ class SystemServiceTests(unittest.TestCase):
             "Investment Adviser",
             "Broker Interfaces",
             "Derivatives And Cross-Border",
-            "research, evidence, paper portfolio, and human committee workflow only",
+            "research, evidence, simulated portfolio, and human review workflow only",
         ]:
             self.assertIn(fragment, memo)
+
+    # ------------------------------------------------------------------
+    # T-403: TDX symbol/market/date schema enhancement tests
+    # ------------------------------------------------------------------
+
+    def test_tdx_symbol_schema_normalization(self) -> None:
+        """T-403: _normalize_tdx_symbol handles all real-world A-share symbol formats."""
+        svc = SystemService()
+
+        cases = [
+            # (raw_input, expected_normalized)
+            ("600000", "600000"),
+            ("sh600000", "600000"),
+            ("SH600000", "600000"),
+            ("600000.SH", "600000"),
+            ("600000.SS", "600000"),      # Reuters/Refinitiv
+            ("600000.XSHG", "600000"),    # ISO MIC
+            ("000001", "000001"),
+            ("sz000001", "000001"),
+            ("000001.SZ", "000001"),
+            ("000001.SZE", "000001"),
+            ("000001.XSHE", "000001"),
+            ("430047.BJ", "430047"),
+            ("bj430047", "430047"),
+            # ISIN-style
+            ("CN0000000001", "000001"),
+            ("CN0006000007", "000007"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                normalized = svc._normalize_tdx_symbol(raw)
+                self.assertEqual(normalized, expected, f"normalize_tdx_symbol({raw!r}) expected {expected!r}, got {normalized!r}")
+
+    def test_tdx_market_from_symbol_inference(self) -> None:
+        """T-403: _tdx_market_from_symbol correctly infers 'A' market for A-share formats."""
+        svc = SystemService()
+        a_share_cases = [
+            "sh600000", "sz000001", "bj430047",
+            "600000.SH", "000001.SZ", "430047.BJ",
+            "600000.SS", "600000.XSHG", "000001.XSHE",
+            "600000",  # bare 6-digit
+        ]
+        for sym in a_share_cases:
+            with self.subTest(sym=sym):
+                self.assertEqual(svc._tdx_market_from_symbol(sym), "A")
+
+        # Non-A-share patterns should return empty string
+        non_a = ["AAPL", "0700.HK", "US12345678", ""]
+        for sym in non_a:
+            with self.subTest(sym=sym):
+                market = svc._tdx_market_from_symbol(sym)
+                self.assertNotEqual(market, "A", f"Expected non-A for {sym!r}, got {market!r}")
+
+    def test_resolve_tdx_security_supports_multiple_schemas(self) -> None:
+        """T-403: _resolve_tdx_security resolves security via ticker, ISIN, and explicit map."""
+        svc = SystemService()
+        svc.seed_default_sources()
+        # Register an issuer and security
+        issuer = svc.register_issuer({"issuer_id": "test_issuer_tdx", "legal_name": "TDX Test Co", "country": "CN"})
+        security = svc.register_security({
+            "issuer_id": issuer.issuer_id,
+            "security_id": "000001",
+            "ticker": "000001",
+            "isin": "CNE000000001",
+            "market": "A",
+            "currency": "CNY",
+            "security_type": "equity",
+        })
+        # Resolve via bare ticker
+        resolved = svc._resolve_tdx_security("000001", {})
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.security_id, "000001")
+        # Resolve via sz-prefixed format
+        resolved2 = svc._resolve_tdx_security("sz000001", {})
+        self.assertIsNotNone(resolved2)
+        self.assertEqual(resolved2.security_id, "000001")
+        # Resolve via explicit security_map
+        resolved3 = svc._resolve_tdx_security("sh000001", {"sh000001": "000001"})
+        self.assertIsNotNone(resolved3)
+        self.assertEqual(resolved3.security_id, "000001")
+        # Unknown symbol returns None
+        resolved4 = svc._resolve_tdx_security("999999", {})
+        self.assertIsNone(resolved4)
+
+    # ------------------------------------------------------------------
+    # T-416: A-share supplemental connector registry tests
+    # ------------------------------------------------------------------
+
+    def test_astock_supplemental_connector_registry_and_fetch(self) -> None:
+        """T-416: AStockSupplementalRegistry lists connectors and service dispatches correctly."""
+        from app.connectors import AStockSupplementalRegistry
+        registry = AStockSupplementalRegistry()
+
+        # All three priority connectors must be present
+        connector_ids = registry.list_ids()
+        for expected_id in ["eastmoney_research", "cninfo_announcements", "tencent_valuation_snapshot"]:
+            self.assertIn(expected_id, connector_ids)
+
+        # Each connector exposes source_id and source_type
+        for cid in connector_ids:
+            connector = registry.get(cid)
+            self.assertIsNotNone(connector)
+            self.assertTrue(hasattr(connector, "source_id"))
+            self.assertEqual(connector.source_type, "third_party_connector")
+
+        # Service method validates missing connector_id
+        svc = SystemService()
+        from app.errors import ValidationError
+        with self.assertRaises(ValidationError):
+            svc.fetch_astock_supplemental_samples({})
+
+        # Service method raises NotFoundError for unknown connector
+        from app.errors import NotFoundError
+        with self.assertRaises(NotFoundError):
+            svc.fetch_astock_supplemental_samples({"connector_id": "unknown_connector_xyz"})
+
+        # Tencent connector: empty symbols list returns empty (no HTTP call)
+        tencent = registry.get("tencent_valuation_snapshot")
+        results = tencent.fetch_samples(user_agent="test/1.0", limit=5, symbols=[])
+        self.assertEqual(results, [])
+
+    def test_astock_supplemental_connector_documents_are_manual_reference(self) -> None:
+        """T-416: All supplemental connector documents carry automation_allowed=False and source_boundary."""
+        from app.connectors import EastMoneyResearchConnector
+        connector = EastMoneyResearchConnector()
+        # Simulate normalize with a fake raw row
+        doc = connector.normalize({
+            "infoCode": "test001",
+            "title": "测试研报",
+            "publishDate": "2025-01-01",
+            "orgName": "某券商",
+            "stockCode": "600000",
+        })
+        self.assertEqual(doc.document_type, "research")
+        self.assertEqual(doc.source_id, "eastmoney_research")
+        self.assertFalse(doc.metadata["automation_allowed"])
+        self.assertIn("manual_reference", doc.metadata["source_boundary"])
+        self.assertEqual(doc.metadata["allowed_use"], ["manual_reference", "supplemental_research"])
+
+    # ------------------------------------------------------------------
+    # T-408: Portfolio attribution backfill tests
+    # ------------------------------------------------------------------
+
+    def test_portfolio_attribution_backfill_dry_run(self) -> None:
+        """T-408: portfolio_attribution_backfill dry_run returns attribution without mutating reports."""
+        svc = SystemService()
+        svc.seed_default_sources()
+        issuer = svc.register_issuer({"issuer_id": "issuer_attr_1", "legal_name": "Attr Co 1", "country": "CN"})
+        sec1 = svc.register_security({
+            "issuer_id": issuer.issuer_id, "security_id": "sec_attr_1",
+            "ticker": "ATTR1", "market": "A", "currency": "CNY", "security_type": "equity",
+        })
+        sec2 = svc.register_security({
+            "issuer_id": issuer.issuer_id, "security_id": "sec_attr_2",
+            "ticker": "ATTR2", "market": "A", "currency": "CNY", "security_type": "equity",
+        })
+        # Register market data points
+        for security_id, close_val in [("sec_attr_1", 10.0), ("sec_attr_2", 20.0)]:
+            svc.register_market_data_point({
+                "security_id": security_id,
+                "source_id": "public_eod_market_data",
+                "as_of_date": "2025-01-02",
+                "market": "A",
+                "data_type": "eod",
+                "currency": "CNY",
+                "open": close_val, "high": close_val * 1.01,
+                "low": close_val * 0.99, "close": close_val,
+                "adjusted_close": close_val, "volume": 100000.0,
+            })
+            svc.register_market_data_point({
+                "security_id": security_id,
+                "source_id": "public_eod_market_data",
+                "as_of_date": "2025-01-03",
+                "market": "A",
+                "data_type": "eod",
+                "currency": "CNY",
+                "open": close_val * 1.02, "high": close_val * 1.03,
+                "low": close_val * 1.01, "close": close_val * 1.02,
+                "adjusted_close": close_val * 1.02, "volume": 100000.0,
+            })
+        holdings = [
+            {"security_id": "sec_attr_1", "weight": 0.6},
+            {"security_id": "sec_attr_2", "weight": 0.4},
+        ]
+        result = svc.portfolio_attribution_backfill({
+            "holdings": holdings,
+            "start_date": "2025-01-01",
+            "end_date": "2025-01-31",
+            "dry_run": True,
+        })
+        # dry_run should compute attribution but not annotate any reports
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["annotated_count"], 0)
+        self.assertTrue(result["simulation_only"])
+        self.assertFalse(result["live_execution_allowed"])
+        self.assertIn("attribution", result)
+
+    # ------------------------------------------------------------------
+    # T-409: Portfolio simulated feedback / investment committee tests
+    # ------------------------------------------------------------------
+
+    def test_portfolio_simulated_feedback_committee_decision(self) -> None:
+        """T-409: portfolio_simulated_feedback records committee decision and stays simulation-only."""
+        svc = SystemService()
+        svc.seed_default_sources()
+        issuer = svc.register_issuer({"issuer_id": "issuer_ic_1", "legal_name": "IC Test Co", "country": "CN"})
+        sec = svc.register_security({
+            "issuer_id": issuer.issuer_id, "security_id": "sec_ic_1",
+            "ticker": "IC1", "market": "A", "currency": "CNY", "security_type": "equity",
+        })
+        svc.register_market_data_point({
+            "security_id": "sec_ic_1",
+            "source_id": "public_eod_market_data",
+            "as_of_date": "2025-06-01",
+            "market": "A", "data_type": "eod", "currency": "CNY",
+            "open": 15.0, "high": 15.5, "low": 14.8, "close": 15.2,
+            "adjusted_close": 15.2, "volume": 200000.0,
+        })
+        # Create a portfolio proposal
+        proposal = svc.run_portfolio_optimizer({
+            "securities": [{"security_id": "sec_ic_1", "market_weight": 1.0, "volatility": 0.2}],
+            "views": [{"security_id": "sec_ic_1", "expected_return": 0.12, "confidence": 0.8, "evidence_ids": []}],
+            "risk_budget": {"max_position": 1.0},
+        })
+        # Investment committee review
+        feedback = svc.portfolio_simulated_feedback({
+            "proposal_id": proposal.proposal_id,
+            "decision": "approved",
+            "rationale": "Strong evidence, fits risk budget.",
+            "committee_member": "cio",
+            "include_valuation": False,
+        })
+        self.assertEqual(feedback["decision"], "approved")
+        self.assertEqual(feedback["proposal_status"], "paper")
+        self.assertTrue(feedback["simulation_only"])
+        self.assertFalse(feedback["live_execution_allowed"])
+        self.assertFalse(feedback["automation_allowed"])
+        self.assertIn("paper_portfolio_simulation", feedback["usage_boundary"])
+
+        # Reject scenario
+        proposal2 = svc.run_portfolio_optimizer({
+            "securities": [{"security_id": "sec_ic_1", "market_weight": 1.0, "volatility": 0.3}],
+            "views": [{"security_id": "sec_ic_1", "expected_return": 0.05, "confidence": 0.5, "evidence_ids": []}],
+        })
+        feedback2 = svc.portfolio_simulated_feedback({
+            "proposal_id": proposal2.proposal_id,
+            "decision": "rejected",
+            "rationale": "Insufficient evidence.",
+            "committee_member": "risk_officer",
+        })
+        self.assertEqual(feedback2["decision"], "rejected")
+        self.assertEqual(feedback2["proposal_status"], "rejected")
+
+        # Validation: missing proposal_id raises
+        from app.errors import ValidationError
+        with self.assertRaises(ValidationError):
+            svc.portfolio_simulated_feedback({})
+
+        # Validation: unknown proposal raises
+        from app.errors import NotFoundError
+        with self.assertRaises(NotFoundError):
+            svc.portfolio_simulated_feedback({"proposal_id": "nonexistent_proposal_xxx"})
 
 
 if __name__ == "__main__":

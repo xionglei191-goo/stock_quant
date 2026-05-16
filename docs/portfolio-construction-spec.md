@@ -2,7 +2,7 @@
 
 ## Scope
 
-The portfolio engine produces paper-only candidate weights for research and committee review. It does not create `ExecutionIntent` records and it must remain downstream of evidence-backed research views and upstream of human approval.
+The portfolio engine produces paper-only candidate weights for research, simulation, and feedback analysis. It does not connect to brokers, route orders, or imply live execution. `ExecutionIntent` records, where used, are paper/simulation objects for building a simulated ledger and measuring whether research views work after publication.
 
 ## Inputs
 
@@ -18,7 +18,7 @@ The portfolio engine produces paper-only candidate weights for research and comm
 | `constraints.industry_budget` | Maximum industry exposure |
 | `constraints.theme_budget` | Maximum theme exposure |
 | `constraints.currency_budget` | Maximum currency exposure |
-| `constraints.current_weights` | Current paper or live weights used for turnover diagnostics |
+| `constraints.current_weights` | Current paper/simulated weights used for turnover diagnostics |
 | `risk_budget` | Market/industry budget aliases used by risk review |
 | `stress_scenarios[]` | Named per-security return shocks |
 | `return_history` | Per-security period return series for walk-forward diagnostics |
@@ -43,4 +43,4 @@ Each `PortfolioProposal` stores prior returns, posterior returns, candidate weig
 
 ## Governance
 
-The proposal status defaults to `candidate`, and `constraints.paper_only` is forced to `true`. Moving from a proposal to any execution workflow still requires a separate DecisionPack and approval-signature path.
+The proposal status defaults to `candidate`, and `constraints.paper_only` is forced to `true`. Moving from a proposal to feedback analysis should create only simulated holdings or simulated transactions. Live broker connectivity, automatic order routing, and unmanaged position changes are out of scope.

@@ -382,6 +382,8 @@ class Evidence:
     span_text: str
     canonical_text: str
     confidence: float
+    locator: dict[str, Any] = field(default_factory=dict)
+    assets: list[dict[str, Any]] = field(default_factory=list)
     created_at: Any = field(default_factory=utcnow)
 
 
@@ -556,6 +558,92 @@ class PortfolioTransaction:
 
     def __post_init__(self) -> None:
         _validate_choice(self.side, {"buy", "sell"}, "side")
+
+
+@dataclass(slots=True)
+class MacroTheme:
+    theme_id: str
+    name: str
+    description: str = ""
+    trigger_type: str = "manual"
+    as_of_date: str = ""
+    source_refs: list[str] = field(default_factory=list)
+    macro_drivers: list[str] = field(default_factory=list)
+    risk_factors: list[str] = field(default_factory=list)
+    confidence: float = 0.5
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class IndustryChain:
+    chain_id: str
+    name: str
+    root_theme_id: str = ""
+    nodes: list[dict[str, Any]] = field(default_factory=list)
+    edges: list[dict[str, Any]] = field(default_factory=list)
+    taxonomy_version: str = "industry-chain-v1"
+    source_refs: list[str] = field(default_factory=list)
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class CompanyPosition:
+    position_id: str
+    issuer_id: str
+    security_id: str = ""
+    chain_id: str = ""
+    node_ids: list[str] = field(default_factory=list)
+    role: str = ""
+    positioning_summary: str = ""
+    revenue_exposure: dict[str, Any] = field(default_factory=dict)
+    profit_exposure: dict[str, Any] = field(default_factory=dict)
+    capacity: dict[str, Any] = field(default_factory=dict)
+    customers: list[str] = field(default_factory=list)
+    suppliers: list[str] = field(default_factory=list)
+    competitors: list[str] = field(default_factory=list)
+    technology_tags: list[str] = field(default_factory=list)
+    valuation_metrics: dict[str, Any] = field(default_factory=dict)
+    event_refs: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    data_quality: str = "needs_review"
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class HotspotLexicon:
+    lexicon_id: str
+    name: str
+    terms: list[str] = field(default_factory=list)
+    synonyms: dict[str, list[str]] = field(default_factory=dict)
+    related_chain_nodes: list[dict[str, Any]] = field(default_factory=list)
+    default_data_slots: list[str] = field(default_factory=lambda: ["revenue_exposure", "profit_exposure", "capacity", "customers", "suppliers", "valuation_metrics"])
+    source_refs: list[str] = field(default_factory=list)
+    taxonomy_version: str = "hotspot-lexicon-v1"
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class ResearchTask:
+    task_id: str
+    task_type: str
+    source: str = "manual"
+    issuer_id: str = ""
+    security_id: str = ""
+    chain_id: str = ""
+    node_ids: list[str] = field(default_factory=list)
+    position_id: str = ""
+    required_slots: list[str] = field(default_factory=list)
+    reason: str = ""
+    status: str = "open"
+    priority: int = 50
+    assignee: str = ""
+    evidence_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"open", "in_progress", "done", "dismissed"}, "status")
 
 
 @dataclass(slots=True)
@@ -1097,6 +1185,19 @@ class EntityMapping:
     confidence: float = 0.0
     source: str = "entity_mapping_registry"
     version: str = "v1"
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class EntityMappingLabel:
+    label_id: str
+    mapping_id: str
+    issuer_id: str
+    ticker: str
+    market: str
+    reviewer: str = ""
+    source: str = "manual_gold_label"
+    notes: str = ""
     created_at: Any = field(default_factory=utcnow)
 
 

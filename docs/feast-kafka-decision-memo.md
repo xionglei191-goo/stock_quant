@@ -2,14 +2,14 @@
 
 ## Decision
 
-Do not introduce Feast or Kafka in the current productionization phase. The system is still centered on batch-oriented A/H/U public filings, public or locally provided EOD/delayed market data, evidence extraction, research review, and human committee approval. SQLite/PostgreSQL records, object storage, OpenSearch-compatible retrieval, ingestion schedules, audit logs, and alert rules are sufficient for the present workload.
+Do not introduce Feast or Kafka in the current productionization phase. The system is still centered on batch-oriented A/H/U public filings, public or locally provided EOD/delayed market data, evidence extraction, research review, simulated portfolio feedback, and human approval. SQLite/PostgreSQL records, object storage, OpenSearch-compatible retrieval, ingestion schedules, audit logs, and alert rules are sufficient for the present workload.
 
 ## Why Not Now
 
 | Area | Current State | Decision |
 |---|---|---|
 | Feature reuse | Most features are document/evidence/research artifacts, not shared low-latency model features | Keep features in records and benchmark outputs |
-| Online serving | No approved automated trading path; execution intent remains human-gated | No online feature store yet |
+| Online serving | No approved automated trading path; execution intent remains paper/simulation-only and human-gated | No online feature store yet |
 | Event rate | Filings, 13F, schedules, reports, and alerts are low-frequency | Batch jobs and retryable schedules are enough |
 | Operational load | Small team, few production services, clear audit requirements | Avoid extra brokers, registries, and replay infrastructure |
 | Failure mode | Main risks are rights misuse, extraction errors, stale evidence, and review gaps | Invest in permissions, benchmarks, alerts, and runbooks first |

@@ -9,7 +9,10 @@
 - 所有接口返回统一 `success/error` 结构
 - 所有写操作必须支持幂等键
 - 所有关键接口必须记录审计日志
-- 所有可执行动作必须有审批状态
+- 系统定位为投资分析、证据研究、模拟组合和复盘反馈；不连接真实券商，不做自动下单
+- 系统必须支持宏观视野和产业链发散分析：从热点、主题、技术、产品或政策出发，沿上游材料、设备、制造、封装、零部件、模组、品牌、渠道和下游应用扩展，并把每家公司放到明确产业链位置
+- 所有“执行意图”均为纸面/模拟语义，只用于把研究决策转成模拟持仓和反馈分析输入
+- 所有可执行动作必须有审批状态；当前可执行动作只允许模拟成交、通知 outbox、缓存治理 handoff 等非交易动作
 - HTTP 调用可用 `X-Actor` 和 `X-Role` 请求头传入操作者与角色；`X-Role` 推荐使用 ASCII 别名：`ceo`、`cio`、`pm`、`risk_compliance`、`platform`、`analyst`、`data_engineer`、`nlp_ml`、`overseas_research`
 - GET 接口支持 query string 参数，例如 `/api/graph/query?issuer_id=issuer_001`
 
@@ -30,7 +33,7 @@
 
 #### `POST /api/demo/full-flow`
 
-生成一套可展示的端到端 demo 数据，覆盖 source、issuer、security、document、evidence、thesis、signal、decision、execution intent、review、exception、playbook 和 dashboard。
+生成一套可展示的端到端 demo 数据，覆盖 source、issuer、security、document、evidence、thesis、signal、decision、纸面执行意图、模拟持仓反馈、review、exception、playbook 和 dashboard。该 demo 不代表真实交易链路。
 
 请求字段：
 
@@ -331,7 +334,7 @@
 
 #### `GET /api/readiness/vision-gate`
 
-返回项目愿景上线闸门报告，按证据覆盖率、研究结论原文回链率、pending prompt、红区训练记录、高风险 challenger 覆盖率、source governance 覆盖率、审计完整性、图谱回溯率、实体映射准确率、benchmark 指标、季度事故演练覆盖率和 readiness checklist 覆盖率计算 `ready` / `not_ready`，并列出仍需人工验收的真实数据 smoke、UI、容量、备份恢复、权限红队、合规复核和上线 checklist 清单。
+返回项目愿景上线闸门报告，按证据覆盖率、研究结论原文回链率、pending prompt、红区训练记录、高风险 challenger 覆盖率、source governance 覆盖率、审计完整性、图谱回溯率、实体映射准确率、benchmark 指标、季度事故演练覆盖率和 readiness checklist 覆盖率计算 `ready` / `not_ready`，并列出仍需人工验收的真实数据 smoke、UI、容量、备份恢复、OpenTelemetry collector、权限红队、合规复核和上线 checklist 清单。
 
 #### `GET /api/readiness/checklist`
 
@@ -339,7 +342,7 @@
 
 #### `POST /api/readiness/checklist/{check_id}`
 
-写入或更新真实上线验收记录，并进入审计日志。支持的 `check_id` 包括 `real_data_smoke_test`、`production_ui_screenshot_acceptance`、`cross_browser_acceptance`、`capacity_latency_report`、`backup_restore_drill`、`permission_red_team_test`、`compliance_review_record` 和 `launch_checklist`。
+写入或更新真实上线验收记录，并进入审计日志。支持的 `check_id` 包括 `real_data_smoke_test`、`production_ui_screenshot_acceptance`、`cross_browser_acceptance`、`capacity_latency_report`、`backup_restore_drill`、`otel_collector_drill`、`permission_red_team_test`、`compliance_review_record` 和 `launch_checklist`。
 
 请求字段：
 
@@ -552,6 +555,26 @@
 
 按 `provider`、`status`、`requires_key`、`limit` 查询 A 股补充接口注册表。
 
+#### `POST /api/connectors/astock/supplemental/fetch`
+
+（T-416）从已注册的 A 股补充 HTTP connector（东财研报、巨潮公告、腾讯估值等）拉取公开接口样本数据。所有结果固定为 `manual_reference_or_supplemental_research_only`，不进入事实真相层或自动化链路。`blocked` connector 或红区来源会被合规闸门拦截。空 `symbols` 列表时接口返回空数组（无 HTTP 调用）。
+
+请求字段：
+
+- `connector_id`：必填；已注册 connector ID（`eastmoney_research`、`cninfo_announcements`、`tencent_valuation_snapshot` 等）
+- `symbols`：可选；标的代码列表，支持 `sh600000`、`000001.SZ`、`600000.SS` 等多种格式
+- `limit`：可选；最大返回条数，默认 10
+- `user_agent`：可选；HTTP 请求 User-Agent
+
+返回字段：
+
+- `connector_id`
+- `connector_type`
+- `source_id`
+- `documents`：归一化文档列表，每条含 `document_type`、`source_id`、`metadata.automation_allowed=false`、`metadata.source_boundary`
+- `sample_count`
+- `usage_boundary`：固定 `manual_reference_or_supplemental_research_only`
+
 #### `POST /api/document-parsing/paddleocr`
 
 调用配置的 PaddleOCR-VL 文档解析备用接口。请求必须配置 `AI_QUANT_PADDLEOCR_TOKEN`；服务端只记录 provider、job id、模型、缓存命中、耗时和估算成本审计，不记录 token。结果按文档/URL、content hash/source URI、模型和 optional payload 缓存在运行时内存中，可用 `use_cache=false` 强制重跑。
@@ -642,7 +665,7 @@
 
 #### `POST /api/market-data/tdx/preview`
 
-从本地通达信 DuckDB 日线库或 `vipdoc/*.day` 本地文件只读预览行情，不写入状态库。DuckDB 默认路径由 `AI_QUANT_TDX_DUCKDB_PATH` 指定；`vipdoc` 默认路径由 `AI_QUANT_TDX_VIPDOC_PATH` 指定。
+从本地通达信 DuckDB 日线库或 `vipdoc/*.day` 本地文件只读预览行情，不写入状态库。DuckDB 默认路径由 `AI_QUANT_TDX_DUCKDB_PATH` 指定；`vipdoc` 默认路径由 `AI_QUANT_TDX_VIPDOC_PATH` 指定。DuckDB adapter 会自动探测表名和字段别名，支持 `daily_kline` 以外的日线表，以及 `symbol/code/ticker/ts_code/security_code/stock_code`、`trade_date/date/datetime/time`、`open/open_price`、`close/close_price`、`high/high_price`、`low/low_price`、`volume/vol`、`amount/amt`、`turnover/turnover_rate` 等常见 schema；日期可从 `YYYYMMDD` 或 `YYYY-MM-DD` 规范化为 `YYYY-MM-DD`，symbol 会兼容 `sh600000`、`600000.SH`、`600000.XSHG` 等格式。
 
 请求字段：
 
@@ -655,7 +678,7 @@
 
 #### `POST /api/market-data/tdx/import`
 
-从本地通达信 DuckDB 日线库或 `vipdoc/*.day` 文件读取行情，并写入公开/已提供 EOD/延时行情层。导入时会复用 `/api/market-data/points` 的 source rights、security、market 和 data_type 校验。
+从本地通达信 DuckDB 日线库或 `vipdoc/*.day` 文件读取行情，并写入公开/已提供 EOD/延时行情层。导入时会复用 `/api/market-data/points` 的 source rights、security、market 和 data_type 校验；DuckDB 字段别名、日期和 symbol 格式兼容口径同 preview。
 
 请求字段：
 
@@ -726,9 +749,17 @@
 
 批量写入 A/H/U 主体映射，逐条返回创建结果和错误。
 
+#### `POST /api/entity-mappings/labels`
+
+批量写入主体映射人工金标，用于上线闸门的 `entity_mapping_accuracy`。每条标签包含 `mapping_id`、期望 `issuer_id`、`ticker`、`market`、`reviewer`、`source` 和 `notes`；逐条返回创建结果和错误，并进入审计日志。
+
+#### `GET /api/entity-mappings/labels`
+
+按 `issuer_id`、`mapping_id`、`limit` 查询已登记人工金标。
+
 #### `GET /api/entity-mappings/quality-report`
 
-根据人工标签样本计算主体映射覆盖率、市场分布、准确率、不匹配样例、平均消歧置信度和低置信映射清单。支持 `issuer_id`、`labels`、`low_confidence_threshold`、`limit`。
+根据人工标签样本计算主体映射覆盖率、市场分布、准确率、不匹配样例、平均消歧置信度和低置信映射清单。支持 `issuer_id`、`labels`、`low_confidence_threshold`、`limit`；未传 `labels` 时使用已通过 `/api/entity-mappings/labels` 登记的持久化金标。
 
 #### `GET /api/market-data`
 
@@ -951,7 +982,7 @@
 
 #### `POST /api/evidence/extract`
 
-从文档生成证据切片。若当前规则/PDF 文本流解析器无法得到文本，且 `AI_QUANT_PADDLEOCR_TOKEN` 已配置，会先调用 PaddleOCR-VL 备用解析并把 markdown 结果切成 evidence；备用解析未配置、失败或仍无文本时，会创建 `ManualReviewItem` 并返回 `422`。
+从文档生成证据切片。若当前规则/PDF 文本流解析器无法得到文本，且 `AI_QUANT_PADDLEOCR_TOKEN` 已配置，会先调用 PaddleOCR-VL 备用解析并把 markdown 结果切成 evidence；备用解析未配置、失败或仍无文本时，会创建 `ManualReviewItem` 并返回 `422`。返回的 evidence 继续保留旧版 `bbox="page=...;chunk=..."` 字符串，同时新增 `locator` 结构：规则文本为 `page_chunk_v1`，OCR 版面结果为 `ocr_bbox_span_v1`，包含 page/chunk、span hash、真实 bbox、表格 cell bbox、图片/表格资产引用和 `legacy_bbox`。
 
 请求字段：
 
@@ -972,7 +1003,7 @@
 
 #### `GET /api/evidence/quality-report`
 
-返回 evidence 定位覆盖率、平均置信度、人工复核数量和解析失败率。
+返回 evidence 定位覆盖率、平均置信度、人工复核数量和解析失败率。报告同时输出 `structured_locator_coverage`、`bbox_coverage`、`table_cell_count`、`table_cell_bbox_coverage` 和 `asset_reference_count`，用于区分普通 page/chunk locator 与 OCR 真实 bbox/table cell 定位。
 
 请求字段：
 
@@ -1068,7 +1099,34 @@
 
 同 `GET /api/research-reports/extraction-queue`；当 `execute=true` 时会批量调用单份抽取逻辑。可抽取文本会生成 citation evidence；无文本 PDF/扫描件会批量创建 `research_report_text_extraction_required` 人工复核项。
 
-#### `POST /api/research-reports/{report_id}/ingest`
+#### `POST /api/research-reports/incremental-schedule`
+
+（T-417）为本地研报资产库大目录生成增量 OCR/抽取调度计划，解决 22G/11742 文件的批量 OCR 成本控制问题。接口比较文件 fingerprint，只处理新增或变更文件；固定为 `local_reference_only` 边界，不可进入训练层或事实真相层。`dry_run=true` 只生成计划，不会落库；`execute=true` 会在首批执行前为未入库的研报登记本地参考 `Document`，再执行文本抽取和 citation 索引。
+
+请求字段：
+
+- `root_path`：必填；本地研报根目录，或由 `AI_QUANT_RESEARCH_REPORT_ROOT` 配置
+- `dry_run`：默认 `true`；为 `true` 时只输出 `schedule_plan`，不执行任何提取
+- `execute`：默认 `false`；`dry_run=true` 时强制为 `false`；为 `true` 时执行首批（`batch_size` 内）
+- `batch_size`：每批最大文件数，默认 50，最大 500
+- `ocr_budget_mb`：单次调度 OCR 文件体积上限（MB），默认 200；超出预算的文件进入 `deferred` 队列
+- `scan_limit`：最大扫描文件数，默认 5000，最大 20000
+- `broker`：可选；只处理指定 broker 下的研报
+- `year`：可选；只处理指定年份
+- `extensions`：文件扩展名过滤，默认 `[".pdf"]`
+- `citation_char_limit`：引用片段长度上限，默认 1200
+
+返回字段：
+
+- `dry_run`、`execute`
+- `total_scanned`、`new_count`、`changed_count`、`skipped_count`
+- `ocr_budget_mb`、`ocr_budget_used_mb`、`deferred_count`
+- `batch_count`、`schedule_plan`：每批含 `batch_index`、`report_ids`、`brokers`、`estimated_size_mb`、`trigger_suggestion`
+- `candidates`：所有候选文件明细
+- `executed_results`：`execute=true` 时首批执行结果
+- `usage_boundary`：固定 `local_reference_only_not_training_or_fact_source`
+- `airflow_dagster_trigger_suggestion`：外部调度器接入建议
+
 
 将单份研报按需登记为 `Document`，保留本地 `object_uri` 和 restricted rights tag，供 OCR、证据抽取和人工引用使用。
 
@@ -1189,7 +1247,7 @@
 
 #### `POST /api/execution-intents`
 
-从已审批的投委会决策生成执行意图。未审批决策必须返回 `423`。
+从已审批的投委会决策生成纸面执行意图，用于模拟持仓和后续反馈分析。未审批决策必须返回 `423`。该接口不创建真实订单，不连接券商，也不代表自动调仓。
 
 请求字段：
 
@@ -1201,11 +1259,11 @@
 
 #### `GET /api/execution-intents/{intent_id}`
 
-返回执行意图。
+返回纸面执行意图。
 
 #### `POST /api/execution-intents/{intent_id}/simulate`
 
-对已审批决策生成的执行意图做模拟成交，并同步写入 `PortfolioTransaction` ledger。接口只接受 `mode=simulated`，拒绝 live/broker 模式；无 `fill_price` 时可使用 intent 标的在 `trade_date` 前最近公开 EOD 收盘价。返回 `SimulatedExecution`、对应交易流水、更新后的 intent，以及 `live_execution_allowed=false`。
+对已审批纸面执行意图做模拟成交，并同步写入 `PortfolioTransaction` ledger，作为模拟持仓、月报绩效、归因和复盘反馈的输入。接口只接受 `mode=simulated`，拒绝 live/broker 模式；无 `fill_price` 时可使用 intent 标的在 `trade_date` 前最近公开 EOD 收盘价。返回 `SimulatedExecution`、对应模拟交易流水、更新后的 intent，以及 `live_execution_allowed=false`。
 
 请求字段：
 
@@ -1270,7 +1328,7 @@
 
 #### `POST /api/operating-reports/{report_id}/board-pack`
 
-导出已发布月报的 Board pack 制品，支持 `format=markdown` 或 `format=pdf`，写入对象存储并返回 `object_uri`、`sha256`、`size_bytes`、`content_type` 和源 markdown 内容。PDF 由 markdown 源内容生成，适合作为可哈希、可归档的董事会包附件。默认要求 `status=published`；如确需草稿预览，可显式传 `allow_draft=true`。导出动作会写入审计日志，不会生成 execution intent 或绕过投委会审批。
+导出已发布月报的 Board pack 制品，支持 `format=markdown` 或 `format=pdf`，写入对象存储并返回 `object_uri`、`sha256`、`size_bytes`、`content_type` 和源 markdown 内容。PDF 由 markdown 源内容生成，适合作为可哈希、可归档的董事会包附件。默认要求 `status=published`；如确需草稿预览，可显式传 `allow_draft=true`。导出动作会写入审计日志，不会生成纸面执行意图、模拟交易流水或绕过投委会审批。
 
 请求字段：
 
@@ -1318,7 +1376,7 @@
 
 #### `POST /api/portfolio/optimize`
 
-生成纸面组合候选方案。当前实现为可解释的 Black-Litterman 原型：由市场权重和波动率得到均衡先验，由 research view 的 `confidence` 绑定 `Omega`，再应用禁投清单、单证券上限、市场预算、行业预算，输出候选权重、风险贡献、换手、约束影子价格、压力测试、walk-forward 诊断，以及基于 `return_history` 的样本协方差、相关矩阵和对角 shrinkage 协方差。该接口不会创建 execution intent。
+生成纸面组合候选方案。当前实现为可解释的 Black-Litterman 原型：由市场权重和波动率得到均衡先验，由 research view 的 `confidence` 绑定 `Omega`，再应用禁投清单、单证券上限、市场预算、行业预算，输出候选权重、风险贡献、换手、约束影子价格、压力测试、walk-forward 诊断，以及基于 `return_history` 的样本协方差、相关矩阵和对角 shrinkage 协方差。该接口不会创建纸面执行意图，也不会产生真实交易指令；建议作为投资分析和模拟组合构建入口。
 
 请求字段：
 
@@ -1373,7 +1431,7 @@
 
 #### `POST /api/portfolio/transactions`
 
-登记人工录入、模拟或回测交易流水，作为持仓、月报绩效和归因的输入层。当前仅支持 long-only buy/sell，写入时校验证券、日期、数量、价格、费用和来源边界；模拟执行推荐通过 `/api/execution-intents/{intent_id}/simulate` 写入，避免绕过审批链。
+登记人工录入、模拟或回测交易流水，作为模拟持仓、月报绩效和归因的输入层。当前仅支持 long-only buy/sell，写入时校验证券、日期、数量、价格、费用和来源边界；模拟执行推荐通过 `/api/execution-intents/{intent_id}/simulate` 写入，避免绕过研究决策和审批链。该 ledger 不代表真实券商成交。
 
 请求字段：
 
@@ -1404,9 +1462,237 @@
 
 返回纸面组合候选方案。
 
+#### `POST /api/portfolio/attribution/backfill`
+
+（T-408）对纸面/模拟组合执行绩效归因回填，将 market/currency/industry/style 分组收益归因写入对应 OperatingReport.annotations。接口固定为 `simulation_only=true`，不接真实交易账户。`dry_run=true` 时只计算归因，不写入任何报告。
+
+请求字段：
+
+- `holdings`：持仓列表，每条含 `security_id`、`weight`；或通过 `proposal_id` 引用已有 PortfolioProposal
+- `proposal_id`：可选；优先于 `holdings`
+- `start_date`：归因起始日期
+- `end_date`：归因结束日期
+- `report_ids`：可选；要回填的 OperatingReport ID 列表
+- `dry_run`：默认 `false`；为 `true` 时只计算，不写入
+
+返回字段：
+
+- `dry_run`
+- `annotated_count`：dry_run=true 时为 0
+- `simulation_only`：固定 `true`
+- `live_execution_allowed`：固定 `false`
+- `attribution`：按 market/currency/industry/style 分组归因结果
+
+#### `POST /api/portfolio/simulated-feedback`
+
+（T-409）投委会审批入口，对 PortfolioProposal 做模拟审批决策（approved/rejected/pending/needs_revision），并可触发模拟持仓估值和区间收益归因反馈。所有操作固定在纸面组合范围内；不连接真实券商，不自动下单。
+
+请求字段：
+
+- `proposal_id`：必填；目标 PortfolioProposal ID
+- `decision`：`approved`、`rejected`、`pending`、`needs_revision` 之一
+- `rationale`：投委会审批理由
+- `committee_member`：审批人/角色（`cio`、`risk_officer`、`ceo` 等）
+- `include_valuation`：可选；为 `true` 时触发模拟持仓估值
+- `feedback_start_date`：可选；归因反馈起始日期
+- `feedback_end_date`：可选；归因反馈结束日期
+
+返回字段：
+
+- `decision`
+- `proposal_id`
+- `proposal_status`：`paper`（approved）、`rejected`、`pending`、`needs_revision`
+- `simulation_only`：固定 `true`
+- `live_execution_allowed`：固定 `false`
+- `automation_allowed`：固定 `false`
+- `usage_boundary`：固定 `paper_portfolio_simulation`
+- `valuation`：可选；触发估值时返回持仓市值、权重和缺失价格
+- `attribution`：可选；触发归因时返回区间收益归因
+
+#### `POST /api/macro-themes`
+
+登记宏观主题、政策、技术周期或市场热点，用作产业链扩散分析入口。主题可以来自公开新闻、公告、研报观点、社媒热词、资金流或人工输入，但必须保留来源边界和采集时间。该接口不产生交易信号。
+
+请求字段：
+
+- `theme_id`
+- `name`
+- `description`
+- `trigger_type`
+- `as_of_date`
+- `source_refs`
+- `macro_drivers`
+- `risk_factors`
+- `confidence`
+
+#### `GET /api/macro-themes`
+
+按 `trigger_type`、关键词 `q` 查询宏观主题列表，返回 `count` 和 `themes`。
+
+#### `POST /api/industry-chains`
+
+登记产业链模板或专题链路。每个链路由一组层级节点和关系边组成，支持从“U 盘、硬盘、内存条、CPU、GPU、蓝牙、射频、WiFi、电源、IGBT、封装、设备、材料、电子化学、代工、硅晶、金属新材料、非金属材料”等节点横向扩展，也支持按上游/中游/下游、价值量、供需瓶颈、国产替代、周期位置和技术路线组织。
+
+请求字段：
+
+- `chain_id`
+- `name`
+- `root_theme_id`
+- `nodes`
+- `edges`
+- `taxonomy_version`
+- `source_refs`
+
+节点字段建议：
+
+- `node_id`
+- `name`
+- `level`
+- `category`
+- `parent_id`
+- `keywords`
+- `supply_demand_factors`
+- `data_slots`
+
+边字段建议：
+
+- `source_node_id`
+- `target_node_id`
+- `relation_type`
+- `direction`
+- `strength`
+- `evidence_ids`
+
+#### `GET /api/industry-chains`
+
+按 `root_theme_id`、关键词 `q` 查询产业链模板列表，返回 `count` 和 `chains`。
+
+#### `POST /api/industry-chains/{chain_id}/companies`
+
+把公司映射到产业链节点，形成“公司定位卡”。同一家公司可落在多个节点，但必须说明主营角色、收入/利润/产能/客户/供应商/技术壁垒/风险暴露的证据来源。公司定位只用于投研分析和模拟组合候选池，不自动生成交易动作。
+
+请求字段：
+
+- `issuer_id`
+- `security_id`
+- `node_ids`
+- `role`
+- `positioning_summary`
+- `revenue_exposure`
+- `profit_exposure`
+- `capacity`
+- `customers`
+- `suppliers`
+- `competitors`
+- `technology_tags`
+- `valuation_metrics`
+- `event_refs`
+- `evidence_ids`
+- `data_quality`
+
+#### `GET /api/company-positions`
+
+按 `chain_id`、`issuer_id`、`security_id`、`node_id`、`role` 查询公司定位卡，返回 `count` 和 `positions`。
+
+#### `GET /api/company-positions/schema`
+
+返回公司定位卡字段字典和必填数据槽位，包含 `schema_id`、`required_data_slots`、`data_quality_values`、`fields` 和 `usage_boundary`。该 schema 用于统一前端录入、批量导入、覆盖度报告和后续自动回填。
+
+#### `GET|POST /api/company-positions/coverage-report`
+
+输出公司定位卡覆盖度和缺口报告。接口按 `required_data_slots` 检查每个定位卡的字段完备性和 evidence 回链，返回 `coverage.slot_coverage`、`coverage.evidence_coverage`、`issues`、`research_tasks`，并按 `chain`、`node` 聚合覆盖率，用于补齐研究任务队列。
+
+#### `POST /api/hotspot-lexicons`
+
+登记热点扩散词表，用于把同义词、相关产业链节点和默认数据槽位配置化。词表只驱动研究召回和图谱扩展，不代表事实结论或交易信号。
+
+请求字段：
+
+- `lexicon_id`
+- `name`
+- `terms`
+- `synonyms`
+- `related_chain_nodes`
+- `default_data_slots`
+- `source_refs`
+- `taxonomy_version`
+
+#### `GET /api/hotspot-lexicons`
+
+按关键词 `q` 查询热点扩散词表，返回 `count` 和 `lexicons`。
+
+#### `POST /api/hotspots/expand`
+
+从热点词、主题、技术名、产品名或公司名发散生成产业链研究地图。输出应包含扩散路径、相关公司、关键数据槽位、缺失证据、潜在反证、事实/观点/推断分层和后续研究任务；不得输出自动下单建议。
+
+请求字段：
+
+- `query`
+- `as_of_date`
+- `markets`
+- `max_depth`
+- `include_restricted`
+- `seed_theme_id`
+- `seed_chain_id`
+- `required_data_slots`
+
+返回字段：
+
+- `theme`
+- `matched_lexicons`
+- `chain_nodes`
+- `chain_edges`
+- `company_positions`
+- `data_coverage`
+- `retrieval_recall`
+- `ranked_candidates`
+- `missing_evidence`
+- `counter_theses`
+- `research_tasks`
+- `evidence_layers`
+- `automation_allowed=false`
+
+`retrieval_recall` 分为 `public_facts`、`research_opinions`、`market_signals`，用于把公告/证据、研报观点和公开行情线索分开召回。`ranked_candidates` 使用本地可解释排序，综合词表命中、公司定位字段覆盖、evidence 回链、公开资料召回和数据质量，输出 `rank_score`、`score_components`、`matched_terms` 和后续 LLM rerank 触发建议。`evidence_layers` 分为 `facts`、`opinions`、`inferences`、`needs_verification`。只有具备 evidence 回链的公司定位或公开资料召回才进入 facts；主题描述和来源观点进入 opinions；词表扩展、链路邻接、缺字段或缺证据的公司定位进入 inferences 或 needs_verification。
+
+#### `POST /api/research/tasks/from-hotspot`
+
+把热点扩散结果中的 `research_tasks` 固化为研究任务队列。重复提交同一热点/产业链/公司定位缺口时不会创建重复任务，而是刷新既有任务的缺失字段和更新时间。该接口只用于公开资料分析、产业链补全和模拟持仓反馈，不触发真实交易。
+
+请求字段同 `POST /api/hotspots/expand`。返回 `created_count`、`existing_count`、`created_tasks`、`existing_tasks`、`source_research_task_count` 和 `usage_boundary`。
+
+#### `POST /api/research/tasks`
+
+手工创建研究任务，用于补齐公司定位卡、产业链节点公司映射、证据回链、财务/产能/客户字段等。
+
+请求字段：
+
+- `task_id`
+- `task_type`
+- `source`
+- `issuer_id`
+- `security_id`
+- `chain_id`
+- `node_ids`
+- `position_id`
+- `required_slots`
+- `reason`
+- `status=open|in_progress|done|dismissed`
+- `priority`
+- `assignee`
+- `evidence_ids`
+- `metadata`
+
+#### `GET /api/research/tasks`
+
+按 `status`、`task_type`、`issuer_id`、`security_id`、`chain_id`、`node_id`、`position_id`、`source` 查询任务队列，返回 `count` 和 `tasks`。
+
+#### `POST /api/research/tasks/{task_id}/status`
+
+更新研究任务状态、负责人、优先级、证据回链和补充元数据。允许状态为 `open`、`in_progress`、`done`、`dismissed`。
+
 #### `GET /api/graph/query`
 
-按主体、证据、观点、持仓关系查询图谱。
+按主体、证据、观点、产业链、公司定位和持仓关系查询图谱。
 
 请求字段：
 
@@ -1415,8 +1701,11 @@
 - `evidence_id`
 - `thesis_id`
 - `decision_id`
+- `theme_id`
+- `chain_id`
+- `chain_node_id`
 
-返回字段包含 `issuers`、`securities`、`market_data`、`corporate_actions`、`documents`、`evidence`、`manual_reviews`、`theses`、`signals`、`decisions`、`execution_intents`、`reviews`、`strategy_replays`、`exceptions`、`entity_mappings`、`research_cards`、`crowding`、`institutional_holdings`、`disclosure_events`、`challengers`、`portfolio_proposals`、`portfolio_positions` 和 `edges`。每条 edge 默认包含 `source`、`timestamp`、`version`、`confidence` 元数据。其中 `portfolio_positions` 由已审批或待审批的 execution intent 派生，`portfolio_proposals` 是纸面组合候选方案，二者都不代表自动交易。
+返回字段包含 `issuers`、`securities`、`market_data`、`corporate_actions`、`documents`、`evidence`、`manual_reviews`、`theses`、`signals`、`decisions`、`execution_intents`、`reviews`、`strategy_replays`、`exceptions`、`entity_mappings`、`research_cards`、`macro_themes`、`industry_chains`、`chain_nodes`、`company_positions`、`research_tasks`、`crowding`、`institutional_holdings`、`disclosure_events`、`challengers`、`portfolio_proposals`、`portfolio_positions` 和 `edges`。产业链研究任务通过 `CHAIN_HAS_RESEARCH_TASK`、`TASK_FOR_CHAIN_NODE`、`TASK_FOR_COMPANY_POSITION`、`ISSUER_HAS_RESEARCH_TASK` 与主题、链路、节点、公司定位和主体连接。每条 edge 默认包含 `source`、`timestamp`、`version`、`confidence` 元数据。其中 `portfolio_positions` 来自模拟/回测 ledger 或纸面执行意图，`portfolio_proposals` 是纸面组合候选方案，二者都不代表自动交易。
 
 #### `GET /api/graph/traceability-report`
 
@@ -1443,6 +1732,7 @@
 #### `GET /api/search`
 
 内置全文检索 fallback，按 query 命中和字段权重返回结果。
+当前混合索引覆盖 document、evidence、thesis、research card、research answer、research report、market data、corporate action、13F、disclosure event、portfolio proposal、company position、research task 和 benchmark sample，因此产业链缺字段/缺证据任务也可以被搜索召回。
 
 请求字段：
 
