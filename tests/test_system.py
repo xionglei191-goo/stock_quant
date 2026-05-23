@@ -6,8 +6,9 @@ from tempfile import TemporaryDirectory
 import hashlib
 import json
 import os
-import sqlite3
 import struct
+import subprocess
+import sys
 import threading
 import unittest
 import zipfile
@@ -19,22 +20,41 @@ from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, SystemAlert
+from app.models import AlertNotification, DecisionPack, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
+from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
 from app.services import SystemService
 from app.store import PostgreSQLStore, SQLiteStore
-from app.tdx_market_data import TDXMarketDataAdapter, TDXVipdocAdapter
+from app.tdx_market_data import TDXVipdocAdapter
 from scripts.capacity_baseline import run_capacity_baseline
 from scripts.download_tdx_vipdoc import download_tdx_vipdoc_archive
 from scripts.full_run_acceptance import run_full_acceptance
+from scripts.fetch_benchmark_samples import fetch_benchmark_samples
+from scripts.local_data_unblock_audit import audit_local_data_unblock
 from scripts.import_tdx_market_data import run_tdx_incremental_import
+from scripts.tdx_batch_import import infer_exchange, normalize_symbol
+from scripts.local_ai_capability_acceptance import build_local_ai_capability_acceptance
+from scripts.local_benchmark_quality_package import build_local_benchmark_quality_package
+from scripts.local_production_audit import build_local_production_audit
 from scripts.migrate_sqlite_to_postgres import migrate_sqlite_to_postgres
 from scripts.postgres_schema_migrate import BASELINE_VERSION, apply_postgres_schema, mark_last_migration_rolled_back
+from scripts.production_closure import validate_production_closure_manifest
+from scripts.production_artifact_inventory_check import build_artifact_inventory_from_bundle, build_artifact_inventory_template, collect_required_artifact_uris, validate_artifact_inventory
+from scripts.production_closure_manifest_check import load_and_validate_production_closure_manifest
+from scripts.production_evidence_plan_check import load_and_validate_evidence_collection_plan, validate_evidence_collection_plan
+from scripts.production_evidence_plan_fill import fill_evidence_collection_plan
+from scripts.production_evidence_plan_to_manifest import build_manifest_from_evidence_plan
+from scripts.production_release_gate import run_production_release_gate
+from scripts.production_task_status_finalize import finalize_production_task_statuses
+from scripts.project_completion_audit import build_completion_audit
+from scripts.production_task_closure_audit import TASKS_WITH_EXTERNAL_EVIDENCE, audit_production_tasks, build_evidence_collection_plan
+from scripts.readiness_evidence_package_check import REQUIRED_CHECK_IDS, REQUIRED_EXTERNAL_VALIDATION_SCOPES, validate_readiness_evidence_package
 from scripts.security_check import scan_repository
 from scripts.staging_acceptance import run_staging_acceptance
 from scripts.staging_lineage_registry_acceptance import run_staging_lineage_registry_acceptance
 from scripts.staging_security_acceptance import run_staging_security_acceptance
+from scripts.ui_cross_browser_matrix_check import validate_cross_browser_matrix
 from scripts.ui_static_check import validate_ui_html
 
 
@@ -52,16 +72,31 @@ class _FakePostgresCursor:
     def execute(self, sql, params=None):
         normalized = " ".join(sql.split()).lower()
         self.database.statements.append(sql)
-        if normalized.startswith("select collection"):
+        if normalized.startswith("select count(*) from ai_quant.records where collection"):
+            collection = params[0] if params else "market_data"
+            self._rows = [(sum(1 for record_collection, _item_id in self.database.records if record_collection == collection),)]
+        elif normalized.startswith("select collection"):
             rows = []
             for (collection, item_id), record in self.database.records.items():
+                if "where collection <> 'market_data'" in normalized and collection == "market_data":
+                    continue
                 rows.append((collection, item_id, record["payload"], record["position"]))
             self._rows = sorted(rows, key=lambda item: (item[0], item[3] is None, item[3] or 0, item[1]))
         elif normalized.startswith("select payload from ai_quant.audit_log"):
             audit_rows = sorted(self.database.audit.values(), key=lambda item: (item["timestamp"], item["event_id"]))
             self._rows = [(item["payload"],) for item in audit_rows]
+        elif normalized.startswith("delete from ai_quant.records where collection = %s and item_id = %s"):
+            self.database.records.pop((params[0], params[1]), None)
+            self._rows = []
+        elif normalized.startswith("delete from ai_quant.records where collection = %s"):
+            collection = params[0]
+            self.database.records = {key: value for key, value in self.database.records.items() if key[0] != collection}
+            self._rows = []
         elif normalized.startswith("delete from ai_quant.records"):
             self.database.records.clear()
+            self._rows = []
+        elif normalized.startswith("delete from ai_quant.audit_log where event_id = %s"):
+            self.database.audit.pop(params[0], None)
             self._rows = []
         elif normalized.startswith("delete from ai_quant.audit_log"):
             self.database.audit.clear()
@@ -87,6 +122,9 @@ class _FakePostgresCursor:
 
     def fetchall(self):
         return list(self._rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
 
 
 class _FakePostgresConnection:
@@ -118,6 +156,44 @@ class _FakePostgresDatabase:
     def connect(self, dsn):
         self.dsns.append(dsn)
         return _FakePostgresConnection(self)
+
+
+class _FakeSecSingleNameConnectors:
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+        self.body = (
+            "Apple Inc. reported revenue growth while Services resilience, subscription activity, "
+            "and installed-base engagement improved the company mix. Gross margin benefited from "
+            "the services contribution and disciplined operating expenses.\n\n"
+            "Risk factors include regulatory scrutiny, supply-chain concentration, component "
+            "availability, foreign exchange volatility, and macro demand changes."
+        )
+
+    def fetch_sec_recent_filings(self, cik, *, user_agent, limit=10, document_types=None):
+        if self.fail:
+            raise RuntimeError("SEC outage")
+        document_type = (document_types or ["10-K"])[0]
+        return [
+            ConnectorDocument(
+                source_id="sec_edgar",
+                source_type="regulatory",
+                document_type=document_type,
+                source_uri="https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/a10-k.htm",
+                language="en",
+                title=f"Apple Inc. {document_type} filing",
+                published_at="2026-05-14",
+                metadata={
+                    "cik": str(cik).lstrip("0") or "0",
+                    "accession_no": "0000320193-24-000123",
+                    "primary_doc": "a10-k.htm",
+                },
+            )
+        ]
+
+    def fetch_sec_document_body(self, source_uri, *, user_agent, max_bytes=2_000_000):
+        if self.fail:
+            raise RuntimeError("SEC body outage")
+        return self.body[:max_bytes]
 
 
 class SystemServiceTests(unittest.TestCase):
@@ -165,6 +241,150 @@ class SystemServiceTests(unittest.TestCase):
             },
             actor="platform",
         )
+
+    def _use_temp_object_store(self) -> None:
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        self.service.object_store = LocalObjectStore(Path(temp_dir.name))
+
+    def test_latest_analysis_api_summarizes_local_artifact_for_ui(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            cwd = Path.cwd()
+            os.chdir(tmpdir)
+            self.addCleanup(os.chdir, cwd)
+            artifact_dir = Path("artifacts/latest-analysis-ahu")
+            artifact_dir.mkdir(parents=True)
+            Path("artifacts/local-business-acceptance-after-us-eod.json").write_text(
+                json.dumps({"base_url": "http://127.0.0.1:8000", "check_count": 2, "checks": [{"passed": True}, {"passed": True}]}),
+                encoding="utf-8",
+            )
+            (artifact_dir / "latest-analysis.json").write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "generated_at": "2026-05-18T12:00:00+08:00",
+                        "analysis": {
+                            "assets": [
+                                {"label": "600000", "security_id": "sec_600000", "market": "A", "source_id": "public_eod_market_data"},
+                                {"label": "AAPL", "security_id": "security_aapl_us", "market": "U", "source_id": "yahoo_chart_us_eod"},
+                            ],
+                            "window": {"start_date": "2026-05-01", "end_date": "2026-05-15"},
+                            "latest_market_date": "2026-05-15",
+                            "returns": {
+                                "600000": {"total_return": -0.025, "return_count": 10},
+                                "AAPL": {"total_return": 0.1234, "return_count": 10},
+                            },
+                            "latest_snapshot": [
+                                {
+                                    "label": "600000",
+                                    "security_id": "sec_600000",
+                                    "market": "A",
+                                    "as_of_date": "2026-05-15",
+                                    "close": 9.07,
+                                    "source_id": "public_eod_market_data",
+                                    "rights_tag": {"license_class": "public_eod_reference"},
+                                },
+                                {
+                                    "label": "AAPL",
+                                    "security_id": "security_aapl_us",
+                                    "market": "U",
+                                    "as_of_date": "2026-05-15",
+                                    "close": 300.23,
+                                    "source_id": "yahoo_chart_us_eod",
+                                    "rights_tag": {"license_class": "candidate_us_eod_reference"},
+                                },
+                            ],
+                            "portfolio_optimizer": {"proposal_id": "pfp_latest", "candidate_weights": {"security_aapl_us": 0.6, "sec_600000": 0.4}},
+                            "portfolio_forward": {"simulation_only": True, "review_flags": []},
+                            "metrics_counts": {"research_reports": 1000, "research_report_citation_evidence": 3200},
+                            "research_evidence": {
+                                "status": "passed",
+                                "counts": {
+                                    "research_reports": 1000,
+                                    "research_report_citation_evidence": 3200,
+                                    "total_evidence": 3600,
+                                },
+                                "semantic_recall": {
+                                    "status": "passed",
+                                    "samples": [
+                                        {
+                                            "resource_type": "research_report",
+                                            "resource_id": "rr_demo",
+                                            "title": "AI semiconductor report",
+                                            "source_boundary": "local_reference_research_report",
+                                            "risk_level": "restricted",
+                                        }
+                                    ],
+                                },
+                                "hotspot_recall": {"status": "passed", "samples": []},
+                                "training_allowed": False,
+                                "fact_source_allowed": False,
+                                "live_trade_signal_allowed": False,
+                            },
+                            "data_quality": {
+                                "status": "usable_with_warnings",
+                                "decision_readiness": "research_only",
+                                "issues": [
+                                    {
+                                        "severity": "medium",
+                                        "issue": "research_is_opinion_only",
+                                        "message": "Research evidence is opinion only.",
+                                    }
+                                ],
+                            },
+                            "decision_summary": {
+                                "status": "research_only",
+                                "headline": "AAPL is the current research candidate.",
+                                "conclusion": "Research only.",
+                                "top_recommendations": [
+                                    {
+                                        "label": "AAPL",
+                                        "security_id": "security_aapl_us",
+                                        "stance": "研究候选",
+                                        "total_return_pct": 12.34,
+                                        "candidate_weight_pct": 60.0,
+                                        "reasons": ["区间收益 12.34%"],
+                                        "risks": ["观点证据仅作参考"],
+                                    }
+                                ],
+                                "red_flags": ["Research evidence is opinion only."],
+                            },
+                            "supplemental_market_observations": {
+                                "status": "available",
+                                "usage_boundary": "manual_reference_or_supplemental_research_only_not_official_eod_not_trade_signal",
+                                "observations": [
+                                    {
+                                        "label": "600000",
+                                        "official_as_of_date": "2026-05-15",
+                                        "official_close": 9.07,
+                                        "supplemental_as_of_date": "2026-05-22",
+                                        "supplemental_close": 8.86,
+                                        "price_change_since_official_close_pct": -2.32,
+                                        "source_boundary": "manual_reference_or_supplemental_research_only",
+                                    }
+                                ],
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            response = self.router.dispatch("GET", "/api/analysis/latest", {}, role="CEO")
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.data["latest_market_date"], "2026-05-15")
+        self.assertEqual(len(response.data["returns"]), 2)
+        self.assertEqual(response.data["returns"][0]["total_return_pct"], -2.5)
+        self.assertEqual(response.data["weights"][0]["label"], "AAPL")
+        self.assertEqual(response.data["weights"][0]["weight_pct"], 60.0)
+        self.assertTrue(response.data["business_acceptance"]["passed"])
+        self.assertEqual(response.data["research_evidence"]["counts"]["research_report_citation_evidence"], 3200)
+        self.assertFalse(response.data["research_evidence"]["training_allowed"])
+        self.assertEqual(response.data["decision_summary"]["headline"], "AAPL is the current research candidate.")
+        self.assertEqual(response.data["data_quality"]["decision_readiness"], "research_only")
+        self.assertEqual(response.data["supplemental_market_observations"]["observations"][0]["label"], "600000")
+        self.assertEqual({item["source_id"] for item in response.data["source_summary"]}, {"public_eod_market_data", "yahoo_chart_us_eod"})
 
     def test_ingest_extract_score_and_decision_flow(self) -> None:
         doc = self.service.ingest_document(
@@ -509,6 +729,63 @@ class SystemServiceTests(unittest.TestCase):
                 },
                 actor="platform",
             )
+        self.service.seed_default_sources(actor="data")
+        for as_of_date, sec_001_close, sec_us_close, sec_h_close in [
+            ("2025-05-01", 10.0, 20.0, 30.0),
+            ("2025-05-02", 10.5, 19.8, 30.5),
+            ("2025-05-03", 10.8, 20.4, 31.0),
+        ]:
+            self.service.register_market_data_point(
+                {
+                    "security_id": "sec_001",
+                    "source_id": "public_eod_market_data",
+                    "as_of_date": as_of_date,
+                    "market": "A",
+                    "data_type": "eod",
+                    "currency": "CNY",
+                    "open": sec_001_close - 0.2,
+                    "high": sec_001_close + 0.3,
+                    "low": sec_001_close - 0.4,
+                    "close": sec_001_close,
+                    "adjusted_close": sec_001_close,
+                    "volume": 1000,
+                },
+                actor="data",
+            )
+            self.service.register_market_data_point(
+                {
+                    "security_id": "sec_us",
+                    "source_id": "public_eod_market_data",
+                    "as_of_date": as_of_date,
+                    "market": "U",
+                    "data_type": "eod",
+                    "currency": "USD",
+                    "open": sec_us_close - 0.2,
+                    "high": sec_us_close + 0.3,
+                    "low": sec_us_close - 0.4,
+                    "close": sec_us_close,
+                    "adjusted_close": sec_us_close,
+                    "volume": 2000,
+                },
+                actor="data",
+            )
+            self.service.register_market_data_point(
+                {
+                    "security_id": "sec_h",
+                    "source_id": "public_eod_market_data",
+                    "as_of_date": as_of_date,
+                    "market": "H",
+                    "data_type": "eod",
+                    "currency": "HKD",
+                    "open": sec_h_close - 0.2,
+                    "high": sec_h_close + 0.3,
+                    "low": sec_h_close - 0.4,
+                    "close": sec_h_close,
+                    "adjusted_close": sec_h_close,
+                    "volume": 3000,
+                },
+                actor="data",
+            )
         response = self.router.dispatch(
             "POST",
             "/api/portfolio/optimize",
@@ -580,6 +857,112 @@ class SystemServiceTests(unittest.TestCase):
         graph = self.router.dispatch("GET", "/api/graph/query", {"security_id": "sec_us"}, role="CIO")
         self.assertTrue(graph.success, graph.error)
         self.assertEqual(graph.data["portfolio_proposals"][0]["proposal_id"], "pfp_bl")
+
+        compare = self.router.dispatch(
+            "POST",
+            "/api/portfolio/optimizer/compare",
+            {
+                "proposal_id": "pfp_bl",
+                "baseline_method": "equal_weight",
+                "external_optimizer_weights": {"sec_us": 0.7, "sec_001": 0.3},
+            },
+            role="CIO",
+        )
+        self.assertTrue(compare.success, compare.error)
+        self.assertTrue(compare.data["simulation_only"])
+        self.assertFalse(compare.data["live_execution_allowed"])
+        self.assertEqual(compare.data["baseline_method"], "equal_weight")
+        self.assertEqual(compare.data["comparisons"][0]["optimizer"], "candidate")
+        self.assertEqual(compare.data["comparisons"][0]["reference"], "baseline:equal_weight")
+        self.assertIn("restricted_security", compare.data["constraint_report"]["restricted_security_violations"] or ["restricted_security"])
+        self.assertIn("market_exposure", compare.data["constraint_report"]["diagnostic_exposure"])
+        self.assertEqual(compare.data["external_optimizer"]["status"], "supplied")
+        self.assertEqual(compare.data["external_optimizer"]["diagnostics"]["dependency"], "caller_supplied")
+
+        external_probe = self.router.dispatch(
+            "POST",
+            "/api/portfolio/optimizer/compare",
+            {
+                "proposal_id": "pfp_bl",
+                "baseline_method": "posterior",
+                "run_external_optimizer": True,
+                "external_optimizer_name": "cvxpy",
+            },
+            role="CIO",
+        )
+        self.assertTrue(external_probe.success, external_probe.error)
+        self.assertEqual(external_probe.data["external_optimizer"]["optimizer"], "cvxpy")
+        self.assertIn(external_probe.data["external_optimizer"]["status"], {"solved", "unavailable", "failed"})
+        self.assertFalse(external_probe.data["automation_allowed"])
+        if external_probe.data["external_optimizer"]["status"] == "unavailable":
+            self.assertEqual(external_probe.data["external_optimizer"]["diagnostics"]["reason"], "cvxpy_not_installed")
+            self.assertTrue(external_probe.data["external_optimizer"]["diagnostics"]["paper_compare_continues"])
+        elif external_probe.data["external_optimizer"]["status"] == "solved":
+            self.assertTrue(external_probe.data["external_optimizer"]["weights"])
+            self.assertTrue(any(row["optimizer"] == "cvxpy" for row in external_probe.data["comparisons"]))
+
+        readiness_gap = self.router.dispatch(
+            "POST",
+            "/api/portfolio/optimizer/readiness-report",
+            {"compare_result": external_probe.data},
+            actor="cio",
+            role="CIO",
+        )
+        self.assertTrue(readiness_gap.success, readiness_gap.error)
+        self.assertFalse(readiness_gap.data["ready_for_production_comparison_archive"])
+        self.assertFalse(readiness_gap.data["automation_allowed"])
+        self.assertFalse(readiness_gap.data["live_execution_allowed"])
+        self.assertIn("solver_version", readiness_gap.data["missing_requirements"])
+        self.assertIn("solver_artifact_uri", readiness_gap.data["missing_requirements"])
+        self.assertIn("comparison_artifact_uri", readiness_gap.data["missing_requirements"])
+        self.assertIn("constraint_report_artifact_uri", readiness_gap.data["missing_requirements"])
+        self.assertIn("portfolio_optimizer_readiness_archives_paper_solver_comparison", readiness_gap.data["usage_boundary"])
+
+        readiness_ready = self.router.dispatch(
+            "POST",
+            "/api/portfolio/optimizer/readiness-report",
+            {
+                "compare_result": compare.data,
+                "solver_version": "cvxpy-1.6.0",
+                "solver_parameters": {"objective": "max_posterior_minus_risk", "risk_penalty": 1.0, "max_weight": 0.6},
+                "artifact_uris": {
+                    "solver_artifact_uri": "s3://ai-quant-evidence/portfolio/cvxpy-solver-result.json",
+                    "comparison_artifact_uri": "s3://ai-quant-evidence/portfolio/optimizer-compare.json",
+                    "constraint_report_artifact_uri": "s3://ai-quant-evidence/portfolio/constraint-report.json",
+                    "parameter_artifact_uri": "s3://ai-quant-evidence/portfolio/solver-params.json",
+                },
+                "record_readiness": True,
+            },
+            actor="cio",
+            role="CIO",
+        )
+        self.assertTrue(readiness_ready.success, readiness_ready.error)
+        self.assertTrue(readiness_ready.data["ready_for_production_comparison_archive"])
+        self.assertEqual(readiness_ready.data["missing_requirements"], [])
+        self.assertEqual(readiness_ready.data["solver_version"], "cvxpy-1.6.0")
+        self.assertEqual(readiness_ready.data["artifact_uris"]["solver_artifact_uri"], "s3://ai-quant-evidence/portfolio/cvxpy-solver-result.json")
+        self.assertEqual(self.service.store.audit_log[-1].action, "portfolio_optimizer_readiness_report")
+
+        forward = self.router.dispatch(
+            "POST",
+            "/api/portfolio/forward-report",
+            {
+                "proposal_id": "pfp_bl",
+                "benchmark_weights": {"sec_001": 0.5, "sec_us": 0.3, "sec_h": 0.2},
+                "start_date": "2025-05-01",
+                "end_date": "2025-05-03",
+                "max_tracking_error": 1.0,
+                "min_common_dates": 1,
+            },
+            role="CIO",
+        )
+        self.assertTrue(forward.success, forward.error)
+        self.assertTrue(forward.data["simulation_only"])
+        self.assertFalse(forward.data["live_execution_allowed"])
+        self.assertIn("active_return", forward.data)
+        self.assertIn("tracking_error", forward.data)
+        self.assertGreaterEqual(forward.data["aligned_date_count"], 1)
+        self.assertIn("review_flags", forward.data)
 
     def test_hotspot_expansion_maps_industry_chain_and_company_position(self) -> None:
         theme = self.router.dispatch(
@@ -677,11 +1060,61 @@ class SystemServiceTests(unittest.TestCase):
             },
             actor="data",
         )
+        self.service.register_source(
+            {
+                "source_id": "local_research_reports",
+                "source_type": "local_reference",
+                "allowed_document_types": ["research"],
+                "usage_scope": "local_reference_citation_tracking_only",
+                "rights_tag": {
+                    "license_class": "local_research_reference",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "restricted",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+            },
+            actor="risk",
+        )
+        research_doc = self.service.ingest_document(
+            {
+                "document_id": "doc_gpu_research_opinion",
+                "issuer_id": "issuer_001",
+                "security_id": "",
+                "source_id": "local_research_reports",
+                "source_type": "local_reference",
+                "document_type": "research",
+                "source_uri": "research-report://rr_gpu_demo",
+                "title": "GPU AI supply chain research note",
+                "body": "Local research opinion says GPU demand is improving, but this is not a public fact source.",
+                "rights_tag": {
+                    "license_class": "local_research_reference",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "restricted",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        self.service.store.evidence["evi_gpu_research_opinion"] = services_module.Evidence(
+            evidence_id="evi_gpu_research_opinion",
+            document_id=research_doc.document_id,
+            section="research_report_citation",
+            page_no=1,
+            bbox="research_report://doc_gpu_research_opinion;chunk=0",
+            span_text="Local research opinion says GPU demand is improving.",
+            canonical_text="Local research opinion says GPU demand is improving.",
+            confidence=0.72,
+        )
 
         expanded = self.router.dispatch(
             "POST",
             "/api/hotspots/expand",
-            {"query": "GPU", "seed_chain_id": "chain_electronics", "max_depth": 2},
+            {"query": "GPU", "seed_chain_id": "chain_electronics", "max_depth": 2, "include_restricted": True},
             role="analyst",
         )
         self.assertTrue(expanded.success, expanded.error)
@@ -699,7 +1132,31 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("needs_verification", expanded.data["evidence_layers"])
         self.assertTrue(expanded.data["evidence_layers"]["facts"])
         self.assertTrue(expanded.data["evidence_layers"]["inferences"])
+        self.assertTrue(any(item["resource_id"] == "evi_gpu_research_opinion" for item in expanded.data["evidence_layers"]["opinions"]))
+        self.assertFalse(any(item["resource_id"] == "evi_gpu_research_opinion" for item in expanded.data["evidence_layers"]["facts"]))
         self.assertTrue(expanded.data["research_tasks"])
+        self.assertEqual(expanded.data["pagination"]["sections"]["chain_nodes"]["total"], 3)
+        self.assertFalse(expanded.data["pagination"]["has_more"])
+        paged = self.router.dispatch(
+            "POST",
+            "/api/hotspots/expand",
+            {"query": "GPU", "seed_chain_id": "chain_electronics", "max_depth": 2, "page_size": 1},
+            role="analyst",
+        )
+        self.assertTrue(paged.success, paged.error)
+        self.assertEqual(len(paged.data["chain_nodes"]), 1)
+        self.assertTrue(paged.data["pagination"]["has_more"])
+        self.assertEqual(paged.data["pagination"]["next_page_token"], "1")
+        self.assertEqual(paged.data["pagination"]["sections"]["research_tasks"]["total"], len(expanded.data["research_tasks"]))
+        next_page = self.router.dispatch(
+            "POST",
+            "/api/hotspots/expand",
+            {"query": "GPU", "seed_chain_id": "chain_electronics", "max_depth": 2, "page_size": 1, "page_token": paged.data["pagination"]["next_page_token"]},
+            role="analyst",
+        )
+        self.assertTrue(next_page.success, next_page.error)
+        self.assertEqual(next_page.data["pagination"]["page_token"], "1")
+        self.assertEqual(len(next_page.data["chain_nodes"]), 1)
         graph = self.router.dispatch("GET", "/api/graph/query", {"chain_id": "chain_electronics"}, role="analyst")
         self.assertTrue(graph.success, graph.error)
         self.assertTrue(graph.data["macro_themes"])
@@ -734,7 +1191,7 @@ class SystemServiceTests(unittest.TestCase):
         queued = self.router.dispatch(
             "POST",
             "/api/research/tasks/from-hotspot",
-            {"query": "GPU", "seed_chain_id": "chain_electronics", "max_depth": 2},
+            {"query": "GPU", "seed_chain_id": "chain_electronics", "max_depth": 2, "page_size": 1},
             role="analyst",
         )
         self.assertTrue(queued.success, queued.error)
@@ -760,6 +1217,18 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(repeat_queue.success, repeat_queue.error)
         self.assertEqual(repeat_queue.data["created_count"], 0)
         self.assertEqual(repeat_queue.data["existing_count"], open_tasks.data["count"])
+        batch_queue = self.router.dispatch(
+            "POST",
+            "/api/research/tasks/from-hotspot/batch",
+            {"queries": ["GPU", "AI chip"], "seed_chain_id": "chain_electronics", "max_depth": 2, "page_size": 1},
+            role="analyst",
+        )
+        self.assertTrue(batch_queue.success, batch_queue.error)
+        self.assertFalse(batch_queue.data["automation_allowed"])
+        self.assertEqual(batch_queue.data["query_count"], 2)
+        self.assertEqual(batch_queue.data["created_count"], 0)
+        self.assertEqual(batch_queue.data["existing_count"], open_tasks.data["count"] * 2)
+        self.assertEqual(batch_queue.data["source_research_task_count"], len(expanded.data["research_tasks"]) * 2)
         updated_task = self.router.dispatch(
             "POST",
             f"/api/research/tasks/{backfill_tasks[0]['task_id']}/status",
@@ -772,6 +1241,198 @@ class SystemServiceTests(unittest.TestCase):
         task_search = self.router.dispatch("GET", "/api/search", {"q": "missing evidence GPU", "issuer_id": "issuer_001"}, role="analyst")
         self.assertTrue(task_search.success, task_search.error)
         self.assertTrue(any(item["resource_type"] == "research_task" for item in task_search.data["results"]))
+
+    def test_hotspot_readiness_report_requires_layer_boundaries_tasks_and_rerank_evidence(self) -> None:
+        theme = self.router.dispatch(
+            "POST",
+            "/api/macro-themes",
+            {
+                "theme_id": "theme_hotspot_readiness",
+                "name": "AI accelerator diffusion",
+                "description": "AI accelerator demand diffusion from endpoint compute to packaging and memory.",
+                "trigger_type": "hotspot",
+                "macro_drivers": ["public AI accelerator demand"],
+                "source_refs": ["manual://hotspot-readiness/theme"],
+                "confidence": 0.82,
+            },
+            role="analyst",
+        )
+        self.assertTrue(theme.success, theme.error)
+        chain = self.router.dispatch(
+            "POST",
+            "/api/industry-chains",
+            {
+                "chain_id": "chain_hotspot_readiness",
+                "name": "AI accelerator hardware chain",
+                "root_theme_id": "theme_hotspot_readiness",
+                "nodes": [
+                    {"node_id": "node_gpu", "name": "GPU", "level": 1, "category": "compute", "keywords": ["GPU", "AI accelerator"]},
+                    {"node_id": "node_packaging", "name": "Advanced packaging", "level": 2, "category": "packaging", "keywords": ["CoWoS", "advanced packaging"]},
+                    {"node_id": "node_hbm", "name": "HBM", "level": 3, "category": "memory", "keywords": ["HBM", "high bandwidth memory"]},
+                ],
+                "edges": [
+                    {"source_node_id": "node_gpu", "target_node_id": "node_packaging", "relation_type": "PACKAGED_BY", "strength": "high"},
+                    {"source_node_id": "node_packaging", "target_node_id": "node_hbm", "relation_type": "USES_MEMORY", "strength": "medium"},
+                ],
+                "source_refs": ["manual://hotspot-readiness/chain"],
+            },
+            role="analyst",
+        )
+        self.assertTrue(chain.success, chain.error)
+        self.router.dispatch(
+            "POST",
+            "/api/hotspot-lexicons",
+            {
+                "lexicon_id": "lex_hotspot_readiness",
+                "name": "AI accelerator",
+                "terms": ["GPU", "AI accelerator"],
+                "synonyms": {"GPU": ["AI chip", "graphics processor"]},
+                "related_chain_nodes": [
+                    {"node_id": "node_gpu", "name": "GPU", "level": 1, "category": "compute", "keywords": ["GPU", "AI chip"]},
+                    {"node_id": "node_packaging", "name": "Advanced packaging", "level": 2, "category": "packaging", "keywords": ["packaging", "CoWoS"]},
+                    {"node_id": "node_hbm", "name": "HBM", "level": 3, "category": "memory", "keywords": ["HBM"]},
+                ],
+                "default_data_slots": ["revenue_exposure", "profit_exposure", "capacity"],
+                "source_refs": ["manual://hotspot-readiness/lexicon"],
+            },
+            role="analyst",
+        )
+        document = self.service.ingest_document(
+            {
+                "document_id": "doc_hotspot_readiness",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "8-K",
+                "source_uri": "https://example.invalid/hotspot-readiness",
+                "title": "AI accelerator capacity update",
+                "body": "GPU AI accelerator capacity expanded for advanced packaging and HBM demand.",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        evidences = self.service.extract_evidence(document.document_id, actor="analyst")
+        position = self.router.dispatch(
+            "POST",
+            "/api/industry-chains/chain_hotspot_readiness/companies",
+            {
+                "position_id": "pos_hotspot_readiness",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "node_ids": ["node_gpu"],
+                "role": "AI accelerator module supplier",
+                "positioning_summary": "Demo Corp maps to GPU AI accelerator demand with public filing evidence.",
+                "revenue_exposure": {"ai_accelerator": 0.42},
+                "profit_exposure": {"ai_accelerator": 0.31},
+                "capacity": {"advanced_packaging": "expanding"},
+                "technology_tags": ["GPU", "AI accelerator"],
+                "evidence_ids": [evidences[0].evidence_id],
+                "data_quality": "verified",
+                "require_evidence_records": True,
+            },
+            role="analyst",
+        )
+        self.assertTrue(position.success, position.error)
+        thesis = self.service.create_thesis(
+            {
+                "thesis_id": "thesis_hotspot_readiness",
+                "issuer_id": "issuer_001",
+                "horizon": "mid",
+                "hypothesis": "GPU AI accelerator exposure can improve growth",
+                "evidence_ids": [item.evidence_id for item in evidences],
+                "risk_factors": ["supply constraints"],
+            },
+            actor="analyst",
+        )
+        self.service.run_scoring(
+            {
+                "signal_id": "sig_hotspot_readiness",
+                "thesis_id": thesis.thesis_id,
+                "strategy_type": "long",
+                "source_model": "rules",
+                "model_version": "v1",
+                "rationale": "GPU AI accelerator evidence supports a research-only inference.",
+            },
+            actor="cio",
+        )
+
+        gap = self.router.dispatch(
+            "POST",
+            "/api/hotspots/readiness-report",
+            {
+                "query": "AI chip",
+                "seed_chain_id": "chain_hotspot_readiness",
+                "max_depth": 3,
+                "min_rerank_top1_accuracy": 0.8,
+                "min_rerank_samples": 2,
+            },
+            role="analyst",
+        )
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_hotspot_research_production"])
+        self.assertIn("research_tasks_persisted_or_reviewed", gap.data["missing_requirements"])
+        self.assertIn("llm_rerank_eval_samples", gap.data["missing_requirements"])
+        self.assertIn("llm_rerank_eval_artifact_uri", gap.data["missing_requirements"])
+        self.assertFalse(gap.data["automation_allowed"])
+        self.assertGreaterEqual(gap.data["graph_summary"]["max_chain_depth"], 3)
+        self.assertEqual(gap.data["coverage_report"]["coverage"]["evidence_coverage"], 1.0)
+        self.assertTrue(gap.data["boundary_summary"]["separated_layers"])
+
+        queued = self.router.dispatch(
+            "POST",
+            "/api/research/tasks/from-hotspot",
+            {"query": "AI chip", "seed_chain_id": "chain_hotspot_readiness", "max_depth": 3},
+            role="analyst",
+        )
+        self.assertTrue(queued.success, queued.error)
+        self.assertGreaterEqual(queued.data["created_count"], 1)
+        ready = self.router.dispatch(
+            "POST",
+            "/api/hotspots/readiness-report",
+            {
+                "query": "AI chip",
+                "seed_chain_id": "chain_hotspot_readiness",
+                "max_depth": 3,
+                "min_rerank_top1_accuracy": 0.8,
+                "min_rerank_samples": 2,
+                "rerank_evaluation": {
+                    "benchmark_id": "hotspot_rerank_prod_eval",
+                    "valid_samples": 120,
+                    "top1_accuracy": 0.91,
+                    "coverage_at_k": 0.97,
+                    "mrr": 0.94,
+                    "fallback_rate": 0.08,
+                    "parse_error_rate": 0.0,
+                },
+                "artifact_uris": {
+                    "llm_rerank_eval_uri": "artifact://prod/hotspot/rerank-eval.json",
+                    "hotspot_gold_refs_uri": "artifact://prod/hotspot/gold-refs.jsonl",
+                    "company_position_review_uri": "artifact://prod/hotspot/company-position-review.json",
+                    "chain_taxonomy_review_uri": "artifact://prod/hotspot/chain-taxonomy-review.json",
+                },
+                "record_readiness": True,
+            },
+            role="analyst",
+            actor="research_lead",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_hotspot_research_production"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertEqual(ready.data["layer_summary"]["present_layer_count"], 4)
+        self.assertEqual(ready.data["research_queue"]["source_research_task_count"], queued.data["source_research_task_count"])
+        self.assertEqual(ready.data["rerank_evaluation"]["valid_samples"], 120)
+        self.assertEqual(ready.data["graph_summary"]["edge_metadata_coverage"], 1.0)
+        self.assertIn("hotspot_readiness_report_validates_chain_depth", ready.data["usage_boundary"])
+        self.assertEqual(self.service.store.audit_log[-1].action, "hotspot_readiness_report")
 
     def test_portfolio_optimizer_requires_benchmark_passed_evidence_when_configured(self) -> None:
         document = self.service.ingest_document(
@@ -1017,6 +1678,124 @@ class SystemServiceTests(unittest.TestCase):
         for fragment in ["company_public_webcast", "manual_reference_transcripts", "No transcript or research text enters training", "Reg FD"]:
             self.assertIn(fragment, policy)
 
+    def test_citation_boundary_readiness_report_requires_reviews_and_policy_artifacts(self) -> None:
+        self.service.seed_default_sources(actor="risk")
+        public_doc = self.service.ingest_document(
+            {
+                "document_id": "doc_citation_public",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "company_public_webcast",
+                "source_type": "company_ir",
+                "document_type": "webcast",
+                "source_uri": "https://ir.example.invalid/citation-webcast",
+                "body": "Public webcast revenue growth and margin outlook.",
+                "rights_tag": {
+                    "license_class": "public_company_ir_reference",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        evidence = self.service.extract_evidence(public_doc.document_id, actor="analyst")
+        answer = self.service.create_research_answer(
+            {
+                "answer_id": "ans_citation_boundary",
+                "question": "What did the public webcast say about revenue growth?",
+                "issuer_id": "issuer_001",
+                "evidence_ids": [item.evidence_id for item in evidence],
+                "human_review_status": "approved",
+                "reviewer": "analyst_lead",
+            },
+            actor="analyst",
+        )
+        self.assertEqual(answer.human_review_status, "approved")
+        manual_reference = self.router.dispatch(
+            "POST",
+            "/api/research/manual-references",
+            {
+                "document_id": "doc_citation_private_meta",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "document_type": "private_meeting_note",
+                "title": "Private meeting note metadata",
+                "source_uri": "private://citation/private-meeting",
+                "notes": "Metadata only for boundary review.",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(manual_reference.success, manual_reference.error)
+
+        gap = self.router.dispatch(
+            "POST",
+            "/api/research/citation-boundary/readiness-report",
+            {"issuer_id": "issuer_001"},
+            actor="risk",
+            role="risk_compliance",
+        )
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_citation_boundary_production"])
+        self.assertIn("source_review_coverage", gap.data["missing_requirements"])
+        self.assertIn("citation_policy_artifact_uri", gap.data["missing_requirements"])
+        self.assertIn("manual_reference_review_artifact_uri", gap.data["missing_requirements"])
+        self.assertIn("research_report_governance_artifact_uri", gap.data["missing_requirements"])
+        self.assertFalse(gap.data["automation_allowed"])
+        self.assertEqual(gap.data["manual_reference_summary"]["manual_reference_body_count"], 0)
+        self.assertEqual(gap.data["research_answers"]["source_link_rate"], 1.0)
+
+        for source_id, status, publicness, usage_scope in [
+            ("company_public_webcast", "approved", "confirmed_public_or_local", "within_boundary"),
+            ("manual_reference_transcripts", "conditional", "manual_reference_only", "manual_reference_only"),
+            ("local_research_reports", "conditional", "confirmed_public_or_local", "manual_reference_only"),
+        ]:
+            reviewed = self.router.dispatch(
+                "POST",
+                f"/api/governance/sources/{source_id}/reviews",
+                {
+                    "review_id": f"srrev_{source_id}_citation",
+                    "reviewed_at": "2026-05-01T00:00:00+00:00",
+                    "status": status,
+                    "publicness_status": publicness,
+                    "tos_status": "reviewed",
+                    "robots_status": "reviewed_or_not_applicable",
+                    "usage_scope_status": usage_scope,
+                    "next_review_due_at": "2026-08-01T00:00:00+00:00",
+                },
+                actor="risk",
+                role="risk_compliance",
+            )
+            self.assertTrue(reviewed.success, reviewed.error)
+
+        ready = self.router.dispatch(
+            "POST",
+            "/api/research/citation-boundary/readiness-report",
+            {
+                "issuer_id": "issuer_001",
+                "artifact_uris": {
+                    "citation_policy_uri": "artifact://prod/research/citation-policy.md",
+                    "source_review_uri": "artifact://prod/research/source-review.json",
+                    "manual_reference_review_uri": "artifact://prod/research/manual-boundary-review.json",
+                    "research_report_governance_uri": "artifact://prod/research/report-governance.json",
+                },
+                "record_readiness": True,
+            },
+            actor="risk_lead",
+            role="risk_compliance",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_citation_boundary_production"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertEqual(ready.data["source_summary"]["review_coverage"], 1.0)
+        self.assertEqual(ready.data["red_zone_training_records"], 0)
+        self.assertIn("citation_boundary_readiness_report_keeps_transcripts", ready.data["usage_boundary"])
+        self.assertEqual(self.service.store.audit_log[-1].action, "citation_boundary_readiness_report")
+
     def test_research_report_manifest_scan_list_and_ingest(self) -> None:
         with TemporaryDirectory() as temp_dir:
             report_dir = Path(temp_dir) / "Goldman" / "2026" / "05"
@@ -1204,6 +1983,76 @@ class SystemServiceTests(unittest.TestCase):
             self.assertEqual(report.status, "text_indexed")
             self.assertFalse(report.rights_tag.training_allowed)
             self.assertEqual(report.rights_tag.display_use, "restricted")
+
+    def test_research_report_inbox_script_uses_local_incremental_schedule(self) -> None:
+        from scripts.research_report_inbox_ingest import run_inbox_ingest
+
+        with TemporaryDirectory() as temp_dir:
+            inbox = Path(temp_dir) / "inbox" / "Morgan" / "2026" / "05"
+            inbox.mkdir(parents=True)
+            report_path = inbox / "New local note.txt"
+            report_path.write_text("AI capex cycle and margin expansion local reference. " * 10, encoding="utf-8")
+            output = Path(temp_dir) / "artifact.json"
+
+            class LocalClient:
+                def __init__(self, _base_url: str, *, timeout: float = 120.0) -> None:
+                    self.timeout = timeout
+
+                def request(self, method: str, path: str, body: dict | None = None) -> dict:
+                    response = self_router.dispatch(method, path, body or {}, actor="inbox_test", role="data_engineer")
+                    if not response.success:
+                        raise RuntimeError(str(response.error))
+                    return response.data
+
+            self_router = self.router
+            import scripts.research_report_inbox_ingest as inbox_script
+
+            original_client = inbox_script.ApiClient
+            try:
+                inbox_script.ApiClient = LocalClient
+                dry_summary = run_inbox_ingest(
+                base_url="local",
+                root_path=str(Path(temp_dir) / "inbox"),
+                api_root_path=str(Path(temp_dir) / "inbox"),
+                output=output,
+                    extensions=[".txt"],
+                    batch_size=1,
+                    scan_limit=10,
+                    ocr_budget_mb=10,
+                    citation_char_limit=200,
+                    execute=False,
+                    dry_run=True,
+                    timeout=1,
+                )
+                self.assertEqual(dry_summary["new_count"], 1)
+                self.assertEqual(dry_summary["executed_count"], 0)
+                self.assertFalse(self.service.store.research_reports)
+
+                exec_summary = run_inbox_ingest(
+                base_url="local",
+                root_path=str(Path(temp_dir) / "inbox"),
+                api_root_path=str(Path(temp_dir) / "inbox"),
+                output=output,
+                    extensions=[".txt"],
+                    batch_size=1,
+                    scan_limit=10,
+                    ocr_budget_mb=10,
+                    citation_char_limit=200,
+                    execute=True,
+                    dry_run=False,
+                    timeout=1,
+                )
+            finally:
+                inbox_script.ApiClient = original_client
+
+            self.assertEqual(exec_summary["status"], "passed")
+            self.assertEqual(exec_summary["executed_count"], 1)
+            self.assertEqual(exec_summary["failed_count"], 0)
+            self.assertIn("no_external_download", exec_summary["usage_boundary"])
+            report = next(iter(self.service.store.research_reports.values()))
+            self.assertEqual(report.file_name, report_path.name)
+            self.assertEqual(report.status, "text_indexed")
+            self.assertTrue(any(item.section == "research_report_citation" for item in self.service.store.evidence.values()))
 
     def test_research_report_governance_report_flags_stale_and_single_source_bias(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -1493,6 +2342,88 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("estimated_cost", cached.data)
         self.assertEqual(len(sent), sent_count)
 
+    def test_paddleocr_document_parsing_retries_transient_failure(self) -> None:
+        sent = []
+        jsonl = json.dumps({"result": {"layoutParsingResults": [{"markdown": {"text": "Retry page markdown."}}]}}).encode("utf-8")
+        job_submissions = {"count": 0}
+
+        def fake_send(request, timeout):
+            sent.append({"url": request.full_url, "method": request.get_method(), "timeout": timeout})
+            if request.full_url.endswith("/api/v2/ocr/jobs") and request.get_method() == "POST":
+                job_submissions["count"] += 1
+                if job_submissions["count"] == 1:
+                    return b'{"data":{}}'
+                return b'{"data":{"jobId":"job_retry_1"}}'
+            if request.full_url.endswith("/api/v2/ocr/jobs/job_retry_1"):
+                return b'{"data":{"state":"done","resultUrl":{"jsonUrl":"https://result.example/retry.jsonl"}}}'
+            if request.full_url == "https://result.example/retry.jsonl":
+                return jsonl
+            return b"{}"
+
+        self.service.document_parser = PaddleOCRParser(token="ocr-test-token", poll_interval=0, max_polls=2, http_send=fake_send)
+        response = self.router.dispatch(
+            "POST",
+            "/api/document-parsing/paddleocr",
+            {"file_url": "https://reports.example/retry.pdf", "retry_attempts": 1, "use_cache": False},
+            role="data_engineer",
+        )
+        self.assertTrue(response.success, response.error)
+        self.assertEqual(response.data["job_id"], "job_retry_1")
+        self.assertEqual(response.data["attempt_count"], 2)
+        self.assertEqual(response.data["retry_attempts"], 1)
+        self.assertIn("PaddleOCR job response missing jobId", response.data["retry_errors"][0])
+        self.assertEqual(job_submissions["count"], 2)
+
+    def test_extract_evidence_ocr_fallback_retries_before_manual_review(self) -> None:
+        jsonl = json.dumps({"result": {"layoutParsingResults": [{"markdown": {"text": "Retried OCR revenue text."}}]}}).encode("utf-8")
+        job_submissions = {"count": 0}
+
+        def fake_send(request, timeout):
+            if request.full_url.endswith("/api/v2/ocr/jobs") and request.get_method() == "POST":
+                job_submissions["count"] += 1
+                if job_submissions["count"] == 1:
+                    return b'{"data":{}}'
+                return b'{"data":{"jobId":"job_retry_extract"}}'
+            if request.full_url.endswith("/api/v2/ocr/jobs/job_retry_extract"):
+                return b'{"data":{"state":"done","resultUrl":{"jsonUrl":"https://result.example/retry-extract.jsonl"}}}'
+            if request.full_url == "https://result.example/retry-extract.jsonl":
+                return jsonl
+            return b"{}"
+
+        self.service.document_parser = PaddleOCRParser(token="ocr-test-token", poll_interval=0, max_polls=2, http_send=fake_send)
+        stored = self.service.object_store.put_bytes("src_sec", "doc_ocr_retry", b"%PDF-1.4\n%%EOF", suffix=".pdf")
+        self.addCleanup(lambda: Path(stored.uri).unlink(missing_ok=True))
+        self.service.ingest_document(
+            {
+                "document_id": "doc_ocr_retry",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "10-K",
+                "source_uri": "https://example.invalid/doc-ocr-retry.pdf",
+                "object_uri": stored.uri,
+                "content_sha256": stored.sha256,
+                "body": "",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+
+        evidences = self.service.extract_evidence("doc_ocr_retry", actor="analyst", parser_version="pdf-rule-1")
+        self.assertEqual(len(evidences), 1)
+        self.assertIn("Retried OCR revenue text.", evidences[0].span_text)
+        self.assertEqual(job_submissions["count"], 2)
+        self.assertEqual(self.service.manual_review_payload({"document_id": "doc_ocr_retry"})["manual_reviews"], [])
+
     def test_extract_evidence_preserves_ocr_bbox_assets_and_table_cells(self) -> None:
         sent = []
         jsonl = json.dumps(
@@ -1584,6 +2515,35 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(report.data["table_cell_count"], 4)
         self.assertEqual(report.data["table_cell_bbox_coverage"], 1.0)
         self.assertEqual(report.data["asset_reference_count"], 2)
+
+        bbox_report = self.router.dispatch(
+            "POST",
+            "/api/evidence/quality-report",
+            {
+                "issuer_id": "issuer_001",
+                "min_bbox_iou": 0.8,
+                "bbox_gold_labels": [
+                    {
+                        "document_id": "doc_ocr_layout",
+                        "page_no": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 200, "height": 100},
+                    },
+                    {
+                        "document_id": "doc_ocr_layout",
+                        "page_no": 1,
+                        "bbox": {"x": 300, "y": 300, "width": 20, "height": 20},
+                    },
+                ],
+            },
+            role="risk_compliance",
+        )
+        self.assertTrue(bbox_report.success, bbox_report.error)
+        validation = bbox_report.data["bbox_gold_validation"]
+        self.assertEqual(validation["label_count"], 2)
+        self.assertEqual(validation["matched_count"], 1)
+        self.assertEqual(validation["bbox_hit_rate"], 0.5)
+        self.assertEqual(validation["labels"][0]["iou"], 1.0)
+        self.assertEqual(validation["failures"][0]["issue"], "bbox_iou_below_threshold_or_missing_evidence")
 
         tables = self.service._extract_tables(evidence.canonical_text, evidence=evidence)
         self.assertEqual(tables[0]["cells"][0]["locator"]["scheme"], "ocr_table_cell_v1")
@@ -2142,6 +3102,152 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(stored.status, "sent")
         self.assertEqual(stored.payload["delivery_provider"], "dry-run-otel")
 
+    def test_observability_readiness_report_tracks_external_evidence_and_playbooks(self) -> None:
+        self.router.dispatch("POST", "/api/playbooks/seed", {}, role="risk_compliance", actor="risk_owner")
+        workflow = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags",
+            {
+                "dag_id": "dag_observability_readiness",
+                "name": "Observability readiness",
+                "tasks": [{"task_id": "collect", "task_type": "noop"}],
+                "owner_role": "平台负责人",
+            },
+            role="platform",
+        )
+        self.assertTrue(workflow.success, workflow.error)
+        run = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags/dag_observability_readiness/run",
+            {"run_id": "wfrun_observability_readiness", "status": "failed", "task_statuses": {"collect": "failed"}, "error": "otel gap"},
+            role="platform",
+        )
+        self.assertTrue(run.success, run.error)
+        self.service.store.system_alerts["alert_observability_readiness"] = SystemAlert(
+            alert_id="alert_observability_readiness",
+            rule_id="alert_workflow_failed_runs",
+            metric="workflow_failed_runs",
+            value=1,
+            threshold=0,
+            severity="high",
+            status="open",
+            message="workflow failed for observability readiness",
+            owner="平台负责人",
+            playbook_id="pb_workflow_sla_breach",
+        )
+        self.service.store.alert_notifications["aln_external_slack_sent"] = AlertNotification(
+            notification_id="aln_external_slack_sent",
+            alert_id="alert_observability_readiness",
+            channel="slack",
+            target="https://hooks.slack.invalid/services/readiness",
+            status="sent",
+            payload={"delivery_provider": "slack", "delivery_attempts": 1, "delivery_response": {"mode": "slack", "status_code": 200}},
+        )
+
+        gap = self.router.dispatch("POST", "/api/observability/readiness-report", {"log_limit": 50}, role="platform")
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_production_observability"])
+        self.assertIn("non_local_collector_configured", gap.data["missing_requirements"])
+        self.assertIn("retention_policy", gap.data["missing_requirements"])
+        self.assertIn("quarterly_drill_coverage", gap.data["missing_requirements"])
+        self.assertIn("external_alert_channel", gap.data["missing_requirements"])
+        self.assertEqual(gap.data["playbook_coverage"], 1.0)
+        self.assertIn("observability_readiness_report_tracks_external_collector", gap.data["usage_boundary"])
+
+        for schedule in list(self.service.store.drill_schedules.values()):
+            result = self.router.dispatch(
+                "POST",
+                f"/api/drill-schedules/{schedule.schedule_id}/result",
+                {
+                    "result": "passed",
+                    "run_at": "2026-05-01T00:00:00+00:00",
+                    "rca_summary": "quarterly drill passed",
+                    "action_items": ["verify escalation", "update runbook evidence"],
+                },
+                role="risk_compliance",
+                actor="risk_owner",
+            )
+            self.assertTrue(result.success, result.error)
+        self.router.dispatch(
+            "POST",
+            "/api/readiness/checklist/otel_collector_drill",
+            {
+                "status": "passed",
+                "owner": "platform_owner",
+                "evidence_uri": "artifact://staging/otel-collector-drill.json",
+                "metrics": {"logs": 1, "metrics": 1, "traces": 1},
+            },
+            role="platform",
+            actor="platform_owner",
+        )
+
+        no_alert_evidence = self.router.dispatch(
+            "POST",
+            "/api/observability/readiness-report",
+            {
+                "environment": "staging",
+                "collector": {
+                    "logs_endpoint": "https://otel.staging.example.com/v1/logs",
+                    "metrics_endpoint": "https://otel.staging.example.com/v1/metrics",
+                    "traces_endpoint": "https://otel.staging.example.com/v1/traces",
+                },
+                "retention_policy": {
+                    "retention_days": 90,
+                    "owner": "platform_owner",
+                    "deletion_policy": "delete_after_90_days_with_legal_hold_override",
+                    "evidence_uri": "artifact://observability/log-retention-policy.md",
+                },
+                "artifact_uris": {
+                    "collector_evidence_uri": "artifact://staging/otel-collector-drill.json",
+                    "logs_backend_uri": "grafana-loki://staging/logs",
+                    "query_evidence_uri": "artifact://staging/loki-query-proof.json",
+                    "drill_evidence_uri": "artifact://staging/incident-drill-matrix.json",
+                },
+            },
+            role="platform",
+            actor="platform_owner",
+        )
+        self.assertTrue(no_alert_evidence.success, no_alert_evidence.error)
+        self.assertFalse(no_alert_evidence.data["ready_for_production_observability"])
+        self.assertNotIn("external_alert_delivery_record", no_alert_evidence.data["missing_requirements"])
+        self.assertIn("external_alert_channel", no_alert_evidence.data["missing_requirements"])
+
+        ready = self.router.dispatch(
+            "POST",
+            "/api/observability/readiness-report",
+            {
+                "environment": "staging",
+                "collector": {
+                    "logs_endpoint": "https://otel.staging.example.com/v1/logs",
+                    "metrics_endpoint": "https://otel.staging.example.com/v1/metrics",
+                    "traces_endpoint": "https://otel.staging.example.com/v1/traces",
+                },
+                "retention_policy": {
+                    "retention_days": 90,
+                    "owner": "platform_owner",
+                    "deletion_policy": "delete_after_90_days_with_legal_hold_override",
+                    "evidence_uri": "artifact://observability/log-retention-policy.md",
+                },
+                "artifact_uris": {
+                    "collector_evidence_uri": "artifact://staging/otel-collector-drill.json",
+                    "logs_backend_uri": "grafana-loki://staging/logs",
+                    "query_evidence_uri": "artifact://staging/loki-query-proof.json",
+                    "external_alert_evidence_uri": "artifact://staging/slack-delivery-proof.json",
+                    "drill_evidence_uri": "artifact://staging/incident-drill-matrix.json",
+                },
+                "record_readiness": True,
+            },
+            role="platform",
+            actor="platform_owner",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_production_observability"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertTrue(ready.data["collector"]["non_local_configured"])
+        self.assertEqual(ready.data["drill_summary"]["coverage"], 1.0)
+        self.assertGreaterEqual(ready.data["notifications"]["sent_external_count"], 1)
+        self.assertEqual(self.service.store.audit_log[-1].action, "observability_readiness_report")
+
     def test_secret_rotation_records_are_metadata_only_and_alert_overdue(self) -> None:
         rotation = self.router.dispatch(
             "POST",
@@ -2365,6 +3471,73 @@ class SystemServiceTests(unittest.TestCase):
             self.assertTrue(listed_runs.success, listed_runs.error)
             self.assertEqual(listed_runs.data["executed_outside_app"], 1)
             self.assertEqual(listed_runs.data["runs"][0]["run_id"], "crun_cache_policy_2026q2")
+
+            security_gap = self.router.dispatch("POST", "/api/governance/security-readiness-report", {}, role="risk_compliance")
+            self.assertTrue(security_gap.success, security_gap.error)
+            self.assertFalse(security_gap.data["ready_for_security_production"])
+            self.assertIn("permission_denied_audited", security_gap.data["missing_requirements"])
+            self.assertIn("secret_rotation_metadata", security_gap.data["missing_requirements"])
+            self.assertIn("secret_manager_evidence_uri", security_gap.data["missing_requirements"])
+            self.assertFalse(security_gap.data["automation_allowed"])
+
+            bool_only_red_team = self.router.dispatch(
+                "POST",
+                "/api/governance/security-readiness-report",
+                {"permission_red_team_evidence": True},
+                role="risk_compliance",
+            )
+            self.assertTrue(bool_only_red_team.success, bool_only_red_team.error)
+            self.assertFalse(bool_only_red_team.data["ready_for_security_production"])
+            self.assertIn("permission_denied_audited", bool_only_red_team.data["missing_requirements"])
+
+            denied = self.router.dispatch("GET", "/api/governance/data-security-report", {}, role="analyst", actor="analyst_denied")
+            self.assertFalse(denied.success)
+            rotation = self.router.dispatch(
+                "POST",
+                "/api/governance/secret-rotations",
+                {
+                    "rotation_id": "secrot_security_ready",
+                    "secret_name": "AI_QUANT_POSTGRES_DSN",
+                    "provider": "vault",
+                    "owner": "platform_security",
+                    "status": "rotated",
+                    "rotated_at": "2026-05-15T00:00:00+00:00",
+                    "next_rotation_due_at": "2026-08-15T00:00:00+00:00",
+                    "evidence_uri": "artifact://security/secret-rotation.json",
+                },
+                role="risk_compliance",
+                actor="risk",
+            )
+            self.assertTrue(rotation.success, rotation.error)
+            security_ready = self.router.dispatch(
+                "POST",
+                "/api/governance/security-readiness-report",
+                {
+                    "secret_manager_provider": "vault",
+                    "api_key_scope": "scoped_read_write_no_admin",
+                    "delete_executor": "s3_lifecycle_opensearch_kms_dlp",
+                    "permission_red_team_evidence": True,
+                    "artifact_uris": {
+                        "secret_manager_evidence_uri": "artifact://security/secret-manager.json",
+                        "least_privilege_policy_uri": "artifact://security/least-privilege-policy.json",
+                        "external_delete_evidence_uri": "artifact://security/cache-delete-evidence.json",
+                        "permission_review_uri": "artifact://security/permission-red-team.json",
+                        "data_security_scan_uri": "artifact://security/data-security-scan.json",
+                        "source_governance_uri": "artifact://security/source-governance.json",
+                    },
+                    "record_readiness": True,
+                },
+                role="risk_compliance",
+                actor="risk",
+            )
+            self.assertTrue(security_ready.success, security_ready.error)
+            self.assertTrue(security_ready.data["ready_for_security_production"])
+            self.assertEqual(security_ready.data["missing_requirements"], [])
+            self.assertEqual(security_ready.data["secret_rotation_summary"]["count"], 1)
+            self.assertGreaterEqual(security_ready.data["permission"]["permission_denied_events"], 1)
+            self.assertEqual(security_ready.data["cache_retention_summary"]["executed_outside_app"], 1)
+            self.assertIn("without_secret_values", security_ready.data["usage_boundary"])
+            self.assertEqual(self.service.store.audit_log[-1].action, "security_readiness_report")
 
     def test_alerts_create_incident_reports_from_playbooks(self) -> None:
         seeded_playbooks = self.router.dispatch("POST", "/api/playbooks/seed", {}, actor="risk", role="risk_compliance")
@@ -3084,6 +4257,184 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(llm_review_notifications[0]["status"], "pending")
         self.assertEqual(llm_review_notifications[0]["payload"]["type"], "llm_task_escalation")
 
+    def test_llm_readiness_report_tracks_prompt_quality_budget_and_challenger_evidence(self) -> None:
+        self.router.dispatch("POST", "/api/llm/task-templates/seed", {}, actor="ml", role="nlp_ml")
+        self.service.llm_gateway = LLMGateway(api_key="", http_send=lambda _request, _timeout: b"{}")
+        document = self.service.ingest_document(
+            {
+                "document_id": "doc_llm_readiness",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "10-K",
+                "source_uri": "https://example.invalid/llm-readiness",
+                "body": "Revenue rose 12% and risk factors include demand volatility.",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        evidence = self.service.extract_evidence(document.document_id, actor="analyst")[0]
+        answer = self.service.create_research_answer(
+            {
+                "answer_id": "ans_llm_ready",
+                "question": "What changed?",
+                "issuer_id": "issuer_001",
+                "evidence_ids": [evidence.evidence_id],
+                "source_document_ids": [document.document_id],
+                "english_source_text": "Revenue rose 12% and risk factors include demand volatility.",
+                "chinese_summary": "收入增长，风险因素包括需求波动。",
+                "summary_version": "summary-v1",
+                "prompt_version": "pr_llmtpl_filing_qa_v1_baseline",
+                "model_version": "qwen3.6-plus",
+                "source_publicness": "public",
+                "human_review_status": "approved",
+            },
+            actor="analyst",
+        )
+        self.assertEqual(answer.answer_id, "ans_llm_ready")
+        thesis = self.service.create_thesis(
+            {
+                "thesis_id": "thesis_llm_ready",
+                "issuer_id": "issuer_001",
+                "horizon": "mid",
+                "hypothesis": "Revenue growth can persist",
+                "evidence_ids": [evidence.evidence_id],
+                "confidence": 0.4,
+                "status": "review",
+            },
+            actor="analyst",
+        )
+        gap = self.router.dispatch(
+            "POST",
+            "/api/llm/readiness-report",
+            {"gateway_configured": False},
+            actor="ml",
+            role="nlp_ml",
+        )
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_llm_production"])
+        self.assertIn("llm_gateway_configured", gap.data["missing_requirements"])
+        self.assertIn("model_quality_evaluation_uri", gap.data["missing_requirements"])
+        self.assertIn("high_risk_challenger_coverage", gap.data["missing_requirements"])
+        self.assertIn("budget_sync_outbox_record", gap.data["missing_requirements"])
+        self.assertFalse(gap.data["automation_allowed"])
+        self.assertIn("llm_readiness_report_tracks_prompt_model", gap.data["usage_boundary"])
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.staging.example.com",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            http_send=lambda _request, _timeout: b'{"id":"ready","choices":[{"message":{"content":"ok"}}]}',
+        )
+        run = self.router.dispatch(
+            "POST",
+            "/api/llm/tasks/run",
+            {
+                "run_id": "llmrun_ready_001",
+                "template_id": "llmtpl_filing_qa_v1",
+                "role": "分析师",
+                "variables": {"question": "What changed?", "source_text": "Revenue rose 12%."},
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(run.success, run.error)
+        challenger = self.service.run_challenger(
+            {
+                "challenger_id": "chg_llm_ready",
+                "thesis_id": thesis.thesis_id,
+                "source_conflict": 0.1,
+                "valuation_gap": 0.1,
+                "narrative_divergence": 0.1,
+                "policy_risk": 0.1,
+            },
+            actor="risk",
+        )
+        self.assertEqual(challenger.thesis_id, thesis.thesis_id)
+        no_budget_outbox = self.router.dispatch(
+            "POST",
+            "/api/llm/readiness-report",
+            {
+                "gateway_configured": True,
+                "artifact_uris": {
+                    "production_llm_gateway_evidence_uri": "artifact://llm/gateway-smoke.json",
+                    "prompt_inventory_uri": "artifact://llm/approved-prompts.json",
+                    "model_quality_evaluation_uri": "artifact://llm/model-quality.json",
+                    "fallback_quality_evaluation_uri": "artifact://llm/fallback-quality.json",
+                    "budget_sync_evidence_uri": "artifact://llm/budget-sync.json",
+                },
+            },
+            actor="ml",
+            role="nlp_ml",
+        )
+        self.assertTrue(no_budget_outbox.success, no_budget_outbox.error)
+        self.assertFalse(no_budget_outbox.data["ready_for_llm_production"])
+        self.assertIn("budget_sync_outbox_record", no_budget_outbox.data["missing_requirements"])
+        self.assertIn("budget_sync_evidence_uri", no_budget_outbox.data["missing_requirements"])
+
+        approval = self.router.dispatch(
+            "POST",
+            "/api/llm/budget-approvals",
+            {
+                "approval_id": "llmbud_ready",
+                "allow_manual": True,
+                "requested_budget": 100000,
+                "requested_by": "ml_owner",
+            },
+            actor="ml",
+            role="nlp_ml",
+        )
+        self.assertTrue(approval.success, approval.error)
+        decided = self.router.dispatch(
+            "POST",
+            "/api/llm/budget-approvals/llmbud_ready/decide",
+            {"status": "approved", "approver_role": "NLP/ML 负责人", "approver": "ml_owner"},
+            actor="ml",
+            role="nlp_ml",
+        )
+        self.assertTrue(decided.success, decided.error)
+        synced = self.router.dispatch(
+            "POST",
+            "/api/llm/budget-approvals/llmbud_ready/sync",
+            {"target": "budget://finance-cloud/staging", "mark_sent": True},
+            actor="ml",
+            role="nlp_ml",
+        )
+        self.assertTrue(synced.success, synced.error)
+        ready = self.router.dispatch(
+            "POST",
+            "/api/llm/readiness-report",
+            {
+                "gateway_configured": True,
+                "artifact_uris": {
+                    "production_llm_gateway_evidence_uri": "artifact://llm/gateway-smoke.json",
+                    "prompt_inventory_uri": "artifact://llm/approved-prompts.json",
+                    "model_quality_evaluation_uri": "artifact://llm/model-quality.json",
+                    "fallback_quality_evaluation_uri": "artifact://llm/fallback-quality.json",
+                    "budget_sync_evidence_uri": "artifact://llm/budget-sync.json",
+                },
+                "record_readiness": True,
+            },
+            actor="ml",
+            role="nlp_ml",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_llm_production"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertEqual(ready.data["templates"]["approved_count"], len(self.service.store.llm_task_templates))
+        self.assertEqual(ready.data["challenger"]["coverage"], 1.0)
+        self.assertEqual(ready.data["budget"]["sync"]["sent_count"], 1)
+        self.assertEqual(self.service.store.audit_log[-1].action, "llm_readiness_report")
+
     def test_workflow_lineage_and_model_version_records_are_idempotent(self) -> None:
         workflow = self.router.dispatch(
             "POST",
@@ -3218,6 +4569,27 @@ class SystemServiceTests(unittest.TestCase):
         node_by_id = {item["task_id"]: item for item in graph["nodes"]}
         self.assertEqual(node_by_id["extract_evidence"]["dependents"], ["index_evidence"])
         self.assertEqual(node_by_id["index_evidence"]["depends_on"], ["extract_evidence", "missing_external_sensor"])
+
+        scheduler_handoff = self.router.dispatch(
+            "POST",
+            "/api/orchestration/scheduler-handoff",
+            {"dag_id": "dag_daily_research", "as_of": "2026-05-18T12:00:00+00:00", "backfill_window_days": 5},
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(scheduler_handoff.success, scheduler_handoff.error)
+        self.assertEqual(scheduler_handoff.data["workflow_count"], 1)
+        self.assertEqual(scheduler_handoff.data["recommended_orchestrator"]["recommended"], "airflow_or_dagster")
+        self.assertEqual(scheduler_handoff.data["external_sensor_count"], 1)
+        self.assertEqual(scheduler_handoff.data["external_sensors"][0]["sensor_id"], "missing_external_sensor")
+        self.assertTrue(scheduler_handoff.data["external_deployment_required"])
+        self.assertFalse(scheduler_handoff.data["automation_allowed"])
+        self.assertIn("scheduler_handoff_is_a_planning_contract", scheduler_handoff.data["usage_boundary"])
+        daily_handoff = scheduler_handoff.data["workflows"][0]
+        self.assertEqual(daily_handoff["adapter_contract"]["airflow_dag_id"], "dag_daily_research")
+        self.assertEqual(daily_handoff["adapter_contract"]["cron_schedule"], "0 9 * * *")
+        self.assertGreaterEqual(daily_handoff["backfill"]["candidate_count"], 1)
+        self.assertIn("large_window_backfill_run_artifact_uri", scheduler_handoff.data["missing_external_evidence"])
 
         openlineage_export = self.router.dispatch(
             "POST",
@@ -3410,6 +4782,174 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("alert_workflow_failed_runs", {item["rule_id"] for item in workflow_alerts.data["alerts"]})
         self.assertIn("alert_workflow_sla_breaches", {item["rule_id"] for item in workflow_alerts.data["alerts"]})
 
+    def test_orchestration_readiness_report_requires_external_scheduler_lineage_and_registry_evidence(self) -> None:
+        workflow = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags",
+            {
+                "dag_id": "dag_orchestration_ready",
+                "name": "Orchestration readiness",
+                "cadence": "daily",
+                "idempotency_key_fields": ["as_of_date"],
+                "tasks": [
+                    {"task_id": "collect", "task_type": "noop", "queue": "ingestion", "output_refs": ["doc:ready"]},
+                    {"task_id": "extract", "task_type": "noop", "queue": "document_ai", "depends_on": ["collect"], "output_refs": ["evidence:ready"]},
+                    {"task_id": "publish", "task_type": "noop", "queue": "registry", "depends_on": ["extract", "external_catalog_sensor"], "output_refs": ["registry:ready"]},
+                ],
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(workflow.success, workflow.error)
+        run = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags/dag_orchestration_ready/run",
+            {
+                "run_id": "wfrun_orch_ready_001",
+                "inputs": {"as_of_date": "2026-05-15"},
+                "status": "succeeded",
+                "output_refs": ["registry:ready"],
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(run.success, run.error)
+        model = self.router.dispatch(
+            "POST",
+            "/api/model-versions",
+            {
+                "model_version_id": "modelv_orch_ready",
+                "model_name": "research-summary",
+                "version": "2026-05-17",
+                "model_type": "llm",
+                "artifact_uri": "models:/research-summary/2026-05-17",
+                "training_dataset_ids": ["evidence_ready"],
+                "prompt_versions": ["pr_llmtpl_research_summary_v1_baseline"],
+                "metrics": {"quality": 0.98, "mlflow_run_id": "mlrun_orch_ready"},
+                "status": "approved",
+            },
+            actor="ml",
+            role="nlp_ml",
+        )
+        self.assertTrue(model.success, model.error)
+        lineage = self.router.dispatch(
+            "POST",
+            "/api/lineage/events",
+            {
+                "lineage_id": "lin_orch_ready",
+                "job_run_id": "wfrun_orch_ready_001",
+                "dataset": "evidence_ready",
+                "input_refs": ["doc:ready"],
+                "output_refs": ["registry:ready"],
+                "code_version": "test-v1",
+                "model_versions": ["modelv_orch_ready"],
+                "prompt_versions": ["pr_llmtpl_research_summary_v1_baseline"],
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(lineage.success, lineage.error)
+        self.router.dispatch(
+            "POST",
+            "/api/orchestration/openlineage/submit",
+            {"dag_id": "dag_orchestration_ready", "namespace": "ai_quant_test", "target": "openlineage://local-catalog"},
+            actor="platform",
+            role="platform",
+        )
+        self.router.dispatch(
+            "POST",
+            "/api/model-versions/mlflow/register",
+            {"model_name": "research-summary", "target": "mlflow://local-registry"},
+            actor="ml",
+            role="nlp_ml",
+        )
+
+        gap = self.router.dispatch(
+            "POST",
+            "/api/orchestration/readiness-report",
+            {"dag_id": "dag_orchestration_ready", "as_of": "2026-05-18T12:00:00+00:00"},
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_orchestration_production"])
+        self.assertIn("scheduler_deployment_evidence_uri", gap.data["missing_requirements"])
+        self.assertIn("external_sensor_evidence_uri", gap.data["missing_requirements"])
+        self.assertIn("backfill_drill_evidence_uri", gap.data["missing_requirements"])
+        self.assertIn("openlineage_real_delivery", gap.data["missing_requirements"])
+        self.assertIn("mlflow_real_registry", gap.data["missing_requirements"])
+        self.assertFalse(gap.data["automation_allowed"])
+        self.assertTrue(gap.data["external_deployment_required"])
+        self.assertIn("orchestration_readiness_report_checks_scheduler", gap.data["usage_boundary"])
+
+        ready = self.router.dispatch(
+            "POST",
+            "/api/orchestration/readiness-report",
+            {
+                "dag_id": "dag_orchestration_ready",
+                "as_of": "2026-05-18T12:00:00+00:00",
+                "scheduler_endpoint": "https://airflow.staging.example.com",
+                "openlineage_endpoint": "https://lineage.staging.example.com",
+                "mlflow_endpoint": "https://mlflow.staging.example.com",
+                "artifact_uris": {
+                    "scheduler_deployment_uri": "artifact://orchestration/scheduler-deployment.json",
+                    "worker_pool_evidence_uri": "artifact://orchestration/worker-pools.json",
+                    "external_sensor_evidence_uri": "artifact://orchestration/external-sensors.json",
+                    "backfill_drill_uri": "artifact://orchestration/backfill-drill.json",
+                    "openlineage_delivery_evidence_uri": "artifact://orchestration/openlineage-delivery.json",
+                    "mlflow_registry_evidence_uri": "artifact://orchestration/mlflow-registry.json",
+                    "replay_runbook_uri": "artifact://orchestration/replay-runbook.md",
+                },
+                "record_readiness": True,
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_orchestration_production"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertEqual(ready.data["workflow_summary"]["external_sensor_count"], 1)
+        self.assertEqual(ready.data["lineage"]["openlineage_export_count"], 1)
+        self.assertEqual(ready.data["model_registry"]["approved_artifact_coverage"], 1.0)
+        self.assertEqual(self.service.store.audit_log[-1].action, "orchestration_readiness_report")
+
+        simple_workflow = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags",
+            {
+                "dag_id": "dag_orchestration_simple",
+                "name": "Single queue reviewed orchestration",
+                "cadence": "manual",
+                "tasks": [{"task_id": "noop", "task_type": "noop", "queue": "default"}],
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(simple_workflow.success, simple_workflow.error)
+        simple_gap = self.router.dispatch(
+            "POST",
+            "/api/orchestration/readiness-report",
+            {
+                "dag_id": "dag_orchestration_simple",
+                "scheduler_endpoint": "https://airflow.staging.example.com",
+                "openlineage_endpoint": "https://lineage.staging.example.com",
+                "mlflow_endpoint": "https://mlflow.staging.example.com",
+                "artifact_uris": {
+                    "scheduler_deployment_uri": "artifact://orchestration/scheduler-deployment.json",
+                    "openlineage_delivery_evidence_uri": "artifact://orchestration/openlineage-delivery.json",
+                    "mlflow_registry_evidence_uri": "artifact://orchestration/mlflow-registry.json",
+                    "replay_runbook_uri": "artifact://orchestration/replay-runbook.md",
+                },
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(simple_gap.success, simple_gap.error)
+        self.assertFalse(simple_gap.data["ready_for_orchestration_production"])
+        self.assertIn("worker_pool_evidence_uri", simple_gap.data["missing_requirements"])
+        self.assertIn("external_sensor_evidence_uri", simple_gap.data["missing_requirements"])
+        self.assertIn("backfill_drill_evidence_uri", simple_gap.data["missing_requirements"])
+
     def test_workflow_builtin_executor_runs_fact_pipeline_tasks(self) -> None:
         benchmark = self.router.dispatch(
             "POST",
@@ -3597,10 +5137,180 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(exported["eventType"], "COMPLETE")
         self.assertIn("benchmark_run:bmrn_executor_fact", {item["name"] for item in exported["outputs"]})
 
+    def test_workflow_backfill_plans_and_records_queue_isolated_runs(self) -> None:
+        workflow = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags",
+            {
+                "dag_id": "dag_queue_backfill",
+                "name": "Queue isolated backfill",
+                "cadence": "business_daily",
+                "idempotency_key_fields": ["as_of_date"],
+                "tasks": [
+                    {"task_id": "collect", "task_type": "noop", "queue": "ingestion", "payload": {"message": "collect"}},
+                    {
+                        "task_id": "parse",
+                        "task_type": "noop",
+                        "queue": "document_ai",
+                        "depends_on": ["collect"],
+                        "payload": {"message": "parse"},
+                    },
+                    {
+                        "task_id": "evaluate",
+                        "task_type": "noop",
+                        "queue": "evaluation",
+                        "depends_on": ["parse"],
+                        "payload": {"message": "evaluate"},
+                    },
+                ],
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(workflow.success, workflow.error)
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags/dag_queue_backfill/backfill",
+            {
+                "start_date": "2026-05-15",
+                "end_date": "2026-05-18",
+                "queues": ["document_ai"],
+                "inputs": {"market": "A"},
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertTrue(dry_run.data["dry_run"])
+        self.assertEqual(dry_run.data["planned_count"], 2)
+        self.assertEqual(dry_run.data["created_count"], 0)
+        self.assertEqual(dry_run.data["selection"]["queues"], ["document_ai"])
+        planned_dates = [item["run_date"] for item in dry_run.data["plan"]]
+        self.assertEqual(planned_dates, ["2026-05-15", "2026-05-18"])
+        planned_first = dry_run.data["plan"][0]
+        self.assertTrue(planned_first["queue_isolation"])
+        self.assertTrue(planned_first["partial_execution"])
+        self.assertEqual(planned_first["task_statuses"]["parse"], "queued")
+        self.assertEqual(planned_first["task_statuses"]["collect"], "skipped")
+        self.assertEqual(self.router.dispatch("GET", "/api/orchestration/runs", {"dag_id": "dag_queue_backfill"}, role="platform").data["total"], 0)
+
+        plan_only = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags/dag_queue_backfill/backfill",
+            {
+                "run_dates": ["2026-05-15"],
+                "queues": ["document_ai"],
+                "dry_run": False,
+                "execute": False,
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(plan_only.success, plan_only.error)
+        self.assertFalse(plan_only.data["dry_run"])
+        self.assertFalse(plan_only.data["execute"])
+        self.assertEqual(plan_only.data["planned_count"], 1)
+        self.assertEqual(plan_only.data["created_count"], 0)
+        self.assertEqual(self.router.dispatch("GET", "/api/orchestration/runs", {"dag_id": "dag_queue_backfill"}, role="platform").data["total"], 0)
+
+        execute = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags/dag_queue_backfill/backfill",
+            {
+                "run_dates": ["2026-05-15", "2026-05-18"],
+                "queues": "document_ai",
+                "inputs": {"market": "A"},
+                "dry_run": False,
+                "execute": True,
+                "run_id_prefix": "wfrun_backfill_queue",
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(execute.success, execute.error)
+        self.assertFalse(execute.data["dry_run"])
+        self.assertEqual(execute.data["created_count"], 2)
+        self.assertEqual(execute.data["reused_count"], 0)
+        self.assertIn("built_in_backfill_planner", execute.data["usage_boundary"])
+        first_run = execute.data["runs"][0]
+        self.assertEqual(first_run["run_id"], "wfrun_backfill_queue_20260515")
+        self.assertEqual(first_run["status"], "queued")
+        self.assertEqual(first_run["inputs"]["as_of_date"], "2026-05-15")
+        self.assertEqual(first_run["inputs"]["market"], "A")
+        self.assertEqual(first_run["inputs"]["backfill"]["selection"]["task_ids"], ["parse"])
+        self.assertTrue(first_run["inputs"]["backfill"]["queue_isolation"])
+        self.assertEqual(first_run["task_statuses"]["parse"], "queued")
+        self.assertEqual(first_run["task_statuses"]["collect"], "skipped")
+        self.assertEqual(first_run["task_statuses"]["evaluate"], "skipped")
+
+        duplicate = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags/dag_queue_backfill/backfill",
+            {
+                "run_dates": ["2026-05-15", "2026-05-18"],
+                "queues": "document_ai",
+                "inputs": {"market": "A"},
+                "dry_run": False,
+                "execute": True,
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(duplicate.success, duplicate.error)
+        self.assertEqual(duplicate.data["created_count"], 0)
+        self.assertEqual(duplicate.data["reused_count"], 2)
+        self.assertEqual(duplicate.data["skipped_count"], 2)
+        self.assertEqual({item["reason"] for item in duplicate.data["skipped"]}, {"idempotent_run_exists"})
+        runs = self.router.dispatch("GET", "/api/orchestration/runs", {"dag_id": "dag_queue_backfill"}, role="platform")
+        self.assertTrue(runs.success, runs.error)
+        self.assertEqual(runs.data["total"], 2)
+
+        handoff = self.router.dispatch(
+            "POST",
+            "/api/orchestration/scheduler-handoff",
+            {
+                "dag_id": "dag_queue_backfill",
+                "as_of": "2026-05-20T12:00:00+00:00",
+                "backfill_window_days": 10,
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(handoff.success, handoff.error)
+        self.assertEqual(handoff.data["recommended_orchestrator"]["recommended"], "airflow_or_dagster")
+        self.assertEqual(handoff.data["queue_count"], 3)
+        worker_pools = {item["queue"]: item for item in handoff.data["worker_pools"]}
+        self.assertTrue({"ingestion", "document_ai", "evaluation"}.issubset(worker_pools))
+        self.assertEqual(worker_pools["document_ai"]["worker_pool"], "wf_document_ai_pool")
+        workflow_handoff = handoff.data["workflows"][0]
+        self.assertTrue(workflow_handoff["queue_isolation_required"])
+        self.assertEqual(workflow_handoff["adapter_contract"]["cron_schedule"], "0 9 * * 1-5")
+        self.assertIn("/api/orchestration/dags/dag_queue_backfill/backfill", workflow_handoff["adapter_contract"]["backfill_endpoint"])
+        self.assertEqual(workflow_handoff["backfill"]["planned_dates"], ["2026-05-19", "2026-05-20"])
+        self.assertIn("worker_pool_deployment_and_queue_binding_evidence", handoff.data["missing_external_evidence"])
+
     def test_astock_connector_registry_tracks_rights_mapping_and_verification(self) -> None:
         seeded = self.router.dispatch("POST", "/api/connectors/astock/seed", {}, actor="data", role="data_engineer")
         self.assertTrue(seeded.success)
-        self.assertGreaterEqual(len(seeded.data["connectors"]), 8)
+        connector_ids = {item["connector_id"] for item in seeded.data["connectors"]}
+        self.assertGreaterEqual(len(connector_ids), 17)
+        self.assertNotIn("iwencai_optional", connector_ids)
+        for expected_id in {
+            "efinance_eastmoney_history",
+            "efinance_eastmoney_base_info",
+            "efinance_eastmoney_board",
+            "akshare_em_history",
+            "akshare_em_spot",
+            "akshare_chip_distribution",
+            "akshare_hot_rank",
+            "akshare_limit_up_pool",
+            "baostock_eod_history",
+            "baostock_stock_basic",
+        }:
+            self.assertIn(expected_id, connector_ids)
+            self.assertFalse(self.service.store.astock_connectors[expected_id].requires_key)
+            self.assertIn("supplemental_research", self.service.store.astock_connectors[expected_id].allowed_use)
         eastmoney = self.service.store.astock_connectors["eastmoney_research"]
         self.assertEqual(eastmoney.rights_tag.display_use, "restricted")
         self.assertIn("title", eastmoney.field_mapping)
@@ -3651,6 +5361,65 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("source_risk_yellow", sample.data["automation_blockers"])
         self.assertIn("restricted_rights_manual_reference_only", sample.data["automation_blockers"])
 
+        readiness_gap = self.router.dispatch(
+            "POST",
+            "/api/connectors/astock/verification-readiness",
+            {
+                "connector_id": "eastmoney_research",
+                "sample_rows": {
+                    "eastmoney_research": [
+                        {"title": "Demo bank sector research", "url": "https://example.invalid/report?id=1", "published_at": "2026-05-15"}
+                    ]
+                },
+            },
+            actor="risk",
+            role="risk_compliance",
+        )
+        self.assertTrue(readiness_gap.success, readiness_gap.error)
+        self.assertFalse(readiness_gap.data["ready_for_real_acceptance"])
+        self.assertFalse(readiness_gap.data["automation_allowed"])
+        gap_row = readiness_gap.data["connectors"][0]
+        self.assertIn("real_endpoint_artifact_uri", gap_row["missing_requirements"])
+        self.assertIn("endpoint_stability_artifact_uri", gap_row["missing_requirements"])
+        self.assertIn("rate_limit_verification_artifact_uri", gap_row["missing_requirements"])
+        self.assertIn("license_review_artifact_uri", gap_row["missing_requirements"])
+        self.assertIn("field_sample_artifact_uri", gap_row["missing_requirements"])
+        self.assertEqual(gap_row["sample_row_count"], 1)
+        self.assertIn("source_risk_yellow", gap_row["automation_blockers"])
+        self.assertEqual(gap_row["usage_boundary"], "astock_connector_readiness_is_manual_reference_acceptance_not_automated_fact_ingestion")
+
+        readiness_ready = self.router.dispatch(
+            "POST",
+            "/api/connectors/astock/verification-readiness",
+            {
+                "connector_id": "eastmoney_research",
+                "sample_rows": {
+                    "eastmoney_research": [
+                        {"title": "Demo bank sector research", "url": "https://example.invalid/report?id=1", "published_at": "2026-05-15"}
+                    ]
+                },
+                "artifact_uris": {
+                    "eastmoney_research": {
+                        "endpoint_artifact_uri": "s3://ai-quant-evidence/astock/eastmoney-endpoint.json",
+                        "stability_artifact_uri": "s3://ai-quant-evidence/astock/eastmoney-stability.json",
+                        "rate_limit_artifact_uri": "s3://ai-quant-evidence/astock/eastmoney-rate-limit.json",
+                        "license_review_uri": "s3://ai-quant-evidence/astock/eastmoney-license.md",
+                        "field_sample_uri": "s3://ai-quant-evidence/astock/eastmoney-sample.jsonl",
+                    }
+                },
+                "record_readiness": True,
+            },
+            actor="risk",
+            role="risk_compliance",
+        )
+        self.assertTrue(readiness_ready.success, readiness_ready.error)
+        self.assertTrue(readiness_ready.data["ready_for_real_acceptance"])
+        ready_row = readiness_ready.data["connectors"][0]
+        self.assertEqual(ready_row["missing_requirements"], [])
+        self.assertFalse(ready_row["automation_allowed"])
+        self.assertEqual(ready_row["artifact_uris"]["endpoint_artifact_uri"], "s3://ai-quant-evidence/astock/eastmoney-endpoint.json")
+        self.assertEqual(self.service.store.audit_log[-1].action, "astock_connector_verification_readiness")
+
         blocked = self.router.dispatch(
             "POST",
             "/api/connectors/astock/verify",
@@ -3677,7 +5446,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("public_eod_market_data", source_rows)
         self.assertEqual(source_rows["public_eod_market_data"]["gaps"], [])
         self.assertIn("close", source_rows["public_eod_market_data"]["field_whitelist"])
-        self.assertEqual(source_rows["public_eod_market_data"]["provenance_ref"], "local://data/local/tdx/market_data.duckdb")
+        self.assertEqual(source_rows["public_eod_market_data"]["provenance_ref"], "local://data/local/tdx/vipdoc")
         self.assertEqual(source_rows["public_eod_market_data"]["collection_method"], "local_file_or_public_api")
         self.assertEqual(source_rows["public_eod_market_data"]["robots_policy"], "reviewed_public_or_local_source")
         self.assertEqual(source_rows["public_eod_market_data"]["review_owner_role"], "数据工程")
@@ -3717,7 +5486,8 @@ class SystemServiceTests(unittest.TestCase):
         source_rows = {item["source_id"]: item for item in after.data["sources"]}
         self.assertEqual(source_rows["public_eod_market_data"]["usage_scope"], "public_eod_internal_research_backtest_risk")
         self.assertEqual(source_rows["public_eod_market_data"]["robots_policy"], "robots_and_tos_reviewed_2026q2")
-        self.assertEqual(after.data["automation_ready"], 1)
+        self.assertTrue(source_rows["public_eod_market_data"]["automation_ready"])
+        self.assertGreaterEqual(after.data["automation_ready"], 1)
 
         review = self.router.dispatch(
             "POST",
@@ -3732,7 +5502,7 @@ class SystemServiceTests(unittest.TestCase):
                 "robots_status": "reviewed_or_not_applicable",
                 "usage_scope_status": "within_boundary",
                 "next_review_due_at": "2099-01-01T00:00:00+00:00",
-                "findings": ["local DuckDB provenance and TDX vipdoc fallback remain internal research inputs"],
+                "findings": ["local TDX vipdoc provenance remains an internal research input"],
             },
             actor="risk",
             role="risk_compliance",
@@ -3940,6 +5710,180 @@ class SystemServiceTests(unittest.TestCase):
         self.assertGreater(templates["s3_lifecycle_policy"]["Rules"][0]["Expiration"]["Days"], 365)
         self.assertIn("风险/合规", templates["ddl_rollback_approval"]["required_approver_roles"])
         self.assertTrue(response.data["checks"]["postgres_no_drop_grant_for_app_role"])
+
+    def test_storage_readiness_report_requires_external_storage_search_and_restore_evidence(self) -> None:
+        gap = self.router.dispatch("POST", "/api/governance/storage-readiness-report", {}, role="platform")
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_storage_production"])
+        self.assertIn("postgres_runtime_or_config", gap.data["missing_requirements"])
+        self.assertIn("s3_object_store_config_or_evidence", gap.data["missing_requirements"])
+        self.assertIn("opensearch_config_or_evidence", gap.data["missing_requirements"])
+        self.assertIn("backup_restore_record", gap.data["missing_requirements"])
+        self.assertIn("postgres_smoke_uri", gap.data["missing_requirements"])
+        self.assertIn("s3_smoke_uri", gap.data["missing_requirements"])
+        self.assertIn("opensearch_smoke_uri", gap.data["missing_requirements"])
+        self.assertFalse(gap.data["automation_allowed"])
+        self.assertTrue(gap.data["runtime"]["sensitive_values_redacted"])
+
+        for check_id in ["real_data_smoke_test", "capacity_latency_report", "backup_restore_drill"]:
+            recorded = self.router.dispatch(
+                "POST",
+                f"/api/readiness/checklist/{check_id}",
+                {
+                    "status": "passed",
+                    "owner": "platform_owner",
+                    "evidence_uri": f"artifact://storage/{check_id}.json",
+                    "metrics": {"accepted": True},
+                },
+                role="platform",
+                actor="platform_owner",
+            )
+            self.assertTrue(recorded.success, recorded.error)
+
+        local_config_only = self.router.dispatch(
+            "POST",
+            "/api/governance/storage-readiness-report",
+            {
+                "postgres_configured": True,
+                "s3_configured": True,
+                "opensearch_configured": True,
+                "runtime": {
+                    "postgres_endpoint": "postgresql://app:secret@localhost/ai_quant",
+                    "s3_endpoint": "http://127.0.0.1:9000",
+                    "opensearch_endpoint": "http://localhost:9200",
+                },
+                "migration": {"dry_run": True, "applied": True, "rollback_recorded": True},
+                "s3_smoke": {"status": "passed", "put_ok": True, "get_ok": True, "checksum_ok": True},
+                "opensearch_smoke": {"status": "passed", "indexed": 12, "search_hits": 3},
+                "artifact_uris": {
+                    "least_privilege_policy_uri": "artifact://storage/least-privilege.json",
+                    "postgres_migration_uri": "artifact://storage/postgres-migration.json",
+                    "capacity_baseline_uri": "artifact://storage/capacity.json",
+                    "backup_restore_uri": "artifact://storage/backup-restore.json",
+                },
+            },
+            role="platform",
+            actor="platform_owner",
+        )
+        self.assertTrue(local_config_only.success, local_config_only.error)
+        self.assertFalse(local_config_only.data["ready_for_storage_production"])
+        self.assertIn("postgres_runtime_or_config", local_config_only.data["missing_requirements"])
+        self.assertIn("s3_object_store_config_or_evidence", local_config_only.data["missing_requirements"])
+        self.assertIn("opensearch_config_or_evidence", local_config_only.data["missing_requirements"])
+        self.assertIn("postgres_smoke_uri", local_config_only.data["missing_requirements"])
+        self.assertIn("s3_smoke_uri", local_config_only.data["missing_requirements"])
+        self.assertIn("opensearch_smoke_uri", local_config_only.data["missing_requirements"])
+        self.assertTrue(local_config_only.data["object_store"]["external_smoke_present"])
+        self.assertTrue(local_config_only.data["search_index"]["external_smoke_present"])
+
+        local_artifacts_only = self.router.dispatch(
+            "POST",
+            "/api/governance/storage-readiness-report",
+            {
+                "postgres_configured": True,
+                "s3_configured": True,
+                "opensearch_configured": True,
+                "runtime": {
+                    "postgres_endpoint": "postgresql://app:secret@postgres.prod.internal/ai_quant",
+                    "s3_endpoint": "https://objects.prod.example.test",
+                    "opensearch_endpoint": "https://search.prod.example.test",
+                },
+                "migration": {"dry_run": True, "applied": True, "rollback_recorded": True},
+                "s3_smoke": {"status": "passed", "put_ok": True, "get_ok": True, "checksum_ok": True},
+                "opensearch_smoke": {"status": "passed", "indexed": 12, "search_hits": 3},
+                "artifact_uris": {
+                    "postgres_smoke_uri": "file:///tmp/postgres-smoke.json",
+                    "s3_smoke_uri": "local://storage/s3-smoke.json",
+                    "opensearch_smoke_uri": "/tmp/opensearch-smoke.json",
+                    "capacity_baseline_uri": "file:///tmp/capacity.json",
+                    "backup_restore_uri": "local://storage/backup-restore.json",
+                    "least_privilege_policy_uri": "file:///tmp/least-privilege.json",
+                    "postgres_migration_uri": "local://storage/postgres-migration.json",
+                },
+            },
+            role="platform",
+            actor="platform_owner",
+        )
+        self.assertTrue(local_artifacts_only.success, local_artifacts_only.error)
+        self.assertFalse(local_artifacts_only.data["ready_for_storage_production"])
+        self.assertIn("least_privilege_policy_uri", local_artifacts_only.data["missing_requirements"])
+        self.assertIn("postgres_migration_evidence", local_artifacts_only.data["missing_requirements"])
+        self.assertIn("postgres_smoke_uri", local_artifacts_only.data["missing_requirements"])
+        self.assertIn("s3_smoke_uri", local_artifacts_only.data["missing_requirements"])
+        self.assertEqual(local_artifacts_only.data["artifact_uris"]["postgres_smoke_uri"], "")
+
+        service_uri_artifacts = self.router.dispatch(
+            "POST",
+            "/api/governance/storage-readiness-report",
+            {
+                "postgres_configured": True,
+                "s3_configured": True,
+                "opensearch_configured": True,
+                "runtime": {
+                    "postgres_endpoint": "postgresql://app:secret@postgres.prod.internal/ai_quant",
+                    "s3_endpoint": "https://objects.prod.example.test",
+                    "opensearch_endpoint": "https://search.prod.example.test",
+                },
+                "migration": {"dry_run": True, "applied": True, "rollback_recorded": True},
+                "s3_smoke": {"status": "passed", "put_ok": True, "get_ok": True, "checksum_ok": True},
+                "opensearch_smoke": {"status": "passed", "indexed": 12, "search_hits": 3},
+                "artifact_uris": {
+                    "postgres_smoke_uri": "postgresql://app:secret@postgres.prod.internal/ai_quant",
+                    "s3_smoke_uri": "https://objects.prod.example.test",
+                    "opensearch_smoke_uri": "opensearch://search.prod.example.test/ai-quant",
+                    "least_privilege_policy_uri": "artifact://storage/least-privilege.json",
+                    "postgres_migration_uri": "artifact://storage/postgres-migration.json",
+                },
+            },
+            role="platform",
+            actor="platform_owner",
+        )
+        self.assertTrue(service_uri_artifacts.success, service_uri_artifacts.error)
+        self.assertFalse(service_uri_artifacts.data["ready_for_storage_production"])
+        self.assertIn("postgres_smoke_uri", service_uri_artifacts.data["missing_requirements"])
+        self.assertIn("s3_smoke_uri", service_uri_artifacts.data["missing_requirements"])
+        self.assertIn("opensearch_smoke_uri", service_uri_artifacts.data["missing_requirements"])
+        self.assertEqual(service_uri_artifacts.data["artifact_uris"]["postgres_smoke_uri"], "")
+        self.assertEqual(service_uri_artifacts.data["artifact_uris"]["opensearch_smoke_uri"], "")
+        self.assertEqual(service_uri_artifacts.data["artifact_uris"]["s3_smoke_uri"], "")
+
+        ready = self.router.dispatch(
+            "POST",
+            "/api/governance/storage-readiness-report",
+            {
+                "postgres_configured": True,
+                "s3_configured": True,
+                "opensearch_configured": True,
+                "runtime": {
+                    "postgres_endpoint": "postgresql://app:secret@postgres.prod.internal/ai_quant",
+                    "s3_endpoint": "https://objects.prod.example.test",
+                    "opensearch_endpoint": "https://search.prod.example.test",
+                },
+                "migration": {"dry_run": True, "applied": True, "rollback_recorded": True},
+                "s3_smoke": {"status": "passed", "put_ok": True, "get_ok": True, "checksum_ok": True},
+                "opensearch_smoke": {"status": "passed", "indexed": 12, "search_hits": 3},
+                "artifact_uris": {
+                    "postgres_smoke_uri": "artifact://storage/postgres-smoke.json",
+                    "s3_smoke_uri": "artifact://storage/s3-smoke.json",
+                    "opensearch_smoke_uri": "artifact://storage/opensearch-smoke.json",
+                    "capacity_baseline_uri": "artifact://storage/capacity.json",
+                    "backup_restore_uri": "artifact://storage/backup-restore.json",
+                    "least_privilege_policy_uri": "artifact://storage/least-privilege.json",
+                    "postgres_migration_uri": "artifact://storage/postgres-migration.json",
+                },
+                "record_readiness": True,
+            },
+            role="platform",
+            actor="platform_owner",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_storage_production"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertTrue(ready.data["runtime"]["postgres_configured"])
+        self.assertNotIn("secret", ready.data["runtime"]["postgres_endpoint_redacted"])
+        self.assertTrue(ready.data["object_store"]["external_smoke_present"])
+        self.assertTrue(ready.data["search_index"]["external_smoke_present"])
+        self.assertEqual(self.service.store.audit_log[-1].action, "storage_readiness_report")
 
     def test_public_market_data_respects_rights_and_dashboard(self) -> None:
         seeded = self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
@@ -4261,6 +6205,186 @@ class SystemServiceTests(unittest.TestCase):
         self.assertAlmostEqual(portfolio.data["attribution"]["industry"]["hardware"]["period_contribution"], -0.02)
         self.assertEqual(portfolio.data["attribution"]["style"]["quality"]["weight"], 0.6)
 
+    def test_portfolio_attribution_readiness_report_tracks_reports_replays_and_ledger(self) -> None:
+        self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
+        self.service.register_security(
+            {
+                "security_id": "sec_attr_ready_2",
+                "issuer_id": "issuer_001",
+                "ticker": "ATTR2",
+                "exchange": "SSE",
+                "currency": "CNY",
+                "market": "A",
+            },
+            actor="platform",
+        )
+        for payload in [
+            {"data_id": "md_attr_r1_d1", "security_id": "sec_001", "as_of_date": "2026-05-14", "close": 10.0, "adjusted_close": 10.0, "volume": 100},
+            {"data_id": "md_attr_r1_d2", "security_id": "sec_001", "as_of_date": "2026-05-15", "close": 11.0, "adjusted_close": 11.0, "volume": 100},
+            {"data_id": "md_attr_r2_d1", "security_id": "sec_attr_ready_2", "as_of_date": "2026-05-14", "close": 20.0, "adjusted_close": 20.0, "volume": 100},
+            {"data_id": "md_attr_r2_d2", "security_id": "sec_attr_ready_2", "as_of_date": "2026-05-15", "close": 19.0, "adjusted_close": 19.0, "volume": 100},
+        ]:
+            created = self.router.dispatch("POST", "/api/market-data/points", {"source_id": "public_eod_market_data", "data_type": "eod", **payload}, role="data_engineer")
+            self.assertTrue(created.success, created.error)
+
+        report = self.router.dispatch(
+            "POST",
+            "/api/operating-reports",
+            {
+                "report_id": "opr_attr_ready",
+                "period": "2026-05",
+                "portfolio_returns": [0.02, -0.01],
+                "benchmark_returns": [0.01, -0.005],
+                "red_flags": [{"type": "attribution_review", "owner": "风险/合规", "due": "month_end"}],
+            },
+            role="CEO",
+            actor="ceo_owner",
+        )
+        self.assertTrue(report.success, report.error)
+        gap = self.router.dispatch("POST", "/api/portfolio/attribution/readiness-report", {}, role="CIO")
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_attribution_production"])
+        self.assertIn("attribution_annotation_coverage", gap.data["missing_requirements"])
+        self.assertIn("strategy_replay_count", gap.data["missing_requirements"])
+        self.assertIn("simulated_ledger_transaction_count", gap.data["missing_requirements"])
+        self.assertIn("forward_attribution_evidence", gap.data["missing_requirements"])
+        self.assertIn("forward_attribution_artifact_uri", gap.data["missing_requirements"])
+        self.assertIn("performance_reconciliation_uri", gap.data["missing_requirements"])
+        self.assertIn("ledger_extract_artifact_uri", gap.data["missing_requirements"])
+        self.assertIn("strategy_replay_artifact_uri", gap.data["missing_requirements"])
+        self.assertIn("board_pack_artifact_uri", gap.data["missing_requirements"])
+        self.assertFalse(gap.data["live_execution_allowed"])
+
+        backfill = self.router.dispatch(
+            "POST",
+            "/api/portfolio/attribution/backfill",
+            {
+                "holdings": [
+                    {"security_id": "sec_001", "weight": 0.6},
+                    {"security_id": "sec_attr_ready_2", "weight": 0.4},
+                ],
+                "start_date": "2026-05-14",
+                "end_date": "2026-05-15",
+                "target_report_ids": ["opr_attr_ready"],
+                "groups": {
+                    "sec_001": {"industry": "software", "style": "quality"},
+                    "sec_attr_ready_2": {"industry": "hardware", "style": "value"},
+                },
+            },
+            role="CIO",
+            actor="pm_owner",
+        )
+        self.assertTrue(backfill.success, backfill.error)
+        self.assertEqual(backfill.data["annotated_count"], 1)
+        self.assertIn("portfolio_attribution", self.service.store.operating_reports["opr_attr_ready"].annotations)
+        published = self.router.dispatch(
+            "POST",
+            "/api/operating-reports/opr_attr_ready/publish",
+            {"approver_role": "CEO", "user": "ceo_owner", "comment": "attribution reviewed"},
+            role="CEO",
+            actor="ceo_owner",
+        )
+        self.assertTrue(published.success, published.error)
+        self.service.store.decisions["dec_attr_ready"] = DecisionPack(
+            decision_id="dec_attr_ready",
+            signal_ids=[],
+            risk_checks=["paper_attribution_review"],
+            approval_state="approved",
+        )
+        self.service.create_strategy_replay(
+            {
+                "replay_id": "replay_attr_ready",
+                "decision_id": "dec_attr_ready",
+                "expected_outcome": "relative return positive",
+                "actual_outcome": "relative return positive",
+                "variance_reason": "hardware drag offset software selection",
+                "next_action": "keep paper tracking",
+                "version": "v1",
+            },
+            actor="cio",
+        )
+        imported = self.router.dispatch(
+            "POST",
+            "/api/portfolio/transactions/import",
+            {
+                "rows": [
+                    {"trade_id": "attr_fill_1", "ticker": "DEMO", "date": "2026-05-14", "signed_qty": 100, "avg_price": 10.0},
+                    {"trade_id": "attr_fill_2", "ticker": "ATTR2", "date": "2026-05-14", "signed_qty": 100, "avg_price": 20.0},
+                ],
+                "security_map": {"DEMO": "sec_001", "ATTR2": "sec_attr_ready_2"},
+            },
+            role="PM",
+            actor="pm_owner",
+        )
+        self.assertTrue(imported.success, imported.error)
+        forward = self.router.dispatch(
+            "POST",
+            "/api/portfolio/returns",
+            {"weights": {"sec_001": 0.6, "sec_attr_ready_2": 0.4}, "source_id": "public_eod_market_data", "data_type": "eod"},
+            role="CIO",
+        )
+        self.assertTrue(forward.success, forward.error)
+
+        exported_board_pack = self.router.dispatch(
+            "POST",
+            "/api/operating-reports/opr_attr_ready/board-pack",
+            {},
+            role="CEO",
+            actor="ceo_owner",
+        )
+        self.assertTrue(exported_board_pack.success, exported_board_pack.error)
+        local_export_only = self.router.dispatch(
+            "POST",
+            "/api/portfolio/attribution/readiness-report",
+            {
+                "forward_report": {
+                    "return_count": forward.data["return_count"],
+                    "attribution": forward.data["attribution"],
+                    "simulation_only": True,
+                    "live_execution_allowed": False,
+                },
+                "artifact_uris": {
+                    "performance_reconciliation_uri": "artifact://staging/performance-reconciliation.json",
+                    "ledger_extract_uri": "artifact://staging/simulated-ledger.json",
+                    "strategy_replay_uri": "artifact://staging/strategy-replay-compare.json",
+                },
+            },
+            role="CIO",
+        )
+        self.assertTrue(local_export_only.success, local_export_only.error)
+        self.assertFalse(local_export_only.data["ready_for_attribution_production"])
+        self.assertGreaterEqual(local_export_only.data["operating_reports"]["board_pack_export_count"], 1)
+        self.assertIn("board_pack_artifact_uri", local_export_only.data["missing_requirements"])
+
+        ready = self.router.dispatch(
+            "POST",
+            "/api/portfolio/attribution/readiness-report",
+            {
+                "record_readiness": True,
+                "forward_report": {
+                    "return_count": forward.data["return_count"],
+                    "attribution": forward.data["attribution"],
+                    "simulation_only": True,
+                    "live_execution_allowed": False,
+                },
+                "artifact_uris": {
+                    "forward_attribution_uri": "artifact://staging/forward-attribution.json",
+                    "performance_reconciliation_uri": "artifact://staging/performance-reconciliation.json",
+                    "board_pack_uri": "artifact://staging/opr-attr-ready-board-pack.md",
+                    "ledger_extract_uri": "artifact://staging/simulated-ledger.json",
+                    "strategy_replay_uri": "artifact://staging/strategy-replay-compare.json",
+                },
+            },
+            role="CIO",
+            actor="cio_owner",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_attribution_production"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertEqual(ready.data["operating_reports"]["attribution_annotated_count"], 1)
+        self.assertFalse(ready.data["ledger"]["live_broker_source_seen"])
+        self.assertEqual(self.service.store.audit_log[-1].action, "portfolio_attribution_readiness_report")
+
     def test_portfolio_valuation_uses_latest_public_market_prices(self) -> None:
         self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
         self.service.register_security(
@@ -4351,36 +6475,96 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(positions.data["positions"][0]["shares"], 60.0)
         self.assertEqual(positions.data["transaction_count"], 2)
 
+    def test_portfolio_transaction_import_accepts_backtest_alias_rows(self) -> None:
+        self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
+        rows = [
+            {
+                "trade_id": "bt_fill_001",
+                "symbol": "DEMO",
+                "datetime": "20260514 09:30:00",
+                "action": "BUY",
+                "shares": 100,
+                "fill_price": 10.0,
+                "commission": 1.0,
+                "portfolio_id": "paper_alias",
+                "strategy": "backtest_v1",
+            },
+            {
+                "trade_id": "bt_fill_002",
+                "ticker": "DEMO",
+                "date": "2026-05-15",
+                "signed_qty": -40,
+                "avg_price": 11.0,
+                "fee": 1.0,
+                "portfolio_id": "paper_alias",
+                "strategy": "backtest_v1",
+            },
+        ]
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/portfolio/transactions/import",
+            {"rows": rows, "dry_run": True},
+            role="PM",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertTrue(dry_run.data["dry_run"])
+        self.assertEqual(dry_run.data["normalized_count"], 2)
+        self.assertEqual(dry_run.data["created_count"], 0)
+        self.assertEqual(dry_run.data["normalized"][1]["side"], "sell")
+        self.assertEqual(dry_run.data["normalized"][1]["quantity"], 40.0)
+        self.assertEqual(dry_run.data["usage_boundary"], "portfolio_transaction_import_accepts_simulated_or_backtest_ledgers_only_no_broker_execution")
+
+        imported = self.router.dispatch(
+            "POST",
+            "/api/portfolio/transactions/import",
+            {"rows": rows},
+            actor="pm",
+            role="PM",
+        )
+        self.assertTrue(imported.success, imported.error)
+        self.assertFalse(imported.data["dry_run"])
+        self.assertEqual(imported.data["source_id"], "simulated_trade_execution")
+        self.assertEqual(imported.data["created_count"], 2)
+        self.assertEqual(imported.data["failed_count"], 0)
+        self.assertTrue(imported.data["simulation_only"])
+        self.assertFalse(imported.data["live_execution_allowed"])
+
+        duplicate = self.router.dispatch(
+            "POST",
+            "/api/portfolio/transactions/import",
+            {"rows": rows},
+            role="PM",
+        )
+        self.assertTrue(duplicate.success, duplicate.error)
+        self.assertEqual(duplicate.data["created_count"], 0)
+        self.assertEqual(duplicate.data["skipped_count"], 2)
+
+        positions = self.router.dispatch(
+            "GET",
+            "/api/portfolio/positions",
+            {"account_id": "paper_alias", "strategy_id": "backtest_v1", "as_of_date": "2026-05-15"},
+            role="PM",
+        )
+        self.assertTrue(positions.success, positions.error)
+        self.assertEqual(positions.data["position_count"], 1)
+        self.assertEqual(positions.data["positions"][0]["shares"], 60.0)
+
     def test_tdx_market_data_preview_and_import_use_public_eod_path(self) -> None:
         with TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "market_data.duckdb"
-            connection = sqlite3.connect(db_path)
-            connection.execute(
-                """
-                CREATE TABLE daily_kline (
-                    symbol TEXT,
-                    trade_date TEXT,
-                    open REAL,
-                    close REAL,
-                    high REAL,
-                    low REAL,
-                    volume REAL,
-                    amount REAL,
-                    turnover REAL
+            vipdoc_root = Path(temp_dir) / "vipdoc"
+            day_dir = vipdoc_root / "sh" / "lday"
+            day_dir.mkdir(parents=True)
+            (day_dir / "sh600000.day").write_bytes(
+                b"".join(
+                    [
+                        struct.pack("<IIIIIfII", 20260514, 1000, 1080, 990, 1050, 10500.0, 1000, 0),
+                        struct.pack("<IIIIIfII", 20260515, 1050, 1120, 1030, 1100, 13200.0, 1200, 0),
+                    ]
                 )
-                """
             )
-            connection.executemany(
-                "INSERT INTO daily_kline VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    ("600000", "2026-05-14", 10.0, 10.5, 10.8, 9.9, 1000.0, 10500.0, None),
-                    ("600000", "2026-05-15", 10.5, 11.0, 11.2, 10.3, 1200.0, 13200.0, None),
-                ],
-            )
-            connection.commit()
-            connection.close()
 
-            self.service.tdx_market_data = TDXMarketDataAdapter(path=db_path, connect=lambda path, _read_only: sqlite3.connect(path))
+            self.service.tdx_market_data = TDXVipdocAdapter(path=vipdoc_root)
+            self.service.tdx_vipdoc = self.service.tdx_market_data
             self.service.register_security(
                 {
                     "security_id": "sec_600000",
@@ -4396,7 +6580,7 @@ class SystemServiceTests(unittest.TestCase):
             preview = self.router.dispatch(
                 "POST",
                 "/api/market-data/tdx/preview",
-                {"symbols": ["sh600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
+                {"source_format": "vipdoc", "symbols": ["sh600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
                 role="data_engineer",
             )
             self.assertTrue(preview.success, preview.error)
@@ -4406,7 +6590,7 @@ class SystemServiceTests(unittest.TestCase):
             imported = self.router.dispatch(
                 "POST",
                 "/api/market-data/tdx/import",
-                {"symbols": ["600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
+                {"source_format": "vipdoc", "symbols": ["600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
                 actor="data",
                 role="data_engineer",
             )
@@ -4420,40 +6604,28 @@ class SystemServiceTests(unittest.TestCase):
             duplicate = self.router.dispatch(
                 "POST",
                 "/api/market-data/tdx/import",
-                {"symbols": ["600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
+                {"source_format": "vipdoc", "symbols": ["600000"], "start_date": "2026-05-14", "end_date": "2026-05-15", "limit": 10},
                 role="data_engineer",
             )
             self.assertTrue(duplicate.success)
             self.assertEqual(duplicate.data["created_count"], 0)
             self.assertEqual(duplicate.data["skipped_count"], 2)
 
-    def test_tdx_market_data_adapter_detects_real_schema_aliases(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "market_data_alias.duckdb"
-            connection = sqlite3.connect(db_path)
-            connection.execute(
-                """
-                CREATE TABLE ashare_daily (
-                    ts_code TEXT,
-                    date INTEGER,
-                    open_price REAL,
-                    high_price REAL,
-                    low_price REAL,
-                    close_price REAL,
-                    vol REAL,
-                    amt REAL,
-                    turnover_rate REAL
-                )
-                """
-            )
-            connection.execute(
-                "INSERT INTO ashare_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ("SH600000", 20260514, 10.0, 10.8, 9.9, 10.5, 1200.0, 12600.0, 1.2),
-            )
-            connection.commit()
-            connection.close()
+    def test_tdx_batch_import_helpers_normalize_symbol_and_exchange(self) -> None:
+        self.assertEqual(normalize_symbol("sh600000"), "600000")
+        self.assertEqual(normalize_symbol("000001.SZ"), "000001")
+        self.assertEqual(normalize_symbol("600519.XSHG"), "600519")
+        self.assertEqual(infer_exchange("600519"), "SSE")
+        self.assertEqual(infer_exchange("300750"), "SZSE")
+        self.assertEqual(infer_exchange("430047"), "BSE")
 
-            adapter = TDXMarketDataAdapter(path=db_path, connect=lambda path, _read_only: sqlite3.connect(path))
+    def test_tdx_vipdoc_adapter_reads_symbols_and_summary(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            vipdoc_root = Path(temp_dir) / "vipdoc"
+            day_dir = vipdoc_root / "sh" / "lday"
+            day_dir.mkdir(parents=True)
+            (day_dir / "sh600000.day").write_bytes(struct.pack("<IIIIIfII", 20260514, 1000, 1080, 990, 1050, 12600.0, 1200, 0))
+            adapter = TDXVipdocAdapter(path=vipdoc_root)
             rows = adapter.query_daily(symbols=["600000.SH"], start_date="2026-05-14", end_date="2026-05-14", limit=10)
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["symbol"], "600000")
@@ -4461,12 +6633,59 @@ class SystemServiceTests(unittest.TestCase):
             self.assertEqual(rows[0]["close"], 10.5)
             self.assertEqual(rows[0]["volume"], 1200.0)
             self.assertEqual(rows[0]["amount"], 12600.0)
-            self.assertEqual(rows[0]["turnover"], 1.2)
+            self.assertIsNone(rows[0]["turnover"])
             summary = adapter.summary()
-            self.assertEqual(summary["rows"], 1)
-            self.assertEqual(summary["schema"]["raw_table"], "ashare_daily")
-            self.assertEqual(summary["schema"]["raw_symbol"], '"ts_code"')
-            self.assertEqual(adapter.symbols(prefix="sh600", limit=5), ["600000"])
+            self.assertEqual(summary["files"], 1)
+            self.assertEqual(adapter.symbols(prefix="600", limit=5), ["600000"])
+
+    def test_market_data_schema_coverage_report_maps_tdx_aliases_to_public_eod_fields(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            vipdoc_root = Path(temp_dir) / "vipdoc"
+            day_dir = vipdoc_root / "sh" / "lday"
+            day_dir.mkdir(parents=True)
+            (day_dir / "sh600000.day").write_bytes(struct.pack("<IIIIIfII", 20260514, 1000, 1080, 990, 1050, 12600.0, 1200, 0))
+            self.service.tdx_market_data = TDXVipdocAdapter(path=vipdoc_root)
+            self.service.tdx_vipdoc = self.service.tdx_market_data
+
+            report = self.router.dispatch(
+                "GET",
+                "/api/market-data/schema-coverage-report",
+                {},
+                role="data_engineer",
+            )
+            self.assertTrue(report.success, report.error)
+            self.assertEqual(report.data["schema_count"], 1)
+            self.assertEqual(report.data["recognized_schema_count"], 1)
+            self.assertEqual(report.data["schema_recognition_coverage"], 1.0)
+            self.assertEqual(report.data["target_field_coverage"], 1.0)
+            self.assertTrue(report.data["automation_ready"])
+            self.assertEqual(report.data["automation_blockers"], [])
+            table = report.data["tables"][0]
+            self.assertTrue(table["table"].endswith("sh600000.day"))
+            self.assertEqual(table["target_field_mapping"]["security_id"], "file_name")
+            self.assertEqual(table["target_field_mapping"]["as_of_date"], "record.date")
+            self.assertEqual(table["target_field_mapping"]["adjusted_close"], "record.close")
+            self.assertEqual(report.data["usage_boundary"], "schema_coverage_report_only_validates_public_eod_field_mapping_no_market_data_is_imported")
+
+    def test_market_data_schema_coverage_report_flags_anomaly_samples(self) -> None:
+        report = self.router.dispatch(
+            "POST",
+            "/api/market-data/schema-coverage-report",
+            {
+                "schema_samples": [
+                    {
+                        "table": "bad_realtime_ticks",
+                        "columns": ["ticker", "last_price", "bid", "ask", "event_time"],
+                    }
+                ]
+            },
+            role="data_engineer",
+        )
+        self.assertTrue(report.success, report.error)
+        self.assertEqual(report.data["schema_count"], 1)
+        self.assertEqual(report.data["schema_anomaly_count"], 1)
+        self.assertFalse(report.data["automation_ready"])
+        self.assertIn("unrecognized_schema", report.data["automation_blockers"])
 
     def test_tdx_vipdoc_preview_and_import_fallback(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -4524,32 +6743,17 @@ class SystemServiceTests(unittest.TestCase):
     def test_tdx_incremental_import_script_starts_after_existing_date(self) -> None:
         with TemporaryDirectory() as temp_dir:
             state_db = Path(temp_dir) / "state.db"
-            tdx_db = Path(temp_dir) / "market_data.duckdb"
-            connection = sqlite3.connect(tdx_db)
-            connection.execute(
-                """
-                CREATE TABLE daily_kline (
-                    symbol TEXT,
-                    trade_date TEXT,
-                    open REAL,
-                    close REAL,
-                    high REAL,
-                    low REAL,
-                    volume REAL,
-                    amount REAL,
-                    turnover REAL
+            vipdoc_root = Path(temp_dir) / "vipdoc"
+            day_dir = vipdoc_root / "sh" / "lday"
+            day_dir.mkdir(parents=True)
+            (day_dir / "sh600000.day").write_bytes(
+                b"".join(
+                    [
+                        struct.pack("<IIIIIfII", 20260514, 1000, 1080, 990, 1050, 10500.0, 1000, 0),
+                        struct.pack("<IIIIIfII", 20260515, 1050, 1120, 1030, 1100, 13200.0, 1200, 0),
+                    ]
                 )
-                """
             )
-            connection.executemany(
-                "INSERT INTO daily_kline VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    ("600000", "2026-05-14", 10.0, 10.5, 10.8, 9.9, 1000.0, 10500.0, None),
-                    ("600000", "2026-05-15", 10.5, 11.0, 11.2, 10.3, 1200.0, 13200.0, None),
-                ],
-            )
-            connection.commit()
-            connection.close()
 
             state_service = SystemService(SQLiteStore(state_db))
             state_service.seed_default_sources(actor="data")
@@ -4584,9 +6788,9 @@ class SystemServiceTests(unittest.TestCase):
                 state_db,
                 symbols=["600000"],
                 security_map={"600000": "sec_600000"},
-                tdx_duckdb_path=tdx_db,
+                vipdoc_path=vipdoc_root,
+                source_format="vipdoc",
                 end_date="2026-05-15",
-                duckdb_connect=lambda path, _read_only: sqlite3.connect(path),
             )
             self.assertEqual(summary["created_count"], 1)
             self.assertEqual(summary["results"][0]["start_date"], "2026-05-15")
@@ -4749,6 +6953,296 @@ class SystemServiceTests(unittest.TestCase):
         self.assertFalse(blocked_negative.success)
         self.assertEqual(blocked_negative.status_code, 422)
 
+    def test_13f_information_table_parse_imports_mapped_holdings_only(self) -> None:
+        self.service.register_security(
+            {
+                "security_id": "sec_us_apple",
+                "issuer_id": "issuer_001",
+                "ticker": "AAPL",
+                "figi": "BBG000B9XRY4",
+                "isin": "US0378331005",
+                "exchange": "NASDAQ",
+                "currency": "USD",
+                "market": "U",
+            },
+            actor="platform",
+        )
+        self.service.register_entity_mapping(
+            {
+                "mapping_id": "map_13f_apple",
+                "issuer_id": "issuer_001",
+                "figi": "BBG000B9XRY4",
+                "isin": "US0378331005",
+                "ticker": "AAPL",
+                "market": "U",
+                "confidence": 0.96,
+                "source": "manual_cusip_figi_gold",
+            },
+            actor="data_engineer",
+        )
+        xml = """<SEC-DOCUMENT>header text</SEC-DOCUMENT>
+<XML>
+<?xml version="1.0" encoding="UTF-8"?>
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+  <infoTable>
+    <nameOfIssuer>APPLE INC</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>037833100</cusip>
+    <value>150000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>1000000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+    <votingAuthority><Sole>1000000</Sole><Shared>0</Shared><None>0</None></votingAuthority>
+  </infoTable>
+  <infoTable>
+    <nameOfIssuer>UNMAPPED SEMICONDUCTOR CO</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>999999999</cusip>
+    <value>9000</value>
+    <shrsOrPrnAmt><sshPrnamt>25000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+    <votingAuthority><Sole>25000</Sole><Shared>0</Shared><None>0</None></votingAuthority>
+  </infoTable>
+</informationTable>
+</XML>
+<XML><metadata>ignored wrapper</metadata></XML>"""
+        parsed = self.router.dispatch(
+            "POST",
+            "/api/13f/filings/parse",
+            {
+                "information_table_xml": xml,
+                "source_uri": "https://www.sec.gov/Archives/edgar/data/1067983/000095012326000001/infotable.xml",
+                "filer_cik": "0001067983",
+                "filer_name": "Berkshire Hathaway Inc",
+                "report_period": "2026-03-31",
+                "import_holdings": True,
+            },
+            role="海外研究负责人",
+        )
+        self.assertTrue(parsed.success, parsed.error)
+        self.assertEqual(parsed.data["row_count"], 2)
+        self.assertEqual(parsed.data["created_count"], 1)
+        self.assertEqual(parsed.data["unmapped_count"], 1)
+        self.assertFalse(parsed.data["automation_allowed"])
+        self.assertFalse(parsed.data["live_execution_allowed"])
+        self.assertEqual(
+            parsed.data["usage_boundary"],
+            "13f_information_table_import_is_research_and_crowding_risk_only_not_trade_signal",
+        )
+        created = parsed.data["created"][0]
+        self.assertEqual(created["security_id"], "sec_us_apple")
+        self.assertEqual(created["shares"], 1000000.0)
+        self.assertEqual(created["value_usd"], 150000000.0)
+        self.assertEqual(created["voting_authority"], "sole=1000000;shared=0;none=0")
+        self.assertEqual(parsed.data["unmapped"][0]["cusip"], "999999999")
+
+        duplicate = self.router.dispatch(
+            "POST",
+            "/api/13f/filings/parse",
+            {
+                "information_table_xml": xml,
+                "filer_cik": "0001067983",
+                "filer_name": "Berkshire Hathaway Inc",
+                "report_period": "2026-03-31",
+                "import_holdings": True,
+            },
+            role="数据工程",
+        )
+        self.assertTrue(duplicate.success, duplicate.error)
+        self.assertEqual(duplicate.data["created_count"], 0)
+        self.assertEqual(duplicate.data["skipped_count"], 2)
+
+        crowding = self.router.dispatch(
+            "POST",
+            "/api/13f/crowding/update",
+            {"snapshot_id": "crd_13f_xml", "issuer_id": "issuer_001", "report_period": "2026-03-31"},
+            role="CIO",
+        )
+        self.assertTrue(crowding.success, crowding.error)
+        candidates = self.router.dispatch(
+            "GET",
+            "/api/13f/candidate-pool",
+            {"report_period": "2026-03-31"},
+            role="CEO",
+        )
+        self.assertFalse(candidates.data["automation_allowed"])
+        self.assertEqual(candidates.data["candidates"][0]["security_id"], "sec_us_apple")
+
+    def test_13f_information_table_parse_fetches_source_uri(self) -> None:
+        class FakeSecConnectors:
+            def __init__(self, xml: str) -> None:
+                self.xml = xml
+                self.fetches = []
+
+            def fetch_sec_document_body(self, source_uri, *, user_agent, max_bytes=2_000_000):
+                self.fetches.append((source_uri, user_agent, max_bytes))
+                return self.xml
+
+        self.service.register_security(
+            {
+                "security_id": "sec_us_msft",
+                "issuer_id": "issuer_001",
+                "ticker": "MSFT",
+                "figi": "BBG000BPH459",
+                "isin": "US5949181045",
+                "exchange": "NASDAQ",
+                "currency": "USD",
+                "market": "U",
+            },
+            actor="platform",
+        )
+        xml = """<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+  <infoTable>
+    <nameOfIssuer>MICROSOFT CORP</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>594918104</cusip>
+    <value>42000</value>
+    <shrsOrPrnAmt><sshPrnamt>210000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+  </infoTable>
+</informationTable>"""
+        fake = FakeSecConnectors(xml)
+        self.service.connectors = fake
+        response = self.router.dispatch(
+            "POST",
+            "/api/13f/filings/parse",
+            {
+                "source_uri": "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000001/infotable.xml",
+                "filer_cik": "0001000000",
+                "report_period": "2026-03-31",
+                "user_agent": "unit-test@example.com",
+                "import_holdings": True,
+                "security_mappings": [
+                    {
+                        "cusip": "594918104",
+                        "issuer_id": "issuer_001",
+                        "security_id": "sec_us_msft",
+                        "confidence": 0.91,
+                    }
+                ],
+            },
+            role="数据工程",
+        )
+        self.assertTrue(response.success, response.error)
+        self.assertEqual(response.data["fetch_status"], "fetched_source_uri")
+        self.assertEqual(response.data["created_count"], 1)
+        self.assertEqual(response.data["created"][0]["security_id"], "sec_us_msft")
+        self.assertEqual(fake.fetches[0][1], "unit-test@example.com")
+
+    def test_13f_information_table_batch_parse_reports_mapping_rate(self) -> None:
+        self.service.register_security(
+            {
+                "security_id": "sec_us_nvda",
+                "issuer_id": "issuer_001",
+                "ticker": "NVDA",
+                "figi": "BBG000BBJQV0",
+                "isin": "US67066G1040",
+                "exchange": "NASDAQ",
+                "currency": "USD",
+                "market": "U",
+            },
+            actor="platform",
+        )
+        mapped_xml = """<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+  <infoTable><nameOfIssuer>NVIDIA CORP</nameOfIssuer><titleOfClass>COM</titleOfClass><cusip>67066G104</cusip><value>1000</value><shrsOrPrnAmt><sshPrnamt>5000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt></infoTable>
+</informationTable>"""
+        unmapped_xml = """<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+  <infoTable><nameOfIssuer>UNKNOWN ADR PLC</nameOfIssuer><titleOfClass>COM</titleOfClass><cusip>111111111</cusip><value>2000</value><shrsOrPrnAmt><sshPrnamt>8000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt></infoTable>
+</informationTable>"""
+        batch = self.router.dispatch(
+            "POST",
+            "/api/13f/filings/batch-parse",
+            {
+                "batch_id": "13f_batch_unit",
+                "import_holdings": True,
+                "report_period": "2026-03-31",
+                "filer_cik": "0001000000",
+                "filings": [
+                    {"filing_id": "filing_nvda", "information_table_xml": mapped_xml, "filer_name": "Gamma Fund"},
+                    {"filing_id": "filing_unknown", "information_table_xml": unmapped_xml, "filer_name": "Delta Fund"},
+                ],
+            },
+            role="数据工程",
+        )
+        self.assertTrue(batch.success, batch.error)
+        self.assertEqual(batch.data["filing_count"], 2)
+        self.assertEqual(batch.data["row_count"], 2)
+        self.assertEqual(batch.data["created_count"], 1)
+        self.assertEqual(batch.data["unmapped_count"], 1)
+        self.assertEqual(batch.data["mapping_rate"], 0.5)
+        self.assertFalse(batch.data["automation_allowed"])
+        self.assertFalse(batch.data["live_execution_allowed"])
+        self.assertEqual(batch.data["usage_boundary"], "13f_batch_import_is_dataset_quality_and_crowding_risk_only_not_trade_signal")
+
+        readiness_gap = self.router.dispatch(
+            "POST",
+            "/api/13f/filings/mapping-readiness",
+            {"batch_result": batch.data},
+            actor="data",
+            role="数据工程",
+        )
+        self.assertTrue(readiness_gap.success, readiness_gap.error)
+        self.assertFalse(readiness_gap.data["ready_for_real_acceptance"])
+        self.assertFalse(readiness_gap.data["automation_allowed"])
+        self.assertFalse(readiness_gap.data["live_execution_allowed"])
+        self.assertIn("filing_count", readiness_gap.data["missing_requirements"])
+        self.assertIn("mapping_rate", readiness_gap.data["missing_requirements"])
+        self.assertIn("batch_artifact_uri", readiness_gap.data["missing_requirements"])
+        self.assertIn("unmapped_review_queue_uri", readiness_gap.data["missing_requirements"])
+        self.assertEqual(readiness_gap.data["mapping_rate"], 0.5)
+        self.assertEqual(readiness_gap.data["unmapped_queue_count"], 1)
+        self.assertIn("13f_mapping_readiness_tracks_real_batch_artifacts", readiness_gap.data["usage_boundary"])
+
+        no_unmapped_without_review_artifact = self.router.dispatch(
+            "POST",
+            "/api/13f/filings/mapping-readiness",
+            {
+                "filing_count": 120,
+                "row_count": 2500,
+                "unmapped_count": 0,
+                "failed_count": 0,
+                "mapping_rate": 1.0,
+                "artifact_uris": {
+                    "batch_artifact_uri": "s3://ai-quant-evidence/13f/batch-2026q1.json",
+                    "mapping_gold_uri": "s3://ai-quant-evidence/13f/cusip-figi-gold-2026q1.jsonl",
+                },
+            },
+            actor="data",
+            role="数据工程",
+        )
+        self.assertTrue(no_unmapped_without_review_artifact.success, no_unmapped_without_review_artifact.error)
+        self.assertFalse(no_unmapped_without_review_artifact.data["ready_for_real_acceptance"])
+        self.assertEqual(no_unmapped_without_review_artifact.data["unmapped_queue_count"], 0)
+        self.assertIn("unmapped_review_queue_uri", no_unmapped_without_review_artifact.data["missing_requirements"])
+
+        readiness_ready = self.router.dispatch(
+            "POST",
+            "/api/13f/filings/mapping-readiness",
+            {
+                "batch_id": "13f_batch_large_ready",
+                "filing_count": 120,
+                "row_count": 2500,
+                "unmapped_count": 20,
+                "failed_count": 0,
+                "mapping_rate": 0.992,
+                "mapping_counts": {"registry_mapping": 2400, "provided_mapping": 80, "unmapped": 20},
+                "artifact_uris": {
+                    "batch_artifact_uri": "s3://ai-quant-evidence/13f/batch-2026q1.json",
+                    "mapping_gold_uri": "s3://ai-quant-evidence/13f/cusip-figi-gold-2026q1.jsonl",
+                    "unmapped_review_queue_uri": "s3://ai-quant-evidence/13f/unmapped-review-2026q1.jsonl",
+                },
+                "record_readiness": True,
+            },
+            actor="data",
+            role="数据工程",
+        )
+        self.assertTrue(readiness_ready.success, readiness_ready.error)
+        self.assertTrue(readiness_ready.data["ready_for_real_acceptance"])
+        self.assertEqual(readiness_ready.data["missing_requirements"], [])
+        self.assertEqual(readiness_ready.data["artifact_uris"]["mapping_gold_uri"], "s3://ai-quant-evidence/13f/cusip-figi-gold-2026q1.jsonl")
+        self.assertEqual(self.service.store.audit_log[-1].action, "form13f_mapping_readiness_report")
+
     def test_disclosure_event_classifier_builds_8k_event_wall_and_graph(self) -> None:
         self.service.seed_default_sources(actor="data")
         self.service.ingest_document(
@@ -4903,6 +7397,294 @@ class SystemServiceTests(unittest.TestCase):
         persisted_report = self.router.dispatch("GET", "/api/entity-mappings/quality-report", {"issuer_id": "issuer_001"}, role="platform")
         self.assertEqual(persisted_report.data["checked_labels"], 2)
         self.assertEqual(persisted_report.data["accuracy"], 1.0)
+
+    def test_entity_mapping_bitemporal_versions_filter_by_valid_and_recorded_time(self) -> None:
+        old_mapping = self.router.dispatch(
+            "POST",
+            "/api/entity-mappings",
+            {
+                "mapping_id": "map_demo_old",
+                "issuer_id": "issuer_001",
+                "cik": "0000001",
+                "ticker": "DEMO",
+                "market": "U",
+                "confidence": 0.72,
+                "version": "2025Q4",
+                "valid_from": "2025-10-01T00:00:00+00:00",
+                "recorded_at": "2025-10-02T00:00:00+00:00",
+            },
+            role="platform",
+        )
+        self.assertTrue(old_mapping.success, old_mapping.error)
+        new_mapping = self.router.dispatch(
+            "POST",
+            "/api/entity-mappings",
+            {
+                "mapping_id": "map_demo_new",
+                "issuer_id": "issuer_001",
+                "cik": "0000001",
+                "figi": "FIGI-DEMO-NEW",
+                "ticker": "DEMO",
+                "market": "U",
+                "confidence": 0.94,
+                "version": "2026Q1",
+                "valid_from": "2026-01-01T00:00:00+00:00",
+                "recorded_at": "2026-01-05T00:00:00+00:00",
+                "supersedes_mapping_id": "map_demo_old",
+            },
+            role="platform",
+        )
+        self.assertTrue(new_mapping.success, new_mapping.error)
+        self.assertEqual(self.service.store.entity_mappings["map_demo_old"].status, "superseded")
+        self.assertEqual(
+            self.service.store.entity_mappings["map_demo_old"].valid_to.isoformat(),
+            "2026-01-01T00:00:00+00:00",
+        )
+
+        historical = self.router.dispatch(
+            "GET",
+            "/api/entity-mappings",
+            {"issuer_id": "issuer_001", "ticker": "DEMO", "valid_at": "2025-12-15T00:00:00+00:00"},
+            role="platform",
+        )
+        self.assertTrue(historical.success, historical.error)
+        self.assertEqual(historical.data["total"], 1)
+        self.assertEqual(historical.data["mappings"][0]["mapping_id"], "map_demo_old")
+
+        current = self.router.dispatch(
+            "GET",
+            "/api/entity-mappings",
+            {
+                "issuer_id": "issuer_001",
+                "ticker": "DEMO",
+                "valid_at": "2026-02-01T00:00:00+00:00",
+                "recorded_at": "2026-01-04T00:00:00+00:00",
+            },
+            role="platform",
+        )
+        self.assertTrue(current.success, current.error)
+        self.assertEqual(current.data["total"], 0)
+
+        current_after_record = self.router.dispatch(
+            "GET",
+            "/api/entity-mappings",
+            {
+                "issuer_id": "issuer_001",
+                "ticker": "DEMO",
+                "valid_at": "2026-02-01T00:00:00+00:00",
+                "recorded_at": "2026-01-06T00:00:00+00:00",
+            },
+            role="platform",
+        )
+        self.assertEqual(current_after_record.data["total"], 1)
+        self.assertEqual(current_after_record.data["mappings"][0]["mapping_id"], "map_demo_new")
+
+        report = self.router.dispatch(
+            "GET",
+            "/api/entity-mappings/quality-report",
+            {"issuer_id": "issuer_001", "valid_at": "2026-02-01T00:00:00+00:00", "low_confidence_threshold": 0.9},
+            role="platform",
+        )
+        self.assertTrue(report.success, report.error)
+        self.assertEqual(report.data["mappings"], 1)
+        self.assertEqual(report.data["bitemporal_version_coverage"], 1.0)
+        self.assertEqual(report.data["active_open_ended_count"], 1)
+        self.assertEqual(report.data["temporal_overlap_count"], 0)
+        self.assertEqual(report.data["status_counts"]["active"], 1)
+
+    def test_entity_mapping_readiness_report_requires_ahu_graph_and_adapter_evidence(self) -> None:
+        self.service.register_issuer(
+            {
+                "issuer_id": "issuer_ahu",
+                "legal_name": "Demo A H U Corp",
+                "market": ["A", "H", "U"],
+                "lei": "LEI-AHU-001",
+                "cik": "0001001",
+                "country": "CN",
+            },
+            actor="platform",
+        )
+        self.service.register_security(
+            {
+                "security_id": "sec_ahu",
+                "issuer_id": "issuer_ahu",
+                "ticker": "AHU",
+                "figi": "FIGI-AHU-001",
+                "isin": "US000AHU001",
+                "exchange": "NASDAQ",
+                "currency": "USD",
+                "market": "U",
+            },
+            actor="platform",
+        )
+        document = self.service.ingest_document(
+            {
+                "document_id": "doc_entity_readiness",
+                "issuer_id": "issuer_ahu",
+                "security_id": "sec_ahu",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "20-F",
+                "source_uri": "https://example.invalid/doc-entity-readiness",
+                "body": "Revenue visibility improved.\n\nSupply chain risk remains manageable.",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+            },
+            actor="data",
+        )
+        evidences = self.service.extract_evidence(document.document_id, actor="analyst")
+        thesis = self.service.create_thesis(
+            {
+                "thesis_id": "thesis_entity_readiness",
+                "issuer_id": "issuer_ahu",
+                "horizon": "mid",
+                "hypothesis": "A/H/U mapping supports subject page traceability",
+                "evidence_ids": [item.evidence_id for item in evidences],
+                "risk_factors": ["identifier drift"],
+            },
+            actor="analyst",
+        )
+        self.service.run_scoring(
+            {
+                "signal_id": "sig_entity_readiness",
+                "thesis_id": thesis.thesis_id,
+                "strategy_type": "long",
+                "source_model": "rules",
+                "model_version": "v1",
+            },
+            actor="cio",
+        )
+        batch = self.router.dispatch(
+            "POST",
+            "/api/entity-mappings/batch",
+            {
+                "batch_id": "entity_readiness_batch",
+                "items": [
+                    {
+                        "mapping_id": "map_ahu_a",
+                        "issuer_id": "issuer_ahu",
+                        "lei": "LEI-AHU-001",
+                        "figi": "FIGI-AHU-A",
+                        "isin": "CNAHU000001",
+                        "ticker": "600001",
+                        "market": "A",
+                        "confidence": 0.99,
+                        "source": "real_adr_china_mapping_batch",
+                        "version": "2026Q1",
+                        "valid_from": "2026-01-01T00:00:00+00:00",
+                        "recorded_at": "2026-01-02T00:00:00+00:00",
+                    },
+                    {
+                        "mapping_id": "map_ahu_h",
+                        "issuer_id": "issuer_ahu",
+                        "lei": "LEI-AHU-001",
+                        "figi": "FIGI-AHU-H",
+                        "isin": "HKAHU000001",
+                        "ticker": "00001",
+                        "market": "H",
+                        "confidence": 0.99,
+                        "source": "real_adr_china_mapping_batch",
+                        "version": "2026Q1",
+                        "valid_from": "2026-01-01T00:00:00+00:00",
+                        "recorded_at": "2026-01-02T00:00:00+00:00",
+                    },
+                    {
+                        "mapping_id": "map_ahu_u",
+                        "issuer_id": "issuer_ahu",
+                        "lei": "LEI-AHU-001",
+                        "cik": "0001001",
+                        "figi": "FIGI-AHU-U",
+                        "isin": "US000AHU001",
+                        "ticker": "AHU",
+                        "market": "U",
+                        "confidence": 0.99,
+                        "source": "real_adr_china_mapping_batch",
+                        "version": "2026Q1",
+                        "valid_from": "2026-01-01T00:00:00+00:00",
+                        "recorded_at": "2026-01-02T00:00:00+00:00",
+                    },
+                ],
+            },
+            role="platform",
+        )
+        self.assertTrue(batch.success, batch.error)
+        labels = self.router.dispatch(
+            "POST",
+            "/api/entity-mappings/labels",
+            {
+                "batch_id": "entity_readiness_labels",
+                "items": [
+                    {"label_id": "emlbl_map_ahu_a", "mapping_id": "map_ahu_a", "issuer_id": "issuer_ahu", "ticker": "600001", "market": "A"},
+                    {"label_id": "emlbl_map_ahu_h", "mapping_id": "map_ahu_h", "issuer_id": "issuer_ahu", "ticker": "00001", "market": "H"},
+                    {"label_id": "emlbl_map_ahu_u", "mapping_id": "map_ahu_u", "issuer_id": "issuer_ahu", "ticker": "AHU", "market": "U"},
+                ],
+            },
+            role="platform",
+        )
+        self.assertTrue(labels.success, labels.error)
+
+        gap = self.router.dispatch(
+            "POST",
+            "/api/entity-mappings/readiness-report",
+            {
+                "issuer_id": "issuer_ahu",
+                "min_mapping_count": 3,
+                "min_label_count": 3,
+                "min_vector_point_count": 1,
+                "min_traceable_resource_count": 1,
+            },
+            role="platform",
+        )
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_entity_graph_production"])
+        self.assertIn("neo4j_non_local_config", gap.data["missing_requirements"])
+        self.assertIn("qdrant_non_local_config", gap.data["missing_requirements"])
+        self.assertIn("real_batch_mapping_artifact_uri", gap.data["missing_requirements"])
+        self.assertIn("entity_mapping_readiness_report_validates_ahu_accuracy", gap.data["usage_boundary"])
+        self.assertFalse(gap.data["automation_allowed"])
+        self.assertEqual(gap.data["market_summary"]["coverage"], 1.0)
+        self.assertEqual(gap.data["quality_report"]["accuracy"], 1.0)
+        self.assertGreaterEqual(gap.data["graph_traceability"]["traceability_rate"], 0.95)
+
+        ready = self.router.dispatch(
+            "POST",
+            "/api/entity-mappings/readiness-report",
+            {
+                "issuer_id": "issuer_ahu",
+                "min_mapping_count": 3,
+                "min_label_count": 3,
+                "min_vector_point_count": 1,
+                "min_traceable_resource_count": 1,
+                "neo4j_endpoint": "neo4j+s://graph.prod.example.com",
+                "qdrant_endpoint": "https://qdrant.prod.example.com",
+                "artifact_uris": {
+                    "real_batch_mapping_artifact_uri": "artifact://prod/entity-mapping/ahu-batch.json",
+                    "adr_china_queue_mapping_uri": "artifact://prod/entity-mapping/adr-china-queue.json",
+                    "mapping_gold_uri": "artifact://prod/entity-mapping/gold-labels.json",
+                    "entity_page_acceptance_uri": "artifact://prod/entity-page/browser-matrix.json",
+                    "graph_adapter_evidence_uri": "artifact://prod/graph/neo4j-sync.json",
+                    "vector_adapter_evidence_uri": "artifact://prod/vector/qdrant-sync.json",
+                },
+                "record_readiness": True,
+            },
+            role="platform",
+            actor="platform_owner",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_entity_graph_production"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertEqual(ready.data["label_summary"]["coverage"], 1.0)
+        self.assertEqual(ready.data["edge_quality"]["edge_metadata_coverage"], 1.0)
+        self.assertEqual(ready.data["vector_export"]["rights_filter"], "restricted_excluded")
+        self.assertTrue(ready.data["adapters"]["neo4j"]["non_local_configured"])
+        self.assertTrue(ready.data["adapters"]["qdrant"]["non_local_configured"])
+        self.assertEqual(self.service.store.audit_log[-1].action, "entity_mapping_readiness_report")
 
     def test_compliance_gate_blocks_private_or_non_display_decision_pack(self) -> None:
         self.service.ingest_document(
@@ -5235,6 +8017,10 @@ class SystemServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(graph.data["research_cards"]), 1)
         self.assertGreaterEqual(len(graph.data["edges"]), 1)
         self.assertTrue(all("source" in edge and "timestamp" in edge and "version" in edge and "confidence" in edge for edge in graph.data["edges"]))
+        mapping_edges = [edge for edge in graph.data["edges"] if edge["type"] == "HAS_MAPPING"]
+        self.assertTrue(mapping_edges)
+        self.assertIn("valid_from", mapping_edges[0])
+        self.assertIn("recorded_at", mapping_edges[0])
         edge_quality = self.router.dispatch("GET", "/api/graph/edge-quality-report", {"issuer_id": "issuer_001"}, role="CEO")
         self.assertTrue(edge_quality.success, edge_quality.error)
         self.assertEqual(edge_quality.data["edge_metadata_coverage"], 1.0)
@@ -5523,6 +8309,84 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(run.data["metrics"]["language_metrics"]["en"]["term_f1"], 1.0)
         self.assertEqual(run.data["metrics"]["language_metrics"]["zh"]["page_hit_rate"], 1.0)
 
+        readiness_gap = self.router.dispatch(
+            "POST",
+            "/api/benchmarks/bm_bilingual/readiness-report",
+            {},
+            actor="ml",
+            role="NLP/ML 负责人",
+        )
+        self.assertTrue(readiness_gap.success, readiness_gap.error)
+        self.assertFalse(readiness_gap.data["ready_for_real_acceptance"])
+        self.assertFalse(readiness_gap.data["automation_allowed"])
+        self.assertTrue(readiness_gap.data["external_artifact_required"])
+        self.assertEqual(readiness_gap.data["active_sample_count"], 2)
+        self.assertIn("sample_size", readiness_gap.data["missing_requirements"])
+        self.assertIn("sample_manifest_artifact", readiness_gap.data["missing_requirements"])
+        self.assertIn("chinese_sample_set_artifact", readiness_gap.data["missing_requirements"])
+        self.assertIn("english_sample_set_artifact", readiness_gap.data["missing_requirements"])
+        self.assertIn("annotation_manual", readiness_gap.data["missing_requirements"])
+        self.assertIn("ocr_bbox_gold_labels", readiness_gap.data["missing_requirements"])
+        self.assertIn("table_cell_gold_labels", readiness_gap.data["missing_requirements"])
+        self.assertIn("summary_quality_samples", readiness_gap.data["missing_requirements"])
+        self.assertIn("regression_baseline_artifact", readiness_gap.data["missing_requirements"])
+        self.assertEqual(readiness_gap.data["latest_run_id"], "bmrn_bilingual")
+        self.assertIn("benchmark_readiness_report_tracks_real_sample", readiness_gap.data["usage_boundary"])
+
+        inline_only = self.router.dispatch(
+            "POST",
+            "/api/benchmarks/bm_bilingual/readiness-report",
+            {
+                "target_sample_size": 2,
+                "min_chinese_samples": 1,
+                "min_english_samples": 1,
+                "bbox_gold_labels": [{"document_id": "doc_bench_en", "page_no": 1, "bbox": {"x": 0, "y": 0, "width": 1, "height": 1}}],
+                "table_cell_gold_labels": [{"document_id": "doc_bench_en", "row": 1, "col": 1, "bbox": {"x": 0, "y": 0, "width": 1, "height": 1}}],
+                "summary_samples": [{"answer_id": "ans_demo", "expected_anchor_terms": ["revenue"]}],
+            },
+            actor="ml",
+            role="NLP/ML 负责人",
+        )
+        self.assertTrue(inline_only.success, inline_only.error)
+        self.assertFalse(inline_only.data["ready_for_real_acceptance"])
+        self.assertEqual(inline_only.data["gold_labels"]["bbox_label_count"], 1)
+        self.assertEqual(inline_only.data["summary_sample_count"], 1)
+        self.assertIn("ocr_bbox_gold_labels", inline_only.data["missing_requirements"])
+        self.assertIn("table_cell_gold_labels", inline_only.data["missing_requirements"])
+        self.assertIn("summary_quality_samples", inline_only.data["missing_requirements"])
+
+        readiness_ready = self.router.dispatch(
+            "POST",
+            "/api/benchmarks/bm_bilingual/readiness-report",
+            {
+                "target_sample_size": 2,
+                "min_chinese_samples": 1,
+                "min_english_samples": 1,
+                "artifact_uris": {
+                    "sample_manifest_uri": "s3://ai-quant-evidence/benchmarks/sample-manifest.json",
+                    "chinese_sample_set_uri": "s3://ai-quant-evidence/benchmarks/zh-samples.jsonl",
+                    "english_sample_set_uri": "s3://ai-quant-evidence/benchmarks/sec-samples.jsonl",
+                    "annotation_manual_uri": "s3://ai-quant-evidence/benchmarks/annotation-manual-v1.md",
+                    "bbox_gold_uri": "s3://ai-quant-evidence/benchmarks/bbox-gold.jsonl",
+                    "table_cell_gold_uri": "s3://ai-quant-evidence/benchmarks/table-cell-gold.jsonl",
+                    "summary_quality_uri": "s3://ai-quant-evidence/benchmarks/summary-samples.jsonl",
+                    "baseline_report_uri": "s3://ai-quant-evidence/benchmarks/baseline-report.json",
+                },
+                "bbox_gold_labels": [{"document_id": "doc_bench_en", "page_no": 1, "bbox": {"x": 0, "y": 0, "width": 1, "height": 1}}],
+                "table_cell_gold_labels": [{"document_id": "doc_bench_en", "row": 1, "col": 1, "bbox": {"x": 0, "y": 0, "width": 1, "height": 1}}],
+                "summary_samples": [{"answer_id": "ans_demo", "expected_anchor_terms": ["revenue"]}],
+                "record_readiness": True,
+            },
+            actor="ml",
+            role="NLP/ML 负责人",
+        )
+        self.assertTrue(readiness_ready.success, readiness_ready.error)
+        self.assertTrue(readiness_ready.data["ready_for_real_acceptance"])
+        self.assertEqual(readiness_ready.data["missing_requirements"], [])
+        self.assertEqual(readiness_ready.data["gold_labels"]["bbox_label_count"], 1)
+        self.assertEqual(readiness_ready.data["artifact_uris"]["baseline_report_uri"], "s3://ai-quant-evidence/benchmarks/baseline-report.json")
+        self.assertEqual(self.service.store.audit_log[-1].action, "benchmark_readiness_report")
+
         low_evidence = self.service.extract_evidence("doc_bench_low", actor="analyst")[0]
         low_evidence.confidence = 0.4
         low_sample = self.router.dispatch(
@@ -5555,6 +8419,269 @@ class SystemServiceTests(unittest.TestCase):
         dashboard = self.service.dashboard()
         self.assertEqual(dashboard["counts"]["benchmark_samples"], 3)
         self.assertEqual(dashboard["counts"]["benchmark_runs"], 2)
+
+    def test_local_benchmark_quality_package_exports_repeatable_large_sample_artifacts(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            inputs = tmp_path / "inputs"
+            output = tmp_path / "quality"
+            inputs.mkdir()
+            (inputs / "en.txt").write_text("FY2026 revenue grew 12%. Operating cash flow improved in 2026.", encoding="utf-8")
+            (inputs / "zh.txt").write_text("2026年营业收入增长12%，经营活动现金流改善。", encoding="utf-8")
+            (inputs / "skip.txt").write_text("No supported finance terms here.", encoding="utf-8")
+
+            package = build_local_benchmark_quality_package(
+                input_paths=[inputs],
+                output_dir=output,
+                benchmark_id="bm_quality_test",
+                target_sample_size=3,
+                min_chinese_samples=1,
+                min_english_samples=1,
+                artifact_prefix="minio://ai-quant-local/benchmark-quality/test",
+            )
+
+            self.assertEqual(package["status"], "generated")
+            self.assertEqual(package["sample_count"], 2)
+            self.assertEqual(package["target_gap"], 1)
+            self.assertFalse(package["large_sample_ready"])
+            self.assertIn("sample_size", package["readiness_missing_requirements"])
+            for artifact_path in package["artifacts"].values():
+                self.assertTrue(Path(artifact_path).exists(), artifact_path)
+            manifest = json.loads((output / "sample-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["sample_count"], 2)
+            self.assertEqual({row["language"] for row in manifest["samples"]}, {"en", "zh"})
+            baseline = json.loads((output / "baseline-report.json").read_text(encoding="utf-8"))
+            self.assertTrue(baseline["run"]["passed"])
+            readiness = json.loads((output / "readiness-report.json").read_text(encoding="utf-8"))
+            self.assertFalse(readiness["ready_for_real_acceptance"])
+            self.assertEqual(readiness["artifact_uris"]["baseline_report_uri"], "minio://ai-quant-local/benchmark-quality/test/baseline-report.json")
+
+            cli_output = tmp_path / "cli-quality"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/local_benchmark_quality_package.py",
+                    str(inputs),
+                    "--output-dir",
+                    str(cli_output),
+                    "--benchmark-id",
+                    "bm_quality_cli",
+                    "--target-sample-size",
+                    "2",
+                    "--min-chinese-samples",
+                    "1",
+                    "--min-english-samples",
+                    "1",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn('"status": "generated"', result.stdout)
+            self.assertTrue((cli_output / "quality-package.json").exists())
+            self.assertFalse((cli_output / ".quality-package.json.tmp").exists())
+
+    def test_fetch_benchmark_samples_writes_public_connector_inputs_for_quality_package(self) -> None:
+        class FakeBenchmarkConnectors:
+            def fetch_sec_recent_filings(self, cik, *, user_agent, limit=10, document_types=None):
+                self.sec_user_agent = user_agent
+                return [
+                    ConnectorDocument(
+                        source_id="sec_edgar",
+                        source_type="regulatory",
+                        document_type="10-K",
+                        source_uri=f"https://www.sec.gov/Archives/edgar/data/{cik}/sample.htm",
+                        language="en",
+                        title="10-K filing",
+                        published_at="2026-05-01",
+                        metadata={"cik": cik, "accession_no": "0000000000-26-000001", "primary_doc": "sample.htm"},
+                    )
+                ][:limit]
+
+            def fetch_sec_document_body(self, source_uri, *, user_agent, max_bytes=2_000_000):
+                return "FY2026 revenue grew 12%. Operating cash flow improved and risk factors changed. Gross margin expanded with services revenue."[:max_bytes]
+
+            def fetch_ashare_recent_filings(self, security_code, *, user_agent, limit=10, begin_date="", end_date="", report_type="ALL", security_type="", exchange="auto"):
+                return [
+                    ConnectorDocument(
+                        source_id="ashare_exchange",
+                        source_type="exchange",
+                        document_type="annual_report",
+                        source_uri=f"https://www.sse.com.cn/{security_code}/annual.pdf",
+                        language="zh",
+                        title="2026年年度报告 营业收入增长 经营活动现金流改善",
+                        body="2026年营业收入增长12%，经营活动现金流改善。",
+                        published_at="2026-04-30T00:00:00+00:00",
+                        metadata={"security_code": security_code},
+                    )
+                ][:limit]
+
+        with TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "fetched"
+            service = SystemService()
+            service.connectors = FakeBenchmarkConnectors()
+            manifest = fetch_benchmark_samples(
+                output_dir=output,
+                sec_ciks=["0000320193"],
+                ashare_codes=["600519"],
+                limit_per_symbol=1,
+                user_agent="test-contact@example.com",
+                service=service,
+            )
+
+            self.assertEqual(manifest["created_count"], 2)
+            self.assertEqual(manifest["error_count"], 0)
+            self.assertTrue((output / "fetch-manifest.json").exists())
+            written = sorted(output.glob("*.txt"))
+            self.assertEqual(len(written), 2)
+            combined = "\n".join(path.read_text(encoding="utf-8") for path in written)
+            self.assertIn("revenue grew", combined)
+            self.assertIn("营业收入增长", combined)
+            self.assertFalse((output / ".fetch-manifest.json.tmp").exists())
+
+    def test_fetch_benchmark_samples_can_discover_ashare_codes_from_tdx(self) -> None:
+        class FakeAshareOnlyConnectors:
+            def __init__(self) -> None:
+                self.codes: list[str] = []
+
+            def fetch_ashare_recent_filings(self, security_code, *, user_agent, limit=10, begin_date="", end_date="", report_type="ALL", security_type="", exchange="auto"):
+                self.codes.append(security_code)
+                return [
+                    ConnectorDocument(
+                        source_id="ashare_exchange",
+                        source_type="exchange",
+                        document_type="announcement",
+                        source_uri=f"https://www.sse.com.cn/{security_code}/notice.pdf",
+                        language="zh",
+                        title=f"{security_code} 2026年公告 营业收入增长",
+                        body=f"{security_code} 2026年营业收入增长，经营活动现金流改善。",
+                        published_at="2026-05-01T00:00:00+00:00",
+                    )
+                ][:limit]
+
+        with TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "tdx-fetched"
+            vipdoc_root = Path(tmpdir) / "vipdoc"
+            day_dir = vipdoc_root / "sh" / "lday"
+            day_dir.mkdir(parents=True)
+            (day_dir / "sh600519.day").write_bytes(struct.pack("<IIIIIfII", 20260501, 100, 100, 100, 100, 1000.0, 100, 0))
+            service = SystemService()
+            fake = FakeAshareOnlyConnectors()
+            service.connectors = fake
+            service.tdx_market_data = TDXVipdocAdapter(path=vipdoc_root)
+            manifest = fetch_benchmark_samples(
+                output_dir=output,
+                ashare_codes_from_tdx=True,
+                limit_per_symbol=1,
+                service=service,
+            )
+
+            self.assertEqual(manifest["created_count"], 1)
+            self.assertEqual(manifest["input_counts"]["ashare_codes_from_tdx"], 1)
+            self.assertEqual(fake.codes, ["600519"])
+            self.assertTrue(any(path.name.startswith("ashare_600519") for path in output.glob("*.txt")))
+
+    def test_fetch_benchmark_samples_can_parse_ashare_attachment_text(self) -> None:
+        class FakeAshareAttachmentConnectors:
+            def __init__(self) -> None:
+                self.downloaded: list[str] = []
+
+            def fetch_ashare_recent_filings(self, security_code, *, user_agent, limit=10, begin_date="", end_date="", report_type="ALL", security_type="", exchange="auto"):
+                return [
+                    ConnectorDocument(
+                        source_id="ashare_exchange",
+                        source_type="exchange",
+                        document_type="annual_report",
+                        source_uri=f"https://www.sse.com.cn/{security_code}/annual.html",
+                        language="zh",
+                        title="2026年年度报告",
+                        body="",
+                        published_at="2026-04-30T00:00:00+00:00",
+                        metadata={"security_code": security_code},
+                    )
+                ][:limit]
+
+            def fetch_document_binary(self, market, source_uri, *, user_agent, max_bytes=10_000_000):
+                self.downloaded.append(source_uri)
+                return "<html><body>2026年营业收入增长12%，经营活动现金流改善，毛利率提升。</body></html>".encode("utf-8")[:max_bytes]
+
+        with TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "ashare-attachment"
+            service = SystemService()
+            fake = FakeAshareAttachmentConnectors()
+            service.connectors = fake
+            manifest = fetch_benchmark_samples(
+                output_dir=output,
+                ashare_codes=["600519"],
+                limit_per_symbol=1,
+                include_ashare_attachment_text=True,
+                service=service,
+            )
+
+            self.assertEqual(manifest["created_count"], 1)
+            self.assertEqual(manifest["skipped_count"], 0)
+            self.assertEqual(fake.downloaded, ["https://www.sse.com.cn/600519/annual.html"])
+            self.assertTrue(manifest["rows"][0]["attachment_text_used"])
+            written = next(output.glob("ashare_600519*.txt"))
+            self.assertIn("营业收入增长", written.read_text(encoding="utf-8"))
+
+    def test_local_data_unblock_audit_separates_data_blockers_from_quality_gaps(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            quality = {
+                "sample_count": 500,
+                "target_gap": 0,
+                "language_counts": {"zh": 217, "en": 283},
+                "source_counts": {"ashare_exchange": 217, "sec_edgar": 283},
+                "readiness_missing_requirements": ["metric_number_recall", "metric_period_recall"],
+            }
+            sample_manifest = {
+                "sample_count": 500,
+                "language_counts": {"zh": 217, "en": 283},
+                "source_counts": {"ashare_exchange": 217, "sec_edgar": 283},
+            }
+            sec_fetch = {"status": "completed", "created_count": 4, "error_count": 0}
+            ashare_fetch = {
+                "status": "completed",
+                "created_count": 0,
+                "skipped_count": 2,
+                "error_count": 0,
+                "skipped": [{"attachment_attempted": True}, {"attachment_attempted": True}],
+            }
+            paths = {
+                "quality": root / "quality.json",
+                "sample_manifest": root / "sample-manifest.json",
+                "sec_fetch": root / "sec-fetch.json",
+                "ashare_fetch": root / "ashare-fetch.json",
+            }
+            paths["quality"].write_text(json.dumps(quality), encoding="utf-8")
+            paths["sample_manifest"].write_text(json.dumps(sample_manifest), encoding="utf-8")
+            paths["sec_fetch"].write_text(json.dumps(sec_fetch), encoding="utf-8")
+            paths["ashare_fetch"].write_text(json.dumps(ashare_fetch), encoding="utf-8")
+
+            result = audit_local_data_unblock(
+                quality_package_path=paths["quality"],
+                sample_manifest_path=paths["sample_manifest"],
+                sec_fetch_manifest_path=paths["sec_fetch"],
+                ashare_fetch_manifest_path=paths["ashare_fetch"],
+            )
+
+            self.assertTrue(result["passed"])
+            self.assertFalse(result["data_blocked"])
+            self.assertEqual(result["data_blockers"], [])
+            self.assertEqual(result["remaining_quality_gaps"], ["metric_number_recall", "metric_period_recall"])
+            self.assertEqual(result["ashare_fetch"]["attachment_attempted_count"], 2)
+
+            quality["readiness_missing_requirements"] = ["chinese_sample_count", "metric_number_recall"]
+            paths["quality"].write_text(json.dumps(quality), encoding="utf-8")
+            blocked = audit_local_data_unblock(
+                quality_package_path=paths["quality"],
+                sample_manifest_path=paths["sample_manifest"],
+                sec_fetch_manifest_path=paths["sec_fetch"],
+                ashare_fetch_manifest_path=paths["ashare_fetch"],
+            )
+            self.assertFalse(blocked["passed"])
+            self.assertEqual(blocked["data_blockers"], ["chinese_sample_count"])
 
     def test_research_answer_keeps_english_evidence_and_summary_audit(self) -> None:
         self.service.ingest_document(
@@ -5648,6 +8775,85 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(reviewed_benchmark.data["passed"], 1)
         self.assertEqual(reviewed_benchmark.data["pass_rate"], 1.0)
 
+    def test_research_answer_readiness_report_requires_model_and_fallback_quality_evidence(self) -> None:
+        self.service.ingest_document(
+            {
+                "document_id": "doc_answer_readiness",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "10-K",
+                "source_uri": "https://example.invalid/doc-answer-readiness",
+                "body": "Revenue grew 12% and risk factors include demand volatility. Services resilience improved.",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        evidence = self.service.extract_evidence("doc_answer_readiness", actor="analyst")
+        answer = self.service.create_research_answer(
+            {
+                "answer_id": "ans_readiness",
+                "question": "What changed in revenue, services resilience, and key risk factors?",
+                "issuer_id": "issuer_001",
+                "evidence_ids": [item.evidence_id for item in evidence],
+                "summary_version": "summary-prod-v1",
+                "prompt_version": "prompt-prod-v1",
+                "model_version": "gpt-prod-eval",
+                "chinese_summary": "收入增长12%，服务韧性改善，风险因素包括需求波动。",
+                "human_review_status": "approved",
+                "reviewer": "analyst_lead",
+            },
+            actor="analyst",
+        )
+        self.assertEqual(answer.answer_id, "ans_readiness")
+
+        gap = self.router.dispatch(
+            "POST",
+            "/api/research/answers/readiness-report",
+            {"issuer_id": "issuer_001", "min_anchor_coverage": 0.0},
+            actor="ml",
+            role="NLP/ML 负责人",
+        )
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_research_answer_production"])
+        self.assertIn("model_quality_evaluation_uri", gap.data["missing_requirements"])
+        self.assertIn("fallback_quality_evaluation_uri", gap.data["missing_requirements"])
+        self.assertEqual(gap.data["quality_report"]["source_link_rate"], 1.0)
+        self.assertEqual(gap.data["summary_benchmark"]["metrics"]["version_metadata_rate"], 1.0)
+        self.assertFalse(gap.data["automation_allowed"])
+
+        ready = self.router.dispatch(
+            "POST",
+            "/api/research/answers/readiness-report",
+            {
+                "issuer_id": "issuer_001",
+                "min_anchor_coverage": 0.0,
+                "artifact_uris": {
+                    "model_quality_evaluation_uri": "artifact://prod/research-answer/model-quality.json",
+                    "fallback_quality_evaluation_uri": "artifact://prod/research-answer/fallback-quality.json",
+                    "summary_review_policy_uri": "artifact://prod/research-answer/summary-rubric.md",
+                },
+                "record_readiness": True,
+            },
+            actor="ml_lead",
+            role="NLP/ML 负责人",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_research_answer_production"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertEqual(ready.data["traceability"]["research_answer_traceability_rate"], 1.0)
+        self.assertIn("research_answer_readiness_report_requires_english_evidence", ready.data["usage_boundary"])
+        self.assertEqual(self.service.store.audit_log[-1].action, "research_answer_readiness_report")
+
     def test_research_answer_limits_non_public_citation_snippets(self) -> None:
         self.service.seed_default_sources(actor="risk")
         body = "Margin pressure and channel checks remain analyst reference material " * 20
@@ -5693,6 +8899,157 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(answer.data["citation_char_limit"], 120)
         self.assertLessEqual(len(answer.data["english_source_text"]), 160)
         self.assertIn("[TRUNCATED_FOR_CITATION_BOUNDARY]", answer.data["english_source_text"])
+
+    def test_filing_qa_answer_auto_extracts_original_text_and_records_fallback(self) -> None:
+        self.service.seed_default_sources(actor="risk")
+        self.service.llm_gateway = LLMGateway(api_key="", http_send=lambda _request, _timeout: b"{}")
+        self.service.ingest_document(
+            {
+                "document_id": "doc_filing_qa",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "sec_edgar",
+                "source_type": "regulatory",
+                "document_type": "10-Q",
+                "source_uri": "https://example.invalid/doc-filing-qa",
+                "body": "Revenue grew 12% year over year. Services demand stayed resilient. Risk factors include supply concentration.",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        response = self.router.dispatch(
+            "POST",
+            "/api/research/answers/filing-qa",
+            {
+                "answer_id": "ans_filing_qa_001",
+                "document_id": "doc_filing_qa",
+                "question": "What changed in revenue and risk factors?",
+                "evidence_limit": 3,
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(response.success, response.error)
+        self.assertFalse(response.data["automation_allowed"])
+        self.assertFalse(response.data["live_execution_allowed"])
+        self.assertEqual(response.data["usage_boundary"], "filing_qa_research_only_original_text_required_no_trade_signal")
+        self.assertTrue(response.data["preserves_english_source"])
+        self.assertEqual(response.data["answer"]["answer_id"], "ans_filing_qa_001")
+        self.assertEqual(response.data["answer"]["source_document_ids"], ["doc_filing_qa"])
+        self.assertGreaterEqual(len(response.data["answer"]["evidence_ids"]), 1)
+        self.assertIn("Revenue grew 12%", response.data["answer"]["english_source_text"])
+        self.assertEqual(response.data["llm_run"]["template_id"], "llmtpl_filing_qa_v1")
+        self.assertEqual(response.data["model_fallback"]["fallback_used"], "rule_summary")
+        self.assertTrue(response.data["model_fallback"]["human_review_required"])
+        self.assertEqual(response.data["quality_report"]["total"], 1)
+        self.assertEqual(response.data["summary_benchmark"]["total"], 1)
+        self.assertIn("pending_human_review", response.data["summary_benchmark"]["answers"][0]["blocking_issues"])
+        self.assertEqual(self.service.store.audit_log[-1].action, "create_filing_qa_answer")
+
+    def test_sec_single_name_research_loop_uses_realtime_sec_and_is_traceable(self) -> None:
+        self._use_temp_object_store()
+        self.service.connectors = _FakeSecSingleNameConnectors()
+        response = self.router.dispatch(
+            "POST",
+            "/api/research/tasks/sec-single-name/run",
+            {},
+            role="cio",
+        )
+        self.assertTrue(response.success, response.error)
+        data = response.data
+        self.assertEqual(data["workflow_status"], "completed")
+        self.assertTrue(data["used_realtime_sec"])
+        self.assertEqual(data["fallback_reason"], "")
+        self.assertTrue(data["simulation_only"])
+        self.assertFalse(data["live_execution_allowed"])
+        self.assertEqual(data["ticker"], "AAPL")
+        self.assertEqual(data["cik"], "0000320193")
+        ids = data["ids"]
+        for key in [
+            "issuer_id",
+            "security_id",
+            "document_id",
+            "answer_id",
+            "thesis_id",
+            "signal_id",
+            "challenger_id",
+            "research_card_id",
+            "decision_id",
+            "intent_id",
+            "task_id",
+        ]:
+            self.assertTrue(ids[key], key)
+        self.assertGreaterEqual(len(ids["evidence_ids"]), 1)
+        self.assertEqual(ids["issuer_id"], "issuer_aapl")
+        self.assertEqual(ids["security_id"], "security_aapl_us")
+        self.assertEqual(data["research_answer"]["source_document_ids"], [ids["document_id"]])
+        self.assertEqual(set(data["research_answer"]["evidence_ids"]), set(ids["evidence_ids"]))
+        self.assertEqual(set(data["thesis"]["evidence_ids"]), set(ids["evidence_ids"]))
+        self.assertEqual(data["decision"]["approval_state"], "approved")
+        self.assertEqual(data["decision_pack"]["decision_id"], ids["decision_id"])
+        self.assertEqual(data["decision_pack"]["approval_state"], "approved")
+        self.assertEqual(data["intent"]["status"], "simulated_filled")
+        self.assertEqual(data["simulated_execution"]["execution"]["mode"], "simulated")
+        self.assertFalse(data["simulated_execution"]["execution"]["live_execution_allowed"])
+
+        graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_aapl"}, role="analyst")
+        self.assertTrue(graph.success, graph.error)
+        self.assertIn(ids["document_id"], {item["document_id"] for item in graph.data["documents"]})
+        self.assertTrue(set(ids["evidence_ids"]).issubset({item["evidence_id"] for item in graph.data["evidence"]}))
+        edge_types = {item["type"] for item in graph.data["edges"]}
+        self.assertTrue({"SUPPORTS", "GENERATES_SIGNAL", "CREATES_INTENT"}.issubset(edge_types))
+
+        traceability = self.router.dispatch(
+            "GET",
+            "/api/graph/traceability-report",
+            {"issuer_id": "issuer_aapl"},
+            role="analyst",
+        )
+        self.assertTrue(traceability.success, traceability.error)
+        self.assertEqual(traceability.data["traceability_rate"], 1.0)
+        self.assertEqual(traceability.data["counts"]["untraceable_theses"], 0)
+        self.assertEqual(traceability.data["counts"]["untraceable_decisions"], 0)
+        self.assertEqual(traceability.data["counts"]["untraceable_research_answers"], 0)
+
+    def test_sec_single_name_research_loop_falls_back_and_respects_permissions(self) -> None:
+        denied = self.router.dispatch(
+            "POST",
+            "/api/research/tasks/sec-single-name/run",
+            {},
+            role="guest",
+        )
+        self.assertFalse(denied.success)
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.error["type"], "permission_denied")
+
+        self._use_temp_object_store()
+        self.service.connectors = _FakeSecSingleNameConnectors(fail=True)
+        fallback = self.router.dispatch(
+            "POST",
+            "/api/research/tasks/sec-single-name/run",
+            {"fallback_mode": "local_sample"},
+            role="analyst",
+        )
+        self.assertTrue(fallback.success, fallback.error)
+        data = fallback.data
+        self.assertEqual(data["workflow_status"], "completed_with_fallback")
+        self.assertFalse(data["used_realtime_sec"])
+        self.assertEqual(data["source_mode"], "local_sec_sample")
+        self.assertIn("SEC outage", data["fallback_reason"])
+        self.assertEqual(data["document"]["version"], "local_sec_sample")
+        self.assertTrue(data["simulation_only"])
+        self.assertFalse(data["live_execution_allowed"])
+        self.assertEqual(data["decision"]["approval_state"], "approved")
+        self.assertEqual(data["task"]["status"], "done")
+        self.assertEqual(data["task"]["evidence_ids"], data["ids"]["evidence_ids"])
 
     def test_structured_extraction_reads_markdown_tables(self) -> None:
         self.service.ingest_document(
@@ -5749,6 +9106,65 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(table["cells"][2]["value"], "10.5")
         self.assertEqual(extraction.data["metrics"]["table_cell_count"], 6.0)
         self.assertEqual(extraction.data["metrics"]["table_locator_rate"], 1.0)
+
+    def test_structured_extraction_merges_cross_page_tables(self) -> None:
+        self._use_temp_object_store()
+        self.service.ingest_document(
+            {
+                "document_id": "doc_cross_page_table",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "annual_report",
+                "source_uri": "https://example.invalid/doc-cross-page-table",
+                "body": (
+                    "Metric | FY2024 | FY2025\n"
+                    "--- | --- | ---\n"
+                    "Revenue | 9.0 | 10.5\f"
+                    "Metric | FY2024 | FY2025\n"
+                    "--- | --- | ---\n"
+                    "Net profit | 1.1 | 1.4"
+                ),
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        first_page_evidence = self.service.extract_evidence("doc_cross_page_table", actor="analyst")[0]
+        extraction = self.router.dispatch(
+            "POST",
+            "/api/extractions/run",
+            {
+                "extraction_id": "ext_cross_page_table",
+                "evidence_id": first_page_evidence.evidence_id,
+                "expected_tables": 1,
+                "include_adjacent_tables": True,
+                "parser_version": "rule-table-cross-page-1",
+            },
+            role="NLP/ML 负责人",
+        )
+        self.assertTrue(extraction.success, extraction.error)
+        self.assertTrue(extraction.data["passed"])
+        self.assertEqual(len(extraction.data["tables"]), 1)
+        table = extraction.data["tables"][0]
+        self.assertEqual(table["headers"], ["Metric", "FY2024", "FY2025"])
+        self.assertEqual(table["row_count"], 2)
+        self.assertEqual(table["page_numbers"], [1, 2])
+        self.assertEqual(table["merged_from_table_count"], 2)
+        self.assertEqual(table["merge_strategy"], "cross_page_same_headers")
+        self.assertEqual(table["cells"][3]["source_page_no"], 2)
+        self.assertEqual(table["cells"][3]["row"], 2)
+        self.assertIn("merged_row=2", table["cells"][3]["bbox"])
+        self.assertEqual(extraction.data["metrics"]["table_cell_count"], 6.0)
+        self.assertEqual(extraction.data["metrics"]["table_recall"], 1.0)
 
     def test_disallows_unexpected_document_type_for_source(self) -> None:
         bad = self.router.dispatch(
@@ -6265,6 +9681,127 @@ class SystemServiceTests(unittest.TestCase):
         self.assertGreaterEqual(reranked.data["results"][0]["rerank_score"], reranked.data["results"][-1]["rerank_score"])
         self.assertIn("term_coverage", reranked.data["results"][0]["score_components"])
         self.assertIn("vector_adapter_trigger", reranked.data["adapter_recommendation"])
+        llm_target = reranked.data["results"][-1]
+        llm_target_ref = f"{llm_target['resource_type']}:{llm_target['resource_id']}"
+
+        sent_rerank = []
+
+        def fake_rerank_send(request, timeout):
+            sent_rerank.append({"url": request.full_url, "body": json.loads(request.data.decode("utf-8")), "timeout": timeout})
+            return json.dumps(
+                {
+                    "id": "chatcmpl_rerank",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "ordered_resource_ids": [llm_target_ref],
+                                        "rationale": "Prefer the most direct evidence row.",
+                                        "boundary_notes": ["ordering_only"],
+                                    }
+                                )
+                            }
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            http_send=fake_rerank_send,
+        )
+        llm_reranked = self.router.dispatch(
+            "POST",
+            "/api/search/semantic/llm-rerank",
+            {
+                "q": "resilient services demand",
+                "issuer_id": "issuer_demo",
+                "limit": 3,
+                "candidate_limit": 10,
+                "llm_run_id": "llmrun_search_rerank_001",
+            },
+            role="CEO",
+        )
+        self.assertTrue(llm_reranked.success, llm_reranked.error)
+        self.assertEqual(llm_reranked.data["reranker"], "llm_semantic_rerank_with_local_fallback")
+        self.assertFalse(llm_reranked.data["automation_allowed"])
+        self.assertFalse(llm_reranked.data["live_execution_allowed"])
+        self.assertEqual(llm_reranked.data["fallback_used"], "")
+        self.assertEqual(llm_reranked.data["results"][0]["rerank_source"], "llm")
+        self.assertEqual(f"{llm_reranked.data['results'][0]['resource_type']}:{llm_reranked.data['results'][0]['resource_id']}", llm_target_ref)
+        self.assertEqual(llm_reranked.data["llm_run"]["template_id"], "llmtpl_search_rerank_v1")
+        self.assertIn("resource_ref", sent_rerank[0]["body"]["messages"][0]["content"])
+        llm_benchmark = self.router.dispatch(
+            "POST",
+            "/api/search/semantic/llm-rerank/benchmark",
+            {
+                "benchmark_id": "bm_llm_rerank_demo",
+                "samples": [
+                    {
+                        "q": "resilient services demand",
+                        "issuer_id": "issuer_demo",
+                        "expected_resource_refs": [llm_target_ref],
+                        "candidate_limit": 10,
+                        "limit": 3,
+                        "llm_run_id": "llmrun_search_rerank_benchmark",
+                    }
+                ],
+            },
+            role="CEO",
+        )
+        self.assertTrue(llm_benchmark.success, llm_benchmark.error)
+        self.assertEqual(llm_benchmark.data["valid_samples"], 1)
+        self.assertEqual(llm_benchmark.data["top1_accuracy"], 1.0)
+        self.assertEqual(llm_benchmark.data["mrr"], 1.0)
+        self.assertEqual(llm_benchmark.data["llm_ordering_rate"], 1.0)
+        self.assertFalse(llm_benchmark.data["automation_allowed"])
+        self.assertEqual(llm_benchmark.data["usage_boundary"], "llm_rerank_benchmark_is_offline_quality_evaluation_not_fact_or_trade_signal")
+
+        self.service.llm_gateway = LLMGateway(api_key="", http_send=lambda _request, _timeout: b"{}")
+        fallback_rerank = self.router.dispatch(
+            "POST",
+            "/api/search/semantic/llm-rerank",
+            {
+                "q": "resilient services demand",
+                "issuer_id": "issuer_demo",
+                "limit": 3,
+                "candidate_limit": 10,
+                "llm_run_id": "llmrun_search_rerank_fallback",
+            },
+            role="CEO",
+        )
+        self.assertTrue(fallback_rerank.success, fallback_rerank.error)
+        self.assertEqual(fallback_rerank.data["llm_run"]["status"], "fallback")
+        self.assertEqual(fallback_rerank.data["fallback_used"], "rule_summary")
+        self.assertTrue(fallback_rerank.data["human_review_required"])
+        self.assertEqual(fallback_rerank.data["results"][0]["rerank_source"], "local_fallback")
+        self.assertEqual(fallback_rerank.data["usage_boundary"], "llm_rerank_is_ordering_assist_only_not_fact_or_trade_signal")
+        fallback_benchmark = self.router.dispatch(
+            "POST",
+            "/api/search/semantic/llm-rerank/benchmark",
+            {
+                "benchmark_id": "bm_llm_rerank_fallback",
+                "samples": [
+                    {
+                        "q": "resilient services demand",
+                        "issuer_id": "issuer_demo",
+                        "expected_resource_refs": [f"{fallback_rerank.data['results'][0]['resource_type']}:{fallback_rerank.data['results'][0]['resource_id']}"],
+                        "candidate_limit": 10,
+                        "limit": 3,
+                        "llm_run_id": "llmrun_search_rerank_benchmark_fallback",
+                    }
+                ],
+            },
+            role="CEO",
+        )
+        self.assertTrue(fallback_benchmark.success, fallback_benchmark.error)
+        self.assertEqual(fallback_benchmark.data["valid_samples"], 1)
+        self.assertEqual(fallback_benchmark.data["top1_accuracy"], 1.0)
+        self.assertEqual(fallback_benchmark.data["fallback_rate"], 1.0)
+        self.assertEqual(fallback_benchmark.data["results"][0]["rerank_source"], "local_fallback")
 
         restricted_doc = self.service.ingest_document(
             {
@@ -6386,6 +9923,54 @@ class SystemServiceTests(unittest.TestCase):
         self.assertGreaterEqual(retried.data["retried_count"], 2)
         self.assertTrue(all(item["status"] == "sent" for item in retried.data["retry_results"]))
 
+        readiness_gap = self.router.dispatch(
+            "POST",
+            "/api/graph-vector/readiness-report",
+            {"issuer_id": "issuer_demo", "min_node_count": 1, "min_point_count": 1},
+            role="platform",
+        )
+        self.assertTrue(readiness_gap.success, readiness_gap.error)
+        self.assertFalse(readiness_gap.data["ready_for_graph_vector_production"])
+        self.assertIn("neo4j_non_local_config", readiness_gap.data["missing_requirements"])
+        self.assertIn("qdrant_non_local_config", readiness_gap.data["missing_requirements"])
+        self.assertIn("throughput_baseline", readiness_gap.data["missing_requirements"])
+        self.assertIn("failure_recovery_evidence", readiness_gap.data["missing_requirements"])
+        self.assertFalse(readiness_gap.data["automation_allowed"])
+        self.assertIn("graph_vector_readiness_report_requires_external", readiness_gap.data["usage_boundary"])
+
+        readiness_ready = self.router.dispatch(
+            "POST",
+            "/api/graph-vector/readiness-report",
+            {
+                "issuer_id": "issuer_demo",
+                "neo4j_endpoint": "neo4j+s://graph.prod.example.com",
+                "qdrant_endpoint": "https://qdrant.prod.example.com",
+                "throughput": {
+                    "graph_nodes_per_second": 1200,
+                    "vector_points_per_second": 2400,
+                    "duration_seconds": 60,
+                },
+                "retry_result": {"retried_count": retried.data["retried_count"]},
+                "artifact_uris": {
+                    "neo4j_sync_artifact_uri": "artifact://prod/graph/neo4j-sync.json",
+                    "qdrant_sync_artifact_uri": "artifact://prod/vector/qdrant-sync.json",
+                    "throughput_baseline_uri": "artifact://prod/graph-vector/throughput.json",
+                    "failure_recovery_uri": "artifact://prod/graph-vector/failure-recovery.json",
+                    "permission_boundary_uri": "artifact://prod/graph-vector/permissions.json",
+                },
+                "record_readiness": True,
+            },
+            role="platform",
+            actor="platform_owner",
+        )
+        self.assertTrue(readiness_ready.success, readiness_ready.error)
+        self.assertTrue(readiness_ready.data["ready_for_graph_vector_production"])
+        self.assertEqual(readiness_ready.data["missing_requirements"], [])
+        self.assertEqual(readiness_ready.data["throughput"]["graph_nodes_per_second"], 1200.0)
+        self.assertTrue(readiness_ready.data["adapters"]["neo4j"]["non_local_configured"])
+        self.assertTrue(readiness_ready.data["adapters"]["qdrant"]["non_local_configured"])
+        self.assertEqual(self.service.store.audit_log[-1].action, "graph_vector_readiness_report")
+
         second = self.router.dispatch("POST", "/api/demo/full-flow", {}, actor="platform_owner", role="platform")
         self.assertTrue(second.success)
         self.assertEqual(second.data["dashboard"]["counts"]["execution_intents"], 1)
@@ -6469,6 +10054,191 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("otel_collector_drill", updated_gate.data["pending_checklist"])
         self.assertEqual(updated_gate.data["counts"]["readiness_checks"], 2)
 
+        invalid = self.router.dispatch(
+            "POST",
+            "/api/readiness/checklist/real_data_smoke_test",
+            {
+                "status": "passed",
+                "owner": "platform_owner",
+                "evidence_uri": "file:///tmp/real-data-smoke.json",
+                "metrics": {"accepted": True},
+            },
+            actor="platform_owner",
+            role="platform",
+        )
+        self.assertTrue(invalid.success, invalid.error)
+        invalid_checklist = self.router.dispatch("GET", "/api/readiness/checklist", {}, role="risk_compliance")
+        self.assertTrue(invalid_checklist.success)
+        invalid_row = next(item for item in invalid_checklist.data["checks"] if item["check_id"] == "real_data_smoke_test")
+        self.assertEqual(invalid_row["effective_status"], "invalid_evidence_uri")
+        self.assertIn("real_data_smoke_test", invalid_checklist.data["pending_checklist"])
+
+        for invalid_uri in ["artifact://local-staging/real-data-smoke.json", "s3://ai-quant-prod"]:
+            invalid_artifact = self.router.dispatch(
+                "POST",
+                "/api/readiness/checklist/real_data_smoke_test",
+                {
+                    "status": "passed",
+                    "owner": "platform_owner",
+                    "evidence_uri": invalid_uri,
+                    "metrics": {"accepted": True},
+                },
+                actor="platform_owner",
+                role="platform",
+            )
+            self.assertTrue(invalid_artifact.success, invalid_artifact.error)
+            invalid_artifact_checklist = self.router.dispatch("GET", "/api/readiness/checklist", {}, role="risk_compliance")
+            self.assertTrue(invalid_artifact_checklist.success)
+            invalid_artifact_row = next(item for item in invalid_artifact_checklist.data["checks"] if item["check_id"] == "real_data_smoke_test")
+            self.assertEqual(invalid_artifact_row["effective_status"], "invalid_evidence_uri")
+            self.assertIn("real_data_smoke_test", invalid_artifact_checklist.data["pending_checklist"])
+
+        external_artifact = self.router.dispatch(
+            "POST",
+            "/api/readiness/checklist/real_data_smoke_test",
+            {
+                "status": "passed",
+                "owner": "platform_owner",
+                "evidence_uri": "s3://ai-quant-prod/readiness/real-data-smoke.json",
+                "metrics": {"accepted": True},
+            },
+            actor="platform_owner",
+            role="platform",
+        )
+        self.assertTrue(external_artifact.success, external_artifact.error)
+        external_artifact_checklist = self.router.dispatch("GET", "/api/readiness/checklist", {}, role="risk_compliance")
+        self.assertTrue(external_artifact_checklist.success)
+        external_artifact_row = next(item for item in external_artifact_checklist.data["checks"] if item["check_id"] == "real_data_smoke_test")
+        self.assertEqual(external_artifact_row["effective_status"], "passed")
+
+    def test_ui_readiness_report_requires_browser_matrix_and_workflow_evidence(self) -> None:
+        gap = self.router.dispatch("GET", "/api/readiness/ui-report", {}, role="CEO")
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_ui_production"])
+        self.assertTrue(gap.data["static_contract"]["passed"])
+        self.assertIn("production_ui_screenshot_acceptance_record", gap.data["missing_requirements"])
+        self.assertIn("required_text_browser_acceptance", gap.data["missing_requirements"])
+        self.assertIn("cross_browser_acceptance_record", gap.data["missing_requirements"])
+        self.assertIn("real_data_ui_walkthrough_uri", gap.data["missing_requirements"])
+        self.assertIn("ui_data_volume_workflow", gap.data["missing_requirements"])
+        self.assertIn("ui_text_no_overlap_review", gap.data["missing_requirements"])
+        self.assertIn("ui_permission_state_review", gap.data["missing_requirements"])
+        self.assertFalse(gap.data["automation_allowed"])
+
+        ui_browser_metrics = {
+            "status": "passed",
+            "browser": "/usr/bin/chromium",
+            "ui_url": "https://staging.example.test/ui",
+            "required_text": ["AI 原生量化投研系统", "总览", "风控合规"],
+            "missing_text": [],
+            "failure_count": 0,
+            "screenshots": [
+                {"name": "desktop", "width": 1440, "height": 1000, "nonblank": True, "sha256": "d" * 64},
+                {"name": "mobile", "width": 390, "height": 844, "nonblank": True, "sha256": "m" * 64},
+            ],
+            "evidence_uri": "artifact://staging/ui-browser-acceptance.json",
+        }
+        screenshot = self.router.dispatch(
+            "POST",
+            "/api/readiness/checklist/production_ui_screenshot_acceptance",
+            {
+                "status": "passed",
+                "owner": "platform_owner",
+                "evidence_uri": "artifact://staging/ui-browser-screenshots.json",
+                "notes": "desktop and mobile screenshots accepted",
+                "metrics": {
+                    **ui_browser_metrics,
+                    "data_volume_rows": 2500,
+                    "pagination_checked": True,
+                    "filtering_checked": True,
+                    "error_states_checked": True,
+                    "real_data_checked": True,
+                },
+            },
+            actor="platform_owner",
+            role="platform",
+        )
+        self.assertTrue(screenshot.success, screenshot.error)
+        browser = self.router.dispatch(
+            "POST",
+            "/api/readiness/checklist/cross_browser_acceptance",
+            {
+                "status": "passed",
+                "owner": "platform_owner",
+                "evidence_uri": "artifact://staging/ui-browser-matrix.json",
+                "notes": "browser matrix accepted",
+                "metrics": {
+                    **ui_browser_metrics,
+                    "browser_matrix": [
+                        {"browser": "chromium", "viewport": "desktop", "status": "passed"},
+                        {"browser": "firefox", "viewport": "mobile", "status": "passed"},
+                    ],
+                    "browsers_checked": ["chromium", "firefox"],
+                    "permission_checked": True,
+                    "permission_states_checked": True,
+                    "text_no_overlap_checked": True,
+                    "visual_no_overflow_checked": True,
+                    "responsive_layout_checked": True,
+                },
+            },
+            actor="platform_owner",
+            role="platform",
+        )
+        self.assertTrue(browser.success, browser.error)
+
+        uri_only = self.router.dispatch(
+            "POST",
+            "/api/readiness/ui-report",
+            {
+                "artifact_uris": {
+                    "cross_browser_matrix_uri": "artifact://staging/ui-browser-matrix.json",
+                    "real_data_workflow_uri": "artifact://staging/ui-real-data-workflows.json",
+                    "visual_overflow_review_uri": "artifact://staging/ui-no-overflow-review.json",
+                    "access_control_review_uri": "artifact://staging/ui-permission-review.json",
+                },
+                "browser_acceptance": {
+                    **ui_browser_metrics,
+                    "browser_matrix": [{"browser": "chromium", "viewport": "desktop", "status": "passed"}],
+                    "browsers_checked": ["chromium"],
+                },
+            },
+            actor="platform_owner",
+            role="platform",
+        )
+        self.assertTrue(uri_only.success, uri_only.error)
+        self.assertFalse(uri_only.data["ready_for_ui_production"])
+        self.assertIn("cross_browser_matrix_coverage", uri_only.data["missing_requirements"])
+        self.assertFalse(uri_only.data["browser_acceptance"]["cross_browser_matrix_ready"])
+
+        ready = self.router.dispatch(
+            "POST",
+            "/api/readiness/ui-report",
+            {
+                "record_readiness": True,
+                "artifact_uris": {
+                    "cross_browser_matrix_uri": "artifact://staging/ui-browser-matrix.json",
+                    "real_data_workflow_uri": "artifact://staging/ui-real-data-workflows.json",
+                    "visual_overflow_review_uri": "artifact://staging/ui-no-overflow-review.json",
+                    "access_control_review_uri": "artifact://staging/ui-permission-review.json",
+                },
+            },
+            actor="platform_owner",
+            role="platform",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_ui_production"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertTrue(ready.data["browser_acceptance"]["required_viewports_nonblank"])
+        self.assertTrue(ready.data["browser_acceptance"]["required_text_present"])
+        self.assertTrue(ready.data["browser_acceptance"]["cross_browser_matrix_ready"])
+        self.assertEqual(ready.data["browser_acceptance"]["browser_families"], ["chromium", "firefox"])
+        self.assertEqual(ready.data["workflow_evidence"]["real_data_flags"]["pagination"], True)
+        self.assertEqual(ready.data["workflow_evidence"]["real_data_flags"]["data_volume"], True)
+        self.assertEqual(ready.data["workflow_evidence"]["real_data_step_ready"]["data_volume"], True)
+        self.assertEqual(ready.data["workflow_evidence"]["visual_step_ready"]["text_no_overlap"], True)
+        self.assertEqual(ready.data["workflow_evidence"]["permission_state_ready"], True)
+        self.assertEqual(self.service.store.audit_log[-1].action, "ui_readiness_report")
+
     def test_readiness_evidence_package_tracks_external_validation_and_outbox(self) -> None:
         self.router.dispatch("POST", "/api/demo/full-flow", {}, actor="platform_owner", role="platform")
         package = self.router.dispatch(
@@ -6511,6 +10281,196 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(smoke["target"], "platform-oncall")
         self.assertEqual(smoke["payload"]["type"], "readiness_evidence_required")
         self.assertIn("until_real_artifacts_are_attached", notified.data["usage_boundary"])
+
+    def test_deployment_report_requires_release_evidence_and_redacts_secret_values(self) -> None:
+        blocked = self.router.dispatch(
+            "POST",
+            "/api/readiness/deployment-report",
+            {"secret_value": "should-not-be-recorded"},
+            role="platform",
+        )
+        self.assertFalse(blocked.success)
+        self.assertIn("must not include secret values", blocked.error["message"])
+
+        gap = self.router.dispatch("POST", "/api/readiness/deployment-report", {}, role="platform")
+        self.assertTrue(gap.success, gap.error)
+        self.assertFalse(gap.data["ready_for_production_deployment"])
+        self.assertIn("postgres_config_present", gap.data["missing_requirements"])
+        self.assertIn("production_parameters_uri", gap.data["missing_requirements"])
+        self.assertIn("secret_manager_config_present", gap.data["missing_requirements"])
+        self.assertIn("backup_restore_drill_record", gap.data["missing_requirements"])
+        self.assertTrue(gap.data["runtime"]["sensitive_values_redacted"])
+        self.assertFalse(gap.data["live_execution_allowed"])
+
+        required_checks = [
+            "real_data_smoke_test",
+            "production_ui_screenshot_acceptance",
+            "cross_browser_acceptance",
+            "capacity_latency_report",
+            "backup_restore_drill",
+            "otel_collector_drill",
+            "permission_red_team_test",
+            "compliance_review_record",
+            "launch_checklist",
+        ]
+        for check_id in required_checks:
+            recorded = self.router.dispatch(
+                "POST",
+                f"/api/readiness/checklist/{check_id}",
+                {
+                    "status": "passed",
+                    "owner": "release_owner",
+                    "evidence_uri": f"artifact://prod-readiness/{check_id}.json",
+                    "metrics": {"accepted": True},
+                },
+                role="platform" if check_id not in {"permission_red_team_test", "compliance_review_record", "launch_checklist"} else "risk_compliance",
+                actor="release_owner",
+            )
+            self.assertTrue(recorded.success, recorded.error)
+        rotation = self.router.dispatch(
+            "POST",
+            "/api/governance/secret-rotations",
+            {
+                "rotation_id": "secrot_prod_release",
+                "secret_name": "AI_QUANT_S3_SECRET_KEY",
+                "provider": "vault",
+                "owner": "platform_owner",
+                "status": "rotated",
+                "evidence_uri": "artifact://prod-readiness/secret-rotation.json",
+            },
+            role="risk_compliance",
+            actor="risk_owner",
+        )
+        self.assertTrue(rotation.success, rotation.error)
+
+        plan_fields_only = self.router.dispatch(
+            "POST",
+            "/api/readiness/deployment-report",
+            {
+                "environment_name": "prod",
+                "postgres_configured": True,
+                "s3_configured": True,
+                "opensearch_configured": True,
+                "secret_manager_provider": "vault",
+                "secret_injection_mode": "runtime_env_from_vault_agent",
+                "release_plan": {
+                    "release_id": "rel_prod_20260517",
+                    "owner": "release_owner",
+                    "canary_window": "2026-05-17T10:00Z/2026-05-17T12:00Z",
+                    "rollback_owner": "platform_owner",
+                    "rollback_window": "15m",
+                },
+                "artifact_uris": {
+                    "secret_manager_evidence_uri": "artifact://prod-readiness/secret-manager.json",
+                    "backup_restore_evidence_uri": "artifact://prod-readiness/backup-restore.json",
+                    "capacity_baseline_uri": "artifact://prod-readiness/capacity.json",
+                    "release_checklist_uri": "artifact://prod-readiness/release-checklist.json",
+                },
+            },
+            role="platform",
+            actor="release_owner",
+        )
+        self.assertTrue(plan_fields_only.success, plan_fields_only.error)
+        self.assertFalse(plan_fields_only.data["ready_for_production_deployment"])
+        self.assertIn("production_parameters_uri", plan_fields_only.data["missing_requirements"])
+        self.assertIn("canary_plan_uri", plan_fields_only.data["missing_requirements"])
+        self.assertIn("rollback_plan_uri", plan_fields_only.data["missing_requirements"])
+
+        self.router.dispatch(
+            "POST",
+            "/api/readiness/checklist/capacity_latency_report",
+            {"status": "passed", "owner": "release_owner", "evidence_uri": "file:///tmp/capacity.json"},
+            role="platform",
+            actor="release_owner",
+        )
+        self.router.dispatch(
+            "POST",
+            "/api/readiness/checklist/backup_restore_drill",
+            {"status": "passed", "owner": "release_owner", "evidence_uri": "local://backup-restore.json"},
+            role="platform",
+            actor="release_owner",
+        )
+        local_record_evidence = self.router.dispatch(
+            "POST",
+            "/api/readiness/deployment-report",
+            {
+                "environment_name": "prod",
+                "postgres_configured": True,
+                "s3_configured": True,
+                "opensearch_configured": True,
+                "secret_manager_provider": "vault",
+                "secret_injection_mode": "runtime_env_from_vault_agent",
+                "artifact_uris": {
+                    "production_parameters_uri": "artifact://prod-readiness/parameters.json",
+                    "secret_manager_evidence_uri": "artifact://prod-readiness/secret-manager.json",
+                    "release_checklist_uri": "artifact://prod-readiness/release-checklist.json",
+                    "canary_plan_uri": "artifact://prod-readiness/canary-plan.md",
+                    "rollback_plan_uri": "artifact://prod-readiness/rollback-plan.md",
+                },
+            },
+            role="platform",
+            actor="release_owner",
+        )
+        self.assertTrue(local_record_evidence.success, local_record_evidence.error)
+        self.assertFalse(local_record_evidence.data["ready_for_production_deployment"])
+        self.assertIn("backup_restore_drill_record", local_record_evidence.data["missing_requirements"])
+        self.assertIn("backup_restore_evidence_uri", local_record_evidence.data["missing_requirements"])
+        self.assertIn("capacity_baseline_record", local_record_evidence.data["missing_requirements"])
+        self.assertIn("capacity_baseline_evidence_uri", local_record_evidence.data["missing_requirements"])
+
+        for check_id in ["capacity_latency_report", "backup_restore_drill"]:
+            recorded = self.router.dispatch(
+                "POST",
+                f"/api/readiness/checklist/{check_id}",
+                {
+                    "status": "passed",
+                    "owner": "release_owner",
+                    "evidence_uri": f"artifact://prod-readiness/{check_id}.json",
+                    "metrics": {"accepted": True},
+                },
+                role="platform",
+                actor="release_owner",
+            )
+            self.assertTrue(recorded.success, recorded.error)
+
+        ready = self.router.dispatch(
+            "POST",
+            "/api/readiness/deployment-report",
+            {
+                "environment_name": "prod",
+                "postgres_configured": True,
+                "s3_configured": True,
+                "opensearch_configured": True,
+                "secret_manager_provider": "vault",
+                "secret_injection_mode": "runtime_env_from_vault_agent",
+                "release_plan": {
+                    "release_id": "rel_prod_20260517",
+                    "owner": "release_owner",
+                    "canary_window": "2026-05-17T10:00Z/2026-05-17T12:00Z",
+                    "rollback_owner": "platform_owner",
+                    "rollback_window": "15m",
+                },
+                "artifact_uris": {
+                    "production_parameters_uri": "artifact://prod-readiness/parameters.json",
+                    "secret_manager_evidence_uri": "artifact://prod-readiness/secret-manager.json",
+                    "backup_restore_evidence_uri": "artifact://prod-readiness/backup-restore.json",
+                    "capacity_baseline_uri": "artifact://prod-readiness/capacity.json",
+                    "release_checklist_uri": "artifact://prod-readiness/release-checklist.json",
+                    "canary_plan_uri": "artifact://prod-readiness/canary-plan.md",
+                    "rollback_plan_uri": "artifact://prod-readiness/rollback-plan.md",
+                },
+                "record_readiness": True,
+            },
+            role="platform",
+            actor="release_owner",
+        )
+        self.assertTrue(ready.success, ready.error)
+        self.assertTrue(ready.data["ready_for_production_deployment"])
+        self.assertEqual(ready.data["missing_requirements"], [])
+        self.assertEqual(ready.data["runtime"]["environment"], "prod")
+        self.assertEqual(ready.data["secret_manager"]["provider"], "vault")
+        self.assertEqual(ready.data["secret_rotation_summary"]["count"], 1)
+        self.assertEqual(self.service.store.audit_log[-1].action, "readiness_deployment_report")
 
     def test_search_falls_back_when_external_backend_fails(self) -> None:
         class FailingSearchIndex:
@@ -6901,6 +10861,12 @@ class SystemServiceTests(unittest.TestCase):
                 "lei": "LEI-PG-001",
                 "cik": "0001888888",
                 "country": "US",
+                "sector": "Technology",
+                "industry": "Software",
+                "company_details": {"country": "United States", "ipo_year": "2020"},
+                "fundamentals": {"sector": "Technology", "industry": "Software"},
+                "valuation_metrics": {"market_cap": 123456789.0, "currency": "USD"},
+                "data_sources": ["nasdaq_screener_sec_company_tickers"],
             },
             actor="platform",
         )
@@ -6913,6 +10879,10 @@ class SystemServiceTests(unittest.TestCase):
                 "exchange": "NASDAQ",
                 "currency": "USD",
                 "market": "U",
+                "security_type": "common_stock",
+                "sector": "Technology",
+                "industry": "Software",
+                "listing_date": "2020",
             },
             actor="platform",
         )
@@ -6949,6 +10919,11 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("src_pg", reloaded.store.sources)
         self.assertIn("issuer_pg", reloaded.store.issuers)
         self.assertIn("security_pg", reloaded.store.securities)
+        self.assertEqual(reloaded.store.issuers["issuer_pg"].industry, "Software")
+        self.assertEqual(reloaded.store.issuers["issuer_pg"].valuation_metrics["market_cap"], 123456789.0)
+        self.assertEqual(reloaded.store.issuers["issuer_pg"].company_details["ipo_year"], "2020")
+        self.assertEqual(reloaded.store.securities["security_pg"].security_type, "common_stock")
+        self.assertEqual(reloaded.store.securities["security_pg"].industry, "Software")
         self.assertIn(market_point.data_id, reloaded.store.market_data)
         self.assertEqual(reloaded.market_data_payload({"security_id": "security_pg"})["market_data"][0]["close"], 45.75)
         self.assertIn(holding.holding_id, reloaded.store.institutional_holdings)
@@ -7134,11 +11109,1694 @@ class SystemServiceTests(unittest.TestCase):
 
     def test_ui_static_contract_matches_target_information_architecture(self) -> None:
         result = validate_ui_html(run_node=False)
-        self.assertEqual(result["nav_labels"], 10)
-        self.assertEqual(result["status_labels"], 7)
-        self.assertEqual(result["required_ids"], 42)
-        self.assertEqual(result["required_functions"], 24)
+        self.assertEqual(result["nav_labels"], 8)
+        self.assertEqual(result["status_labels"], 8)
+        self.assertEqual(result["required_ids"], 145)
+        self.assertEqual(result["required_functions"], 48)
         self.assertEqual(result["node_check"], "skipped")
+
+    def test_ui_cross_browser_matrix_validator_requires_families_viewports_and_text(self) -> None:
+        invalid = validate_cross_browser_matrix(
+            {
+                "browser_matrix": [{"browser": "chromium", "viewport": "desktop", "status": "passed"}],
+                "required_text": ["AI 原生量化投研系统"],
+                "missing_text": [],
+                "failure_count": 0,
+            }
+        )
+        self.assertFalse(invalid["passed"])
+        failure_checks = {item["check"] for item in invalid["failures"]}
+        self.assertIn("browser_family_count", failure_checks)
+        self.assertIn("required_viewports", failure_checks)
+
+        valid = validate_cross_browser_matrix(
+            {
+                "browser_matrix": [
+                    {"browser": "chromium", "viewport": "desktop", "status": "passed"},
+                    {"browser": "firefox", "viewport": "mobile", "status": "passed"},
+                ],
+                "required_text": ["AI 原生量化投研系统", "总览"],
+                "missing_text": [],
+                "failure_count": 0,
+            }
+        )
+        self.assertTrue(valid["passed"])
+        self.assertEqual(valid["browser_families"], ["chromium", "firefox"])
+        self.assertEqual(valid["missing_viewports"], [])
+
+    def test_readiness_evidence_package_validator_requires_ready_external_artifacts(self) -> None:
+        self.assertTrue(is_external_artifact_uri("artifact://staging-local/real-data-smoke.json"))
+        self.assertFalse(is_production_artifact_uri("artifact://staging-local/real-data-smoke.json"))
+        invalid = validate_readiness_evidence_package(
+            {
+                "package_id": "pkg_invalid",
+                "status": "ready",
+                "ready_for_launch": True,
+                "missing_evidence_count": 0,
+                "failed_gate_count": 0,
+                "checklist_coverage": 1.0,
+                "pending_checklist": [],
+                "required_evidence": [
+                    {
+                        "check_id": "real_data_smoke_test",
+                        "status": "passed",
+                        "missing_evidence": False,
+                        "evidence_uri": "artifact://staging-local/real-data-smoke.json",
+                    },
+                    {
+                        "check_id": "capacity_latency_report",
+                        "status": "passed",
+                        "missing_evidence": False,
+                        "evidence_uri": "s3://ai-quant-prod",
+                    }
+                ],
+                "external_validations": [
+                    {
+                        "scope": "state_store_object_store_fulltext_search",
+                        "check_status": "passed",
+                        "ready": True,
+                        "evidence_uri": "https://storage.example.test",
+                    }
+                ],
+            }
+        )
+        self.assertFalse(invalid["passed"])
+        self.assertEqual(invalid["failure_count"], len(invalid["failures"]))
+        failure_checks = {item["check"] for item in invalid["failures"]}
+        self.assertIn("required_evidence_uri", failure_checks)
+        self.assertIn("required_evidence_check_ids", failure_checks)
+        self.assertIn("external_validation_scopes", failure_checks)
+        self.assertIn("external_validation_evidence_uri", failure_checks)
+
+        valid_scopes = [
+            "state_store_object_store_fulltext_search",
+            "metrics_logs_traces",
+            "graph_vector_semantic_search",
+            "lineage_model_registry",
+            "kms_rotation_cache_retention_external_delete",
+            "desktop_mobile_cross_browser",
+        ]
+        valid_check_ids = [
+            "real_data_smoke_test",
+            "production_ui_screenshot_acceptance",
+            "cross_browser_acceptance",
+            "capacity_latency_report",
+            "backup_restore_drill",
+            "otel_collector_drill",
+            "permission_red_team_test",
+            "compliance_review_record",
+            "launch_checklist",
+        ]
+        valid = validate_readiness_evidence_package(
+            {
+                "package_id": "pkg_ready",
+                "status": "ready",
+                "ready_for_launch": True,
+                "missing_evidence_count": 0,
+                "failed_gate_count": 0,
+                "checklist_coverage": 1.0,
+                "pending_checklist": [],
+                "required_evidence": [
+                    {
+                        "check_id": check_id,
+                        "status": "passed",
+                        "missing_evidence": False,
+                        "evidence_uri": f"s3://ai-quant-prod/readiness/{check_id}.json",
+                    }
+                    for check_id in valid_check_ids
+                ],
+                "external_validations": [
+                    {
+                        "scope": scope,
+                        "check_status": "passed",
+                        "ready": True,
+                        "outbox_channels_ready": True,
+                        "evidence_uri": f"artifact://prod-readiness/{scope}.json",
+                    }
+                    for scope in valid_scopes
+                ],
+            }
+        )
+        self.assertTrue(valid["passed"])
+        self.assertEqual(valid["failure_count"], 0)
+        self.assertEqual(valid["missing_scopes"], [])
+
+        template = validate_readiness_evidence_package(
+            json.loads(Path("artifacts/readiness-evidence-package.example.json").read_text(encoding="utf-8"))
+        )
+        self.assertTrue(template["passed"], template["failures"])
+        self.assertEqual(template["failure_count"], 0)
+        self.assertEqual(template["required_evidence_count"], 9)
+        self.assertEqual(template["external_validation_count"], 6)
+        with TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "readiness-evidence-package-validation.json"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/readiness_evidence_package_check.py",
+                    "artifacts/readiness-evidence-package.example.json",
+                    "--output",
+                    str(output_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(output_path.exists())
+            self.assertFalse((output_path.parent / f".{output_path.name}.tmp").exists())
+            self.assertTrue(json.loads(output_path.read_text(encoding="utf-8"))["passed"])
+            self.assertEqual(json.loads(output_path.read_text(encoding="utf-8"))["failure_count"], 0)
+
+    def test_production_closure_manifest_freezes_sources_and_external_evidence(self) -> None:
+        base_checks = {
+            check_id: {"status": "passed", "evidence_uri": f"s3://ai-quant-prod/readiness/{check_id}.json"}
+            for check_id in [
+                "real_data_smoke_test",
+                "production_ui_screenshot_acceptance",
+                "cross_browser_acceptance",
+                "capacity_latency_report",
+                "backup_restore_drill",
+                "otel_collector_drill",
+                "permission_red_team_test",
+                "compliance_review_record",
+                "launch_checklist",
+            ]
+        }
+        astock_connector_ids = [
+            "eastmoney_research",
+            "cninfo_announcements",
+            "tencent_valuation_snapshot",
+            "ths_hot_topics",
+            "baidu_concepts",
+            "dragon_tiger_list",
+            "unlock_calendar",
+        ]
+        astock_artifacts = {
+            connector_id: {
+                "endpoint_artifact_uri": f"s3://ai-quant-prod/reports/astock/{connector_id}-endpoint.json",
+                "stability_artifact_uri": f"s3://ai-quant-prod/reports/astock/{connector_id}-stability.json",
+                "rate_limit_artifact_uri": f"s3://ai-quant-prod/reports/astock/{connector_id}-rate-limit.json",
+                "license_review_uri": f"s3://ai-quant-prod/reports/astock/{connector_id}-license.json",
+                "field_sample_uri": f"s3://ai-quant-prod/reports/astock/{connector_id}-sample.jsonl",
+            }
+            for connector_id in astock_connector_ids
+        }
+        astock_manifest = {
+            "connector_ids": astock_connector_ids,
+            "verify": [{"connector_id": connector_id, "status": "passed"} for connector_id in astock_connector_ids],
+            "verification_readiness": {
+                "connector_ids": astock_connector_ids,
+                "artifact_uris": astock_artifacts,
+            },
+        }
+        reports = {
+            name: {"artifact_uris": {f"{name}_uri": f"s3://ai-quant-prod/reports/{name}.json"}}
+            for name in ["storage", "security", "observability", "ui", "deployment"]
+        }
+        evidence_package = {
+            "status": "ready",
+            "ready_for_launch": True,
+            "missing_evidence_count": 0,
+            "failed_gate_count": 0,
+            "checklist_coverage": 1.0,
+            "pending_checklist": [],
+            "required_evidence": [
+                {
+                    "check_id": check_id,
+                    "status": "passed",
+                    "missing_evidence": False,
+                    "evidence_uri": f"s3://ai-quant-prod/readiness/{check_id}.json",
+                }
+                for check_id in base_checks
+            ],
+            "external_validations": [
+                {
+                    "scope": scope,
+                    "check_status": "passed",
+                    "ready": True,
+                    "outbox_channels_ready": True,
+                    "evidence_uri": f"s3://ai-quant-prod/validations/{scope}.json",
+                }
+                for scope in [
+                    "state_store_object_store_fulltext_search",
+                    "metrics_logs_traces",
+                    "graph_vector_semantic_search",
+                    "lineage_model_registry",
+                    "kms_rotation_cache_retention_external_delete",
+                    "desktop_mobile_cross_browser",
+                ]
+            ],
+        }
+        invalid = validate_production_closure_manifest(
+            {
+                "ready_for_launch": True,
+                "readiness_checks": {
+                    **base_checks,
+                    "capacity_latency_report": {"status": "passed", "evidence_uri": "artifact://staging-local/capacity.json"},
+                },
+                "reports": reports,
+                "data_sources": [
+                    {"source_id": "paid_terminal", "source_class": "paid_terminal", "requires_paid_license": True}
+                ],
+                "astock_connectors": {"connector_ids": ["eastmoney_research", "iwencai_optional"]},
+                "evidence_package": evidence_package,
+            }
+        )
+        self.assertFalse(invalid["passed"])
+        failure_checks = {item["check"] for item in invalid["failures"]}
+        self.assertIn("readiness_check_evidence_uri", failure_checks)
+        self.assertIn("data_source_class", failure_checks)
+        self.assertIn("paid_data_source", failure_checks)
+        self.assertIn("astock_connector_scope", failure_checks)
+        self.assertIn("astock_connector_verification", failure_checks)
+        self.assertIn("astock_connector_readiness_scope", failure_checks)
+        self.assertIn("astock_connector_artifact_fields", failure_checks)
+        self.assertIn("astock_connector_artifact_uri", failure_checks)
+
+        valid = validate_production_closure_manifest(
+            {
+                "ready_for_launch": True,
+                "readiness_checks": base_checks,
+                "reports": reports,
+                "data_sources": [
+                    {
+                        "source_id": "sec_edgar",
+                        "source_class": "official_public_disclosure",
+                        "rights_tag": {
+                            "license_class": "public",
+                            "training_allowed": False,
+                            "redistribution_allowed": False,
+                            "display_use": "allowed",
+                            "non_display_use": "restricted",
+                            "derived_data_use": "restricted",
+                        },
+                        "field_whitelist": ["filing_id", "issuer_id", "form_type", "filed_at", "source_uri"],
+                        "retention_policy": "retain_public_disclosure_for_research",
+                        "cache_ttl_days": 3650,
+                        "provenance_ref": "https://www.sec.gov/Archives/",
+                        "usage_scope": "public_disclosure_research_only",
+                        "collection_method": "official_public_download",
+                        "robots_policy": "robots_and_tos_reviewed",
+                        "review_cadence": "quarterly",
+                        "review_owner": "platform_owner",
+                        "review_owner_role": "平台负责人",
+                        "source_tos_uri": "https://www.sec.gov/os/accessing-edgar-data",
+                        "risk_level": "green",
+                        "review_status": "approved",
+                        "validation_status": "verified",
+                    },
+                    {
+                        "source_id": "public_eod_market_data",
+                        "source_class": "tdx_local",
+                        "rights_tag": {
+                            "license_class": "public_eod_reference",
+                            "training_allowed": False,
+                            "redistribution_allowed": False,
+                            "display_use": "allowed",
+                            "non_display_use": "allowed",
+                            "derived_data_use": "restricted",
+                        },
+                        "field_whitelist": ["security_id", "as_of_date", "open", "high", "low", "close", "adjusted_close", "volume"],
+                        "retention_policy": "retain_adjusted_eod_for_research_10y",
+                        "cache_ttl_days": 3650,
+                        "provenance_ref": "local://data/local/tdx/vipdoc",
+                        "usage_scope": "public_eod_internal_research_backtest_risk",
+                        "collection_method": "local_file_or_public_api",
+                        "robots_policy": "reviewed_public_or_local_source",
+                        "review_cadence": "quarterly",
+                        "review_owner": "market_data_owner",
+                        "review_owner_role": "数据工程",
+                        "source_tos_uri": "https://www.tdx.com.cn/",
+                        "risk_level": "green",
+                        "review_status": "approved",
+                        "validation_status": "verified",
+                    },
+                    {
+                        "source_id": "local_research_reports",
+                        "source_class": "local_research_reports",
+                        "rights_tag": {
+                            "license_class": "local_research_reference",
+                            "training_allowed": False,
+                            "redistribution_allowed": False,
+                            "display_use": "restricted",
+                            "non_display_use": "restricted",
+                            "derived_data_use": "restricted",
+                        },
+                        "field_whitelist": ["report_id", "broker", "title", "published_at", "source_uri"],
+                        "retention_policy": "retain_local_reference_reports_for_citation_tracking",
+                        "cache_ttl_days": 3650,
+                        "provenance_ref": "local:///home/xionglei/文档/6大投行研报汇总",
+                        "usage_scope": "local_reference_citation_tracking_only",
+                        "collection_method": "local_file_scan",
+                        "robots_policy": "not_applicable_local_filesystem",
+                        "review_cadence": "quarterly",
+                        "review_owner": "research_owner",
+                        "review_owner_role": "分析师",
+                        "source_tos_uri": "internal://manual-review/local-research-cache-policy",
+                        "risk_level": "yellow",
+                        "review_status": "conditional",
+                        "validation_status": "reviewed",
+                    },
+                ],
+                "astock_connectors": astock_manifest,
+                "evidence_package": evidence_package,
+            }
+        )
+        self.assertTrue(valid["passed"])
+        self.assertEqual(valid["required_check_count"], 9)
+        self.assertIn("tdx_local", valid["allowed_data_source_classes"])
+
+        template_style = validate_production_closure_manifest(
+            {
+                "ready_for_launch": False,
+                "readiness_checks": base_checks,
+                "reports": reports,
+                "data_sources": [],
+                "astock_connectors": astock_manifest,
+            }
+        )
+        self.assertFalse(template_style["passed"])
+        self.assertEqual(template_style["failure_count"], len(template_style["failures"]))
+        template_failures = {item["check"] for item in template_style["failures"]}
+        self.assertIn("ready_for_launch", template_failures)
+        self.assertIn("evidence_package", template_failures)
+        template_style_allowed = validate_production_closure_manifest(
+            {
+                "ready_for_launch": False,
+                "readiness_checks": base_checks,
+                "reports": reports,
+                "data_sources": [],
+                "astock_connectors": astock_manifest,
+            },
+            require_launch_ready=False,
+        )
+        self.assertTrue(template_style_allowed["passed"], template_style_allowed["failures"])
+        self.assertEqual(template_style_allowed["failure_count"], 0)
+
+        template_manifest = json.loads(Path("artifacts/production-closure-manifest.example.json").read_text(encoding="utf-8"))
+        template_validation = validate_production_closure_manifest(template_manifest, require_launch_ready=False)
+        self.assertTrue(template_validation["passed"], template_validation["failures"])
+        self.assertEqual(template_validation["failure_count"], 0)
+        self.assertEqual(template_validation["required_check_count"], 9)
+        self.assertEqual(template_validation["required_report_count"], 5)
+        self.assertEqual(len(template_manifest["astock_connectors"]["verify"]), 7)
+        self.assertEqual(len(template_manifest["astock_connectors"]["verification_readiness"]["connector_ids"]), 7)
+
+        manifest_validation = load_and_validate_production_closure_manifest(
+            "artifacts/production-closure-manifest.example.json",
+            require_launch_ready=False,
+        )
+        self.assertTrue(manifest_validation["passed"], manifest_validation["failures"])
+        self.assertEqual(manifest_validation["failure_count"], 0)
+        with TemporaryDirectory() as tmpdir:
+            validation_output = Path(tmpdir) / "production-closure-manifest-validation.json"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_closure_manifest_check.py",
+                    "artifacts/production-closure-manifest.example.json",
+                    "--allow-template",
+                    "--output",
+                    str(validation_output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(validation_output.exists())
+            self.assertFalse((validation_output.parent / f".{validation_output.name}.tmp").exists())
+            self.assertTrue(json.loads(validation_output.read_text(encoding="utf-8"))["passed"])
+
+        with TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "production-closure-result.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_closure.py",
+                    "http://127.0.0.1:9",
+                    "--manifest",
+                    "artifacts/production-closure-manifest.example.json",
+                    "--output",
+                    str(output_path),
+                    "--dry-run",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertTrue(output_path.exists())
+            self.assertFalse((output_path.parent / f".{output_path.name}.tmp").exists())
+            closure_result = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(closure_result["status"], "failed")
+
+    def test_production_task_closure_audit_separates_external_evidence_blockers(self) -> None:
+        audit = audit_production_tasks()
+        self.assertEqual(audit["status"], "passed")
+        self.assertEqual(audit["doing_task_count"], 0)
+        self.assertEqual(audit["blocked_task_count"], 17)
+        self.assertEqual(audit["open_task_count"], 17)
+        self.assertEqual(audit["todo_status_counts"]["doing"], 0)
+        self.assertFalse(audit["has_real_closure_evidence"])
+        self.assertEqual(audit["counts"].get("needs_code_work", 0), 0)
+        self.assertEqual(audit["counts"].get("blocked_external_evidence"), 17)
+        self.assertEqual(audit["needs_code_work_count"], 0)
+        self.assertEqual(audit["blocked_external_evidence_count"], 17)
+        self.assertEqual(audit["done_by_real_evidence_count"], 0)
+        self.assertEqual(audit["needs_code_work_task_ids"], [])
+        self.assertEqual(len(audit["blocked_external_evidence_task_ids"]), 17)
+        self.assertIn("T-416", audit["blocked_external_evidence_task_ids"])
+        rows = {item["task_id"]: item for item in audit["tasks"]}
+        self.assertIn("T-416", rows)
+        self.assertIn("connector endpoint availability artifacts", rows["T-416"]["external_evidence_blockers"])
+        self.assertGreater(rows["T-416"]["external_artifact_count_in_manifest"], 0)
+        self.assertIn("T-412", rows)
+        self.assertIn("production parameter confirmation", rows["T-412"]["external_evidence_blockers"])
+        plan = build_evidence_collection_plan(audit)
+        self.assertEqual(plan["task_count"], 17)
+        plan_rows = {item["task_id"]: item for item in plan["tasks"]}
+        self.assertEqual(plan_rows["T-416"]["readiness_endpoint"], "/api/connectors/astock/verification-readiness")
+        self.assertIn("field_sample_uri", plan_rows["T-416"]["artifact_fields"])
+        self.assertEqual(plan_rows["T-412"]["owner_role"], "平台负责人")
+        self.assertIn("production_parameters_uri", plan_rows["T-412"]["artifact_uri_template"])
+        plan_validation = validate_evidence_collection_plan(plan)
+        self.assertTrue(plan_validation["passed"], plan_validation["failures"])
+        self.assertEqual(plan_validation["failure_count"], 0)
+        self.assertEqual(plan_validation["expected_task_count"], 17)
+        plan_filled_validation = validate_evidence_collection_plan(plan, require_filled_uris=True)
+        self.assertFalse(plan_filled_validation["passed"])
+        self.assertEqual(plan_filled_validation["failure_count"], len(plan_filled_validation["failures"]))
+        self.assertIn("artifact_uri_filled", {item["check"] for item in plan_filled_validation["failures"]})
+        loaded_plan_validation = load_and_validate_evidence_collection_plan("artifacts/production-evidence-collection-plan.example.json")
+        self.assertTrue(loaded_plan_validation["passed"], loaded_plan_validation["failures"])
+        self.assertEqual(loaded_plan_validation["failure_count"], 0)
+
+        with TemporaryDirectory() as tmpdir:
+            quality_path = Path(tmpdir) / "quality-package.json"
+            data_unblock_path = Path(tmpdir) / "local-data-unblock-audit.json"
+            quality_path.write_text(
+                json.dumps(
+                    {
+                        "sample_count": 500,
+                        "language_counts": {"zh": 165, "en": 335},
+                        "run_passed": True,
+                        "large_sample_ready": True,
+                        "readiness_missing_requirements": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            data_unblock_path.write_text(
+                json.dumps(
+                    {
+                        "passed": True,
+                        "data_blocked": False,
+                        "remaining_quality_gaps": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            local_audit = audit_production_tasks(
+                local_benchmark_quality_package_path=quality_path,
+                local_data_unblock_audit_path=data_unblock_path,
+            )
+            self.assertTrue(local_audit["local_benchmark_quality_passed"])
+            self.assertEqual(local_audit["done_by_real_evidence_count"], 1)
+            self.assertIn("T-402", local_audit["done_by_real_evidence_task_ids"])
+            self.assertEqual(local_audit["blocked_external_evidence_count"], 16)
+            local_rows = {item["task_id"]: item for item in local_audit["tasks"]}
+            self.assertTrue(local_rows["T-402"]["local_evidence_passed"])
+            self.assertEqual(local_rows["T-402"]["external_evidence_blockers"], [])
+
+        with TemporaryDirectory() as tmpdir:
+            output_audit = Path(tmpdir) / "production-task-closure-audit.json"
+            output_plan = Path(tmpdir) / "production-evidence-collection-plan.json"
+            validation_output = Path(tmpdir) / "production-evidence-plan-validation.json"
+            strict_validation_output = Path(tmpdir) / "production-evidence-plan-strict-validation.json"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_task_closure_audit.py",
+                    "--output",
+                    str(output_audit),
+                    "--output-plan",
+                    str(output_plan),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(output_audit.exists())
+            self.assertFalse((output_audit.parent / f".{output_audit.name}.tmp").exists())
+            generated_audit = json.loads(output_audit.read_text(encoding="utf-8"))
+            self.assertEqual(generated_audit["blocked_external_evidence_count"], 17)
+            self.assertEqual(generated_audit["needs_code_work_task_ids"], [])
+            self.assertTrue(output_plan.exists())
+            self.assertFalse((output_plan.parent / f".{output_plan.name}.tmp").exists())
+            generated_plan = json.loads(output_plan.read_text(encoding="utf-8"))
+            self.assertTrue(validate_evidence_collection_plan(generated_plan)["passed"])
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_evidence_plan_check.py",
+                    str(output_plan),
+                    "--output",
+                    str(validation_output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(validation_output.exists())
+            self.assertFalse((validation_output.parent / f".{validation_output.name}.tmp").exists())
+            self.assertTrue(json.loads(validation_output.read_text(encoding="utf-8"))["passed"])
+            self.assertEqual(json.loads(validation_output.read_text(encoding="utf-8"))["failure_count"], 0)
+            strict_result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_evidence_plan_check.py",
+                    str(output_plan),
+                    "--require-filled-uris",
+                    "--output",
+                    str(strict_validation_output),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(strict_result.returncode, 1)
+            self.assertTrue(strict_validation_output.exists())
+            self.assertFalse((strict_validation_output.parent / f".{strict_validation_output.name}.tmp").exists())
+            self.assertFalse(json.loads(strict_validation_output.read_text(encoding="utf-8"))["passed"])
+            strict_output = json.loads(strict_validation_output.read_text(encoding="utf-8"))
+            self.assertEqual(strict_output["failure_count"], len(strict_output["failures"]))
+
+    def test_production_evidence_plan_fill_replaces_placeholders_with_strict_prefix(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        filled = fill_evidence_collection_plan(
+            plan,
+            artifact_prefix="s3://ai-quant-prod/evidence/release-20260518",
+        )
+        validation = validate_evidence_collection_plan(filled, require_filled_uris=True)
+        self.assertTrue(validation["passed"], validation["failures"])
+        first_row = filled["tasks"][0]
+        self.assertTrue(first_row["artifact_uri_template"]["sample_manifest_uri"].startswith("s3://ai-quant-prod/evidence/release-20260518/T-402/"))
+        self.assertNotIn("<production-evidence-bucket>", json.dumps(filled, ensure_ascii=False))
+
+        with self.assertRaises(AssertionError):
+            fill_evidence_collection_plan(plan, artifact_prefix="artifact://staging-local/release-20260518")
+
+        with TemporaryDirectory() as tmpdir:
+            plan_path = Path(tmpdir) / "plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_evidence_plan_fill.py",
+                    str(plan_path),
+                    "--artifact-prefix",
+                    "s3://ai-quant-prod/evidence/release-20260518",
+                    "--output",
+                    str(plan_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("filled_artifact_prefix", result.stdout)
+            self.assertFalse((plan_path.parent / f".{plan_path.name}.tmp").exists())
+            loaded = json.loads(plan_path.read_text(encoding="utf-8"))
+            self.assertTrue(validate_evidence_collection_plan(loaded, require_filled_uris=True)["passed"])
+
+    def test_project_completion_audit_maps_objective_to_real_evidence(self) -> None:
+        completion = build_completion_audit()
+        self.assertFalse(completion["achieved"])
+        self.assertEqual(completion["status"], "not_achieved")
+        self.assertEqual(completion["summary"]["doing_task_count"], 0)
+        self.assertEqual(completion["summary"]["needs_code_work_count"], 0)
+        self.assertEqual(completion["summary"]["blocked_external_evidence_count"], 17)
+        self.assertFalse(completion["summary"]["has_real_closure_evidence"])
+        self.assertEqual(completion["doing_task_count"], completion["summary"]["doing_task_count"])
+        self.assertEqual(completion["needs_code_work_count"], completion["summary"]["needs_code_work_count"])
+        self.assertEqual(completion["blocked_external_evidence_count"], completion["summary"]["blocked_external_evidence_count"])
+        self.assertEqual(completion["open_task_count"], completion["summary"]["open_task_count"])
+        self.assertIs(completion["has_real_closure_evidence"], completion["summary"]["has_real_closure_evidence"])
+        self.assertEqual(completion["summary"]["target_mode"], "non_local_organizational_release")
+        self.assertFalse(completion["summary"]["local_production_ready"])
+        self.assertEqual(completion["blocked_requirement_ids"], ["R3", "R6"])
+        self.assertEqual(completion["open_requirement_ids"], ["R3", "R6"])
+        self.assertEqual(completion["failed_requirement_ids"], [])
+        self.assertEqual([item["requirement_id"] for item in completion["blocked_requirements"]], ["R3", "R6"])
+        checklist = {item["requirement_id"]: item for item in completion["prompt_to_artifact_checklist"]}
+        self.assertEqual(checklist["R1"]["status"], "passed")
+        self.assertEqual(checklist["R2"]["status"], "passed")
+        self.assertEqual(checklist["R3"]["status"], "blocked")
+        self.assertEqual(checklist["R6"]["status"], "blocked")
+        self.assertIn("真实 staging/production artifact URI", checklist["R3"]["gap"])
+        self.assertIsNone(completion["production_release_gate"])
+
+        with TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "project-completion-audit.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/project_completion_audit.py",
+                    "--output",
+                    str(output_path),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertTrue(output_path.exists())
+            self.assertFalse((output_path.parent / f".{output_path.name}.tmp").exists())
+            output = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(output["status"], "not_achieved")
+            self.assertEqual(output["blocked_external_evidence_count"], 17)
+            self.assertFalse(output["has_real_closure_evidence"])
+            self.assertEqual(output["blocked_requirement_ids"], ["R3", "R6"])
+
+    def test_project_completion_audit_accepts_explicit_local_personal_production_evidence(self) -> None:
+        local_audit = {
+            "status": "passed",
+            "passed": True,
+            "deployment_target": "local_only_personal_production",
+            "ready_for_launch": True,
+            "failure_count": 0,
+            "warning_count": 2,
+            "strict_production_gate_unchanged": True,
+        }
+        ai_acceptance = {
+            "status": "passed",
+            "passed": True,
+            "deployment_target": "local_only_personal_production",
+            "failure_count": 0,
+        }
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            local_path = tmp_path / "local-production-audit.json"
+            ai_path = tmp_path / "local-ai-capability-acceptance.json"
+            output_path = tmp_path / "project-completion-audit.json"
+            local_path.write_text(json.dumps(local_audit), encoding="utf-8")
+            ai_path.write_text(json.dumps(ai_acceptance), encoding="utf-8")
+
+            completion = build_completion_audit(
+                local_production_audit_path=local_path,
+                local_ai_acceptance_path=ai_path,
+            )
+            self.assertTrue(completion["achieved"], completion["blocked_requirements"])
+            self.assertEqual(completion["status"], "achieved")
+            self.assertEqual(completion["summary"]["target_mode"], "local_only_personal_production")
+            self.assertTrue(completion["summary"]["local_production_ready"])
+            self.assertEqual(completion["blocked_requirement_ids"], [])
+            self.assertEqual(completion["open_requirement_ids"], [])
+            self.assertEqual(completion["local_production_evidence"]["warning_count"], 2)
+            self.assertTrue(completion["local_production_evidence"]["strict_production_gate_unchanged"])
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/project_completion_audit.py",
+                    "--local-production-audit",
+                    str(local_path),
+                    "--local-ai-acceptance",
+                    str(ai_path),
+                    "--output",
+                    str(output_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn('"status": "achieved"', result.stdout)
+            self.assertTrue(output_path.exists())
+            self.assertFalse((output_path.parent / f".{output_path.name}.tmp").exists())
+            output = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertTrue(output["achieved"])
+            self.assertEqual(output["local_production_evidence"]["target_mode"], "local_only_personal_production")
+
+    def test_project_completion_audit_requires_release_gate_even_when_tasks_are_done(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            todo_path = Path(tmpdir) / "todo_done.md"
+            todo_path.write_text("- `DONE` T-402 example\n- `DONE` T-404 example\n", encoding="utf-8")
+            completion = build_completion_audit(todo_path=todo_path)
+        self.assertFalse(completion["achieved"])
+        self.assertEqual(completion["summary"]["open_task_count"], 0)
+        checklist = {item["requirement_id"]: item for item in completion["prompt_to_artifact_checklist"]}
+        self.assertEqual(checklist["R1"]["status"], "passed")
+        self.assertEqual(checklist["R6"]["status"], "blocked")
+        self.assertIn("release gate", checklist["R6"]["gap"])
+
+    def test_project_completion_audit_can_enforce_release_bundle_hashes(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        for row in plan["tasks"]:
+            task_id = row["task_id"]
+            row["status"] = "blocked_external_evidence"
+            row["artifact_uri_template"] = {
+                field: f"s3://ai-quant-prod/evidence/completion-bundle/{task_id}/{field}.json"
+                for field in row["artifact_fields"]
+            }
+        base_manifest = json.loads(Path("artifacts/production-closure-manifest.example.json").read_text(encoding="utf-8"))
+        package = json.loads(Path("artifacts/readiness-evidence-package.example.json").read_text(encoding="utf-8"))
+        manifest = build_manifest_from_evidence_plan(
+            plan,
+            base_manifest=base_manifest,
+            evidence_package=package,
+            release_ready=True,
+        )
+        inventory = self._production_artifact_inventory_for_contexts(plan, package, manifest)
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            plan_path = tmp_path / "plan.json"
+            package_path = tmp_path / "package.json"
+            inventory_path = tmp_path / "inventory.json"
+            manifest_path = tmp_path / "manifest.json"
+            todo_path = tmp_path / "todo_done.md"
+            bundle_root = tmp_path / "bundle"
+            todo_path.write_text("\n".join(f"- `DONE` {task_id} example" for task_id in TASKS_WITH_EXTERNAL_EVIDENCE) + "\n", encoding="utf-8")
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            package_path.write_text(json.dumps(package), encoding="utf-8")
+            inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+            manifest_path.write_text(json.dumps(base_manifest), encoding="utf-8")
+
+            completion = build_completion_audit(
+                todo_path=todo_path,
+                manifest_path=manifest_path,
+                evidence_plan_path=plan_path,
+                evidence_package_path=package_path,
+                artifact_inventory_path=inventory_path,
+                artifact_bundle_root=bundle_root,
+            )
+            self.assertFalse(completion["achieved"])
+            self.assertEqual(completion["production_release_gate"]["failed_stage"], "artifact_inventory_validation")
+            checks = {item["check"] for item in completion["production_release_gate"]["artifact_inventory_validation"]["failures"]}
+            self.assertIn("bundle_file_exists", checks)
+
+    def test_local_production_audit_accepts_local_only_readiness_without_relaxing_strict_gate(self) -> None:
+        health = {
+            "success": True,
+            "data": {
+                "status": "ok",
+                "store": "PostgreSQLStore",
+                "object_store": {"backend": "s3", "root": "s3://ai-quant-local/raw"},
+                "search_index": {"backend": "opensearch"},
+                "tdx_market_data": {"configured": True},
+            },
+        }
+        vision_gate = {
+            "success": True,
+            "data": {
+                "status": "ready",
+                "gates": [{"name": "evidence_coverage", "passed": True}],
+            },
+        }
+        package = {
+            "success": True,
+            "data": {
+                "status": "ready",
+                "ready_for_launch": True,
+                "missing_evidence_count": 0,
+                "failed_gate_count": 0,
+                "checklist_coverage": 1.0,
+                "required_evidence": [
+                    {
+                        "check_id": check_id,
+                        "status": "passed",
+                        "missing_evidence": False,
+                        "evidence_uri": f"artifact://staging-local/{check_id}.json",
+                    }
+                    for check_id in sorted(REQUIRED_CHECK_IDS)
+                ],
+                "external_validations": [
+                    {
+                        "scope": scope,
+                        "check_status": "passed",
+                        "ready": scope != "graph_vector_semantic_search",
+                        "evidence_uri": f"artifact://staging-local/{scope}.json",
+                    }
+                    for scope in sorted(REQUIRED_EXTERNAL_VALIDATION_SCOPES)
+                ],
+            },
+        }
+        metrics = {
+            "success": True,
+            "data": {
+                "pending_prompt_changes": 0,
+                "sensitive_findings": 0,
+                "source_review_overdue": 0,
+                "workflow_failed_runs": 1,
+                "open_alerts": 1,
+            },
+        }
+
+        audit = build_local_production_audit(
+            health=health,
+            vision_gate=vision_gate,
+            evidence_package=package,
+            metrics=metrics,
+        )
+
+        self.assertTrue(audit["passed"], audit["failures"])
+        self.assertEqual(audit["deployment_target"], "local_only_personal_production")
+        self.assertTrue(audit["strict_production_gate_unchanged"])
+        self.assertGreaterEqual(audit["warning_count"], 1)
+        self.assertIn("not valid as non-local organizational release evidence", audit["production_boundary"])
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            health_path = tmp_path / "health.json"
+            vision_path = tmp_path / "vision.json"
+            package_path = tmp_path / "package.json"
+            metrics_path = tmp_path / "metrics.json"
+            output_path = tmp_path / "local-production-audit.json"
+            health_path.write_text(json.dumps(health), encoding="utf-8")
+            vision_path.write_text(json.dumps(vision_gate), encoding="utf-8")
+            package_path.write_text(json.dumps(package), encoding="utf-8")
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/local_production_audit.py",
+                    "--health-json",
+                    str(health_path),
+                    "--vision-gate-json",
+                    str(vision_path),
+                    "--evidence-package-json",
+                    str(package_path),
+                    "--metrics-json",
+                    str(metrics_path),
+                    "--output",
+                    str(output_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(output_path.exists())
+            self.assertFalse((output_path.parent / f".{output_path.name}.tmp").exists())
+
+    def test_local_production_audit_rejects_missing_or_demo_evidence(self) -> None:
+        health = {
+            "status": "ok",
+            "store": "SQLiteStore",
+            "object_store": {"backend": "local"},
+            "search_index": {"backend": "local"},
+            "tdx_market_data": {"configured": False},
+        }
+        vision_gate = {"status": "not_ready", "gates": [{"name": "evidence_coverage", "passed": False}]}
+        package = {
+            "status": "ready",
+            "ready_for_launch": True,
+            "missing_evidence_count": 0,
+            "failed_gate_count": 0,
+            "checklist_coverage": 1.0,
+            "required_evidence": [
+                {
+                    "check_id": check_id,
+                    "status": "passed",
+                    "missing_evidence": False,
+                    "evidence_uri": "artifact://demo/local.json",
+                }
+                for check_id in sorted(REQUIRED_CHECK_IDS)
+            ],
+            "external_validations": [
+                {"scope": scope, "check_status": "passed", "ready": True}
+                for scope in sorted(REQUIRED_EXTERNAL_VALIDATION_SCOPES)
+            ],
+        }
+
+        audit = build_local_production_audit(health=health, vision_gate=vision_gate, evidence_package=package)
+
+        self.assertFalse(audit["passed"])
+        failure_checks = {item["check"] for item in audit["failures"]}
+        self.assertIn("state_store", failure_checks)
+        self.assertIn("vision_gate_status", failure_checks)
+        self.assertIn("required_evidence_uri", failure_checks)
+
+    def test_local_ai_capability_acceptance_summarizes_real_smokes_without_secret_payloads(self) -> None:
+        from http.server import BaseHTTPRequestHandler
+
+        health = {
+            "success": True,
+            "data": {
+                "status": "ok",
+                "store": "PostgreSQLStore",
+                "object_store": {"backend": "s3"},
+                "search_index": {"backend": "opensearch"},
+                "tdx_market_data": {"configured": True},
+                "llm_gateway": {"configured": True, "default_model": "qwen3.6-plus"},
+                "document_parser": {"configured": True, "model": "PaddleOCR-VL-1.5"},
+            },
+        }
+        llm_response = {
+            "success": True,
+            "data": {
+                "provider": "openai",
+                "model": "qwen3.6-plus",
+                "response": {"choices": [{"message": {"content": "ok"}}]},
+            },
+        }
+        ocr_response = {
+            "success": True,
+            "data": {
+                "provider": "paddleocr",
+                "model": "PaddleOCR-VL-1.5",
+                "job_id": "job_1",
+                "state": "done",
+                "page_count": 1,
+                "attempt_count": 1,
+                "retry_attempts": 0,
+                "cache_hit": False,
+                "elapsed_ms": 1530,
+                "result_url": "https://signed.example.invalid/secret-jsonl",
+                "text": "Dummy PDF file",
+            },
+        }
+
+        audit = build_local_ai_capability_acceptance(
+            health=health,
+            llm_response=llm_response,
+            llm_wall_ms=500,
+            ocr_response=ocr_response,
+            ocr_wall_ms=1600,
+        )
+
+        self.assertTrue(audit["passed"], audit["failures"])
+        self.assertTrue(audit["llm_gateway"]["smoke_passed"])
+        self.assertTrue(audit["paddleocr"]["smoke_passed"])
+        rendered = json.dumps(audit)
+        self.assertNotIn("secret-jsonl", rendered)
+        self.assertNotIn("result_url", rendered)
+
+        class _LocalAiHandler(BaseHTTPRequestHandler):
+            def _send_json(self, payload: dict) -> None:
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self) -> None:
+                if self.path == "/api/health":
+                    self._send_json(health)
+                else:
+                    self.send_error(404)
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                if length:
+                    self.rfile.read(length)
+                if self.path == "/api/llm/openai/chat/completions":
+                    self._send_json(llm_response)
+                elif self.path == "/api/document-parsing/paddleocr":
+                    self._send_json(ocr_response)
+                else:
+                    self.send_error(404)
+
+            def log_message(self, format: str, *args) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _LocalAiHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with TemporaryDirectory() as tmpdir:
+                output_path = Path(tmpdir) / "local-ai-capability.json"
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "scripts/local_ai_capability_acceptance.py",
+                        "--base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                        "--ocr-file-url",
+                        "https://example.invalid/local-ai-cli-test.pdf",
+                        "--timeout",
+                        "5",
+                        "--output",
+                        str(output_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertTrue(output_path.exists())
+                self.assertFalse((output_path.parent / f".{output_path.name}.tmp").exists())
+                cli_audit = json.loads(output_path.read_text(encoding="utf-8"))
+                self.assertEqual(cli_audit["status"], "passed")
+                self.assertTrue(cli_audit["llm_gateway"]["smoke_passed"])
+                self.assertTrue(cli_audit["paddleocr"]["smoke_passed"])
+                self.assertNotIn("secret-jsonl", json.dumps(cli_audit))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_local_ai_capability_acceptance_rejects_unconfigured_or_empty_smokes(self) -> None:
+        audit = build_local_ai_capability_acceptance(
+            health={
+                "status": "ok",
+                "llm_gateway": {"configured": False},
+                "document_parser": {"configured": False},
+            },
+            llm_response={"success": True, "response": {"choices": [{"message": {"content": "nope"}}]}},
+            ocr_response={"success": True, "state": "done", "page_count": 0, "text": ""},
+        )
+
+        self.assertFalse(audit["passed"])
+        failure_checks = {item["check"] for item in audit["failures"]}
+        self.assertIn("llm_configured", failure_checks)
+        self.assertIn("paddleocr_configured", failure_checks)
+        self.assertIn("llm_smoke", failure_checks)
+        self.assertIn("paddleocr_smoke", failure_checks)
+
+    def test_production_evidence_plan_to_manifest_maps_filled_uris_without_marking_release_ready(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        for row in plan["tasks"]:
+            task_id = row["task_id"]
+            row["status"] = "blocked_external_evidence"
+            row["artifact_uri_template"] = {
+                field: f"s3://ai-quant-prod/evidence/2026Q2/{task_id}/{field}.json"
+                for field in row["artifact_fields"]
+            }
+        base_manifest = json.loads(Path("artifacts/production-closure-manifest.example.json").read_text(encoding="utf-8"))
+        manifest = build_manifest_from_evidence_plan(plan, base_manifest=base_manifest)
+
+        self.assertFalse(manifest["ready_for_launch"])
+        self.assertEqual(len(manifest["task_evidence"]), 17)
+        self.assertEqual(
+            manifest["readiness_checks"]["cross_browser_acceptance"]["evidence_uri"],
+            "s3://ai-quant-prod/evidence/2026Q2/T-407/cross_browser_matrix_uri.json",
+        )
+        self.assertEqual(
+            manifest["readiness_checks"]["launch_checklist"]["evidence_uri"],
+            "s3://ai-quant-prod/evidence/2026Q2/T-412/release_checklist_uri.json",
+        )
+        self.assertEqual(
+            manifest["reports"]["storage"]["artifact_uris"]["postgres_smoke_uri"],
+            "s3://ai-quant-prod/evidence/2026Q2/T-404/postgres_smoke_uri.json",
+        )
+        self.assertEqual(
+            manifest["reports"]["security"]["artifact_uris"]["permission_review_uri"],
+            "s3://ai-quant-prod/evidence/2026Q2/T-421/permission_review_uri.json",
+        )
+        for connector_id in manifest["astock_connectors"]["verification_readiness"]["connector_ids"]:
+            self.assertEqual(
+                manifest["astock_connectors"]["verification_readiness"]["artifact_uris"][connector_id]["license_review_uri"],
+                "s3://ai-quant-prod/evidence/2026Q2/T-416/license_review_uri.json",
+            )
+        generation = manifest["manifest_generation"]
+        self.assertTrue(generation["filled_uri_validation"]["passed"])
+        self.assertEqual(generation["mapped_readiness_check_count"], len(generation["mapped_readiness_checks"]))
+        self.assertEqual(
+            generation["mapped_external_validation_scope_count"],
+            len(generation["mapped_external_validation_scopes"]),
+        )
+        self.assertIn("launch_checklist", generation["mapped_readiness_checks"])
+        self.assertIn("desktop_mobile_cross_browser", generation["mapped_external_validation_scopes"])
+        self.assertEqual(generation["missing_readiness_check_count"], 0)
+        self.assertEqual(generation["missing_readiness_checks_from_plan"], [])
+        self.assertEqual(generation["missing_external_validation_scope_count"], 0)
+        self.assertEqual(generation["missing_external_validation_scopes_from_plan"], [])
+        self.assertEqual(generation["skipped_mapping_count"], len(generation["skipped_mappings"]))
+        self.assertFalse(generation["release_validation"]["passed"])
+        self.assertIn("ready_for_launch", {item["check"] for item in generation["release_validation"]["failures"]})
+
+        draft_validation = validate_production_closure_manifest(manifest, require_launch_ready=False)
+        self.assertTrue(draft_validation["passed"], draft_validation["failures"])
+        strict_validation = validate_production_closure_manifest(manifest)
+        self.assertFalse(strict_validation["passed"])
+        self.assertIn("ready_for_launch", {item["check"] for item in strict_validation["failures"]})
+
+        with TemporaryDirectory() as tmpdir:
+            plan_path = Path(tmpdir) / "filled-plan.json"
+            output_path = Path(tmpdir) / "production-closure-manifest.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_evidence_plan_to_manifest.py",
+                    "--plan",
+                    str(plan_path),
+                    "--base",
+                    "artifacts/production-closure-manifest.example.json",
+                    "--output",
+                    str(output_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(output_path.exists())
+            self.assertFalse((output_path.parent / f".{output_path.name}.tmp").exists())
+            self.assertEqual(json.loads(output_path.read_text(encoding="utf-8"))["task_evidence"]["T-407"]["artifact_uris"]["cross_browser_matrix_uri"], "s3://ai-quant-prod/evidence/2026Q2/T-407/cross_browser_matrix_uri.json")
+
+    def test_production_evidence_plan_to_manifest_rejects_placeholders_by_default(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        base_manifest = json.loads(Path("artifacts/production-closure-manifest.example.json").read_text(encoding="utf-8"))
+        with self.assertRaises(AssertionError):
+            build_manifest_from_evidence_plan(plan, base_manifest=base_manifest)
+
+        manifest = build_manifest_from_evidence_plan(plan, base_manifest=base_manifest, allow_placeholders=True)
+        self.assertFalse(manifest["manifest_generation"]["release_field_mapping_enabled"])
+        self.assertGreater(len(manifest["manifest_generation"]["skipped_mappings"]), 0)
+        self.assertEqual(
+            manifest["manifest_generation"]["skipped_mapping_count"],
+            len(manifest["manifest_generation"]["skipped_mappings"]),
+        )
+        self.assertGreater(manifest["manifest_generation"]["missing_readiness_check_count"], 0)
+        self.assertGreater(manifest["manifest_generation"]["missing_external_validation_scope_count"], 0)
+        self.assertEqual(
+            manifest["readiness_checks"]["cross_browser_acceptance"]["evidence_uri"],
+            base_manifest["readiness_checks"]["cross_browser_acceptance"]["evidence_uri"],
+        )
+
+    def test_production_evidence_plan_to_manifest_can_build_release_manifest_with_real_package(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        for row in plan["tasks"]:
+            task_id = row["task_id"]
+            row["status"] = "blocked_external_evidence"
+            row["artifact_uri_template"] = {
+                field: f"s3://ai-quant-prod/evidence/release-20260517/{task_id}/{field}.json"
+                for field in row["artifact_fields"]
+            }
+        base_manifest = json.loads(Path("artifacts/production-closure-manifest.example.json").read_text(encoding="utf-8"))
+        package = json.loads(Path("artifacts/readiness-evidence-package.example.json").read_text(encoding="utf-8"))
+
+        manifest = build_manifest_from_evidence_plan(
+            plan,
+            base_manifest=base_manifest,
+            evidence_package=package,
+            release_ready=True,
+        )
+
+        self.assertTrue(manifest["ready_for_launch"])
+        strict_validation = validate_production_closure_manifest(manifest)
+        self.assertTrue(strict_validation["passed"], strict_validation["failures"])
+        self.assertTrue(manifest["manifest_generation"]["release_validation"]["passed"])
+        self.assertEqual(manifest["manifest_generation"]["missing_readiness_check_count"], 0)
+        self.assertEqual(manifest["manifest_generation"]["missing_external_validation_scope_count"], 0)
+        self.assertEqual(
+            manifest["manifest_generation"]["mapped_readiness_check_count"],
+            len(manifest["manifest_generation"]["mapped_readiness_checks"]),
+        )
+        self.assertEqual(manifest["evidence_package"]["package_id"], "readiness_pkg_example")
+
+    def _production_artifact_inventory_for_contexts(self, *contexts):
+        uris = sorted({row["uri"] for row in collect_required_artifact_uris(*contexts)})
+        return {
+            "inventory_id": "release-inventory-test",
+            "environment": "staging",
+            "storage_backend": "s3",
+            "generated_at": "2026-05-17T00:00:00Z",
+            "artifact_count": len(uris),
+            "artifacts": [
+                {
+                    "uri": uri,
+                    "sha256": f"{idx + 1:064x}",
+                    "size_bytes": 1024 + idx,
+                    "environment": "staging",
+                    "storage_backend": "s3",
+                    "created_at": "2026-05-17T00:00:00Z",
+                    "producer": "staging_acceptance",
+                    "owner_role": "平台负责人",
+                    "content_type": "application/json",
+                    "retention_policy": "retain_release_evidence_7y",
+                    "immutable": True,
+                }
+                for idx, uri in enumerate(uris)
+            ],
+        }
+
+    def _write_artifact_inventory_bundle(self, inventory, bundle_root: Path) -> None:
+        for idx, row in enumerate(inventory["artifacts"]):
+            bundle_path = Path(row.get("bundle_path", f"release-artifacts/{idx:04d}.json"))
+            row["bundle_path"] = str(bundle_path)
+            content = json.dumps({"uri": row["uri"], "index": idx}, sort_keys=True).encode("utf-8")
+            target = bundle_root / bundle_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            row["sha256"] = hashlib.sha256(content).hexdigest()
+            row["size_bytes"] = len(content)
+
+    def test_production_artifact_inventory_covers_release_evidence_uris(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        for row in plan["tasks"]:
+            task_id = row["task_id"]
+            row["status"] = "blocked_external_evidence"
+            row["artifact_uri_template"] = {
+                field: f"s3://ai-quant-prod/evidence/inventory/{task_id}/{field}.json"
+                for field in row["artifact_fields"]
+            }
+        base_manifest = json.loads(Path("artifacts/production-closure-manifest.example.json").read_text(encoding="utf-8"))
+        package = json.loads(Path("artifacts/readiness-evidence-package.example.json").read_text(encoding="utf-8"))
+        manifest = build_manifest_from_evidence_plan(
+            plan,
+            base_manifest=base_manifest,
+            evidence_package=package,
+            release_ready=True,
+        )
+        invalid = validate_artifact_inventory(
+            {
+                "inventory_id": "bad",
+                "environment": "local",
+                "storage_backend": "s3",
+                "generated_at": "2026-05-17T00:00:00Z",
+                "artifacts": [
+                    {
+                        "uri": "artifact://local/foo.json",
+                        "sha256": "abc",
+                        "size_bytes": 0,
+                    }
+                ],
+            },
+            required_contexts=[plan, package, manifest],
+        )
+        self.assertFalse(invalid["passed"])
+        failure_checks = {item["check"] for item in invalid["failures"]}
+        self.assertIn("inventory_environment", failure_checks)
+        self.assertIn("inventory_artifact_uri", failure_checks)
+        self.assertIn("required_artifact_inventory_coverage", failure_checks)
+
+        placeholder_inventory = {
+            "inventory_id": "placeholder",
+            "environment": "staging",
+            "storage_backend": "s3",
+            "generated_at": "2026-05-17T00:00:00Z",
+            "artifact_count": 1,
+            "artifacts": [
+                {
+                    "uri": "s3://<production-evidence-bucket>/<release-id>/T-402/sample_manifest_uri",
+                    "sha256": "1" * 64,
+                    "size_bytes": 1024,
+                    "environment": "staging",
+                    "storage_backend": "s3",
+                    "created_at": "2026-05-17T00:00:00Z",
+                    "producer": "staging_acceptance",
+                    "owner_role": "平台负责人",
+                    "content_type": "application/json",
+                    "retention_policy": "retain_release_evidence_7y",
+                    "immutable": True,
+                }
+            ],
+        }
+        placeholder_validation = validate_artifact_inventory(placeholder_inventory)
+        self.assertFalse(placeholder_validation["passed"])
+        self.assertEqual(placeholder_validation["failure_count"], len(placeholder_validation["failures"]))
+        self.assertIn("inventory_artifact_uri_filled", {item["check"] for item in placeholder_validation["failures"]})
+
+        placeholder_context_validation = validate_artifact_inventory(
+            self._production_artifact_inventory_for_contexts({"artifact_uris": {"ok": "s3://ai-quant-prod/evidence/ok.json"}}),
+            required_contexts=[
+                {"artifact_uris": {"leftover": "s3://<production-evidence-bucket>/<release-id>/leftover.json"}}
+            ],
+        )
+        self.assertFalse(placeholder_context_validation["passed"])
+        self.assertEqual(placeholder_context_validation["failure_count"], len(placeholder_context_validation["failures"]))
+        self.assertIn("required_artifact_uri_filled", {item["check"] for item in placeholder_context_validation["failures"]})
+
+        inventory = self._production_artifact_inventory_for_contexts(plan, package, manifest)
+        valid = validate_artifact_inventory(inventory, required_contexts=[plan, package, manifest])
+        self.assertTrue(valid["passed"], valid["failures"])
+        self.assertEqual(valid["failure_count"], 0)
+        self.assertGreater(valid["required_uri_count"], 0)
+
+        template = build_artifact_inventory_template(plan, package, manifest)
+        self.assertEqual(template["artifact_count"], valid["required_uri_count"])
+        self.assertGreater(len(template["artifacts"][0]["source_paths"]), 0)
+        template_validation = validate_artifact_inventory(template, required_contexts=[plan, package, manifest])
+        self.assertFalse(template_validation["passed"])
+        self.assertEqual(template_validation["failure_count"], len(template_validation["failures"]))
+        template_failure_checks = {item["check"] for item in template_validation["failures"]}
+        self.assertIn("inventory_sha256", template_failure_checks)
+        self.assertIn("inventory_generated_at", template_failure_checks)
+        self.assertIn("inventory_producer", template_failure_checks)
+
+    def test_production_artifact_inventory_can_verify_local_bundle_hashes(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bundle_root = Path(tmpdir)
+            content = b'{"status":"passed"}\n'
+            bundle_path = bundle_root / "prod-readiness" / "real-data-smoke-test.json"
+            bundle_path.parent.mkdir(parents=True)
+            bundle_path.write_bytes(content)
+            digest = hashlib.sha256(content).hexdigest()
+            inventory = {
+                "inventory_id": "bundle-inventory",
+                "environment": "staging",
+                "storage_backend": "s3",
+                "generated_at": "2026-05-17T00:00:00Z",
+                "artifact_count": 1,
+                "artifacts": [
+                    {
+                        "uri": "artifact://prod-readiness/real-data-smoke-test.json",
+                        "bundle_path": "prod-readiness/real-data-smoke-test.json",
+                        "sha256": digest,
+                        "size_bytes": len(content),
+                        "environment": "staging",
+                        "storage_backend": "s3",
+                        "created_at": "2026-05-17T00:00:00Z",
+                        "producer": "staging_acceptance",
+                        "owner_role": "平台负责人",
+                        "content_type": "application/json",
+                        "retention_policy": "retain_release_evidence_7y",
+                        "immutable": True,
+                    }
+                ],
+            }
+            valid = validate_artifact_inventory(inventory, bundle_root=bundle_root)
+            self.assertTrue(valid["passed"], valid["failures"])
+            self.assertEqual(valid["failure_count"], 0)
+            self.assertEqual(valid["bundle_check_count"], 1)
+
+            inventory["artifacts"][0]["sha256"] = "0" * 64
+            invalid = validate_artifact_inventory(inventory, bundle_root=bundle_root)
+            self.assertFalse(invalid["passed"])
+            self.assertEqual(invalid["failure_count"], len(invalid["failures"]))
+            self.assertIn("bundle_sha256", {item["check"] for item in invalid["failures"]})
+
+    def test_production_artifact_inventory_can_be_generated_from_bundle(self) -> None:
+        package = json.loads(Path("artifacts/readiness-evidence-package.example.json").read_text(encoding="utf-8"))
+        template = build_artifact_inventory_template(package)
+        with TemporaryDirectory() as tmpdir:
+            bundle_root = Path(tmpdir)
+            for idx, row in enumerate(template["artifacts"]):
+                target = bundle_root / row["bundle_path"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps({"uri": row["uri"], "idx": idx}), encoding="utf-8")
+            inventory = build_artifact_inventory_from_bundle(
+                package,
+                bundle_root=bundle_root,
+                producer="staging_acceptance",
+                owner_role="平台负责人",
+            )
+            self.assertEqual(inventory["missing_bundle_file_count"], 0)
+            self.assertEqual(inventory["artifact_count"], template["artifact_count"])
+            self.assertRegex(inventory["generated_at"], r"^\d{4}-\d{2}-\d{2}T")
+            validation = validate_artifact_inventory(inventory, required_contexts=[package], bundle_root=bundle_root)
+            self.assertTrue(validation["passed"], validation["failures"])
+            self.assertEqual(validation["failure_count"], 0)
+            self.assertEqual(validation["bundle_check_count"], template["artifact_count"])
+
+            missing = build_artifact_inventory_from_bundle(
+                {"artifact_uris": {"missing": "artifact://prod-readiness/missing.json"}},
+                bundle_root=bundle_root,
+                generated_at="2026-05-17T00:00:00Z",
+            )
+            self.assertEqual(missing["artifact_count"], 0)
+            self.assertEqual(missing["missing_bundle_file_count"], 1)
+
+            template_path = bundle_root / "inventory-template.json"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_artifact_inventory_check.py",
+                    "--evidence-package",
+                    "artifacts/readiness-evidence-package.example.json",
+                    "--output-template",
+                    str(template_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(template_path.exists())
+            self.assertFalse((template_path.parent / f".{template_path.name}.tmp").exists())
+
+            inventory_path = bundle_root / "inventory.json"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_artifact_inventory_check.py",
+                    "--evidence-package",
+                    "artifacts/readiness-evidence-package.example.json",
+                    "--from-bundle-root",
+                    str(bundle_root),
+                    "--output",
+                    str(inventory_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(inventory_path.exists())
+            self.assertFalse((inventory_path.parent / f".{inventory_path.name}.tmp").exists())
+
+            validation_path = bundle_root / "inventory-validation.json"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_artifact_inventory_check.py",
+                    str(inventory_path),
+                    "--evidence-package",
+                    "artifacts/readiness-evidence-package.example.json",
+                    "--bundle-root",
+                    str(bundle_root),
+                    "--output",
+                    str(validation_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(validation_path.exists())
+            self.assertFalse((validation_path.parent / f".{validation_path.name}.tmp").exists())
+
+    def test_production_release_gate_requires_real_package_and_can_pass_strict_plan(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        base_manifest = json.loads(Path("artifacts/production-closure-manifest.example.json").read_text(encoding="utf-8"))
+        draft = run_production_release_gate(plan=plan, base_manifest=base_manifest, draft=True)
+        self.assertEqual(draft["status"], "draft")
+        self.assertFalse(draft["manifest_ready_for_launch"])
+        self.assertEqual(draft["failed_stage_count"], 0)
+        self.assertGreaterEqual(draft["passed_stage_count"], 2)
+
+        for row in plan["tasks"]:
+            task_id = row["task_id"]
+            row["status"] = "blocked_external_evidence"
+            row["artifact_uri_template"] = {
+                field: f"s3://ai-quant-prod/evidence/release-gate/{task_id}/{field}.json"
+                for field in row["artifact_fields"]
+            }
+
+        missing_package = run_production_release_gate(plan=plan, base_manifest=base_manifest)
+        self.assertEqual(missing_package["status"], "failed")
+        self.assertEqual(missing_package["failed_stage"], "evidence_package_required")
+        self.assertEqual(missing_package["failed_stage_count"], 1)
+        self.assertEqual(missing_package["failed_stage_names"], ["evidence_package_required"])
+
+        package = json.loads(Path("artifacts/readiness-evidence-package.example.json").read_text(encoding="utf-8"))
+        missing_inventory = run_production_release_gate(
+            plan=plan,
+            base_manifest=base_manifest,
+            evidence_package=package,
+        )
+        self.assertEqual(missing_inventory["status"], "failed")
+        self.assertEqual(missing_inventory["failed_stage"], "artifact_inventory_required")
+        self.assertEqual(missing_inventory["failed_stage_count"], 1)
+        self.assertEqual(missing_inventory["failed_stage_names"], ["artifact_inventory_required"])
+        preview_manifest = build_manifest_from_evidence_plan(
+            plan,
+            base_manifest=base_manifest,
+            evidence_package=package,
+            release_ready=True,
+        )
+        inventory = self._production_artifact_inventory_for_contexts(plan, package, preview_manifest)
+        strict = run_production_release_gate(
+            plan=plan,
+            base_manifest=base_manifest,
+            evidence_package=package,
+            artifact_inventory=inventory,
+        )
+        self.assertEqual(strict["status"], "passed")
+        self.assertTrue(strict["manifest_ready_for_launch"])
+        self.assertTrue(strict["manifest_validation"]["passed"])
+        self.assertTrue(strict["artifact_inventory_validation"]["passed"])
+        self.assertEqual(strict["failed_stage_count"], 0)
+        self.assertEqual(strict["stage_count"], strict["passed_stage_count"])
+
+        with TemporaryDirectory() as tmpdir:
+            bundle_inventory = self._production_artifact_inventory_for_contexts(plan, package, preview_manifest)
+            self._write_artifact_inventory_bundle(bundle_inventory, Path(tmpdir))
+            bundle_strict = run_production_release_gate(
+                plan=plan,
+                base_manifest=base_manifest,
+                evidence_package=package,
+                artifact_inventory=bundle_inventory,
+                artifact_bundle_root=tmpdir,
+            )
+            self.assertEqual(bundle_strict["status"], "passed")
+            self.assertEqual(
+                bundle_strict["artifact_inventory_validation"]["bundle_check_count"],
+                len(bundle_inventory["artifacts"]),
+            )
+
+        with TemporaryDirectory() as tmpdir:
+            manifest_output = Path(tmpdir) / "production-closure-manifest.json"
+            bad_inventory = self._production_artifact_inventory_for_contexts(plan, package, preview_manifest)
+            bad_inventory["artifacts"][0]["sha256"] = "not-a-sha"
+            failed = run_production_release_gate(
+                plan=plan,
+                base_manifest=base_manifest,
+                evidence_package=package,
+                artifact_inventory=bad_inventory,
+                manifest_output=manifest_output,
+            )
+            self.assertEqual(failed["status"], "failed")
+            self.assertEqual(failed["failed_stage"], "artifact_inventory_validation")
+            self.assertEqual(failed["failed_stage_count"], 1)
+            self.assertEqual(failed["failed_stage_names"], ["artifact_inventory_validation"])
+            self.assertFalse(manifest_output.exists())
+            self.assertFalse((manifest_output.parent / f".{manifest_output.name}.tmp").exists())
+
+            passed_manifest_output = Path(tmpdir) / "production-closure-manifest-passed.json"
+            passed = run_production_release_gate(
+                plan=plan,
+                base_manifest=base_manifest,
+                evidence_package=package,
+                artifact_inventory=inventory,
+                manifest_output=passed_manifest_output,
+            )
+            self.assertEqual(passed["status"], "passed")
+            self.assertEqual(passed["failed_stage_count"], 0)
+            self.assertTrue(passed_manifest_output.exists())
+            self.assertFalse((passed_manifest_output.parent / f".{passed_manifest_output.name}.tmp").exists())
+
+            plan_path = Path(tmpdir) / "evidence-plan.json"
+            package_path = Path(tmpdir) / "readiness-package.json"
+            inventory_path = Path(tmpdir) / "artifact-inventory.json"
+            result_path = Path(tmpdir) / "release-gate-result.json"
+            cli_manifest_output = Path(tmpdir) / "production-closure-manifest-cli.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            package_path.write_text(json.dumps(package), encoding="utf-8")
+            inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_release_gate.py",
+                    "--plan",
+                    str(plan_path),
+                    "--evidence-package",
+                    str(package_path),
+                    "--artifact-inventory",
+                    str(inventory_path),
+                    "--manifest-output",
+                    str(cli_manifest_output),
+                    "--output",
+                    str(result_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(result_path.exists())
+            self.assertTrue(cli_manifest_output.exists())
+            self.assertFalse((result_path.parent / f".{result_path.name}.tmp").exists())
+            self.assertFalse((cli_manifest_output.parent / f".{cli_manifest_output.name}.tmp").exists())
+            release_gate_result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(release_gate_result["failed_stage_count"], 0)
+            self.assertEqual(release_gate_result["stage_count"], release_gate_result["passed_stage_count"])
+
+    def test_production_task_status_finalize_requires_strict_release_gate(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        base_manifest = json.loads(Path("artifacts/production-closure-manifest.example.json").read_text(encoding="utf-8"))
+        package = json.loads(Path("artifacts/readiness-evidence-package.example.json").read_text(encoding="utf-8"))
+        placeholder_inventory = self._production_artifact_inventory_for_contexts(package)
+        with TemporaryDirectory() as tmpdir:
+            todo_path = Path(tmpdir) / "todo.md"
+            todo_path.write_text("- `BLOCKED` T-402 大样本中英双语 benchmark 执行\n  - 待做：真实 artifact URI 归档\n", encoding="utf-8")
+            blocked = finalize_production_task_statuses(
+                todo_path=todo_path,
+                plan=plan,
+                base_manifest=base_manifest,
+                evidence_package=package,
+                artifact_inventory=placeholder_inventory,
+                task_ids=["T-402"],
+                dry_run=True,
+            )
+            self.assertEqual(blocked["status"], "failed")
+            self.assertEqual(blocked["failed_stage"], "production_release_gate")
+            self.assertIn("`BLOCKED` T-402", todo_path.read_text(encoding="utf-8"))
+
+            for row in plan["tasks"]:
+                task_id = row["task_id"]
+                row["status"] = "blocked_external_evidence"
+                row["artifact_uri_template"] = {
+                    field: f"s3://ai-quant-prod/evidence/finalize/{task_id}/{field}.json"
+                    for field in row["artifact_fields"]
+                }
+            preview_manifest = build_manifest_from_evidence_plan(
+                plan,
+                base_manifest=base_manifest,
+                evidence_package=package,
+                release_ready=True,
+            )
+            inventory = self._production_artifact_inventory_for_contexts(plan, package, preview_manifest)
+            passed = finalize_production_task_statuses(
+                todo_path=todo_path,
+                plan=plan,
+                base_manifest=base_manifest,
+                evidence_package=package,
+                artifact_inventory=inventory,
+                task_ids=["T-402"],
+                dry_run=True,
+            )
+            self.assertEqual(passed["status"], "passed")
+            self.assertEqual(passed["updated_task_ids"], ["T-402"])
+            self.assertIn("`BLOCKED` T-402", todo_path.read_text(encoding="utf-8"))
+
+            applied = finalize_production_task_statuses(
+                todo_path=todo_path,
+                plan=plan,
+                base_manifest=base_manifest,
+                evidence_package=package,
+                artifact_inventory=inventory,
+                task_ids=["T-402"],
+            )
+            self.assertEqual(applied["status"], "passed")
+            updated = todo_path.read_text(encoding="utf-8")
+            self.assertIn("`DONE` T-402", updated)
+            self.assertIn("release gate 已通过", updated)
+            self.assertFalse((todo_path.parent / f".{todo_path.name}.tmp").exists())
+
+            cli_todo_path = Path(tmpdir) / "todo-cli.md"
+            cli_todo_path.write_text("- `BLOCKED` T-402 大样本中英双语 benchmark 执行\n", encoding="utf-8")
+            plan_path = Path(tmpdir) / "finalize-plan.json"
+            package_path = Path(tmpdir) / "finalize-package.json"
+            inventory_path = Path(tmpdir) / "finalize-inventory.json"
+            result_path = Path(tmpdir) / "finalize-result.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            package_path.write_text(json.dumps(package), encoding="utf-8")
+            inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_task_status_finalize.py",
+                    "--todo",
+                    str(cli_todo_path),
+                    "--plan",
+                    str(plan_path),
+                    "--evidence-package",
+                    str(package_path),
+                    "--artifact-inventory",
+                    str(inventory_path),
+                    "--task-id",
+                    "T-402",
+                    "--dry-run",
+                    "--output",
+                    str(result_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(result_path.exists())
+            self.assertIn("`BLOCKED` T-402", cli_todo_path.read_text(encoding="utf-8"))
+            self.assertFalse((result_path.parent / f".{result_path.name}.tmp").exists())
 
     def test_production_runbook_and_env_template_cover_required_operations(self) -> None:
         env_template = Path(".env.example").read_text(encoding="utf-8")
@@ -7153,6 +12811,8 @@ class SystemServiceTests(unittest.TestCase):
             "AI_QUANT_SEC_USER_AGENT",
             "AI_QUANT_STAGING_URL",
             "AI_QUANT_STAGING_ARTIFACT_PREFIX",
+            "AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS",
+            "AI_QUANT_LOCAL_PRODUCTION_SKIP_AI_ACCEPTANCE",
             "AI_QUANT_OTEL_EXPORTER_OTLP_ENDPOINT",
             "AI_QUANT_NEO4J_SYNC_TARGET",
             "AI_QUANT_QDRANT_SYNC_TARGET",
@@ -7169,11 +12829,74 @@ class SystemServiceTests(unittest.TestCase):
             "scripts/smoke_test.py",
             "scripts/staging_acceptance.py",
             "scripts/local_staging_stack.sh",
+            "scripts/local_production_stack.sh",
             "scripts/staging_security_acceptance.py",
             "scripts/capacity_baseline.py",
             "scripts/ui_static_check.py",
+            "scripts/ui_cross_browser_matrix_check.py",
+            "scripts/readiness_evidence_package_check.py",
+            "scripts/production_artifact_inventory_check.py",
+            "scripts/production_closure_manifest_check.py",
+            "scripts/production_evidence_plan_check.py",
+            "scripts/production_evidence_plan_to_manifest.py",
+            "scripts/production_release_gate.py",
+            "scripts/production_closure.py",
+            "scripts/project_completion_audit.py",
+            "scripts/local_production_audit.py",
+            "artifacts/production-task-closure-audit.json",
+            "failed_requirement_ids",
+            "blocked_requirement_ids",
+            "blocked_external_evidence_task_ids",
+            "stage_count",
+            "failed_stage_count",
+            "failed_stage_names",
+            "skipped_mapping_count",
+            "missing_readiness_check_count",
+            "readiness-evidence-package-validation.json",
+            "production-closure-manifest-validation.json",
+            "production-evidence-plan-validation.json",
         ]:
             self.assertIn(fragment, runbook)
+        readme = Path("README.md").read_text(encoding="utf-8")
+        api_contracts = Path("docs/api-contracts.md").read_text(encoding="utf-8")
+        for fragment in [
+            "failed_requirement_ids",
+            "blocked_requirement_ids",
+            "open_requirement_ids",
+            "needs_code_work_count",
+            "blocked_external_evidence_count",
+            "blocked_external_evidence_task_ids",
+            "stage_count",
+            "failed_stage_count",
+            "failed_stage_names",
+            "skipped_mapping_count",
+            "missing_readiness_check_count",
+            "artifacts/production-task-closure-audit.json",
+            "readiness-evidence-package-validation.json",
+            "production-closure-manifest-validation.json",
+            "production-evidence-plan-validation.json",
+        ]:
+            self.assertIn(fragment, readme)
+            if fragment not in {"artifacts/production-task-closure-audit.json", "production-evidence-plan-validation.json"}:
+                self.assertIn(fragment, api_contracts)
+        local_staging_stack = Path("scripts/local_staging_stack.sh").read_text(encoding="utf-8")
+        for fragment in [
+            "--capacity-simulate-threshold-ms",
+            "AI_QUANT_HOST=\"${AI_QUANT_APP_HOST:-0.0.0.0}\"",
+            "AI_QUANT_OBJECT_STORE_BACKEND=\"${AI_QUANT_APP_OBJECT_STORE_BACKEND:-s3}\"",
+            "AI_QUANT_SEARCH_BACKEND=\"${AI_QUANT_APP_SEARCH_BACKEND:-opensearch}\"",
+            "AI_QUANT_TDX_VIPDOC_PATH=\"${AI_QUANT_APP_TDX_VIPDOC_PATH:-/data/local/tdx/vipdoc}\"",
+        ]:
+            self.assertIn(fragment, local_staging_stack)
+        local_production_stack = Path("scripts/local_production_stack.sh").read_text(encoding="utf-8")
+        for fragment in [
+            "AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS=\"${AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS:-5000}\"",
+            "AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS=\"${AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS:-5000}\"",
+            "AI_QUANT_S3_HOST_PORT=\"${AI_QUANT_S3_HOST_PORT:-19000}\"",
+            "scripts/local_production_audit.py",
+            "scripts/local_ai_capability_acceptance.py",
+        ]:
+            self.assertIn(fragment, local_production_stack)
         dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
         self.assertIn("COPY scripts ./scripts", dockerfile)
         self.assertIn("psycopg[binary]", dockerfile)
@@ -7259,13 +12982,63 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(checks["ui_browser_acceptance"]["passed"])
         self.assertEqual(checks["ui_browser_acceptance"]["evidence"]["status"], "passed")
         self.assertTrue(all(item["nonblank"] for item in checks["ui_browser_acceptance"]["evidence"]["screenshots"]))
-        self.assertGreaterEqual(len(result["readiness_records"]), 4)
+        self.assertGreaterEqual(len(result["readiness_records"]), 3)
         readiness_ids = {item["check_id"] for item in result["readiness_records"] if "check_id" in item}
         self.assertIn("real_data_smoke_test", readiness_ids)
         self.assertIn("production_ui_screenshot_acceptance", readiness_ids)
-        self.assertIn("cross_browser_acceptance", readiness_ids)
+        self.assertNotIn("cross_browser_acceptance", readiness_ids)
         self.assertIsNotNone(result["notifications"])
+        self.assertIsNotNone(result["evidence_package_validation"])
+        self.assertFalse(result["evidence_package_validation"]["passed"])
+        validation_checks = {item["check"] for item in result["evidence_package_validation"]["failures"]}
+        self.assertIn("package_status", validation_checks)
+        self.assertIn("external_validation_ready", validation_checks)
+        self.assertIn("required_evidence_uri", validation_checks)
         self.assertEqual(result["production_boundary"], "does_not_enable_live_broker_or_automatic_order_execution")
+
+    def test_staging_acceptance_records_cross_browser_only_with_external_matrix(self) -> None:
+        import app.server as server_module
+
+        server_module.ROUTER = ApiRouter(SystemService())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), server_module.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            local_url = f"http://127.0.0.1:{server.server_port}"
+            result = run_staging_acceptance(
+                base_url=local_url,
+                artifact_prefix="artifact://staging-test",
+                record_readiness=True,
+                notify_missing=False,
+                timeout=5,
+                cross_browser_matrix={
+                    "status": "passed",
+                    "evidence_uri": "artifact://staging-test/ui-browser-matrix.json",
+                    "browser_matrix": [
+                        {"browser": "chromium", "viewport": "desktop", "status": "passed"},
+                        {"browser": "firefox", "viewport": "mobile", "status": "passed"},
+                    ],
+                    "browsers_checked": ["chromium", "firefox"],
+                    "viewports_checked": ["desktop", "mobile"],
+                    "failure_count": 0,
+                },
+                env={
+                    "AI_QUANT_POSTGRES_DSN": f"postgresql://app:secret@127.0.0.1:{server.server_port}/ai_quant",
+                    "AI_QUANT_S3_BUCKET": "ai-quant-staging",
+                    "AI_QUANT_S3_ENDPOINT": local_url,
+                    "AI_QUANT_OPENSEARCH_URL": local_url,
+                },
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(result["status"], "passed")
+        checks = {item["check"]: item for item in result["checks"]}
+        self.assertTrue(checks["cross_browser_matrix_record"]["passed"])
+        self.assertTrue(checks["cross_browser_matrix_record"]["evidence"]["metrics"]["validation"]["passed"])
+        readiness_ids = {item["check_id"] for item in result["readiness_records"] if "check_id" in item}
+        self.assertIn("cross_browser_acceptance", readiness_ids)
 
     def test_staging_lineage_registry_acceptance_posts_to_local_sinks(self) -> None:
         import app.server as server_module
@@ -7462,9 +13235,17 @@ class SystemServiceTests(unittest.TestCase):
         from app.connectors import AStockSupplementalRegistry
         registry = AStockSupplementalRegistry()
 
-        # All three priority connectors must be present
+        # All frozen free/public supplemental connectors must be present
         connector_ids = registry.list_ids()
-        for expected_id in ["eastmoney_research", "cninfo_announcements", "tencent_valuation_snapshot"]:
+        for expected_id in [
+            "eastmoney_research",
+            "cninfo_announcements",
+            "tencent_valuation_snapshot",
+            "ths_hot_topics",
+            "baidu_concepts",
+            "dragon_tiger_list",
+            "unlock_calendar",
+        ]:
             self.assertIn(expected_id, connector_ids)
 
         # Each connector exposes source_id and source_type
@@ -7489,6 +13270,75 @@ class SystemServiceTests(unittest.TestCase):
         tencent = registry.get("tencent_valuation_snapshot")
         results = tencent.fetch_samples(user_agent="test/1.0", limit=5, symbols=[])
         self.assertEqual(results, [])
+
+        # Newly registered connectors should normalize supplied sample rows without network calls.
+        sample_cases = {
+            "ths_hot_topics": (
+                {"sample_rows": [{"title": "AI 热点扩散", "topic": "AI", "reason": "资金关注", "published_at": "2026-05-15"}]},
+                "hot_topic",
+            ),
+            "baidu_concepts": (
+                {"sample_rows": [{"name": "AI 产业链", "block_type": "concept", "desc": "概念板块", "published_at": "2026-05-15"}]},
+                "concept_block",
+            ),
+            "dragon_tiger_list": (
+                {"sample_rows": [{"security_code": "600000", "security_name": "浦发银行", "trade_date": "2026-05-15", "reason": "龙虎榜上榜"}]},
+                "dragon_tiger_record",
+            ),
+            "unlock_calendar": (
+                {"sample_rows": [{"security_code": "600000", "security_name": "浦发银行", "event_date": "2026-05-15", "unlock_shares": 1000000}]},
+                "unlock_calendar",
+            ),
+        }
+        for connector_id, (kwargs, document_type) in sample_cases.items():
+            with self.subTest(connector_id=connector_id):
+                connector = registry.get(connector_id)
+                self.assertIsNotNone(connector)
+                rows = connector.fetch_samples(user_agent="test/1.0", limit=5, **kwargs)
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0].document_type, document_type)
+                self.assertFalse(rows[0].metadata["automation_allowed"])
+                self.assertIn("manual_reference", rows[0].metadata["source_boundary"])
+
+        for connector_id, sample_rows in {
+            "eastmoney_research": [{"title": "Demo eastmoney research", "url": "https://example.invalid/eastmoney?token=secret", "published_at": "2026-05-15"}],
+            "cninfo_announcements": [{"announcementTitle": "Demo cninfo announcement", "announcementId": "001", "adjunctUrl": "https://example.invalid/cninfo?api_key=secret"}],
+            "tencent_valuation_snapshot": [{"symbol": "sz000001", "security_name": "平安银行", "close": 10.2, "pe_ttm": 12.3, "pb": 1.2}],
+        }.items():
+            with self.subTest(sample_connector=connector_id):
+                connector = registry.get(connector_id)
+                self.assertIsNotNone(connector)
+                rows = connector.fetch_samples(user_agent="test/1.0", limit=5, sample_rows=sample_rows)
+                self.assertEqual(len(rows), 1)
+                self.assertFalse(rows[0].metadata["automation_allowed"])
+                self.assertIn("manual_reference", rows[0].metadata["source_boundary"])
+
+        supplemental = self.router.dispatch(
+            "POST",
+            "/api/connectors/astock/supplemental/fetch",
+            {
+                "connector_id": "dragon_tiger_list",
+                "sample_rows": [
+                    {
+                        "security_code": "600000",
+                        "security_name": "浦发银行",
+                        "trade_date": "2026-05-15",
+                        "reason": "龙虎榜上榜",
+                        "source_uri": "https://example.invalid/dragon?t=1&token=secret",
+                    }
+                ],
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(supplemental.success, supplemental.error)
+        self.assertEqual(supplemental.data["count"], 1)
+        supplemental_doc = supplemental.data["documents"][0]
+        self.assertEqual(supplemental_doc["document_type"], "dragon_tiger_record")
+        self.assertEqual(supplemental_doc["source_id"], "dragon_tiger_list")
+        self.assertFalse(supplemental_doc["metadata"]["automation_allowed"])
+        self.assertEqual(supplemental_doc["source_uri"], "https://example.invalid/dragon?t=1")
+        self.assertIn("manual_reference", supplemental_doc["metadata"]["source_boundary"])
 
     def test_astock_supplemental_connector_documents_are_manual_reference(self) -> None:
         """T-416: All supplemental connector documents carry automation_allowed=False and source_boundary."""

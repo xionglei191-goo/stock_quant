@@ -4,12 +4,12 @@ import argparse
 from datetime import date, timedelta
 import json
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
 from app.errors import ValidationError
 from app.services import PUBLIC_EOD_MARKET_DATA_SOURCE_ID, SystemService
 from app.store import SQLiteStore
-from app.tdx_market_data import TDXMarketDataAdapter, TDXVipdocAdapter
+from app.tdx_market_data import TDXVipdocAdapter
 
 
 def run_tdx_incremental_import(
@@ -17,8 +17,7 @@ def run_tdx_incremental_import(
     *,
     symbols: list[str],
     security_map: Mapping[str, Any] | None = None,
-    source_format: str = "duckdb",
-    tdx_duckdb_path: str | Path | None = None,
+    source_format: str = "vipdoc",
     vipdoc_path: str | Path | None = None,
     start_date: str = "",
     end_date: str = "2099-12-31",
@@ -27,21 +26,17 @@ def run_tdx_incremental_import(
     source_id: str = PUBLIC_EOD_MARKET_DATA_SOURCE_ID,
     dry_run: bool = False,
     skip_existing: bool = True,
-    duckdb_connect: Callable[[str, bool], Any] | None = None,
 ) -> dict[str, Any]:
     if not symbols:
         raise ValidationError("symbols are required")
     service = SystemService(SQLiteStore(state_db))
     service.seed_default_sources(actor="tdx_incremental_import")
-    if tdx_duckdb_path:
-        service.tdx_market_data = TDXMarketDataAdapter(path=tdx_duckdb_path, connect=duckdb_connect)
-    elif duckdb_connect:
-        service.tdx_market_data = TDXMarketDataAdapter(connect=duckdb_connect)
     if vipdoc_path:
         service.tdx_vipdoc = TDXVipdocAdapter(path=vipdoc_path)
+        service.tdx_market_data = service.tdx_vipdoc
 
     security_map = dict(security_map or {})
-    source_format = source_format.strip().lower() or "duckdb"
+    source_format = source_format.strip().lower() or "vipdoc"
     results: list[dict[str, Any]] = []
     totals = {"created_count": 0, "skipped_count": 0, "failed_count": 0, "source_rows": 0}
     for symbol in symbols:
@@ -135,13 +130,12 @@ def _load_security_map(value: str, file_path: str) -> dict[str, str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Incrementally import local TongDaXin EOD market data into a SQLite AI Quant state DB.")
+    parser = argparse.ArgumentParser(description="Incrementally import local TongDaXin vipdoc EOD market data into a SQLite AI Quant state DB.")
     parser.add_argument("state_db", help="Path to AI_QUANT_DB SQLite state file")
     parser.add_argument("--symbols", required=True, help="Comma-separated symbols, for example 600000,000001")
     parser.add_argument("--security-map", default="", help='JSON object, for example {"600000":"sec_600000"}')
     parser.add_argument("--security-map-file", default="", help="Path to a JSON symbol->security_id map")
-    parser.add_argument("--source-format", choices=["duckdb", "vipdoc"], default="duckdb")
-    parser.add_argument("--tdx-duckdb-path", default="", help="Override AI_QUANT_TDX_DUCKDB_PATH")
+    parser.add_argument("--source-format", choices=["vipdoc"], default="vipdoc")
     parser.add_argument("--vipdoc-path", default="", help="Override AI_QUANT_TDX_VIPDOC_PATH")
     parser.add_argument("--start-date", default="", help="Optional YYYY-MM-DD. Defaults to last imported date + 1 per symbol.")
     parser.add_argument("--end-date", default="2099-12-31")
@@ -156,7 +150,6 @@ def main() -> None:
         symbols=[item.strip() for item in args.symbols.split(",") if item.strip()],
         security_map=_load_security_map(args.security_map, args.security_map_file),
         source_format=args.source_format,
-        tdx_duckdb_path=args.tdx_duckdb_path or None,
         vipdoc_path=args.vipdoc_path or None,
         start_date=args.start_date,
         end_date=args.end_date,

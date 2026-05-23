@@ -159,7 +159,7 @@ def run_staging_otel_acceptance(
     *,
     base_url: str = DEFAULT_BASE_URL,
     otel_endpoint: str = "http://127.0.0.1:4318/v1/logs",
-    artifact_prefix: str = "artifact://local-staging",
+    artifact_prefix: str = "artifact://staging-local",
     record_readiness: bool = False,
     timeout: float = 10.0,
 ) -> dict[str, Any]:
@@ -257,7 +257,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run OpenTelemetry collector staging acceptance.")
     parser.add_argument("base_url", nargs="?", default=DEFAULT_BASE_URL)
     parser.add_argument("--otel-endpoint", default="http://127.0.0.1:4318/v1/logs")
-    parser.add_argument("--artifact-prefix", default="artifact://local-staging")
+    parser.add_argument("--artifact-prefix", default="artifact://staging-local")
     parser.add_argument("--record-readiness", action="store_true")
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args()

@@ -70,8 +70,8 @@ def _source_provenance_review(client: StagingClient, suffix: str) -> dict[str, A
             "field_whitelist": ["security_id", "as_of_date", "open", "high", "low", "close", "volume", "adjusted_close"],
             "retention_policy": "retain_public_eod_with_source_uri_and_field_whitelist",
             "cache_ttl_days": 3650,
-            "provenance_ref": "local://data/local/tdx/market_data.duckdb",
-            "source_tos_uri": "https://www.tdx.com.cn/",
+            "provenance_ref": "local://data/local/tdx/vipdoc",
+            "source_tos_uri": "https://www.tdx.com.cn/article/vipdata.html",
             "usage_scope": "public_or_local_eod_internal_research_backtest_risk",
             "collection_method": "local_file_or_public_api",
             "robots_policy": "reviewed_public_or_local_source",
@@ -106,7 +106,7 @@ def _source_provenance_review(client: StagingClient, suffix: str) -> dict[str, A
     passed = (
         bool(updated.get("provenance_ref"))
         and bool(review.get("review_id"))
-        and public_eod.get("provenance_ref") == "local://data/local/tdx/market_data.duckdb"
+        and public_eod.get("provenance_ref") == "local://data/local/tdx/vipdoc"
         and "close" in public_eod.get("field_whitelist", [])
         and float(report.get("coverage", 0.0)) >= 0.95
     )
@@ -253,7 +253,7 @@ def _cache_retention_external_delete(client: StagingClient, suffix: str, artifac
 def run_staging_security_acceptance(
     *,
     base_url: str = DEFAULT_BASE_URL,
-    artifact_prefix: str = "artifact://local-staging",
+    artifact_prefix: str = "artifact://staging-local",
     secret_manager_provider: str = "local-development-metadata-only",
     timeout: float = 10.0,
 ) -> dict[str, Any]:
@@ -294,7 +294,7 @@ def run_staging_security_acceptance(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run staging security/KMS/lifecycle governance acceptance.")
     parser.add_argument("base_url", nargs="?", default=DEFAULT_BASE_URL)
-    parser.add_argument("--artifact-prefix", default="artifact://local-staging")
+    parser.add_argument("--artifact-prefix", default="artifact://staging-local")
     parser.add_argument("--secret-manager-provider", default="local-development-metadata-only")
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args()

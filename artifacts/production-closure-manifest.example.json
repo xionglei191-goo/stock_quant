@@ -1,0 +1,534 @@
+{
+  "ready_for_launch": false,
+  "seed_default_sources": true,
+  "required_reports": [
+    "storage",
+    "security",
+    "observability",
+    "ui",
+    "deployment"
+  ],
+  "source_governance": [
+    {
+      "source_id": "sec_edgar",
+      "source_class": "official_public_disclosure",
+      "rights_tag": {
+        "license_class": "public",
+        "training_allowed": false,
+        "redistribution_allowed": false,
+        "display_use": "allowed",
+        "non_display_use": "restricted",
+        "derived_data_use": "restricted"
+      },
+      "field_whitelist": [
+        "filing_id",
+        "issuer_id",
+        "form_type",
+        "filed_at",
+        "source_uri"
+      ],
+      "retention_policy": "retain_public_disclosure_for_research",
+      "cache_ttl_days": 3650,
+      "provenance_ref": "https://www.sec.gov/Archives/",
+      "usage_scope": "public_disclosure_research_only",
+      "collection_method": "official_public_download",
+      "robots_policy": "robots_and_tos_reviewed",
+      "review_cadence": "quarterly",
+      "review_owner": "platform_owner",
+      "review_owner_role": "平台负责人",
+      "source_tos_uri": "https://www.sec.gov/os/accessing-edgar-data",
+      "risk_level": "green",
+      "review_status": "approved",
+      "validation_status": "verified",
+      "governance_artifact_uri": "s3://ai-quant-prod/governance/sec-edgar.json",
+      "validation_artifact_uri": "s3://ai-quant-prod/governance/sec-edgar-validation.json",
+      "tos_review_artifact_uri": "s3://ai-quant-prod/governance/sec-edgar-tos-review.json",
+      "robots_review_artifact_uri": "s3://ai-quant-prod/governance/sec-edgar-robots-review.json"
+    },
+    {
+      "source_id": "public_eod_market_data",
+      "source_class": "tdx_local",
+      "rights_tag": {
+        "license_class": "public_eod_reference",
+        "training_allowed": false,
+        "redistribution_allowed": false,
+        "display_use": "allowed",
+        "non_display_use": "allowed",
+        "derived_data_use": "restricted"
+      },
+      "field_whitelist": [
+        "security_id",
+        "as_of_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "adjusted_close",
+        "volume"
+      ],
+      "retention_policy": "retain_adjusted_eod_for_research_10y",
+      "cache_ttl_days": 3650,
+      "provenance_ref": "local://data/local/tdx/market_data.duckdb",
+      "usage_scope": "public_eod_internal_research_backtest_risk",
+      "collection_method": "local_file_or_public_api",
+      "robots_policy": "reviewed_public_or_local_source",
+      "review_cadence": "quarterly",
+      "review_owner": "market_data_owner",
+      "review_owner_role": "数据工程",
+      "source_tos_uri": "https://www.tdx.com.cn/",
+      "risk_level": "green",
+      "review_status": "approved",
+      "validation_status": "verified",
+      "governance_artifact_uri": "s3://ai-quant-prod/governance/public-eod-market-data.json",
+      "validation_artifact_uri": "s3://ai-quant-prod/governance/public-eod-market-data-validation.json",
+      "tos_review_artifact_uri": "s3://ai-quant-prod/governance/public-eod-market-data-tos-review.json",
+      "robots_review_artifact_uri": "s3://ai-quant-prod/governance/public-eod-market-data-robots-review.json"
+    },
+    {
+      "source_id": "local_research_reports",
+      "source_class": "local_research_reports",
+      "rights_tag": {
+        "license_class": "local_research_reference",
+        "training_allowed": false,
+        "redistribution_allowed": false,
+        "display_use": "restricted",
+        "non_display_use": "restricted",
+        "derived_data_use": "restricted"
+      },
+      "field_whitelist": [
+        "report_id",
+        "broker",
+        "title",
+        "published_at",
+        "source_uri"
+      ],
+      "retention_policy": "retain_local_reference_reports_for_citation_tracking",
+      "cache_ttl_days": 3650,
+      "provenance_ref": "local:///home/xionglei/文档/6大投行研报汇总",
+      "usage_scope": "local_reference_citation_tracking_only",
+      "collection_method": "local_file_scan",
+      "robots_policy": "not_applicable_local_filesystem",
+      "review_cadence": "quarterly",
+      "review_owner": "research_owner",
+      "review_owner_role": "分析师",
+      "source_tos_uri": "internal://manual-review/local-research-cache-policy",
+      "risk_level": "yellow",
+      "review_status": "conditional",
+      "validation_status": "reviewed",
+      "governance_artifact_uri": "s3://ai-quant-prod/governance/local-research-reports.json",
+      "validation_artifact_uri": "s3://ai-quant-prod/governance/local-research-reports-validation.json",
+      "tos_review_artifact_uri": "s3://ai-quant-prod/governance/local-research-reports-tos-review.json",
+      "robots_review_artifact_uri": "s3://ai-quant-prod/governance/local-research-reports-robots-review.json"
+    }
+  ],
+  "source_reviews": [
+    {
+      "source_id": "sec_edgar",
+      "reviewer": "risk_compliance",
+      "review_period": "2026Q2",
+      "status": "approved",
+      "publicness_status": "confirmed_public_or_local",
+      "tos_status": "reviewed",
+      "robots_status": "reviewed_or_not_applicable",
+      "usage_scope_status": "within_boundary",
+      "notes": "fill with real production review evidence URI in release manifest",
+      "findings": [
+        "source governance must remain within public disclosure boundary"
+      ]
+    },
+    {
+      "source_id": "public_eod_market_data",
+      "reviewer": "risk_compliance",
+      "review_period": "2026Q2",
+      "status": "approved",
+      "publicness_status": "confirmed_public_or_local",
+      "tos_status": "reviewed",
+      "robots_status": "reviewed_or_not_applicable",
+      "usage_scope_status": "within_boundary",
+      "notes": "fill with real production review evidence URI in release manifest"
+    },
+    {
+      "source_id": "local_research_reports",
+      "reviewer": "risk_compliance",
+      "review_period": "2026Q2",
+      "status": "conditional",
+      "publicness_status": "manual_reference_only",
+      "tos_status": "reviewed",
+      "robots_status": "reviewed_or_not_applicable",
+      "usage_scope_status": "manual_reference_only",
+      "notes": "fill with real production review evidence URI in release manifest"
+    }
+  ],
+  "data_sources": [
+    {
+      "source_id": "sec_edgar",
+      "source_class": "official_public_disclosure",
+      "rights_tag": {
+        "license_class": "public",
+        "training_allowed": false,
+        "redistribution_allowed": false,
+        "display_use": "allowed",
+        "non_display_use": "restricted",
+        "derived_data_use": "restricted"
+      },
+      "field_whitelist": [
+        "filing_id",
+        "issuer_id",
+        "form_type",
+        "filed_at",
+        "source_uri"
+      ],
+      "retention_policy": "retain_public_disclosure_for_research",
+      "cache_ttl_days": 3650,
+      "provenance_ref": "https://www.sec.gov/Archives/",
+      "usage_scope": "public_disclosure_research_only",
+      "collection_method": "official_public_download",
+      "robots_policy": "robots_and_tos_reviewed",
+      "review_cadence": "quarterly",
+      "review_owner": "platform_owner",
+      "review_owner_role": "平台负责人",
+      "source_tos_uri": "https://www.sec.gov/os/accessing-edgar-data",
+      "risk_level": "green",
+      "review_status": "approved",
+      "validation_status": "verified",
+      "governance_artifact_uri": "s3://ai-quant-prod/governance/sec-edgar.json",
+      "validation_artifact_uri": "s3://ai-quant-prod/governance/sec-edgar-validation.json",
+      "tos_review_artifact_uri": "s3://ai-quant-prod/governance/sec-edgar-tos-review.json",
+      "robots_review_artifact_uri": "s3://ai-quant-prod/governance/sec-edgar-robots-review.json"
+    },
+    {
+      "source_id": "public_eod_market_data",
+      "source_class": "tdx_local",
+      "rights_tag": {
+        "license_class": "public_eod_reference",
+        "training_allowed": false,
+        "redistribution_allowed": false,
+        "display_use": "allowed",
+        "non_display_use": "allowed",
+        "derived_data_use": "restricted"
+      },
+      "field_whitelist": [
+        "security_id",
+        "as_of_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "adjusted_close",
+        "volume"
+      ],
+      "retention_policy": "retain_adjusted_eod_for_research_10y",
+      "cache_ttl_days": 3650,
+      "provenance_ref": "local://data/local/tdx/market_data.duckdb",
+      "usage_scope": "public_eod_internal_research_backtest_risk",
+      "collection_method": "local_file_or_public_api",
+      "robots_policy": "reviewed_public_or_local_source",
+      "review_cadence": "quarterly",
+      "review_owner": "market_data_owner",
+      "review_owner_role": "数据工程",
+      "source_tos_uri": "https://www.tdx.com.cn/",
+      "risk_level": "green",
+      "review_status": "approved",
+      "validation_status": "verified",
+      "governance_artifact_uri": "s3://ai-quant-prod/governance/public-eod-market-data.json",
+      "validation_artifact_uri": "s3://ai-quant-prod/governance/public-eod-market-data-validation.json",
+      "tos_review_artifact_uri": "s3://ai-quant-prod/governance/public-eod-market-data-tos-review.json",
+      "robots_review_artifact_uri": "s3://ai-quant-prod/governance/public-eod-market-data-robots-review.json"
+    },
+    {
+      "source_id": "local_research_reports",
+      "source_class": "local_research_reports",
+      "rights_tag": {
+        "license_class": "local_research_reference",
+        "training_allowed": false,
+        "redistribution_allowed": false,
+        "display_use": "restricted",
+        "non_display_use": "restricted",
+        "derived_data_use": "restricted"
+      },
+      "field_whitelist": [
+        "report_id",
+        "broker",
+        "title",
+        "published_at",
+        "source_uri"
+      ],
+      "retention_policy": "retain_local_reference_reports_for_citation_tracking",
+      "cache_ttl_days": 3650,
+      "provenance_ref": "local:///home/xionglei/文档/6大投行研报汇总",
+      "usage_scope": "local_reference_citation_tracking_only",
+      "collection_method": "local_file_scan",
+      "robots_policy": "not_applicable_local_filesystem",
+      "review_cadence": "quarterly",
+      "review_owner": "research_owner",
+      "review_owner_role": "分析师",
+      "source_tos_uri": "internal://manual-review/local-research-cache-policy",
+      "risk_level": "yellow",
+      "review_status": "conditional",
+      "validation_status": "reviewed",
+      "governance_artifact_uri": "s3://ai-quant-prod/governance/local-research-reports.json",
+      "validation_artifact_uri": "s3://ai-quant-prod/governance/local-research-reports-validation.json",
+      "tos_review_artifact_uri": "s3://ai-quant-prod/governance/local-research-reports-tos-review.json",
+      "robots_review_artifact_uri": "s3://ai-quant-prod/governance/local-research-reports-robots-review.json"
+    }
+  ],
+  "readiness_checks": {
+    "real_data_smoke_test": {
+      "status": "passed",
+      "evidence_uri": "s3://ai-quant-prod/readiness/real_data_smoke_test.json"
+    },
+    "production_ui_screenshot_acceptance": {
+      "status": "passed",
+      "evidence_uri": "s3://ai-quant-prod/readiness/production_ui_screenshot_acceptance.json"
+    },
+    "cross_browser_acceptance": {
+      "status": "passed",
+      "evidence_uri": "s3://ai-quant-prod/readiness/cross_browser_acceptance.json"
+    },
+    "capacity_latency_report": {
+      "status": "passed",
+      "evidence_uri": "s3://ai-quant-prod/readiness/capacity_latency_report.json"
+    },
+    "backup_restore_drill": {
+      "status": "passed",
+      "evidence_uri": "s3://ai-quant-prod/readiness/backup_restore_drill.json"
+    },
+    "otel_collector_drill": {
+      "status": "passed",
+      "evidence_uri": "s3://ai-quant-prod/readiness/otel_collector_drill.json"
+    },
+    "permission_red_team_test": {
+      "status": "passed",
+      "evidence_uri": "s3://ai-quant-prod/readiness/permission_red_team_test.json"
+    },
+    "compliance_review_record": {
+      "status": "passed",
+      "evidence_uri": "s3://ai-quant-prod/readiness/compliance_review_record.json"
+    },
+    "launch_checklist": {
+      "status": "passed",
+      "evidence_uri": "s3://ai-quant-prod/readiness/launch_checklist.json"
+    }
+  },
+  "reports": {
+    "storage": {
+      "artifact_uris": {
+        "least_privilege_policy_uri": "s3://ai-quant-prod/reports/storage/least-privilege-policy.json",
+        "postgres_migration_uri": "s3://ai-quant-prod/reports/storage/postgres-migration.json",
+        "postgres_smoke_uri": "s3://ai-quant-prod/reports/storage/postgres-smoke.json",
+        "s3_smoke_uri": "s3://ai-quant-prod/reports/storage/s3-smoke.json",
+        "opensearch_smoke_uri": "s3://ai-quant-prod/reports/storage/opensearch-smoke.json",
+        "capacity_baseline_uri": "s3://ai-quant-prod/reports/storage/capacity-baseline.json",
+        "backup_restore_uri": "s3://ai-quant-prod/reports/storage/backup-restore.json"
+      }
+    },
+    "security": {
+      "artifact_uris": {
+        "secret_manager_evidence_uri": "s3://ai-quant-prod/reports/security/secret-manager.json",
+        "least_privilege_policy_uri": "s3://ai-quant-prod/reports/security/least-privilege.json",
+        "external_delete_evidence_uri": "s3://ai-quant-prod/reports/security/external-delete.json",
+        "permission_review_uri": "s3://ai-quant-prod/reports/security/permission-review.json"
+      },
+      "storage_policy": {
+        "environment": "production",
+        "bucket": "ai-quant-prod-objects",
+        "prefix": "objects/",
+        "opensearch_index": "ai-quant-prod-search-*",
+        "postgres_schema": "ai_quant"
+      }
+    },
+    "observability": {
+      "collector": {
+        "logs_endpoint": "https://otel.prod.example/v1/logs",
+        "metrics_endpoint": "https://otel.prod.example/v1/metrics",
+        "traces_endpoint": "https://otel.prod.example/v1/traces"
+      },
+      "artifact_uris": {
+        "collector_evidence_uri": "s3://ai-quant-prod/reports/observability/collector.json",
+        "logs_backend_uri": "s3://ai-quant-prod/reports/observability/logs-backend.json",
+        "query_evidence_uri": "s3://ai-quant-prod/reports/observability/query.json",
+        "retention_policy_uri": "s3://ai-quant-prod/reports/observability/retention-policy.json",
+        "external_alert_evidence_uri": "s3://ai-quant-prod/reports/observability/external-alert.json",
+        "drill_evidence_uri": "s3://ai-quant-prod/reports/observability/drill.json"
+      }
+    },
+    "ui": {
+      "artifact_uris": {
+        "browser_acceptance_uri": "s3://ai-quant-prod/reports/ui/browser-acceptance.json",
+        "screenshot_manifest_uri": "s3://ai-quant-prod/reports/ui/screenshot-manifest.json",
+        "cross_browser_matrix_uri": "s3://ai-quant-prod/reports/ui/cross-browser-matrix.json",
+        "real_data_workflow_uri": "s3://ai-quant-prod/reports/ui/real-data-workflow.json",
+        "visual_overflow_review_uri": "s3://ai-quant-prod/reports/ui/visual-overflow.json",
+        "access_control_review_uri": "s3://ai-quant-prod/reports/ui/access-control.json"
+      },
+      "browser_acceptance": {
+        "status": "passed",
+        "browser": "chromium",
+        "ui_url": "https://staging.example.internal/ui",
+        "required_text": [
+          "Dashboard",
+          "Research",
+          "Readiness"
+        ],
+        "missing_text": [],
+        "failure_count": 0,
+        "screenshots": [
+          {"name": "desktop", "nonblank": true},
+          {"name": "mobile", "nonblank": true}
+        ],
+        "browser_matrix": {
+          "rows": [
+            {"browser": "chromium", "viewport": "desktop", "status": "passed"},
+            {"browser": "firefox", "viewport": "mobile", "status": "passed"}
+          ]
+        }
+      },
+      "workflow_evidence": {
+        "data_volume_checked": true,
+        "pagination_checked": true,
+        "filtering_checked": true,
+        "error_states_checked": true,
+        "permission_checked": true,
+        "text_no_overlap_checked": true,
+        "visual_no_overflow_checked": true
+      }
+    },
+    "deployment": {
+      "environment_name": "production",
+      "postgres_configured": true,
+      "s3_configured": true,
+      "opensearch_configured": true,
+      "secret_manager_provider": "aws-secrets-manager",
+      "secret_manager": {
+        "provider": "aws-secrets-manager",
+        "injection_mode": "sidecar_or_runtime"
+      },
+      "runtime": {
+        "live_execution_enabled": false
+      },
+      "artifact_uris": {
+        "production_parameters_uri": "s3://ai-quant-prod/reports/deployment/production-parameters.json",
+        "secret_manager_evidence_uri": "s3://ai-quant-prod/reports/deployment/secret-manager.json",
+        "backup_restore_evidence_uri": "s3://ai-quant-prod/reports/deployment/backup-restore.json",
+        "capacity_baseline_uri": "s3://ai-quant-prod/reports/deployment/capacity-baseline.json",
+        "release_checklist_uri": "s3://ai-quant-prod/reports/deployment/release-checklist.json",
+        "canary_plan_uri": "s3://ai-quant-prod/reports/deployment/canary-plan.json",
+        "rollback_plan_uri": "s3://ai-quant-prod/reports/deployment/rollback-plan.json"
+      }
+    }
+  },
+  "astock_connectors": {
+    "seed": true,
+    "connector_ids": [
+      "eastmoney_research",
+      "cninfo_announcements",
+      "tencent_valuation_snapshot",
+      "ths_hot_topics",
+      "baidu_concepts",
+      "dragon_tiger_list",
+      "unlock_calendar"
+    ],
+    "verify": [
+      {
+        "connector_id": "eastmoney_research",
+        "status": "passed"
+      },
+      {
+        "connector_id": "cninfo_announcements",
+        "status": "passed"
+      },
+      {
+        "connector_id": "tencent_valuation_snapshot",
+        "status": "passed"
+      },
+      {
+        "connector_id": "ths_hot_topics",
+        "status": "passed"
+      },
+      {
+        "connector_id": "baidu_concepts",
+        "status": "passed"
+      },
+      {
+        "connector_id": "dragon_tiger_list",
+        "status": "passed"
+      },
+      {
+        "connector_id": "unlock_calendar",
+        "status": "passed"
+      }
+    ],
+    "verification_readiness": {
+      "connector_ids": [
+        "eastmoney_research",
+        "cninfo_announcements",
+        "tencent_valuation_snapshot",
+        "ths_hot_topics",
+        "baidu_concepts",
+        "dragon_tiger_list",
+        "unlock_calendar"
+      ],
+      "artifact_uris": {
+        "eastmoney_research": {
+          "endpoint_artifact_uri": "s3://ai-quant-prod/reports/astock/eastmoney-endpoint.json",
+          "stability_artifact_uri": "s3://ai-quant-prod/reports/astock/eastmoney-stability.json",
+          "rate_limit_artifact_uri": "s3://ai-quant-prod/reports/astock/eastmoney-rate-limit.json",
+          "license_review_uri": "s3://ai-quant-prod/reports/astock/eastmoney-license.json",
+          "field_sample_uri": "s3://ai-quant-prod/reports/astock/eastmoney-sample.jsonl"
+        },
+        "cninfo_announcements": {
+          "endpoint_artifact_uri": "s3://ai-quant-prod/reports/astock/cninfo-endpoint.json",
+          "stability_artifact_uri": "s3://ai-quant-prod/reports/astock/cninfo-stability.json",
+          "rate_limit_artifact_uri": "s3://ai-quant-prod/reports/astock/cninfo-rate-limit.json",
+          "license_review_uri": "s3://ai-quant-prod/reports/astock/cninfo-license.json",
+          "field_sample_uri": "s3://ai-quant-prod/reports/astock/cninfo-sample.jsonl"
+        },
+        "tencent_valuation_snapshot": {
+          "endpoint_artifact_uri": "s3://ai-quant-prod/reports/astock/tencent-endpoint.json",
+          "stability_artifact_uri": "s3://ai-quant-prod/reports/astock/tencent-stability.json",
+          "rate_limit_artifact_uri": "s3://ai-quant-prod/reports/astock/tencent-rate-limit.json",
+          "license_review_uri": "s3://ai-quant-prod/reports/astock/tencent-license.json",
+          "field_sample_uri": "s3://ai-quant-prod/reports/astock/tencent-sample.jsonl"
+        },
+        "ths_hot_topics": {
+          "endpoint_artifact_uri": "s3://ai-quant-prod/reports/astock/ths-endpoint.json",
+          "stability_artifact_uri": "s3://ai-quant-prod/reports/astock/ths-stability.json",
+          "rate_limit_artifact_uri": "s3://ai-quant-prod/reports/astock/ths-rate-limit.json",
+          "license_review_uri": "s3://ai-quant-prod/reports/astock/ths-license.json",
+          "field_sample_uri": "s3://ai-quant-prod/reports/astock/ths-sample.jsonl"
+        },
+        "baidu_concepts": {
+          "endpoint_artifact_uri": "s3://ai-quant-prod/reports/astock/baidu-endpoint.json",
+          "stability_artifact_uri": "s3://ai-quant-prod/reports/astock/baidu-stability.json",
+          "rate_limit_artifact_uri": "s3://ai-quant-prod/reports/astock/baidu-rate-limit.json",
+          "license_review_uri": "s3://ai-quant-prod/reports/astock/baidu-license.json",
+          "field_sample_uri": "s3://ai-quant-prod/reports/astock/baidu-sample.jsonl"
+        },
+        "dragon_tiger_list": {
+          "endpoint_artifact_uri": "s3://ai-quant-prod/reports/astock/dragon-endpoint.json",
+          "stability_artifact_uri": "s3://ai-quant-prod/reports/astock/dragon-stability.json",
+          "rate_limit_artifact_uri": "s3://ai-quant-prod/reports/astock/dragon-rate-limit.json",
+          "license_review_uri": "s3://ai-quant-prod/reports/astock/dragon-license.json",
+          "field_sample_uri": "s3://ai-quant-prod/reports/astock/dragon-sample.jsonl"
+        },
+        "unlock_calendar": {
+          "endpoint_artifact_uri": "s3://ai-quant-prod/reports/astock/unlock-endpoint.json",
+          "stability_artifact_uri": "s3://ai-quant-prod/reports/astock/unlock-stability.json",
+          "rate_limit_artifact_uri": "s3://ai-quant-prod/reports/astock/unlock-rate-limit.json",
+          "license_review_uri": "s3://ai-quant-prod/reports/astock/unlock-license.json",
+          "field_sample_uri": "s3://ai-quant-prod/reports/astock/unlock-sample.jsonl"
+        }
+      }
+    }
+  },
+  "evidence_package": {
+    "package_id": "production_closure_template",
+    "ready_for_launch": true,
+    "missing_evidence_count": 0,
+    "failed_gate_count": 0,
+    "checklist_coverage": 1.0,
+    "pending_checklist": [],
+    "required_evidence": [],
+    "external_validations": []
+  }
+}

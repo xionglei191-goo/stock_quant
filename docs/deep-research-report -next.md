@@ -281,7 +281,7 @@ RC_i(w) = w_i \frac{\partial R(w)}{\partial w_i}
 
 | 选项 | 适合场景 | 优点 | 缺点 | 当前建议 |
 |---|---|---|---|---|
-| Airflow/Cron + Parquet/DuckDB | 日频/周频研究 | 简单、便宜、易审计 | 共享特征管理弱 | 阶段一默认 |
+| Airflow/Cron + Parquet/本地标准文件 | 日频/周频研究 | 简单、便宜、易审计 | 共享特征管理弱 | 阶段一默认 |
 | Feast + Batch | 多策略共享特征、训练/推理口径一致 | point-in-time correctness、feature registry 强 | 引入运维与抽象成本 | 阶段二候选 |
 | Kafka 事件驱动 | 多源事件、分钟级告警、多消费者 | 解耦、回放、流式处理、exactly-once | 架构复杂度上升 | 阶段二后半或阶段三 |
 

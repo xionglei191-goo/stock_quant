@@ -61,7 +61,7 @@ def run_backup_restore_drill(
     db_user: str = "ai_quant",
     source_db: str = "ai_quant",
     restore_db: str = "",
-    artifact_prefix: str = "artifact://local-staging",
+    artifact_prefix: str = "artifact://staging-local",
     record_readiness_url: str = "",
     keep_restore_db: bool = False,
 ) -> dict[str, Any]:
@@ -135,7 +135,7 @@ def main() -> None:
     parser.add_argument("--db-user", default="ai_quant")
     parser.add_argument("--source-db", default="ai_quant")
     parser.add_argument("--restore-db", default="")
-    parser.add_argument("--artifact-prefix", default="artifact://local-staging")
+    parser.add_argument("--artifact-prefix", default="artifact://staging-local")
     parser.add_argument("--record-readiness-url", default="")
     parser.add_argument("--keep-restore-db", action="store_true")
     args = parser.parse_args()

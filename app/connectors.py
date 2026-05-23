@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -579,6 +580,20 @@ class AStockSupplementalConnector(BaseConnector):
         """
         raise NotImplementedError
 
+    def _sample_rows_override(self, kwargs: Mapping[str, Any]) -> list[dict[str, Any]]:
+        rows = kwargs.get("sample_rows", kwargs.get("rows"))
+        if rows is None:
+            return []
+        if isinstance(rows, Mapping):
+            rows = [rows]
+        if not isinstance(rows, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if isinstance(row, Mapping):
+                normalized.append(dict(row))
+        return normalized
+
     def _sanitize_uri(self, uri: str) -> str:
         """Strip known secret query parameters from a URI."""
         import re as _re
@@ -659,6 +674,9 @@ class EastMoneyResearchConnector(AStockSupplementalConnector):
         **kwargs: Any,
     ) -> list[ConnectorDocument]:
         limit = max(1, min(50, int(limit)))
+        sample_rows = self._sample_rows_override(kwargs)
+        if sample_rows:
+            return [self.normalize(row) for row in sample_rows[:limit]]
         params: dict[str, Any] = {
             "pageSize": limit,
             "pageNo": 1,
@@ -765,6 +783,9 @@ class CninfoAnnouncementConnector(AStockSupplementalConnector):
         **kwargs: Any,
     ) -> list[ConnectorDocument]:
         limit = max(1, min(50, int(limit)))
+        sample_rows = self._sample_rows_override(kwargs)
+        if sample_rows:
+            return [self.normalize(row) for row in sample_rows[:limit]]
         body_parts = [
             f"pageNum=1&pageSize={limit}&tabName=fulltext&column=szse&category=",
             f"plate=&seDate={start_date}%7E{end_date}",
@@ -883,6 +904,9 @@ class TencentValuationConnector(AStockSupplementalConnector):
         **kwargs: Any,
     ) -> list[ConnectorDocument]:
         limit = max(1, min(20, int(limit)))
+        sample_rows = self._sample_rows_override(kwargs)
+        if sample_rows:
+            return [self.normalize(row) for row in sample_rows[:limit]]
         symbols = list(symbols or [])[:limit]
         if not symbols:
             return []
@@ -952,6 +976,439 @@ class TencentValuationConnector(AStockSupplementalConnector):
         return documents[:limit]
 
 
+class THSHotTopicConnector(AStockSupplementalConnector):
+    """Tonghuashun hot stocks / sector attribution connector."""
+
+    source_id = "ths_hot_topics"
+    base_url = "http://zx.10jqka.com.cn/event/api/getharden/date/{date}/orderby/date/orderway/desc/charset/GBK/"
+
+    def normalize(self, raw: dict[str, Any]) -> ConnectorDocument:
+        trade_date = str(raw.get("date") or raw.get("trade_date") or raw.get("published_at") or "")
+        code = str(raw.get("code") or raw.get("security_code") or raw.get("symbol") or "")
+        name = str(raw.get("name") or raw.get("security_name") or raw.get("title") or "")
+        reason = str(raw.get("reason") or raw.get("topic") or raw.get("theme") or "")
+        source_uri = self._sanitize_uri(str(raw.get("source_uri") or self.base_url.format(date=trade_date or "")))
+        body = reason or str(raw.get("desc") or "")
+        return ConnectorDocument(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            document_type="hot_topic",
+            source_uri=source_uri,
+            language=self.language,
+            title=f"{name} 热点归因" if name else "热点归因",
+            body=body,
+            published_at=trade_date,
+            metadata={
+                "code": code,
+                "security_name": name,
+                "reason": reason,
+                "change_pct": raw.get("zhangfu") or raw.get("change_pct"),
+                "turnover_rate": raw.get("huanshou"),
+                "amount": raw.get("chengjiaoe"),
+                "volume": raw.get("chengjiaoliang"),
+                "market": raw.get("market"),
+                "allowed_use": self.allowed_use,
+                "automation_allowed": False,
+                "source_boundary": "manual_reference_or_supplemental_research_only",
+            },
+        )
+
+    def fetch_samples(
+        self,
+        *,
+        user_agent: str,
+        limit: int = 10,
+        date: str = "",
+        **kwargs: Any,
+    ) -> list[ConnectorDocument]:
+        limit = max(1, min(50, int(limit)))
+        sample_rows = self._sample_rows_override(kwargs)
+        if sample_rows:
+            documents: list[ConnectorDocument] = []
+            for row in sample_rows[:limit]:
+                row = dict(row)
+                row.setdefault("published_at", date or row.get("date") or row.get("trade_date") or "")
+                row.setdefault("source_uri", self.base_url.format(date=row.get("published_at") or date or ""))
+                documents.append(self.normalize(row))
+            return documents
+        if not date:
+            from datetime import date as _date
+
+            date = _date.today().isoformat()
+        url = self.base_url.format(date=date)
+        try:
+            data = self._get_json(url, user_agent=user_agent, headers={
+                "Referer": "http://zx.10jqka.com.cn/",
+            })
+        except Exception as exc:
+            return [ConnectorDocument(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                document_type="hot_topic",
+                source_uri=self._sanitize_uri(url),
+                language=self.language,
+                title=f"[fetch_error] {exc}",
+                body="",
+                metadata={
+                    "error": str(exc),
+                    "allowed_use": self.allowed_use,
+                    "automation_allowed": False,
+                    "source_boundary": "manual_reference_or_supplemental_research_only",
+                },
+            )]
+        if data.get("errocode", 0) not in {0, "0"}:
+            return [ConnectorDocument(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                document_type="hot_topic",
+                source_uri=self._sanitize_uri(url),
+                language=self.language,
+                title=f"[fetch_error] {data.get('errormsg', 'unknown error')}",
+                body="",
+                metadata={
+                    "error": str(data.get("errormsg", "unknown error")),
+                    "allowed_use": self.allowed_use,
+                    "automation_allowed": False,
+                    "source_boundary": "manual_reference_or_supplemental_research_only",
+                },
+            )]
+        documents: list[ConnectorDocument] = []
+        for item in (data.get("data") or [])[:limit]:
+            if isinstance(item, dict):
+                item = dict(item)
+                item.setdefault("published_at", date)
+                item.setdefault("source_uri", url)
+                documents.append(self.normalize(item))
+        return documents
+
+
+class BaiduConceptBlocksConnector(AStockSupplementalConnector):
+    """Baidu Stock concept / industry / region classification connector."""
+
+    source_id = "baidu_concepts"
+    base_url = "https://finance.pae.baidu.com/api/getrelatedblock"
+    _HEADERS = {
+        "Host": "finance.pae.baidu.com",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/117.0.0.0",
+        "Accept": "application/vnd.finance-web.v1+json",
+        "Origin": "https://gushitong.baidu.com",
+        "Referer": "https://gushitong.baidu.com/",
+    }
+
+    def normalize(self, raw: dict[str, Any]) -> ConnectorDocument:
+        code = str(raw.get("code") or raw.get("security_code") or "")
+        block_type = str(raw.get("block_type") or raw.get("type") or "")
+        name = str(raw.get("name") or "")
+        change_pct = raw.get("change_pct") or raw.get("increase") or ""
+        desc = str(raw.get("desc") or "")
+        source_uri = self._sanitize_uri(str(raw.get("source_uri") or self.base_url))
+        return ConnectorDocument(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            document_type="concept_block",
+            source_uri=source_uri,
+            language=self.language,
+            title=f"{block_type} {name}".strip() or "概念板块归属",
+            body=desc or name,
+            published_at=str(raw.get("published_at") or ""),
+            metadata={
+                "code": code,
+                "block_type": block_type,
+                "name": name,
+                "change_pct": change_pct,
+                "desc": desc,
+                "allowed_use": self.allowed_use,
+                "automation_allowed": False,
+                "source_boundary": "manual_reference_or_supplemental_research_only",
+            },
+        )
+
+    def fetch_samples(
+        self,
+        *,
+        user_agent: str,
+        limit: int = 10,
+        code: str = "",
+        **kwargs: Any,
+    ) -> list[ConnectorDocument]:
+        limit = max(1, min(50, int(limit)))
+        sample_rows = self._sample_rows_override(kwargs)
+        if sample_rows:
+            documents: list[ConnectorDocument] = []
+            for row in sample_rows[:limit]:
+                row = dict(row)
+                row.setdefault("code", code)
+                row.setdefault("source_uri", f"{self.base_url}?code={code}&market=ab&typeCode=all&finClientType=pc")
+                documents.append(self.normalize(row))
+            return documents
+        if not code:
+            return []
+        url = f"{self.base_url}?code={code}&market=ab&typeCode=all&finClientType=pc"
+        try:
+            data = self._get_json(url, user_agent=user_agent, headers=self._HEADERS)
+        except Exception as exc:
+            return [ConnectorDocument(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                document_type="concept_block",
+                source_uri=self._sanitize_uri(url),
+                language=self.language,
+                title=f"[fetch_error] {exc}",
+                body="",
+                metadata={
+                    "error": str(exc),
+                    "allowed_use": self.allowed_use,
+                    "automation_allowed": False,
+                    "source_boundary": "manual_reference_or_supplemental_research_only",
+                },
+            )]
+        if str(data.get("ResultCode", -1)) != "0":
+            return [ConnectorDocument(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                document_type="concept_block",
+                source_uri=self._sanitize_uri(url),
+                language=self.language,
+                title=f"[fetch_error] {data}",
+                body="",
+                metadata={
+                    "error": str(data),
+                    "allowed_use": self.allowed_use,
+                    "automation_allowed": False,
+                    "source_boundary": "manual_reference_or_supplemental_research_only",
+                },
+            )]
+        documents: list[ConnectorDocument] = []
+        for block in data.get("Result", []) or []:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "")
+            for item in block.get("list", []) or []:
+                if not isinstance(item, dict):
+                    continue
+                row = dict(item)
+                row.setdefault("code", code)
+                row.setdefault("block_type", block_type)
+                row.setdefault("source_uri", url)
+                documents.append(self.normalize(row))
+                if len(documents) >= limit:
+                    return documents
+        return documents
+
+
+class DragonTigerListConnector(AStockSupplementalConnector):
+    """Eastmoney dragon tiger board connector."""
+
+    source_id = "dragon_tiger_list"
+    base_url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+
+    def normalize(self, raw: dict[str, Any]) -> ConnectorDocument:
+        trade_date = str(raw.get("trade_date") or raw.get("date") or raw.get("TRADE_DATE") or "")
+        code = str(raw.get("security_code") or raw.get("code") or raw.get("SECURITY_CODE") or "")
+        name = str(raw.get("security_name") or raw.get("name") or raw.get("SECURITY_NAME") or "")
+        reason = str(raw.get("reason") or raw.get("EXPLANATION") or "")
+        source_uri = self._sanitize_uri(str(raw.get("source_uri") or self.base_url))
+        body = reason or f"{code} {trade_date}".strip()
+        return ConnectorDocument(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            document_type="dragon_tiger_record",
+            source_uri=source_uri,
+            language=self.language,
+            title=f"{name} 龙虎榜" if name else "龙虎榜记录",
+            body=body,
+            published_at=trade_date,
+            metadata={
+                "code": code,
+                "security_name": name,
+                "reason": reason,
+                "net_buy": raw.get("net_buy") or raw.get("BILLBOARD_NET_AMT"),
+                "turnover": raw.get("turnover") or raw.get("TURNOVERRATE"),
+                "allowed_use": self.allowed_use,
+                "automation_allowed": False,
+                "source_boundary": "manual_reference_or_supplemental_research_only",
+            },
+        )
+
+    def fetch_samples(
+        self,
+        *,
+        user_agent: str,
+        limit: int = 10,
+        code: str = "",
+        trade_date: str = "",
+        look_back: int = 30,
+        **kwargs: Any,
+    ) -> list[ConnectorDocument]:
+        limit = max(1, min(50, int(limit)))
+        sample_rows = self._sample_rows_override(kwargs)
+        if sample_rows:
+            documents: list[ConnectorDocument] = []
+            for row in sample_rows[:limit]:
+                row = dict(row)
+                row.setdefault("security_code", code)
+                row.setdefault("published_at", trade_date or row.get("trade_date") or row.get("TRADE_DATE") or "")
+                row.setdefault(
+                    "source_uri",
+                    f"{self.base_url}?reportName=RPT_DAILYBILLBOARD_DETAILSNEW&code={code}&date={row.get('published_at') or trade_date}",
+                )
+                documents.append(self.normalize(row))
+            return documents
+        if not code or not trade_date:
+            return []
+        from datetime import datetime, timedelta
+
+        start = datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=max(1, int(look_back)))
+        start_str = start.strftime("%Y-%m-%d")
+        params = {
+            "reportName": "RPT_DAILYBILLBOARD_DETAILSNEW",
+            "columns": "ALL",
+            "filter": f'(TRADE_DATE>="{start_str}")(TRADE_DATE<="{trade_date}")(SECURITY_CODE="{code}")',
+            "pageNumber": "1",
+            "pageSize": str(limit),
+            "sortColumns": "TRADE_DATE",
+            "sortTypes": "-1",
+            "source": "WEB",
+            "client": "WEB",
+        }
+        url = f"{self.base_url}?{urlencode(params)}"
+        try:
+            data = self._get_json(url, user_agent=user_agent, headers={"User-Agent": user_agent})
+        except Exception as exc:
+            return [ConnectorDocument(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                document_type="dragon_tiger_record",
+                source_uri=self._sanitize_uri(url),
+                language=self.language,
+                title=f"[fetch_error] {exc}",
+                body="",
+                metadata={
+                    "error": str(exc),
+                    "allowed_use": self.allowed_use,
+                    "automation_allowed": False,
+                    "source_boundary": "manual_reference_or_supplemental_research_only",
+                },
+            )]
+        rows = (data.get("result") or {}).get("data") or []
+        documents: list[ConnectorDocument] = []
+        for item in rows[:limit]:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            row.setdefault("security_code", code)
+            row.setdefault("published_at", str(item.get("TRADE_DATE") or trade_date))
+            row.setdefault("source_uri", url)
+            documents.append(self.normalize(row))
+        return documents
+
+
+class UnlockCalendarConnector(AStockSupplementalConnector):
+    """Eastmoney lockup expiry calendar connector."""
+
+    source_id = "unlock_calendar"
+    base_url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+
+    def normalize(self, raw: dict[str, Any]) -> ConnectorDocument:
+        event_date = str(raw.get("event_date") or raw.get("unlock_date") or raw.get("FREE_DATE") or "")
+        code = str(raw.get("security_code") or raw.get("code") or raw.get("SECURITY_CODE") or "")
+        name = str(raw.get("security_name") or raw.get("name") or raw.get("SECURITY_NAME") or "")
+        source_uri = self._sanitize_uri(str(raw.get("source_uri") or self.base_url))
+        body = str(raw.get("type") or raw.get("LIMITED_STOCK_TYPE") or "")
+        return ConnectorDocument(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            document_type="unlock_calendar",
+            source_uri=source_uri,
+            language=self.language,
+            title=f"{name} 解禁日历" if name else "解禁日历",
+            body=body,
+            published_at=event_date,
+            metadata={
+                "code": code,
+                "security_name": name,
+                "unlock_type": raw.get("type") or raw.get("LIMITED_STOCK_TYPE"),
+                "unlock_shares": raw.get("shares") or raw.get("FREE_SHARES_NUM"),
+                "unlock_ratio": raw.get("ratio") or raw.get("FREE_RATIO"),
+                "allowed_use": self.allowed_use,
+                "automation_allowed": False,
+                "source_boundary": "manual_reference_or_supplemental_research_only",
+            },
+        )
+
+    def fetch_samples(
+        self,
+        *,
+        user_agent: str,
+        limit: int = 10,
+        code: str = "",
+        trade_date: str = "",
+        forward_days: int = 90,
+        **kwargs: Any,
+    ) -> list[ConnectorDocument]:
+        limit = max(1, min(50, int(limit)))
+        sample_rows = self._sample_rows_override(kwargs)
+        if sample_rows:
+            documents: list[ConnectorDocument] = []
+            for row in sample_rows[:limit]:
+                row = dict(row)
+                row.setdefault("security_code", code)
+                row.setdefault("published_at", row.get("event_date") or row.get("unlock_date") or row.get("FREE_DATE") or trade_date or "")
+                row.setdefault(
+                    "source_uri",
+                    f"{self.base_url}?reportName=RPT_LIFT_STAGE&code={code}&date={row.get('published_at') or trade_date}",
+                )
+                documents.append(self.normalize(row))
+            return documents
+        if not code or not trade_date:
+            return []
+        from datetime import datetime, timedelta
+
+        end_date = datetime.strptime(trade_date, "%Y-%m-%d") + timedelta(days=max(1, int(forward_days)))
+        end_str = end_date.strftime("%Y-%m-%d")
+        params = {
+            "reportName": "RPT_LIFT_STAGE",
+            "columns": "ALL",
+            "filter": f'(SECURITY_CODE="{code}")(FREE_DATE>="{trade_date}")(FREE_DATE<="{end_str}")',
+            "pageNumber": "1",
+            "pageSize": str(limit),
+            "sortColumns": "FREE_DATE",
+            "sortTypes": "1",
+            "source": "WEB",
+            "client": "WEB",
+        }
+        url = f"{self.base_url}?{urlencode(params)}"
+        try:
+            data = self._get_json(url, user_agent=user_agent, headers={"User-Agent": user_agent})
+        except Exception as exc:
+            return [ConnectorDocument(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                document_type="unlock_calendar",
+                source_uri=self._sanitize_uri(url),
+                language=self.language,
+                title=f"[fetch_error] {exc}",
+                body="",
+                metadata={
+                    "error": str(exc),
+                    "allowed_use": self.allowed_use,
+                    "automation_allowed": False,
+                    "source_boundary": "manual_reference_or_supplemental_research_only",
+                },
+            )]
+        rows = (data.get("result") or {}).get("data") or []
+        documents: list[ConnectorDocument] = []
+        for item in rows[:limit]:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            row.setdefault("security_code", code)
+            row.setdefault("published_at", str(item.get("FREE_DATE") or trade_date))
+            row.setdefault("source_uri", url)
+            documents.append(self.normalize(row))
+        return documents
+
+
 class AStockSupplementalRegistry:
     """Registry of A-share supplemental public connectors (T-416).
 
@@ -966,6 +1423,10 @@ class AStockSupplementalRegistry:
             "eastmoney_research": EastMoneyResearchConnector(),
             "cninfo_announcements": CninfoAnnouncementConnector(),
             "tencent_valuation_snapshot": TencentValuationConnector(),
+            "ths_hot_topics": THSHotTopicConnector(),
+            "baidu_concepts": BaiduConceptBlocksConnector(),
+            "dragon_tiger_list": DragonTigerListConnector(),
+            "unlock_calendar": UnlockCalendarConnector(),
         }
 
     def get(self, connector_id: str) -> AStockSupplementalConnector | None:

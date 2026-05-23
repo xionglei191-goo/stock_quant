@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Native Quant Org</title>
+  <title>AI 原生量化投研系统</title>
   <style>
     :root {
       color-scheme: light;
@@ -162,6 +162,128 @@
       grid-template-columns: repeat(12, minmax(0, 1fr));
       gap: 12px;
     }
+    .workspace-hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.95fr);
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .analysis-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .analysis-title {
+      display: grid;
+      gap: 4px;
+    }
+    .analysis-title strong {
+      font-size: 18px;
+    }
+    .analysis-title span, .small-note {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .decision-summary {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfe;
+      display: grid;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .decision-summary strong {
+      font-size: 16px;
+      line-height: 1.35;
+    }
+    .decision-summary p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .recommendation-list {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .recommendation-row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+      display: grid;
+      grid-template-columns: minmax(88px, 0.8fr) minmax(0, 1.8fr) auto;
+      gap: 10px;
+      align-items: start;
+    }
+    .recommendation-row strong {
+      display: block;
+      font-size: 14px;
+    }
+    .recommendation-row .metric {
+      font-weight: 800;
+      font-size: 16px;
+    }
+    .flag-list {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .flag-row {
+      border-left: 3px solid var(--amber);
+      background: #fff8e6;
+      padding: 8px 10px;
+      font-size: 13px;
+      color: #5f4300;
+    }
+    .return-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+      gap: 8px;
+    }
+    .return-tile {
+      min-height: 86px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fbfcfe;
+      display: grid;
+      gap: 6px;
+    }
+    .return-tile strong {
+      font-size: 15px;
+    }
+    .return-tile .number {
+      font-size: 22px;
+      font-weight: 800;
+    }
+    .return-tile .number.up { color: var(--green); }
+    .return-tile .number.down { color: var(--red); }
+    .weight-row {
+      display: grid;
+      grid-template-columns: minmax(72px, 96px) minmax(0, 1fr) 56px;
+      align-items: center;
+      gap: 8px;
+      min-height: 28px;
+      font-size: 12px;
+    }
+    .source-grid {
+      display: grid;
+      gap: 8px;
+    }
+    .source-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      padding: 7px 0;
+    }
+    .source-row:last-child { border-bottom: 0; }
     .panel {
       background: var(--surface);
       border: 1px solid var(--line);
@@ -348,10 +470,52 @@
     .system-box span { color: var(--muted); font-size: 12px; }
     .row {
       display: flex;
-      align-items: center;
+      align-items: flex-end;
       gap: 8px;
       flex-wrap: wrap;
       margin-bottom: 12px;
+    }
+    .field {
+      display: grid;
+      gap: 4px;
+      min-width: 150px;
+    }
+    .field.wide {
+      min-width: min(360px, 100%);
+      flex: 1 1 260px;
+    }
+    .field.compact { min-width: 96px; }
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+    }
+    .field .hint {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.3;
+    }
+    .quick-start {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .quick-step {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfdff;
+      padding: 12px;
+      min-height: 96px;
+      display: grid;
+      gap: 7px;
+      align-content: start;
+    }
+    .quick-step strong { font-size: 13px; }
+    .quick-step span { color: var(--muted); font-size: 12px; }
+    .quick-step button {
+      justify-self: start;
+      min-height: 30px;
     }
     table {
       width: 100%;
@@ -433,7 +597,8 @@
       nav button { width: auto; white-space: nowrap; margin: 0 8px 0 0; }
       .nav-footer { display: none; }
       .span-2, .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
-      .flow, .agent-grid, .system-strip { grid-template-columns: 1fr; }
+      .workspace-hero { grid-template-columns: 1fr; }
+      .flow, .agent-grid, .system-strip, .quick-start { grid-template-columns: 1fr; }
       .flow-step::after { display: none; }
       .risk-row { grid-template-columns: 1fr; }
     }
@@ -442,30 +607,34 @@
 <body>
   <header>
     <div class="brand">
-      <h1>AI Native 虚拟量化基金组织</h1>
+      <h1>AI 原生虚拟量化基金组织</h1>
       <div class="top-status" aria-label="market status">
-        <span class="chip">A股</span>
-        <span class="chip green">港股</span>
-        <span class="chip green">美股</span>
-        <span class="chip">研究中</span>
-        <span class="chip green">风险正常</span>
-        <span class="chip warn">3 条冲突证据</span>
-        <span class="chip block">2 条高优先级事件</span>
+        <span class="chip" id="chipService">服务检查中</span>
+        <span class="chip" id="chipAshare">A股待载入</span>
+        <span class="chip" id="chipUs">美股待载入</span>
+        <span class="chip" id="chipResearch">研究待载入</span>
+        <span class="chip warn" id="chipAcceptance">验收待载入</span>
       </div>
     </div>
     <div class="toolbar">
-      <input id="actor" value="ceo_owner" aria-label="actor">
-      <select id="role" aria-label="role">
-        <option value="ceo">CEO</option>
-        <option value="cio">CIO</option>
-        <option value="pm">PM</option>
-        <option value="risk_compliance">Risk / Compliance</option>
-        <option value="platform">Platform</option>
-        <option value="analyst">Analyst</option>
-        <option value="data_engineer">Data Engineer</option>
-      </select>
-      <button id="refresh">Refresh</button>
-      <button id="seed" class="primary">Seed Demo</button>
+      <div class="field compact">
+        <label for="actor">操作人</label>
+        <input id="actor" value="" aria-label="操作人" placeholder="默认演示用户">
+      </div>
+      <div class="field compact">
+        <label for="role">当前身份</label>
+        <select id="role" aria-label="当前身份">
+          <option value="ceo">首席执行官</option>
+          <option value="cio">投资负责人</option>
+          <option value="pm">组合经理</option>
+          <option value="risk_compliance">风控合规</option>
+          <option value="platform">平台负责人</option>
+          <option value="analyst">研究员</option>
+          <option value="data_engineer">数据工程</option>
+        </select>
+      </div>
+      <button id="refresh">刷新</button>
+      <button id="seed" class="primary">初始化样例</button>
     </div>
   </header>
   <div class="layout">
@@ -473,13 +642,11 @@
       <button class="active" data-open="dashboard">总览</button>
       <button data-open="ingestion">数据中台</button>
       <button data-open="search">研究工作台</button>
-      <button data-open="agents">Agent 协作</button>
+      <button data-open="agents">智能体协作</button>
       <button data-open="review">策略实验室</button>
       <button data-open="committee">投委会</button>
-      <button data-open="incidents">风控合规</button>
-      <button data-open="dashboard">CEO 看板</button>
       <button data-open="entity">知识图谱</button>
-      <button data-open="incidents">系统治理</button>
+      <button data-open="incidents">风控合规</button>
       <div class="nav-footer">
         <div class="nav-card"><strong>系统时间</strong><span id="navClock">2026-05-15</span></div>
         <div class="nav-card"><strong>市场状态</strong><span id="navMarket">已开盘 · 公开延时数据</span></div>
@@ -489,6 +656,104 @@
       <div id="status" class="status"></div>
 
       <section data-tab="dashboard" class="active">
+        <div class="quick-start" aria-label="常用运行路径">
+          <div class="quick-step">
+            <strong>1. 初始化样例</strong>
+            <span>生成可演示的公司、公告、证据、决策和组合数据。</span>
+            <button data-action="seed-demo">初始化</button>
+          </div>
+          <div class="quick-step">
+            <strong>2. 跑单标的研究</strong>
+            <span>从 SEC 披露开始，生成证据、摘要、信号和模拟结果。</span>
+            <button data-open="search">进入研究</button>
+          </div>
+          <div class="quick-step">
+            <strong>3. 人工审批</strong>
+            <span>查看投委会材料包，签批或创建需要跟进的例外。</span>
+            <button data-open="committee">进入投委会</button>
+          </div>
+          <div class="quick-step">
+            <strong>4. 回放复盘</strong>
+            <span>对比历史决策结果，判断策略应继续、修订或停止。</span>
+            <button data-open="review">进入复盘</button>
+          </div>
+        </div>
+        <div class="workspace-hero">
+          <div class="panel">
+            <div class="analysis-header">
+              <div class="analysis-title">
+                <strong>最新投研分析</strong>
+                <span id="analysisMeta">等待最新分析产物</span>
+              </div>
+              <span class="badge ok" id="analysisStatus">载入中</span>
+            </div>
+            <div class="decision-summary" id="decisionSummaryBox">
+              <strong id="decisionHeadline">等待结论生成</strong>
+              <p id="decisionConclusion">最新分析会展示可用性、研究候选、关键风险和证据边界。</p>
+            </div>
+            <div class="recommendation-list" id="decisionRecommendationRows"></div>
+            <div class="return-grid" id="analysisReturns"></div>
+          </div>
+          <div class="panel">
+            <div class="analysis-header">
+              <div class="analysis-title">
+                <strong>模拟组合建议</strong>
+                <span>研究用途，不连接券商，不自动下单</span>
+              </div>
+              <span class="badge warn" id="portfolioBoundary">仅模拟</span>
+            </div>
+            <div id="analysisWeights"></div>
+            <div class="small-note" id="portfolioFlags" style="margin-top:10px"></div>
+            <div class="flag-list" id="decisionFlagRows" style="margin-top:10px"></div>
+          </div>
+        </div>
+        <div class="dashboard-grid" style="margin-bottom:12px">
+          <div class="panel span-6">
+            <h2>数据来源边界</h2>
+            <div class="source-grid" id="analysisSources"></div>
+          </div>
+          <div class="panel span-6">
+            <h2>A股补充观察</h2>
+            <table><thead><tr><th>标的</th><th>官方日线</th><th>补充快照</th><th>边界</th></tr></thead><tbody id="supplementalObservationRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>本地生产验收</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>业务验收</strong><span id="acceptanceStatus">待载入</span></div>
+              <div class="system-box"><strong>检查项</strong><span id="acceptanceChecks">0</span></div>
+              <div class="system-box"><strong>失败项</strong><span id="acceptanceFailed">0</span></div>
+              <div class="system-box"><strong>分析产物</strong><span id="analysisArtifact">-</span></div>
+            </div>
+          </div>
+          <div class="panel span-12">
+            <h2>研报观点证据</h2>
+            <div class="system-strip" style="margin-bottom:10px">
+              <div class="system-box"><strong>研报资产</strong><span id="researchReportCount">0</span></div>
+              <div class="system-box"><strong>引用证据</strong><span id="researchCitationCount">0</span></div>
+              <div class="system-box"><strong>语义召回</strong><span id="researchSemanticStatus">待载入</span></div>
+              <div class="system-box"><strong>热点观点层</strong><span id="researchHotspotStatus">待载入</span></div>
+            </div>
+            <table><thead><tr><th>类型</th><th>标题</th><th>边界</th><th>片段</th></tr></thead><tbody id="researchEvidenceRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>产业链覆盖</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>产业链</strong><span id="chainCount">0</span></div>
+              <div class="system-box"><strong>公司定位</strong><span id="positionCount">0</span></div>
+              <div class="system-box"><strong>字段覆盖</strong><span id="positionSlotCoverage">0%</span></div>
+              <div class="system-box"><strong>证据覆盖</strong><span id="positionEvidenceCoverage">0%</span></div>
+              <div class="system-box"><strong>待补问题</strong><span id="positionIssueCount">0</span></div>
+            </div>
+          </div>
+          <div class="panel span-6">
+            <h2>A股/美股产业链</h2>
+            <table><thead><tr><th>产业链</th><th>节点数</th><th>边数</th><th>版本</th></tr></thead><tbody id="chainRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>公司产业定位</h2>
+            <table><thead><tr><th>主体</th><th>产业链</th><th>节点</th><th>定位</th></tr></thead><tbody id="companyPositionRows"></tbody></table>
+          </div>
+        </div>
         <div class="dashboard-grid" id="metrics"></div>
         <div class="dashboard-grid" style="margin-top:12px">
           <div class="panel span-6">
@@ -503,17 +768,17 @@
             </div>
           </div>
           <div class="panel span-6">
-            <h2>Agent 组织</h2>
+            <h2>智能体组织</h2>
             <div class="agent-grid">
-              <div class="agent core"><strong>CEO Agent</strong><span>决策中枢与绩效统筹</span></div>
-              <div class="agent core"><strong>Research Agent</strong><span>研究编排与观点整合</span></div>
-              <div class="agent"><strong>Challenger Agent</strong><span>反事实与挑战路径</span></div>
-              <div class="agent"><strong>Data Agent</strong><span>数据采集与治理</span></div>
-              <div class="agent"><strong>Fundamental Agent</strong><span>基本面分析</span></div>
-              <div class="agent"><strong>Risk Agent</strong><span>风险监控与计量</span></div>
-              <div class="agent"><strong>Macro Agent</strong><span>宏观研究与预测</span></div>
-              <div class="agent"><strong>Portfolio Agent</strong><span>组合构建与再平衡</span></div>
-              <div class="agent"><strong>Compliance Agent</strong><span>合规审查与监控</span></div>
+              <div class="agent core"><strong>决策智能体</strong><span>决策中枢与绩效统筹</span></div>
+              <div class="agent core"><strong>研究智能体</strong><span>研究编排与观点整合</span></div>
+              <div class="agent"><strong>挑战智能体</strong><span>反事实与挑战路径</span></div>
+              <div class="agent"><strong>数据智能体</strong><span>数据采集与治理</span></div>
+              <div class="agent"><strong>基本面智能体</strong><span>基本面分析</span></div>
+              <div class="agent"><strong>风险智能体</strong><span>风险监控与计量</span></div>
+              <div class="agent"><strong>宏观智能体</strong><span>宏观研究与预测</span></div>
+              <div class="agent"><strong>组合智能体</strong><span>组合构建与再平衡</span></div>
+              <div class="agent"><strong>合规智能体</strong><span>合规审查与监控</span></div>
             </div>
           </div>
           <div class="panel span-4">
@@ -554,10 +819,10 @@
             <h2>系统架构运行概览</h2>
             <div class="system-strip">
               <div class="system-box"><strong>公开来源矩阵</strong><span id="sysSources">0 个来源</span></div>
-              <div class="system-box"><strong>对象存储</strong><span id="sysObjectStore">local</span></div>
-              <div class="system-box"><strong>检索后端</strong><span id="sysSearch">local</span></div>
+              <div class="system-box"><strong>对象存储</strong><span id="sysObjectStore">本地</span></div>
+              <div class="system-box"><strong>检索后端</strong><span id="sysSearch">本地</span></div>
               <div class="system-box"><strong>审计日志</strong><span id="sysAudit">0 条</span></div>
-              <div class="system-box"><strong>服务健康</strong><span id="sysHealth">checking</span></div>
+              <div class="system-box"><strong>服务健康</strong><span id="sysHealth">检查中</span></div>
             </div>
           </div>
         </div>
@@ -565,135 +830,506 @@
 
       <section data-tab="entity">
         <div class="row">
-          <input id="issuerId" value="issuer_demo" aria-label="issuer id">
-          <button id="loadEntity" class="primary">Load Entity</button>
+          <div class="field">
+            <label for="issuerId">公司或主体</label>
+            <input id="issuerId" value="" aria-label="公司或主体" placeholder="留空使用样例公司">
+            <span class="hint">也可在总览点击公司自动填入</span>
+          </div>
+          <button id="loadEntity" class="primary">查看公司图谱</button>
         </div>
         <div class="grid">
-          <div class="panel span-4"><h2>Issuer</h2><pre id="issuerBox"></pre></div>
-          <div class="panel span-4"><h2>Securities</h2><table><tbody id="securityRows"></tbody></table></div>
-          <div class="panel span-4"><h2>Research</h2><table><tbody id="researchRows"></tbody></table></div>
-          <div class="panel span-12"><h2>Documents & Evidence</h2><table><thead><tr><th>ID</th><th>Type</th><th>Title</th></tr></thead><tbody id="documentRows"></tbody></table></div>
+          <div class="panel span-4"><h2>公司档案</h2><pre id="issuerBox"></pre></div>
+          <div class="panel span-4"><h2>证券列表</h2><table><tbody id="securityRows"></tbody></table></div>
+          <div class="panel span-4"><h2>研究记录</h2><table><tbody id="researchRows"></tbody></table></div>
+          <div class="panel span-12">
+            <h2>图谱总览</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>产业链</strong><span id="graphChainCount">0</span></div>
+              <div class="system-box"><strong>公司定位</strong><span id="graphPositionCount">0</span></div>
+              <div class="system-box"><strong>研究任务</strong><span id="graphTaskCount">0</span></div>
+              <div class="system-box"><strong>图谱关系</strong><span id="graphEdgeCount">0</span></div>
+              <div class="system-box"><strong>组合/持仓</strong><span id="graphPortfolioCount">0</span></div>
+              <div class="system-box"><strong>证据/事件</strong><span id="graphFactCount">0</span></div>
+              <div class="system-box"><strong>决策/复盘</strong><span id="graphDecisionCount">0</span></div>
+            </div>
+          </div>
+          <div class="panel span-6">
+            <h2>产业链</h2>
+            <table><thead><tr><th>产业链</th><th>主题</th><th>节点</th><th>关系</th></tr></thead><tbody id="graphChainRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>产业链节点</h2>
+            <table><thead><tr><th>节点</th><th>层级</th><th>类别</th><th>产业链</th></tr></thead><tbody id="graphChainNodeRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>公司产业定位</h2>
+            <table><thead><tr><th>主体</th><th>产业链</th><th>节点</th><th>定位</th></tr></thead><tbody id="graphCompanyPositionRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>研究补全任务</h2>
+            <table><thead><tr><th>任务</th><th>关联对象</th><th>待补数据</th><th>状态</th></tr></thead><tbody id="graphResearchTaskRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>组合、持仓与拥挤度</h2>
+            <table><thead><tr><th>对象</th><th>动作/权重</th><th>来源</th><th>说明</th></tr></thead><tbody id="graphPortfolioRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>证据、事件与行情</h2>
+            <table><thead><tr><th>类型</th><th>对象</th><th>来源/日期</th><th>说明</th></tr></thead><tbody id="graphFactRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>决策、执行与复盘</h2>
+            <table><thead><tr><th>类型</th><th>对象</th><th>状态/动作</th><th>说明</th></tr></thead><tbody id="graphDecisionRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>图谱关系</h2>
+            <table><thead><tr><th>关系</th><th>起点</th><th>终点</th><th>来源/置信</th></tr></thead><tbody id="graphEdgeRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>主体映射双时态</h2>
+            <div class="row">
+              <div class="field">
+                <label for="entityMappingValidAt">按生效日期查看</label>
+                <input id="entityMappingValidAt" value="" aria-label="按生效日期查看" placeholder="例如 2026-05-14">
+                <span class="hint">留空表示当前有效代码</span>
+              </div>
+              <div class="field">
+                <label for="entityMappingRecordedAt">按记录日期回看</label>
+                <input id="entityMappingRecordedAt" value="" aria-label="按记录日期回看" placeholder="例如 2026-05-14">
+                <span class="hint">用于排查历史数据版本</span>
+              </div>
+              <div class="field compact">
+                <label for="entityMappingStatus">映射状态</label>
+                <select id="entityMappingStatus" aria-label="映射状态">
+                  <option value="">全部状态</option>
+                  <option value="active">有效</option>
+                  <option value="superseded">已替换</option>
+                </select>
+              </div>
+              <button id="loadEntityMappings" class="primary">查看代码映射</button>
+              <button id="loadEntityMappingQuality">检查映射质量</button>
+            </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>映射数</strong><span id="entityMappingTotal">0</span></div>
+              <div class="system-box"><strong>准确率</strong><span id="entityMappingAccuracy">0%</span></div>
+              <div class="system-box"><strong>版本覆盖</strong><span id="entityMappingVersionCoverage">0%</span></div>
+              <div class="system-box"><strong>时间重叠</strong><span id="entityMappingOverlapCount">0</span></div>
+              <div class="system-box"><strong>低置信</strong><span id="entityMappingLowConfidence">0</span></div>
+            </div>
+          </div>
+          <div class="panel span-8">
+            <h2>映射版本</h2>
+            <table><thead><tr><th>映射记录</th><th>市场代码</th><th>状态</th><th>有效区间</th></tr></thead><tbody id="entityMappingRows"></tbody></table>
+          </div>
+          <div class="panel span-4">
+            <h2>映射问题</h2>
+            <table><thead><tr><th>问题类型</th><th>相关记录</th><th>说明</th></tr></thead><tbody id="entityMappingIssueRows"></tbody></table>
+          </div>
+          <div class="panel span-12"><h2>文档与证据</h2><table><thead><tr><th>资料</th><th>类型</th><th>标题</th></tr></thead><tbody id="documentRows"></tbody></table></div>
         </div>
       </section>
 
       <section data-tab="search">
-        <div class="row">
-          <input id="query" value="services resilience" aria-label="search query">
-          <input id="searchIssuer" value="issuer_demo" aria-label="search issuer filter">
-          <button id="runSearch" class="primary">Search</button>
-        </div>
-        <div class="panel">
-          <h2>Results</h2>
-          <table><thead><tr><th>Type</th><th>ID</th><th>Score</th><th>Snippet</th></tr></thead><tbody id="searchRows"></tbody></table>
+        <div class="grid">
+          <div class="panel span-12">
+            <h2>单只美股研究流程</h2>
+            <div class="row">
+              <div class="field compact">
+                <label for="secSingleTicker">股票代码</label>
+                <input id="secSingleTicker" value="AAPL" aria-label="股票代码">
+                <span class="hint">例如 AAPL</span>
+              </div>
+              <div class="field">
+                <label for="secSingleCik">SEC 公司编号</label>
+                <input id="secSingleCik" value="0000320193" aria-label="SEC 公司编号">
+                <span class="hint">不清楚时可先用样例</span>
+              </div>
+              <div class="field">
+                <label for="secSingleForms">读取的披露类型</label>
+                <input id="secSingleForms" value="10-K,10-Q" aria-label="读取的披露类型">
+                <span class="hint">年报 10-K，季报 10-Q</span>
+              </div>
+              <div class="field compact">
+                <label for="secSingleLimit">读取份数</label>
+                <input id="secSingleLimit" value="1" aria-label="读取份数">
+                <span class="hint">建议 1-3</span>
+              </div>
+              <button id="runSecSingleName" class="primary">开始研究</button>
+            </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>来源</strong><span id="secSingleSourceMode">-</span></div>
+              <div class="system-box"><strong>流程</strong><span id="secSingleWorkflow">空闲</span></div>
+              <div class="system-box"><strong>最新资料</strong><span id="secSingleDocumentId">-</span></div>
+              <div class="system-box"><strong>研究结论</strong><span id="secSingleSignal">-</span></div>
+              <div class="system-box"><strong>模拟边界</strong><span id="secSingleSimulationMode">仅模拟，不连接券商</span></div>
+            </div>
+            <table style="margin-top:12px"><thead><tr><th>流程步骤</th><th>状态</th><th>产出</th><th>使用边界</th></tr></thead><tbody id="secSingleStageRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>证据列表</h2>
+            <table><thead><tr><th>证据</th><th>资料</th><th>页码</th><th>片段</th></tr></thead><tbody id="secSingleEvidenceRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>研究摘要</h2>
+            <pre id="secSingleAnswerBox"></pre>
+          </div>
+          <div class="panel span-12">
+            <h2>披露原文问答</h2>
+            <div class="row">
+              <div class="field">
+                <label for="filingQaDocumentId">要提问的资料</label>
+                <input id="filingQaDocumentId" value="" aria-label="要提问的资料" placeholder="留空使用样例年报">
+                <span class="hint">运行上方研究后会自动填入</span>
+              </div>
+              <div class="field wide">
+                <label for="filingQaQuestion">想问原文的问题</label>
+                <input id="filingQaQuestion" value="收入、服务韧性和主要风险因素发生了哪些变化？" aria-label="想问原文的问题">
+                <span class="hint">答案会保留英文原文和中文摘要</span>
+              </div>
+              <div class="field compact">
+                <label for="filingQaEvidenceLimit">引用条数</label>
+                <input id="filingQaEvidenceLimit" value="5" aria-label="引用条数">
+                <span class="hint">建议 3-8</span>
+              </div>
+              <button id="runFilingQa" class="primary">问原文</button>
+            </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>答案</strong><span id="filingQaAnswerId">-</span></div>
+              <div class="system-box"><strong>复核</strong><span id="filingQaReviewStatus">待复核</span></div>
+              <div class="system-box"><strong>模型</strong><span id="filingQaModelStatus">未运行</span></div>
+              <div class="system-box"><strong>来源</strong><span id="filingQaSourceLink">需要原文</span></div>
+              <div class="system-box"><strong>边界</strong><span id="filingQaBoundary">仅研究，不生成交易信号</span></div>
+            </div>
+          </div>
+          <div class="panel span-6">
+            <h2>问答结果</h2>
+            <pre id="filingQaAnswerBox"></pre>
+          </div>
+          <div class="panel span-6">
+            <h2>英文原文</h2>
+            <pre id="filingQaSourceBox"></pre>
+          </div>
+          <div class="panel span-6">
+            <h2>问答证据</h2>
+            <table><thead><tr><th>证据</th><th>页码</th><th>可信度</th><th>引用</th></tr></thead><tbody id="filingQaEvidenceRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>问答质量检查</h2>
+            <table><thead><tr><th>检查项</th><th>状态</th><th>问题</th><th>说明</th></tr></thead><tbody id="filingQaAuditRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>热点扩散</h2>
+            <div class="row">
+              <div class="field">
+                <label for="hotspotQuery">市场热点</label>
+                <input id="hotspotQuery" value="AI 芯片" aria-label="市场热点">
+                <span class="hint">例如 AI 芯片、云计算、创新药</span>
+              </div>
+              <div class="field">
+                <label for="hotspotChainId">产业链范围</label>
+                <input id="hotspotChainId" value="" aria-label="产业链范围" placeholder="留空自动匹配">
+                <span class="hint">留空则按热点自动匹配</span>
+              </div>
+              <div class="field compact">
+                <label for="hotspotDepth">扩散层数</label>
+                <input id="hotspotDepth" value="3" aria-label="扩散层数">
+                <span class="hint">数字越大范围越宽</span>
+              </div>
+              <button id="runHotspotExpansion" class="primary">寻找相关公司</button>
+            </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>词表</strong><span id="hotspotLexiconCount">0</span></div>
+              <div class="system-box"><strong>节点</strong><span id="hotspotNodeCount">0</span></div>
+              <div class="system-box"><strong>候选公司</strong><span id="hotspotCandidateCount">0</span></div>
+              <div class="system-box"><strong>任务</strong><span id="hotspotTaskCount">0</span></div>
+              <div class="system-box"><strong>边界</strong><span id="hotspotBoundary">仅研究，不作为交易信号</span></div>
+            </div>
+          </div>
+          <div class="panel span-6">
+            <h2>产业链节点</h2>
+            <table><thead><tr><th>节点</th><th>层级</th><th>类别</th><th>产业链</th></tr></thead><tbody id="hotspotNodeRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>候选公司排序</h2>
+            <table><thead><tr><th>公司</th><th>产业角色</th><th>相关度</th><th>证据覆盖</th></tr></thead><tbody id="hotspotCandidateRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>证据分层</h2>
+            <table><thead><tr><th>层级</th><th>数量</th><th>边界</th><th>样例</th></tr></thead><tbody id="hotspotEvidenceLayerRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>研究任务</h2>
+            <table><thead><tr><th>任务</th><th>类型</th><th>公司</th><th>原因</th></tr></thead><tbody id="hotspotTaskRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>投委会材料包</h2>
+            <pre id="secSingleDecisionBox"></pre>
+          </div>
+          <div class="panel span-6">
+            <h2>模拟反馈</h2>
+            <pre id="secSingleSimulationBox"></pre>
+          </div>
+          <div class="panel span-12">
+            <h2>辅助检索</h2>
+            <div class="row">
+              <div class="field wide">
+                <label for="query">检索问题或关键词</label>
+                <input id="query" value="服务韧性" aria-label="检索问题或关键词">
+                <span class="hint">可输入公司、主题、风险或一句问题</span>
+              </div>
+              <div class="field">
+                <label for="searchIssuer">限定公司</label>
+                <input id="searchIssuer" value="" aria-label="限定公司" placeholder="可选">
+                <span class="hint">留空表示全库检索</span>
+              </div>
+              <button id="runSearch" class="primary">检索</button>
+            </div>
+            <table><thead><tr><th>资料类型</th><th>资料</th><th>相关度</th><th>片段</th></tr></thead><tbody id="searchRows"></tbody></table>
+          </div>
         </div>
       </section>
 
       <section data-tab="agents">
         <div class="grid">
           <div class="panel span-12">
-            <h2>Prompt 审批</h2>
+            <h2>提示词审批</h2>
             <div class="row">
-              <input id="promptChangeId" value="pr_ui_review" aria-label="prompt change id">
-              <input id="promptName" value="research-summary" aria-label="prompt name">
-              <select id="promptChangeLevel" aria-label="prompt change level">
-                <option value="minor">Minor</option>
-                <option value="baseline">Baseline</option>
-                <option value="major">Major</option>
-              </select>
-              <input id="promptContent" value="Summarize with source-boundary notes: {{source_text}}" aria-label="prompt content">
-              <button id="createPromptChange" class="primary">Create Prompt</button>
-              <button id="approvePromptChange">Approve</button>
-              <button id="loadPromptChanges">Load Prompts</button>
+              <div class="field">
+                <label for="promptChangeId">变更申请名</label>
+                <input id="promptChangeId" value="" aria-label="变更申请名" placeholder="留空自动生成">
+                <span class="hint">用于审批追踪</span>
+              </div>
+              <div class="field">
+                <label for="promptName">提示词用途</label>
+                <input id="promptName" value="研究摘要" aria-label="提示词用途">
+                <span class="hint">例如研究摘要</span>
+              </div>
+              <div class="field compact">
+                <label for="promptChangeLevel">变更影响</label>
+                <select id="promptChangeLevel" aria-label="变更影响">
+                  <option value="minor">小改动</option>
+                  <option value="baseline">基线变更</option>
+                  <option value="major">重大变更</option>
+                </select>
+              </div>
+              <div class="field wide">
+                <label for="promptContent">提示词内容</label>
+                <input id="promptContent" value="请在摘要中标明资料来源和使用边界。" aria-label="提示词内容">
+                <span class="hint">模型回答前必须说明来源边界</span>
+              </div>
+              <button id="createPromptChange" class="primary">提交变更</button>
+              <button id="approvePromptChange">审批通过</button>
+              <button id="loadPromptChanges">载入提示词</button>
             </div>
-            <table><thead><tr><th>Request</th><th>Name</th><th>Status</th><th>Level</th></tr></thead><tbody id="promptChangeRows"></tbody></table>
+            <table><thead><tr><th>申请</th><th>名称</th><th>状态</th><th>级别</th></tr></thead><tbody id="promptChangeRows"></tbody></table>
           </div>
           <div class="panel span-12">
             <h2>模型服务预算</h2>
             <div class="system-strip">
-              <div class="system-box"><strong>Runs</strong><span id="llmRuns">0</span></div>
-              <div class="system-box"><strong>Error Rate</strong><span id="llmErrorRate">0%</span></div>
-              <div class="system-box"><strong>Cost</strong><span id="llmCost">0</span></div>
-              <div class="system-box"><strong>Budget Used</strong><span id="llmBudgetUsed">0%</span></div>
+              <div class="system-box"><strong>运行次数</strong><span id="llmRuns">0</span></div>
+              <div class="system-box"><strong>错误率</strong><span id="llmErrorRate">0%</span></div>
+              <div class="system-box"><strong>成本</strong><span id="llmCost">0</span></div>
+              <div class="system-box"><strong>预算占用</strong><span id="llmBudgetUsed">0%</span></div>
             </div>
           </div>
           <div class="panel span-12">
-            <h2>Agent 权限矩阵</h2>
+            <h2>智能体权限矩阵</h2>
             <div class="row">
-              <select id="permissionRole" aria-label="permission role">
-                <option value="analyst">Analyst</option>
-                <option value="cio">CIO</option>
-                <option value="pm">PM</option>
-                <option value="risk_compliance">Risk / Compliance</option>
-                <option value="platform">Platform</option>
-                <option value="data_engineer">Data Engineer</option>
-                <option value="nlp_ml">NLP / ML</option>
-                <option value="ceo">CEO</option>
-              </select>
-              <select id="permissionDomain" aria-label="permission data domain">
-                <option value="">All Domains</option>
-                <option value="llm_gateway">LLM Gateway</option>
-                <option value="research">Research</option>
-                <option value="ingestion">Ingestion</option>
-                <option value="source_governance">Source Governance</option>
-                <option value="investment_decisions">Investment Decisions</option>
-                <option value="execution_intent">Execution Intent</option>
-              </select>
-              <select id="permissionAction" aria-label="permission action">
-                <option value="">All Actions</option>
-                <option value="read">Read</option>
-                <option value="write">Write</option>
-                <option value="execute">Execute</option>
-                <option value="approve">Approve</option>
-              </select>
-              <button id="loadPermissionMatrix" class="primary">Load Matrix</button>
+              <div class="field">
+                <label for="permissionRole">查看哪个角色</label>
+                <select id="permissionRole" aria-label="查看哪个角色">
+                  <option value="analyst">研究员</option>
+                  <option value="cio">投资负责人</option>
+                  <option value="pm">组合经理</option>
+                  <option value="risk_compliance">风控合规</option>
+                  <option value="platform">平台负责人</option>
+                  <option value="data_engineer">数据工程</option>
+                  <option value="nlp_ml">模型负责人</option>
+                  <option value="ceo">首席执行官</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="permissionDomain">业务范围</label>
+                <select id="permissionDomain" aria-label="业务范围">
+                  <option value="">全部范围</option>
+                  <option value="llm_gateway">模型网关</option>
+                  <option value="research">研究</option>
+                  <option value="ingestion">数据接入</option>
+                  <option value="source_governance">来源治理</option>
+                  <option value="investment_decisions">投资决策</option>
+                  <option value="execution_intent">执行意图</option>
+                </select>
+              </div>
+              <div class="field compact">
+                <label for="permissionAction">操作类型</label>
+                <select id="permissionAction" aria-label="操作类型">
+                  <option value="">全部动作</option>
+                  <option value="read">读取</option>
+                  <option value="write">写入</option>
+                  <option value="execute">执行</option>
+                  <option value="approve">审批</option>
+                </select>
+              </div>
+              <button id="loadPermissionMatrix" class="primary">查看权限</button>
             </div>
             <div class="system-strip">
-              <div class="system-box"><strong>Allowed</strong><span id="permissionAllowed">0</span></div>
-              <div class="system-box"><strong>Denied</strong><span id="permissionDenied">0</span></div>
-              <div class="system-box"><strong>Red Domains</strong><span id="permissionRedAllowed">0</span></div>
-              <div class="system-box"><strong>Rules</strong><span id="permissionRuleCount">0</span></div>
-              <div class="system-box"><strong>Domains</strong><span id="permissionDomainCount">0</span></div>
+              <div class="system-box"><strong>允许</strong><span id="permissionAllowed">0</span></div>
+              <div class="system-box"><strong>拒绝</strong><span id="permissionDenied">0</span></div>
+              <div class="system-box"><strong>红区域</strong><span id="permissionRedAllowed">0</span></div>
+              <div class="system-box"><strong>规则</strong><span id="permissionRuleCount">0</span></div>
+              <div class="system-box"><strong>数据域</strong><span id="permissionDomainCount">0</span></div>
             </div>
-            <table style="margin-top:12px"><thead><tr><th>Rule</th><th>Action</th><th>Domain</th><th>Decision</th></tr></thead><tbody id="permissionRows"></tbody></table>
+            <table style="margin-top:12px"><thead><tr><th>规则说明</th><th>动作</th><th>业务范围</th><th>判定</th></tr></thead><tbody id="permissionRows"></tbody></table>
           </div>
         </div>
       </section>
 
       <section data-tab="committee">
         <div class="row">
-          <input id="decisionId" value="dec_demo" aria-label="decision id">
-          <button id="loadDecision" class="primary">Load Decision</button>
-          <input id="intentId" value="intent_demo" aria-label="intent id">
-          <button id="loadIntent">Load Intent</button>
+            <div class="field">
+              <label for="decisionId">决策材料</label>
+            <input id="decisionId" value="" aria-label="决策材料" placeholder="留空使用样例决策">
+            <span class="hint">运行研究后会自动填入</span>
+          </div>
+          <button id="loadDecision" class="primary">查看材料</button>
+          <div class="field">
+            <label for="intentId">模拟执行单</label>
+            <input id="intentId" value="" aria-label="模拟执行单" placeholder="留空使用样例执行单">
+            <span class="hint">只用于纸面跟踪</span>
+          </div>
+          <button id="loadIntent">查看执行单</button>
         </div>
         <div class="grid">
-          <div class="panel span-6"><h2>Decision Pack</h2><pre id="decisionBox"></pre></div>
-          <div class="panel span-6"><h2>Execution Intent</h2><pre id="intentBox"></pre></div>
+          <div class="panel span-6"><h2>决策材料包</h2><pre id="decisionBox"></pre></div>
+          <div class="panel span-6"><h2>执行意图</h2><pre id="intentBox"></pre></div>
+          <div class="panel span-12">
+            <h2>异常审批面板</h2>
+            <div class="row">
+              <div class="field compact">
+                <label for="decisionSignerRole">签批角色</label>
+                <select id="decisionSignerRole" aria-label="签批角色">
+                  <option value="风险/合规">风控合规</option>
+                  <option value="CEO">首席执行官</option>
+                  <option value="CIO">投资负责人</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="decisionSignerUser">签批人</label>
+                <input id="decisionSignerUser" value="" aria-label="签批人" placeholder="默认当前操作人">
+              </div>
+              <div class="field wide">
+                <label for="decisionSignComment">签批意见</label>
+                <input id="decisionSignComment" value="投委会界面复核通过" aria-label="签批意见">
+              </div>
+              <button id="signDecision" class="primary">签批决策</button>
+              <div class="field compact">
+                <label for="exceptionSeverity">例外级别</label>
+                <select id="exceptionSeverity" aria-label="例外级别">
+                  <option value="medium">中</option>
+                  <option value="high">高</option>
+                  <option value="critical">严重</option>
+                </select>
+              </div>
+              <div class="field wide">
+                <label for="exceptionReason">例外原因</label>
+                <input id="exceptionReason" value="需要投委会人工跟进" aria-label="例外原因">
+              </div>
+              <button id="createException">创建例外</button>
+              <button id="loadCommitteeRisk">刷新风险队列</button>
+            </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>审批</strong><span id="decisionApprovalState">待处理</span></div>
+              <div class="system-box"><strong>签名</strong><span id="decisionSignatureCount">0</span></div>
+              <div class="system-box"><strong>开放例外</strong><span id="committeeOpenExceptions">0</span></div>
+              <div class="system-box"><strong>待决策</strong><span id="committeePendingDecisions">0</span></div>
+              <div class="system-box"><strong>边界</strong><span id="committeeApprovalBoundary">人工审批，不连接券商</span></div>
+            </div>
+          </div>
+          <div class="panel span-6">
+            <h2>审批签名</h2>
+            <table><thead><tr><th>角色</th><th>用户</th><th>状态</th><th>备注</th></tr></thead><tbody id="decisionSignatureRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>开放例外</h2>
+            <table><thead><tr><th>例外事项</th><th>关联决策</th><th>级别</th><th>原因</th></tr></thead><tbody id="committeeExceptionRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>组合模拟审批</h2>
+            <div class="row">
+              <div class="field">
+                <label for="portfolioProposalId">组合方案</label>
+                <input id="portfolioProposalId" value="" aria-label="组合方案" placeholder="留空自动找最新方案">
+                <span class="hint">留默认会自动找最新方案</span>
+              </div>
+              <div class="field compact">
+                <label for="portfolioCommitteeDecision">审批结论</label>
+                <select id="portfolioCommitteeDecision" aria-label="审批结论">
+                  <option value="approved">通过</option>
+                  <option value="needs_revision">需要修订</option>
+                  <option value="rejected">驳回</option>
+                  <option value="pending">待处理</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="portfolioCommitteeMember">投委会成员</label>
+                <input id="portfolioCommitteeMember" value="" aria-label="投委会成员" placeholder="默认当前操作人">
+              </div>
+              <div class="field compact">
+                <label for="portfolioFeedbackStart">回放开始</label>
+                <input id="portfolioFeedbackStart" value="2025-05-01" aria-label="回放开始">
+              </div>
+              <div class="field compact">
+                <label for="portfolioFeedbackEnd">回放结束</label>
+                <input id="portfolioFeedbackEnd" value="2025-05-03" aria-label="回放结束">
+              </div>
+              <button id="runPortfolioFeedback" class="primary">运行模拟反馈</button>
+              <button id="loadPortfolioProposal">载入方案</button>
+            </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>方案</strong><span id="portfolioFeedbackProposal">-</span></div>
+              <div class="system-box"><strong>状态</strong><span id="portfolioFeedbackStatus">空闲</span></div>
+              <div class="system-box"><strong>决策</strong><span id="portfolioFeedbackDecision">待处理</span></div>
+              <div class="system-box"><strong>边界</strong><span id="portfolioFeedbackBoundary">仅模拟，不连接券商</span></div>
+              <div class="system-box"><strong>收益</strong><span id="portfolioFeedbackReturn">-</span></div>
+            </div>
+          </div>
+          <div class="panel span-6"><h2>组合方案</h2><pre id="portfolioProposalBox"></pre></div>
+          <div class="panel span-6"><h2>模拟反馈</h2><pre id="portfolioFeedbackBox"></pre></div>
         </div>
       </section>
 
       <section data-tab="review">
         <div class="row">
-          <input id="reportId" value="opr_2026_05" aria-label="operating report id">
-          <button id="loadReport" class="primary">Load Report</button>
-          <input id="replayId" value="replay_demo" aria-label="strategy replay id">
-          <button id="loadReplay">Load Replay</button>
-          <input id="replayDecisionId" value="dec_demo" aria-label="strategy replay decision id">
-          <button id="compareReplays">Compare Replays</button>
+          <div class="field">
+            <label for="reportId">运营报告</label>
+            <input id="reportId" value="" aria-label="运营报告" placeholder="留空使用当前月份">
+            <span class="hint">默认使用当前月份</span>
+          </div>
+          <button id="loadReport" class="primary">查看报告</button>
+          <div class="field">
+            <label for="replayId">策略回放</label>
+            <input id="replayId" value="" aria-label="策略回放" placeholder="留空使用样例回放">
+          </div>
+          <button id="loadReplay">查看回放</button>
+          <div class="field">
+            <label for="replayDecisionId">对比哪个决策</label>
+            <input id="replayDecisionId" value="" aria-label="对比哪个决策" placeholder="留空对比全部可用回放">
+          </div>
+          <button id="compareReplays">对比回放</button>
         </div>
         <div class="grid">
-          <div class="panel span-6"><h2>Operating Report</h2><pre id="reportBox"></pre></div>
-          <div class="panel span-6"><h2>Strategy Replay</h2><pre id="replayBox"></pre></div>
+          <div class="panel span-6"><h2>运营报告</h2><pre id="reportBox"></pre></div>
+          <div class="panel span-6"><h2>策略回放</h2><pre id="replayBox"></pre></div>
           <div class="panel span-12">
             <h2>回放批次对比</h2>
             <div class="system-strip">
-              <div class="system-box"><strong>Batch</strong><span id="replayCompareCount">0</span></div>
-              <div class="system-box"><strong>Variance</strong><span id="replayVarianceCount">0</span></div>
-              <div class="system-box"><strong>Latest</strong><span id="replayLatestId">-</span></div>
-              <div class="system-box"><strong>Review</strong><span id="replayReviewCount">0</span></div>
-              <div class="system-box"><strong>Continue</strong><span id="replayContinueCount">0</span></div>
+              <div class="system-box"><strong>批次</strong><span id="replayCompareCount">0</span></div>
+              <div class="system-box"><strong>偏差</strong><span id="replayVarianceCount">0</span></div>
+              <div class="system-box"><strong>最新</strong><span id="replayLatestId">-</span></div>
+              <div class="system-box"><strong>复核</strong><span id="replayReviewCount">0</span></div>
+              <div class="system-box"><strong>延续</strong><span id="replayContinueCount">0</span></div>
             </div>
-            <table style="margin-top:12px"><thead><tr><th>Replay</th><th>Version</th><th>Outcome</th><th>Next</th></tr></thead><tbody id="replayCompareRows"></tbody></table>
+            <table style="margin-top:12px"><thead><tr><th>回放批次</th><th>版本</th><th>结果</th><th>建议动作</th></tr></thead><tbody id="replayCompareRows"></tbody></table>
           </div>
         </div>
       </section>
@@ -701,117 +1337,234 @@
       <section data-tab="ingestion">
         <div class="grid">
           <div class="panel span-12">
-            <h2>A-Share Filings</h2>
+            <h2>A 股公告</h2>
             <div class="row">
-              <input id="ashareCode" value="600000" aria-label="a share code">
-              <select id="ashareExchange" aria-label="a share exchange">
-                <option value="auto">Auto</option>
-                <option value="sse">SSE</option>
-                <option value="szse">SZSE</option>
-              </select>
-              <input id="ashareBegin" value="2026-04-01" aria-label="a share begin date">
-              <input id="ashareEnd" value="2026-05-14" aria-label="a share end date">
-              <input id="ashareUserAgent" value="ai-native-quant-org/0.1 contact@example.com" aria-label="a share user agent">
-              <button id="previewAshare" class="primary">Preview A-Share</button>
+              <div class="field compact">
+                <label for="ashareCode">股票代码</label>
+                <input id="ashareCode" value="600000" aria-label="A 股股票代码">
+              </div>
+              <div class="field compact">
+                <label for="ashareExchange">交易所</label>
+                <select id="ashareExchange" aria-label="A 股交易所">
+                  <option value="auto">自动</option>
+                  <option value="sse">上交所</option>
+                  <option value="szse">深交所</option>
+                </select>
+              </div>
+              <div class="field compact">
+                <label for="ashareBegin">开始日期</label>
+                <input id="ashareBegin" value="2026-04-01" aria-label="A 股公告开始日期">
+              </div>
+              <div class="field compact">
+                <label for="ashareEnd">结束日期</label>
+                <input id="ashareEnd" value="2026-05-14" aria-label="A 股公告结束日期">
+              </div>
+              <div class="field wide">
+                <label for="ashareUserAgent">请求标识</label>
+                <input id="ashareUserAgent" value="" aria-label="A 股请求标识" placeholder="默认请求标识">
+                <span class="hint">公开数据源要求保留联系标识</span>
+              </div>
+              <button id="previewAshare" class="primary">预览 A 股公告</button>
             </div>
-            <table><thead><tr><th>Type</th><th>Published</th><th>URI</th></tr></thead><tbody id="ashareRows"></tbody></table>
+            <table><thead><tr><th>类型</th><th>发布时间</th><th>链接</th></tr></thead><tbody id="ashareRows"></tbody></table>
           </div>
           <div class="panel span-12">
-            <h2>SEC Filings</h2>
+            <h2>SEC 披露</h2>
             <div class="row">
-              <input id="cik" value="0000320193" aria-label="cik">
-              <input id="forms" value="10-K" aria-label="document types">
-              <input id="secUserAgent" value="ai-native-quant-org/0.1 contact@example.com" aria-label="sec user agent">
-              <button id="previewSec" class="primary">Preview SEC</button>
+              <div class="field">
+                <label for="cik">SEC 公司编号</label>
+                <input id="cik" value="0000320193" aria-label="SEC 公司编号">
+              </div>
+              <div class="field">
+                <label for="forms">披露类型</label>
+                <input id="forms" value="10-K" aria-label="SEC 披露类型">
+                <span class="hint">多个类型用英文逗号分隔</span>
+              </div>
+              <div class="field wide">
+                <label for="secUserAgent">请求标识</label>
+                <input id="secUserAgent" value="" aria-label="SEC 请求标识" placeholder="默认请求标识">
+              </div>
+              <button id="previewSec" class="primary">预览 SEC 披露</button>
             </div>
-            <table><thead><tr><th>Type</th><th>Published</th><th>URI</th></tr></thead><tbody id="secRows"></tbody></table>
+            <table><thead><tr><th>类型</th><th>发布时间</th><th>链接</th></tr></thead><tbody id="secRows"></tbody></table>
           </div>
           <div class="panel span-12">
-            <h2>HKEX Filings</h2>
+            <h2>港交所披露</h2>
             <div class="row">
-              <input id="hkexQuery" value="annual" aria-label="hkex query">
-              <input id="hkexFileType" value="pdf" aria-label="hkex file type">
-              <input id="hkexUserAgent" value="ai-native-quant-org/0.1 contact@example.com" aria-label="hkex user agent">
-              <button id="previewHkex" class="primary">Preview HKEX</button>
+              <div class="field">
+                <label for="hkexQuery">搜索词</label>
+                <input id="hkexQuery" value="年报" aria-label="港交所搜索词">
+              </div>
+              <div class="field compact">
+                <label for="hkexFileType">文件类型</label>
+                <input id="hkexFileType" value="pdf" aria-label="港交所文件类型">
+              </div>
+              <div class="field wide">
+                <label for="hkexUserAgent">请求标识</label>
+                <input id="hkexUserAgent" value="" aria-label="港交所请求标识" placeholder="默认请求标识">
+              </div>
+              <button id="previewHkex" class="primary">预览港交所披露</button>
             </div>
-            <table><thead><tr><th>Type</th><th>Published</th><th>URI</th></tr></thead><tbody id="hkexRows"></tbody></table>
+            <table><thead><tr><th>类型</th><th>发布时间</th><th>链接</th></tr></thead><tbody id="hkexRows"></tbody></table>
           </div>
           <div class="panel span-12">
             <h2>公开行情数据</h2>
             <div class="row">
-              <input id="mdSecurityId" value="security_demo_us" aria-label="market data security id">
-              <input id="mdSourceId" value="public_eod_market_data" aria-label="market data source id">
-              <select id="mdType" aria-label="market data type">
-                <option value="eod">EOD</option>
-                <option value="delayed">Delayed</option>
-              </select>
-              <input id="mdDate" value="2026-05-14" aria-label="market data date">
-              <input id="mdClose" value="187.42" aria-label="market data close">
-              <input id="mdVolume" value="52130000" aria-label="market data volume">
-              <button id="addMarketData" class="primary">Add Market Data</button>
-              <button id="loadMarketData">Load Market Data</button>
+              <div class="field">
+                <label for="mdSecurityId">证券</label>
+                <input id="mdSecurityId" value="" aria-label="证券" placeholder="留空使用样例证券">
+              </div>
+              <div class="field">
+                <label for="mdSourceId">数据来源</label>
+                <input id="mdSourceId" value="" aria-label="行情数据来源" placeholder="留空使用公开日线行情">
+                <span class="hint">用于区分公开日线、延时行情等</span>
+              </div>
+              <div class="field compact">
+                <label for="mdType">行情类型</label>
+                <select id="mdType" aria-label="行情类型">
+                  <option value="eod">日线</option>
+                  <option value="delayed">延时</option>
+                </select>
+              </div>
+              <div class="field compact">
+                <label for="mdDate">日期</label>
+                <input id="mdDate" value="2026-05-14" aria-label="行情日期">
+              </div>
+              <div class="field compact">
+                <label for="mdClose">收盘价</label>
+                <input id="mdClose" value="187.42" aria-label="收盘价">
+              </div>
+              <div class="field compact">
+                <label for="mdVolume">成交量</label>
+                <input id="mdVolume" value="52130000" aria-label="成交量">
+              </div>
+              <button id="addMarketData" class="primary">新增行情</button>
+              <button id="loadMarketData">载入行情</button>
             </div>
-            <table><thead><tr><th>Security</th><th>Date</th><th>Close</th><th>Rights</th></tr></thead><tbody id="marketDataRows"></tbody></table>
+            <table><thead><tr><th>证券</th><th>日期</th><th>收盘</th><th>权限</th></tr></thead><tbody id="marketDataRows"></tbody></table>
           </div>
           <div class="panel span-12">
             <h2>人工参考边界复核</h2>
             <div class="row">
-              <input id="manualRefDocId" value="doc_private_note_meta" aria-label="manual reference document id">
-              <input id="manualRefIssuerId" value="issuer_demo" aria-label="manual reference issuer id">
-              <input id="manualRefSecurityId" value="security_demo_us" aria-label="manual reference security id">
-              <select id="manualRefType" aria-label="manual reference type">
-                <option value="private_meeting_note">Private Meeting</option>
-                <option value="roadshow_note">Roadshow</option>
-                <option value="expert_note">Expert Note</option>
-                <option value="transcript">Transcript</option>
-              </select>
-              <input id="manualRefTitle" value="Private meeting metadata" aria-label="manual reference title">
-              <input id="manualRefUri" value="private://meetings/demo" aria-label="manual reference uri">
-              <input id="manualRefNotes" value="Metadata only; confirm publicness and Reg FD boundary." aria-label="manual reference notes">
-              <button id="createManualReference" class="primary">Create Review</button>
-              <button id="loadManualReferences">Load Reviews</button>
+              <div class="field">
+                <label for="manualRefDocId">参考资料</label>
+                <input id="manualRefDocId" value="" aria-label="参考资料" placeholder="留空使用样例纪要">
+              </div>
+              <div class="field">
+                <label for="manualRefIssuerId">关联公司</label>
+                <input id="manualRefIssuerId" value="" aria-label="关联公司" placeholder="留空使用样例公司">
+              </div>
+              <div class="field">
+                <label for="manualRefSecurityId">关联证券</label>
+                <input id="manualRefSecurityId" value="" aria-label="关联证券" placeholder="留空使用样例证券">
+              </div>
+              <div class="field">
+                <label for="manualRefType">资料性质</label>
+                <select id="manualRefType" aria-label="资料性质">
+                  <option value="private_meeting_note">私下会议</option>
+                  <option value="roadshow_note">路演纪要</option>
+                  <option value="expert_note">专家纪要</option>
+                  <option value="transcript">转录稿</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="manualRefTitle">资料标题</label>
+                <input id="manualRefTitle" value="私下会议元数据" aria-label="资料标题">
+              </div>
+              <div class="field wide">
+                <label for="manualRefUri">资料位置</label>
+                <input id="manualRefUri" value="" aria-label="资料位置" placeholder="留空使用样例资料位置">
+              </div>
+              <div class="field wide">
+                <label for="manualRefNotes">复核备注</label>
+                <input id="manualRefNotes" value="仅记录元数据；需确认公开性和公平披露边界。" aria-label="复核备注">
+              </div>
+              <button id="createManualReference" class="primary">创建复核</button>
+              <button id="loadManualReferences">载入复核</button>
             </div>
-            <table><thead><tr><th>Document</th><th>Issue</th><th>Status</th><th>Action</th></tr></thead><tbody id="manualReferenceRows"></tbody></table>
+            <table><thead><tr><th>资料</th><th>问题</th><th>状态</th><th>建议动作</th></tr></thead><tbody id="manualReferenceRows"></tbody></table>
           </div>
           <div class="panel span-12">
-            <h2>13F Holdings</h2>
+            <h2>13F 持仓</h2>
             <div class="row">
-              <input id="holdingIssuerId" value="issuer_demo" aria-label="13f issuer id">
-              <input id="holdingSecurityId" value="security_demo_us" aria-label="13f security id">
-              <input id="holdingFilerCik" value="0001067983" aria-label="13f filer cik">
-              <input id="holdingFilerName" value="Demo Capital Partners" aria-label="13f filer name">
-              <input id="holdingPeriod" value="2026-03-31" aria-label="13f report period">
-              <input id="holdingShares" value="1250000" aria-label="13f shares">
-              <input id="holdingValueUsd" value="234000000" aria-label="13f value usd">
-              <button id="add13fHolding" class="primary">Add 13F Holding</button>
-              <button id="update13fCrowding">Update Crowding</button>
-              <button id="load13fHoldings">Load 13F</button>
+              <div class="field">
+                <label for="holdingIssuerId">关联公司</label>
+                <input id="holdingIssuerId" value="" aria-label="13F 关联公司" placeholder="留空使用样例公司">
+              </div>
+              <div class="field">
+                <label for="holdingSecurityId">证券</label>
+                <input id="holdingSecurityId" value="" aria-label="13F 证券" placeholder="留空使用样例证券">
+              </div>
+              <div class="field">
+                <label for="holdingFilerCik">申报方编号</label>
+                <input id="holdingFilerCik" value="0001067983" aria-label="13F 申报方编号">
+              </div>
+              <div class="field">
+                <label for="holdingFilerName">申报方名称</label>
+                <input id="holdingFilerName" value="样例资本合伙" aria-label="13F 申报方名称">
+              </div>
+              <div class="field compact">
+                <label for="holdingPeriod">报告期</label>
+                <input id="holdingPeriod" value="2026-03-31" aria-label="13F 报告期">
+              </div>
+              <div class="field compact">
+                <label for="holdingShares">股数</label>
+                <input id="holdingShares" value="1250000" aria-label="13F 股数">
+              </div>
+              <div class="field">
+                <label for="holdingValueUsd">美元市值</label>
+                <input id="holdingValueUsd" value="234000000" aria-label="13F 美元市值">
+              </div>
+              <button id="add13fHolding" class="primary">新增 13F 持仓</button>
+              <button id="update13fCrowding">更新拥挤度</button>
+              <button id="load13fHoldings">载入 13F</button>
             </div>
-            <table><thead><tr><th>Filer</th><th>Period</th><th>Value USD</th><th>Security</th></tr></thead><tbody id="holdingRows"></tbody></table>
+            <table><thead><tr><th>申报方</th><th>期间</th><th>美元市值</th><th>证券</th></tr></thead><tbody id="holdingRows"></tbody></table>
           </div>
           <div class="panel span-12">
-            <h2>Structured Extraction</h2>
+            <h2>结构化抽取</h2>
             <div class="row">
-              <input id="extractEvidenceId" value="" aria-label="evidence id">
-              <input id="extractBenchmarkId" value="" aria-label="benchmark id">
-              <input id="extractExpectedTerms" value="revenue,risk_factor" aria-label="expected terms">
-              <button id="runExtraction" class="primary">Run Extraction</button>
+              <div class="field">
+                <label for="extractEvidenceId">证据材料</label>
+            <input id="extractEvidenceId" value="" aria-label="证据材料">
+                <span class="hint">先运行 SEC 单标的研究，会自动填入证据材料</span>
+              </div>
+              <div class="field">
+                <label for="extractBenchmarkId">校验样本</label>
+                <input id="extractBenchmarkId" value="" aria-label="校验样本">
+                <span class="hint">可为空，表示只做抽取</span>
+              </div>
+              <div class="field wide">
+                <label for="extractExpectedTerms">希望识别的词</label>
+                <input id="extractExpectedTerms" value="收入,风险因素" aria-label="希望识别的词">
+                <span class="hint">多个词用英文逗号分隔</span>
+              </div>
+              <button id="runExtraction" class="primary">运行抽取</button>
             </div>
             <pre id="extractionBox"></pre>
           </div>
           <div class="panel span-12">
-            <h2>Ingestion Schedule</h2>
+            <h2>接入调度</h2>
             <div class="row">
-              <input id="scheduleId" value="sched_ui" aria-label="schedule id">
-              <input id="scheduleName" value="UI scheduled ingest" aria-label="schedule name">
-              <select id="scheduleCadence" aria-label="schedule cadence">
-                <option value="manual">Manual</option>
-                <option value="hourly">Hourly</option>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-              </select>
-              <button id="createSchedule" class="primary">Create Schedule</button>
-              <button id="runSchedules">Run Due</button>
+              <div class="field">
+                <label for="scheduleId">调度名称</label>
+                <input id="scheduleId" value="" aria-label="调度名称" placeholder="留空自动生成">
+              </div>
+              <div class="field wide">
+                <label for="scheduleName">显示名称</label>
+                <input id="scheduleName" value="界面触发的数据接入" aria-label="显示名称">
+              </div>
+              <div class="field compact">
+                <label for="scheduleCadence">运行频率</label>
+                <select id="scheduleCadence" aria-label="运行频率">
+                  <option value="manual">手动</option>
+                  <option value="hourly">每小时</option>
+                  <option value="daily">每日</option>
+                  <option value="weekly">每周</option>
+                </select>
+              </div>
+              <button id="createSchedule" class="primary">创建调度</button>
+              <button id="runSchedules">运行到期任务</button>
             </div>
             <pre id="scheduleBox"></pre>
           </div>
@@ -820,25 +1573,25 @@
 
       <section data-tab="incidents">
         <div class="row">
-          <button id="loadIncidents" class="primary">Load Incidents</button>
-          <button id="loadSourceReviews">Load Source Reviews</button>
-          <button id="notifySourceReviews">Notify Reviews</button>
+          <button id="loadIncidents" class="primary">载入事故</button>
+          <button id="loadSourceReviews">载入来源复核</button>
+          <button id="notifySourceReviews">发送复核通知</button>
         </div>
         <div class="grid">
-          <div class="panel span-4"><h2>Playbooks</h2><pre id="playbooksBox"></pre></div>
-          <div class="panel span-4"><h2>Reports</h2><pre id="reportsBox"></pre></div>
-          <div class="panel span-4"><h2>Schedules</h2><pre id="schedulesBox"></pre></div>
+          <div class="panel span-4"><h2>处置手册</h2><pre id="playbooksBox"></pre></div>
+          <div class="panel span-4"><h2>事故报告</h2><pre id="reportsBox"></pre></div>
+          <div class="panel span-4"><h2>演练计划</h2><pre id="schedulesBox"></pre></div>
           <div class="panel span-6">
             <h2>来源复核提醒</h2>
-            <table><thead><tr><th>Source</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead><tbody id="sourceReviewRows"></tbody></table>
+            <table><thead><tr><th>来源</th><th>负责人</th><th>到期</th><th>状态</th></tr></thead><tbody id="sourceReviewRows"></tbody></table>
           </div>
           <div class="panel span-6">
-            <h2>复核 Owner 看板</h2>
-            <table><thead><tr><th>Owner</th><th>Total</th><th>Overdue</th><th>Blocked</th></tr></thead><tbody id="sourceReviewOwnerRows"></tbody></table>
+            <h2>复核负责人看板</h2>
+            <table><thead><tr><th>负责人</th><th>总数</th><th>逾期</th><th>阻塞</th></tr></thead><tbody id="sourceReviewOwnerRows"></tbody></table>
           </div>
           <div class="panel span-12">
-            <h2>复核通知 Outbox</h2>
-            <table><thead><tr><th>Alert</th><th>Channel</th><th>Status</th><th>Target</th></tr></thead><tbody id="sourceReviewNotificationRows"></tbody></table>
+            <h2>复核通知发件箱</h2>
+            <table><thead><tr><th>告警</th><th>渠道</th><th>状态</th><th>目标</th></tr></thead><tbody id="sourceReviewNotificationRows"></tbody></table>
           </div>
         </div>
       </section>
@@ -848,11 +1601,13 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const status = $("status");
+    let activeEntitySecurityId = "";
+    let activeEntityIssuerId = "";
 
     function headers(roleOverride) {
       return {
         "Content-Type": "application/json",
-        "X-Actor": $("actor").value || "ui_user",
+        "X-Actor": formValue("actor", "demo_user"),
         "X-Role": roleOverride || $("role").value
       };
     }
@@ -873,13 +1628,320 @@
       status.className = error ? "status error" : "status";
     }
 
+    function formValue(id, fallback = "") {
+      const element = $(id);
+      const value = element ? String(element.value || "").trim() : "";
+      return value || fallback;
+    }
+
+    function normalizeTerm(value) {
+      const labels = {
+        "收入": "revenue",
+        "风险因素": "risk_factor",
+        "利润": "profit",
+        "现金流": "cash_flow",
+        "客户": "customer",
+        "供应商": "supplier"
+      };
+      return labels[value] || value;
+    }
+
+    function defaultUserAgent() {
+      return "ai-native-quant-org/0.1 contact@example.com";
+    }
+
     function pretty(value) {
       return JSON.stringify(value, null, 2);
+    }
+
+    function userPretty(value) {
+      const keyLabels = {
+        decision: "审批结论",
+        committee_member: "投委会成员",
+        candidate_weights: "组合权重",
+        simulated_valuation: "模拟估值",
+        returns_feedback: "回放收益",
+        automation_allowed: "允许自动化",
+        live_execution_allowed: "允许实盘",
+        usage_boundary: "使用边界",
+        proposal_id: "组合方案",
+        proposal_status: "方案状态",
+        target_weight: "目标权重",
+        action: "动作",
+        direction: "方向",
+        score: "分数",
+        signal: "研究结论",
+        thesis: "研究观点",
+        challenger: "反方挑战",
+        conflict_score: "冲突分数",
+        approval_state: "审批状态",
+        intent_id: "模拟执行单",
+        decision_id: "决策材料",
+        evidence_id: "证据",
+        document_id: "资料",
+        issuer_id: "公司",
+        security_id: "证券",
+        source_id: "来源",
+        report_id: "运营报告",
+        replay_id: "回放批次",
+        schedule_id: "调度",
+        extraction_id: "抽取结果",
+        benchmark_id: "校验样本",
+        data_id: "行情记录",
+        holding_id: "持仓记录",
+        alert_id: "提醒",
+        rule_id: "规则",
+        channel: "渠道",
+        target: "目标",
+        report_period: "报告期",
+        value_usd: "美元市值",
+        shares: "股数",
+        close: "收盘价",
+        adjusted_close: "复权收盘价",
+        volume: "成交量",
+        as_of_date: "日期",
+        data_type: "行情类型",
+        rights_tag: "数据权限",
+        status: "状态",
+        version: "版本",
+        actual_outcome: "实际结果",
+        expected_outcome: "预期结果",
+        action_bucket: "建议动作",
+        count: "数量",
+        variance_count: "偏差数量",
+        latest_replay_id: "最新回放",
+        action_counts: "动作统计",
+        terms: "识别词",
+        numbers: "识别数字",
+        periods: "识别期间",
+        tables: "识别表格",
+        metrics: "质量指标",
+        passed: "是否通过",
+        parser_version: "解析器版本",
+        language: "语言",
+        task_type: "任务类型",
+        ran: "已执行",
+        skipped: "已跳过",
+        last_status: "上次状态",
+        retry_count: "重试次数",
+        retry_limit: "最大重试",
+        cadence: "运行频率",
+        name: "名称",
+        payload: "任务内容",
+        reason: "原因",
+        rationale: "理由",
+        message: "说明",
+        severity: "严重程度",
+        signatures: "签批记录",
+        role: "角色",
+        user: "操作人",
+        comment: "意见",
+        issuer_name: "公司名称",
+        name: "名称",
+        ticker: "股票代码",
+        market: "市场",
+        sector: "行业",
+        currency: "币种",
+        title: "标题",
+        notes: "备注",
+        source_uri: "资料位置"
+      };
+      const convert = (item) => {
+        if (Array.isArray(item)) return item.map(convert);
+        if (keyLabels[String(item)]) return keyLabels[String(item)];
+        if (!item || typeof item !== "object") return statusLabel(item);
+        return Object.fromEntries(Object.entries(item).map(([key, val]) => {
+          const label = keyLabels[key] || statusLabel(key);
+          const isIdentifier = /(^|_)(id|uri)$/.test(key) || key === "channel" || key === "target";
+          const value = isIdentifier && typeof val === "string" ? compactId(val) : convert(val);
+          return [label, value];
+        }));
+      };
+      return JSON.stringify(convert(value), null, 2);
+    }
+
+    function renderDisclosureRows(targetId, filings) {
+      $(targetId).innerHTML = rows(filings, "暂无披露", (item) => `<tr><td>${documentTypeLabel(item.document_type)}</td><td>${item.published_at || ""}</td><td>${item.source_uri || "-"}</td></tr>`);
+    }
+
+    function renderMarketDataRows(items) {
+      $("marketDataRows").innerHTML = rows(items, "暂无行情", (item) => `<tr><td>${compactId(item.security_id)}</td><td>${item.as_of_date || ""}</td><td>${item.close ?? "-"}</td><td>${statusLabel(item.rights_tag?.license_class || item.license_class || "-")}</td></tr>`);
+    }
+
+    function renderManualReferenceRows(items) {
+      $("manualReferenceRows").innerHTML = rows(items, "暂无人工参考", (item) => `<tr><td>${compactId(item.document_id)}</td><td>${statusLabel(item.issue_type)}</td><td>${statusLabel(item.status)}</td><td>${statusLabel(item.suggested_action)}</td></tr>`);
+    }
+
+    function renderHoldingRows(items) {
+      $("holdingRows").innerHTML = rows(items, "暂无 13F 持仓", (item) => `<tr><td>${item.filer_name || compactId(item.filer_cik)}</td><td>${item.report_period}</td><td>${item.value_usd}</td><td>${compactId(item.security_id)}</td></tr>`);
+    }
+
+    function renderScheduleSummary(data) {
+      $("scheduleBox").textContent = userPretty(data);
+    }
+
+    function renderIssuerSummary(item) {
+      $("issuerBox").textContent = userPretty({
+        issuer_id: item?.issuer_id,
+        issuer_name: item?.name || item?.issuer_name,
+        ticker: item?.ticker,
+        market: item?.market,
+        sector: item?.sector,
+        status: item?.status
+      });
+    }
+
+    function setText(id, value) {
+      const element = $(id);
+      if (element) element.textContent = value;
     }
 
     function rows(items, empty, mapper) {
       if (!items || !items.length) return `<tr><td colspan="4">${empty}</td></tr>`;
       return items.map(mapper).join("");
+    }
+
+    function graphRef(value, fallback = "-") {
+      return compactId(value, fallback);
+    }
+
+    function graphList(values) {
+      if (!Array.isArray(values) || !values.length) return "-";
+      return values.map((item) => {
+        const raw = String(item || "");
+        const labeled = statusLabel(raw);
+        return labeled !== raw ? labeled : graphRef(raw);
+      }).join(", ");
+    }
+
+    function renderKnowledgeGraph(data) {
+      const chains = data.industry_chains || [];
+      const nodes = data.chain_nodes || [];
+      const positions = data.company_positions || [];
+      const tasks = data.research_tasks || [];
+      const edges = data.edges || [];
+      const proposals = data.portfolio_proposals || [];
+      const portfolioPositions = data.portfolio_positions || [];
+      const holdings = data.institutional_holdings || [];
+      const crowding = data.crowding || [];
+      const factRows = [
+        ...(data.evidence || []).map((item) => ({
+          type: "证据",
+          object: graphRef(item.evidence_id),
+          source: `${graphRef(item.document_id)}${metaLine("置信", formatScore(item.confidence))}`,
+          note: item.statement || item.quote || item.text || "-",
+        })),
+        ...(data.manual_reviews || []).map((item) => ({
+          type: "人工复核",
+          object: graphRef(item.review_id),
+          source: `${statusLabel(item.issue_type)}${metaLine("级别", statusLabel(item.severity))}`,
+          note: statusLabel(item.status),
+        })),
+        ...(data.disclosure_events || []).map((item) => ({
+          type: "披露事件",
+          object: statusLabel(item.event_type),
+          source: item.occurred_at || graphRef(item.document_id),
+          note: `${graphRef(item.issuer_id)}${metaLine("级别", statusLabel(item.severity))}`,
+        })),
+        ...(data.market_data || []).map((item) => ({
+          type: "行情",
+          object: graphRef(item.security_id),
+          source: item.as_of_date || graphRef(item.source_id),
+          note: `${documentTypeLabel(item.data_type) || item.data_type || "-"} · 收盘 ${item.close ?? "-"}`,
+        })),
+        ...(data.corporate_actions || []).map((item) => ({
+          type: "公司行动",
+          object: graphRef(item.security_id),
+          source: item.ex_date || graphRef(item.action_id),
+          note: `${statusLabel(item.action_type)} · 调整因子 ${item.ratio || 1}`,
+        })),
+      ];
+      const decisionRows = [
+        ...(data.signals || []).map((item) => ({
+          type: "研究信号",
+          object: graphRef(item.signal_id),
+          status: `${statusLabel(item.direction)}${metaLine("分数", formatScore(item.score))}`,
+          note: item.rationale || graphRef(item.thesis_id),
+        })),
+        ...(data.decisions || []).map((item) => ({
+          type: "决策材料",
+          object: graphRef(item.decision_id),
+          status: statusLabel(item.approval_state),
+          note: graphList(item.signal_ids),
+        })),
+        ...(data.execution_intents || []).map((item) => ({
+          type: "模拟执行",
+          object: graphRef(item.intent_id),
+          status: `${statusLabel(item.action)} · ${pct(item.target_weight || 0)}`,
+          note: graphRef(item.security_id),
+        })),
+        ...(data.reviews || []).map((item) => ({
+          type: "决策复盘",
+          object: graphRef(item.review_id),
+          status: statusLabel(item.realized_outcome || item.status),
+          note: item.next_action || item.lesson || graphRef(item.decision_id),
+        })),
+        ...(data.strategy_replays || []).map((item) => ({
+          type: "策略回放",
+          object: graphRef(item.replay_id),
+          status: statusLabel(item.actual_outcome),
+          note: item.next_action || graphRef(item.decision_id),
+        })),
+        ...(data.exceptions || []).map((item) => ({
+          type: "例外",
+          object: graphRef(item.exception_id),
+          status: `${statusLabel(item.severity)} · ${statusLabel(item.status)}`,
+          note: item.reason || graphRef(item.decision_id),
+        })),
+      ];
+      const chainById = Object.fromEntries(chains.map((item) => [item.chain_id, item]));
+
+      setText("graphChainCount", `${chains.length}`);
+      setText("graphPositionCount", `${positions.length}`);
+      setText("graphTaskCount", `${tasks.length}`);
+      setText("graphEdgeCount", `${edges.length}`);
+      setText("graphPortfolioCount", `${proposals.length + portfolioPositions.length + holdings.length + crowding.length}`);
+      setText("graphFactCount", `${factRows.length}`);
+      setText("graphDecisionCount", `${decisionRows.length}`);
+
+      $("graphChainRows").innerHTML = rows(chains, "暂无产业链", (item) => `<tr data-action="open-hotspot" data-query="${item.name || item.chain_id || ""}" data-chain-id="${item.chain_id || ""}" title="点击进入热点扩散"><td>${item.name || graphRef(item.chain_id)}</td><td>${graphRef(item.root_theme_id)}</td><td>${item.nodes?.length || 0}</td><td>${item.edges?.length || 0}${metaLine("版本", graphRef(item.taxonomy_version, ""))}</td></tr>`);
+      $("graphChainNodeRows").innerHTML = rows(nodes, "暂无产业链节点", (item) => `<tr><td>${item.name || graphRef(item.node_id)}${metaLine("标识", graphRef(item.node_id, ""))}</td><td>${item.level ?? "-"}</td><td>${statusLabel(item.category)}</td><td>${chainById[item.chain_id]?.name || graphRef(item.chain_id)}</td></tr>`);
+      $("graphCompanyPositionRows").innerHTML = rows(positions, "暂无公司产业定位", (item) => `<tr data-action="open-company" data-issuer-id="${item.issuer_id || ""}" data-security-id="${item.security_id || ""}" title="点击重新载入主体图谱"><td>${graphRef(item.issuer_id)}${metaLine("证券", graphRef(item.security_id, ""))}</td><td>${chainById[item.chain_id]?.name || graphRef(item.chain_id)}</td><td>${graphList(item.node_ids)}</td><td>${item.positioning_summary || statusLabel(item.role)}${metaLine("质量", statusLabel(item.data_quality))}</td></tr>`);
+      $("graphResearchTaskRows").innerHTML = rows(tasks, "暂无研究补全任务", (item) => {
+        const related = item.position_id || item.issuer_id || item.security_id || item.chain_id || graphList(item.node_ids);
+        return `<tr><td>${statusLabel(item.task_type)}${metaLine("任务", graphRef(item.task_id, ""))}</td><td>${graphRef(related)}</td><td>${graphList(item.required_slots)}${metaLine("原因", item.reason || "")}</td><td><span class="badge ${item.status === "open" || item.status === "in_progress" ? "warn" : item.status === "done" ? "ok" : ""}">${statusLabel(item.status)}</span>${metaLine("优先级", item.priority ?? "")}</td></tr>`;
+      });
+
+      const graphPortfolioRows = [
+        ...portfolioPositions.map((item) => ({
+          object: graphRef(item.security_id),
+          action: `${statusLabel(item.action)} · ${pct(item.target_weight || 0)}`,
+          source: graphRef(item.decision_id),
+          note: `${statusLabel(item.approval_state)}${metaLine("模拟执行", graphRef(item.intent_id, ""))}`,
+        })),
+        ...proposals.flatMap((proposal) => Object.entries(proposal.candidate_weights || {}).map(([securityId, weight]) => ({
+          object: graphRef(securityId),
+          action: `建议权重 ${pct(weight)}`,
+          source: graphRef(proposal.proposal_id),
+          note: statusLabel(proposal.status),
+        }))),
+        ...holdings.map((item) => ({
+          object: item.filer_name || graphRef(item.holding_id),
+          action: `${graphRef(item.security_id)} · ${item.shares || 0} 股`,
+          source: `${sourceLabel(item.source_id)} ${item.report_period || ""}`,
+          note: `市值 ${item.value_usd || 0}`,
+        })),
+        ...crowding.map((item) => ({
+          object: graphRef(item.issuer_id),
+          action: `拥挤度 ${pct(item.score || 0)}`,
+          source: sourceLabel(item.source),
+          note: item.rationale || graphRef(item.snapshot_id),
+        })),
+      ];
+      $("graphPortfolioRows").innerHTML = rows(graphPortfolioRows, "暂无组合、持仓或拥挤度数据", (item) => `<tr><td>${item.object}</td><td>${item.action}</td><td>${item.source}</td><td>${item.note}</td></tr>`);
+      $("graphFactRows").innerHTML = rows(factRows, "暂无证据、事件或行情数据", (item) => `<tr><td>${item.type}</td><td>${item.object}</td><td>${item.source}</td><td>${String(item.note || "-").slice(0, 220)}</td></tr>`);
+      $("graphDecisionRows").innerHTML = rows(decisionRows, "暂无决策、执行或复盘数据", (item) => `<tr><td>${item.type}</td><td>${item.object}</td><td>${item.status}</td><td>${String(item.note || "-").slice(0, 220)}</td></tr>`);
+      $("graphEdgeRows").innerHTML = rows(edges, "暂无图谱关系", (item) => `<tr><td>${statusLabel(item.type)}</td><td>${graphRef(item.from)}</td><td>${graphRef(item.to)}</td><td>${sourceLabel(item.source_id || item.source)}${metaLine("置信", formatScore(item.confidence))}</td></tr>`);
     }
 
     function spark(values, tone = "") {
@@ -890,72 +1952,529 @@
       return `${Math.round((value || 0) * 100)}%`;
     }
 
+    function signedPct(value) {
+      if (value === undefined || value === null || Number.isNaN(Number(value))) return "-";
+      const rounded = Math.round(Number(value) * 100) / 100;
+      return `${rounded > 0 ? "+" : ""}${rounded}%`;
+    }
+
+    function rawPct(value) {
+      if (value === undefined || value === null || Number.isNaN(Number(value))) return "-";
+      return `${Math.round(Number(value) * 100) / 100}%`;
+    }
+
+    function toneForNumber(value) {
+      if (value === undefined || value === null || Number.isNaN(Number(value))) return "";
+      return Number(value) >= 0 ? "up" : "down";
+    }
+
+    function shortPath(value) {
+      if (!value) return "-";
+      const parts = String(value).split("/");
+      return parts.slice(-2).join("/");
+    }
+
+    function statusLabel(value) {
+      const labels = {
+        ok: "正常",
+        passed: "通过",
+        ready: "就绪",
+        available: "可用",
+        usable: "可用",
+        usable_with_warnings: "可用但有警告",
+        research_only: "仅研究",
+        needs_review: "需要复核",
+        not_actionable: "不可执行",
+        watch: "观察",
+        neutral: "中性",
+        research_long_candidate: "研究候选",
+        avoid_or_reduce_in_simulation: "降低模拟权重",
+        research_watch_positive: "积极观察",
+        stale_data_watch: "数据滞后",
+        risk_watch: "风险观察",
+        opinion_only: "观点参考",
+        missing: "缺失",
+        active: "有效",
+        superseded: "已替换",
+        approved: "已批准",
+        rejected: "已驳回",
+        pending: "待处理",
+        idle: "空闲",
+        running: "运行中",
+        completed: "已完成",
+        review: "待复核",
+        high: "高",
+        medium: "中",
+        low: "低",
+        critical: "严重",
+        blocked: "已阻塞",
+        not_due: "未到运行时间",
+        fallback: "回退",
+        filled: "已填充",
+        done: "完成",
+        error: "错误",
+        not_run: "未运行",
+        unknown: "未知",
+        public: "公开",
+        allowed: "允许",
+        denied: "拒绝",
+        eod: "日线",
+        delayed: "延时",
+        manual: "手动",
+        hourly: "每小时",
+        daily: "每日",
+        weekly: "每周",
+        created: "已创建",
+        queued: "已入队",
+        notified: "已通知",
+        sent: "已发送",
+        failed: "失败",
+        overdue: "已逾期",
+        due_soon: "即将到期",
+        open: "开放",
+        closed: "已关闭",
+        source_review_outbox: "来源复核发件箱",
+        risk_compliance: "风控合规",
+        data_engineer: "数据工程",
+        nlp_ml: "模型团队",
+        cio: "投委会",
+        ceo: "管理层",
+        low_confidence: "置信度偏低",
+        temporal_overlap: "有效期重叠",
+        label_mismatch: "标签不一致",
+        source_linked: "引用已关联",
+        english_source: "英文原文保留",
+        summary_benchmark: "摘要质量基准",
+        model_fallback: "模型回退",
+        facts: "事实证据",
+        needs_verification: "需要复核",
+        non_factual: "非事实线索",
+        verified: "已验证",
+        partial: "部分补齐",
+        needs_review: "需要复核",
+        in_progress: "进行中",
+        dismissed: "已忽略",
+        candidate: "候选",
+        long: "多头",
+        short: "空头",
+        compute: "算力",
+        packaging: "封装",
+        materials: "材料",
+        memory: "存储",
+        revenue_exposure: "收入敞口",
+        profit_exposure: "利润敞口",
+        capacity: "产能",
+        customers: "客户",
+        suppliers: "供应商",
+        valuation_metrics: "估值指标",
+        company_position_backfill: "公司定位补全",
+        hotspot_research_backfill: "热点研究补全",
+        hotspot_expansion: "热点扩散",
+        "GPU workload beneficiary": "GPU 需求受益方",
+        PACKAGED_BY: "由其封装",
+        SUPPLIED_TO: "供应给",
+        ENABLED_BY: "由其支撑",
+        HAS_INDUSTRY_CHAIN: "主题包含产业链",
+        HAS_CHAIN_NODE: "产业链包含节点",
+        HAS_COMPANY_POSITION: "产业链包含公司定位",
+        POSITIONED_AS: "公司定位为",
+        SECURITY_FOR_POSITION: "定位关联证券",
+        POSITION_IN_CHAIN_NODE: "定位落在节点",
+        POSITION_EVIDENCE: "定位证据",
+        CHAIN_HAS_RESEARCH_TASK: "产业链研究任务",
+        TASK_FOR_CHAIN_NODE: "任务关联节点",
+        TASK_FOR_COMPANY_POSITION: "任务关联公司定位",
+        ISSUER_HAS_RESEARCH_TASK: "公司研究任务",
+        TASK_BACKED_BY_EVIDENCE: "任务证据",
+        HAS_MAPPING: "主体代码映射",
+        ISSUES: "发行证券",
+        HAS_MARKET_DATA: "行情数据",
+        HAS_CORPORATE_ACTION: "公司行动",
+        DISCLOSES: "披露资料",
+        DISCLOSURE_FOR: "披露关联证券",
+        HAS_EVIDENCE: "资料证据",
+        NEEDS_REVIEW: "需要人工复核",
+        HAS_DISCLOSURE_EVENT: "披露事件",
+        EVENT_FROM_DOCUMENT: "事件来自资料",
+        EVENT_ON_SECURITY: "事件关联证券",
+        EVENT_EVIDENCE: "事件证据",
+        HAS_THESIS: "研究观点",
+        SUPPORTS: "证据支持",
+        GENERATES_SIGNAL: "生成信号",
+        SUMMARIZED_BY: "研究卡片摘要",
+        CHALLENGES: "反方挑战",
+        INCLUDED_IN_DECISION: "纳入决策",
+        CREATES_INTENT: "生成模拟执行",
+        INTENT_ON: "模拟执行标的",
+        REVIEW_OF: "复盘决策",
+        REPLAY_OF: "策略回放",
+        HAS_EXCEPTION: "决策例外",
+        HAS_13F_HOLDING: "13F 持仓",
+        HOLDS_SECURITY: "持有证券",
+        HAS_CROWDING: "拥挤度",
+        CONTRIBUTES_TO_CROWDING: "贡献拥挤度",
+        HAS_PORTFOLIO_PROPOSAL: "组合方案",
+        PROPOSES_WEIGHT: "建议权重",
+        buy: "买入倾向",
+        sell: "卖出倾向",
+        hold: "保持观察",
+        bullish: "偏积极",
+        bearish: "偏谨慎",
+        neutral: "中性",
+        needs_revision: "需要修订",
+        continue_or_expand: "继续或扩大",
+        review_again: "重新复核",
+        stop_or_reduce: "停止或降低",
+        manual_reference_boundary_review: "人工资料边界复核"
+      };
+      return labels[value] || value || "-";
+    }
+
+    function compactId(value, fallback = "-") {
+      if (!value) return fallback;
+      const text = String(value);
+      const parts = text.split(/[_/:.-]+/).filter(Boolean);
+      if (parts.length >= 2) return parts.slice(-2).join(" ");
+      return text;
+    }
+
+    function metaLine(label, value) {
+      return value ? `<span class="small-note">${label}: ${value}</span>` : "";
+    }
+
+    function documentTypeLabel(value) {
+      const labels = {
+        "10-K": "年报 10-K",
+        "10-Q": "季报 10-Q",
+        "8-K": "重大事项 8-K",
+        annual_report: "年报",
+        interim_report: "中报",
+        quarterly_report: "季报",
+        research_report: "研报",
+        private_meeting_note: "私下会议纪要",
+        roadshow_note: "路演纪要",
+        expert_note: "专家纪要",
+        transcript: "转录稿"
+      };
+      return labels[value] || value || "-";
+    }
+
+    function sourceLabel(value) {
+      const labels = {
+        sec_edgar: "SEC 官方披露",
+        ashare_exchange: "A 股交易所公告",
+        hkexnews: "港交所披露易",
+        public_eod_market_data: "公开日线行情",
+        company_public_webcast: "公司公开电话会",
+        local_reference: "本地参考资料"
+      };
+      return labels[value] || value || "-";
+    }
+
+    function domainLabel(value) {
+      const labels = {
+        llm_gateway: "模型网关",
+        research: "研究",
+        ingestion: "数据接入",
+        source_governance: "来源治理",
+        investment_decisions: "投资决策",
+        execution_intent: "执行意图",
+        public: "公开"
+      };
+      return labels[value] || value || "-";
+    }
+
+    function workflowStageLabel(value) {
+      const labels = {
+        sec_disclosure_fetch: "读取 SEC 披露",
+        document_parse: "解析公告正文",
+        evidence_extract: "抽取证据",
+        filing_qa: "原文问答",
+        thesis_generation: "形成研究观点",
+        signal_generation: "生成研究结论",
+        challenger_review: "反方挑战",
+        decision_pack: "生成投委会材料",
+        simulated_execution: "纸面模拟"
+      };
+      return labels[value] || statusLabel(value);
+    }
+
+    function formatScore(value) {
+      if (value === undefined || value === null || value === "") return "-";
+      const num = Number(value);
+      if (Number.isNaN(num)) return value;
+      if (num <= 1) return pct(num);
+      return `${Math.round(num * 100) / 100}`;
+    }
+
+    function backendLabel(value) {
+      const labels = { local: "本地", s3: "S3 对象存储", opensearch: "OpenSearch", "local-semantic": "本地语义检索" };
+      return labels[value] || value || "-";
+    }
+
+    function boundaryLabel(value) {
+      const labels = {
+        "portfolio_forward_report_is_simulated_tracking_only_not_live_execution": "组合前瞻报告仅用于模拟跟踪，不用于实盘执行",
+        "paper_portfolio_simulation": "纸面组合模拟",
+        "local_reference_citation_tracking_only": "本地研报观点引用",
+        "manual_reference_or_supplemental_research_only": "人工参考/补充研究",
+        "research only · no trade signal": "仅研究，不生成交易信号",
+        "research only · not trade signal": "仅研究，不作为交易信号",
+        "simulated only · no broker execution": "仅模拟，不连接券商"
+      };
+      return labels[value] || value || "-";
+    }
+
+    function openTab(tabName) {
+      const button = document.querySelector(`[data-open="${tabName}"]`);
+      const tab = document.querySelector(`[data-tab="${tabName}"]`);
+      if (!button || !tab) return;
+      document.querySelectorAll("[data-open]").forEach((item) => item.classList.remove("active"));
+      document.querySelectorAll("[data-tab]").forEach((item) => item.classList.remove("active"));
+      button.classList.add("active");
+      tab.classList.add("active");
+      tab.scrollIntoView({ block: "start" });
+    }
+
+    function setValue(id, value) {
+      if (value !== undefined && value !== null && $(id)) $(id).value = value;
+    }
+
+    async function openSecurityContext(securityId, label = "") {
+      setValue("mdSecurityId", securityId || "");
+      setValue("query", label || securityId || "");
+      setValue("searchIssuer", "");
+      openTab("ingestion");
+      await loadMarketData();
+      setStatus(`已切到行情上下文 · ${label || securityId}`);
+    }
+
+    function openResearchContext(item = {}) {
+      setValue("query", item.title || item.snippet || "AI 芯片");
+      setValue("searchIssuer", "");
+      openTab("search");
+      setStatus(`已切到研究检索 · ${item.title || compactId(item.resource_id) || "研报观点"}`);
+    }
+
+    async function openCompanyContext(issuerId, securityId = "") {
+      setValue("issuerId", issuerId || "issuer_demo");
+      activeEntityIssuerId = issuerId || "issuer_demo";
+      activeEntitySecurityId = securityId || "";
+      if (securityId) setValue("searchIssuer", issuerId || "");
+      openTab("entity");
+      $("issuerBox").textContent = `正在载入主体 ${issuerId || "issuer_demo"} ...`;
+      await loadEntity();
+    }
+
+    async function openPortfolioContext(proposalId) {
+      setValue("portfolioProposalId", proposalId || $("portfolioProposalId").value || "");
+      openTab("committee");
+      await loadPortfolioProposal();
+    }
+
+    function renderLatestAnalysis(data) {
+      const window = data.window || {};
+      $("analysisStatus").textContent = data.status ? statusLabel(data.status) : "可用";
+      $("analysisMeta").textContent = `${window.start_date || "-"} 至 ${window.end_date || data.latest_market_date || "-"} · ${data.generated_at || "本地产物"}`;
+      const decision = data.decision_summary || {};
+      const quality = data.data_quality || {};
+      $("decisionHeadline").textContent = decision.headline || "当前没有可用结论";
+      $("decisionConclusion").textContent = decision.conclusion || `数据质量: ${statusLabel(quality.status || "missing")}`;
+      const recommendations = decision.top_recommendations || [];
+      $("decisionRecommendationRows").innerHTML = recommendations.length ? recommendations.slice(0, 4).map((item) => `
+        <div class="recommendation-row" data-action="open-security" data-security-id="${item.security_id || ""}" data-label="${item.label || ""}" title="点击查看行情数据">
+          <div>
+            <strong>${item.label || "-"}</strong>
+            <span class="small-note">${item.name || item.market || "-"} · ${statusLabel(item.stance || item.action)}</span>
+          </div>
+          <div>
+            <span class="small-note">${(item.reasons || []).slice(0, 2).join(" · ") || "暂无理由"}</span>
+            <span class="small-note">${(item.risks || []).slice(0, 2).join(" · ") || statusLabel(item.evidence_status || "")}</span>
+          </div>
+          <div class="metric ${toneForNumber(item.total_return_pct)}">${signedPct(item.total_return_pct)}</div>
+        </div>
+      `).join("") : `<span class="small-note">暂无研究候选</span>`;
+      const flags = decision.red_flags || (quality.issues || []).map((item) => item.message);
+      $("decisionFlagRows").innerHTML = flags.length ? flags.slice(0, 5).map((item) => `<div class="flag-row">${item}</div>`).join("") : `<div class="flag-row">当前未发现阻塞性红旗，但仍只限本机研究和模拟组合。</div>`;
+      const topReturns = (data.returns || []).slice().sort((a, b) => Math.abs(b.total_return_pct || 0) - Math.abs(a.total_return_pct || 0)).slice(0, 9);
+      $("analysisReturns").innerHTML = topReturns.length ? topReturns.map((item) => `
+        <div class="return-tile" data-action="open-security" data-security-id="${item.security_id || ""}" data-label="${item.label || ""}" title="点击查看行情数据">
+          <strong>${item.label}</strong>
+          <div class="number ${toneForNumber(item.total_return_pct)}">${signedPct(item.total_return_pct)}</div>
+          <span class="small-note">${item.market || "-"} · ${sourceLabel(item.source_id)} · ${item.end_date || "-"}</span>
+        </div>
+      `).join("") : `<div class="return-tile"><strong>无分析结果</strong><span class="small-note">${data.message || "请先运行最新分析脚本"}</span></div>`;
+
+      const weights = (data.weights || []).filter((item) => Number(item.weight_pct || 0) > 0.01).slice(0, 8);
+      $("analysisWeights").innerHTML = weights.length ? weights.map((item) => `
+        <div class="weight-row" data-action="open-security" data-security-id="${item.security_id || ""}" data-label="${item.label || ""}" title="点击查看行情数据">
+          <strong>${item.label}</strong>
+          <div class="bar"><span style="width:${Math.max(1, Math.min(100, item.weight_pct || 0))}%"></span></div>
+          <span>${rawPct(item.weight_pct)}</span>
+        </div>
+      `).join("") : `<span class="small-note">暂无组合权重</span>`;
+      const portfolioFlags = data.portfolio?.review_flags || [];
+      $("portfolioBoundary").textContent = data.portfolio?.simulation_only === false ? "需要复核" : "仅模拟";
+      $("portfolioFlags").textContent = portfolioFlags.length ? portfolioFlags.map((item) => item.flag || item.message).join(" · ") : "组合建议仅用于研究与回放。";
+      if (data.portfolio?.proposal_id) {
+        $("portfolioProposalId").value = data.portfolio.proposal_id;
+      }
+
+      const researchEvidence = data.research_evidence || {};
+      const researchCounts = researchEvidence.counts || {};
+      const semanticRecall = researchEvidence.semantic_recall || {};
+      const hotspotRecall = researchEvidence.hotspot_recall || {};
+      $("researchReportCount").textContent = `${researchCounts.research_reports || data.counts?.research_reports || 0}`;
+      $("researchCitationCount").textContent = `${researchCounts.research_report_citation_evidence || data.counts?.research_report_citation_evidence || 0}`;
+      $("researchSemanticStatus").textContent = statusLabel(semanticRecall.status || "not_run");
+      $("researchHotspotStatus").textContent = statusLabel(hotspotRecall.status || "not_run");
+      const researchRows = [...(semanticRecall.samples || []), ...(hotspotRecall.samples || [])].slice(0, 8);
+      $("researchEvidenceRows").innerHTML = rows(researchRows, "暂无研报观点证据召回", (item) => `
+        <tr data-action="open-research" data-resource-id="${item.resource_id || ""}" data-title="${item.title || ""}" data-snippet="${(item.snippet || "").replace(/"/g, "&quot;")}" title="点击进入研究工作台检索">
+          <td>${documentTypeLabel(item.resource_type || item.document_type || "-")}</td>
+          <td>${item.title || compactId(item.resource_id)}${metaLine("资料", compactId(item.resource_id, ""))}</td>
+          <td>${boundaryLabel(item.source_boundary) || statusLabel(item.risk_level)}</td>
+          <td>${(item.snippet || "").slice(0, 180)}</td>
+        </tr>
+      `);
+
+      $("analysisSources").innerHTML = (data.source_summary || []).map((item) => `
+        <div class="source-row" data-action="open-ingestion" title="点击查看数据接入">
+          <div>
+            <strong>${sourceLabel(item.source_id)}</strong>
+            <div class="small-note">${(item.markets || []).join(", ") || "-"} · ${(item.license_classes || []).join(", ") || "-"}</div>
+          </div>
+          <span class="badge ok">${item.asset_count} · ${item.latest_date || "-"}</span>
+        </div>
+      `).join("") || `<span class="small-note">暂无来源摘要</span>`;
+
+      const supplementalObservations = data.supplemental_market_observations?.observations || [];
+      $("supplementalObservationRows").innerHTML = rows(supplementalObservations, "暂无补充观察", (item) => `
+        <tr data-action="open-security" data-security-id="sec_${item.label || ""}" data-label="${item.label || ""}" title="点击查看正式行情">
+          <td>${item.label || "-"}</td>
+          <td>${item.official_as_of_date || "-"}${metaLine("收盘", item.official_close ?? "")}</td>
+          <td>${item.supplemental_as_of_date || "-"}${metaLine("快照", item.supplemental_close ?? "")}${metaLine("变化", signedPct(item.price_change_since_official_close_pct))}</td>
+          <td>${boundaryLabel(item.source_boundary)}</td>
+        </tr>
+      `);
+
+      const acceptance = data.business_acceptance || {};
+      $("acceptanceStatus").textContent = acceptance.passed ? "通过" : acceptance.artifact_path ? "存在失败项" : "未执行";
+      $("acceptanceChecks").textContent = `${acceptance.check_count || 0}`;
+      $("acceptanceFailed").textContent = `${acceptance.failed_count || 0}`;
+      $("analysisArtifact").textContent = shortPath(data.artifact_path);
+
+      const snapshots = data.snapshots || [];
+      const latestA = snapshots.filter((item) => item.market === "A").map((item) => item.as_of_date).sort().pop();
+      const latestU = snapshots.filter((item) => item.market === "U").map((item) => item.as_of_date).sort().pop();
+      $("chipAshare").textContent = `A股 ${latestA || "-"}`;
+      $("chipUs").textContent = `美股 ${latestU || "-"}`;
+      $("chipAcceptance").textContent = acceptance.passed ? `验收 ${acceptance.check_count || 0}/${acceptance.check_count || 0}` : `验收失败 ${acceptance.failed_count || 0}`;
+      $("chipAcceptance").className = acceptance.passed ? "chip green" : "chip warn";
+    }
+
+    async function loadIndustryChainSummary() {
+      const [chains, positions, coverage] = await Promise.all([
+        api("/api/industry-chains?limit=20", { role: "analyst" }),
+        api("/api/company-positions?limit=50", { role: "analyst" }),
+        api("/api/company-positions/coverage-report", { role: "analyst" })
+      ]);
+      const chainRows = chains.data.chains || [];
+      const positionRows = positions.data.positions || [];
+      const coverageData = coverage.data.coverage || {};
+      $("chainCount").textContent = `${chainRows.length}`;
+      $("positionCount").textContent = `${positionRows.length}`;
+      $("positionSlotCoverage").textContent = pct(coverageData.slot_coverage || 0);
+      $("positionEvidenceCoverage").textContent = pct(coverageData.evidence_coverage || 0);
+      $("positionIssueCount").textContent = `${coverageData.positions_with_issues || 0}`;
+      $("chainRows").innerHTML = rows(chainRows, "暂无产业链", (item) => `<tr data-action="open-hotspot" data-query="${item.name || item.chain_id || ""}" data-chain-id="${item.chain_id || ""}" title="点击进入热点扩散"><td>${item.name || compactId(item.chain_id)}</td><td>${item.nodes?.length || 0}</td><td>${item.edges?.length || 0}</td><td>${compactId(item.taxonomy_version)}</td></tr>`);
+      $("companyPositionRows").innerHTML = rows(positionRows, "暂无公司定位", (item) => `<tr data-action="open-company" data-issuer-id="${item.issuer_id || ""}" data-security-id="${item.security_id || ""}" title="点击载入主体图谱"><td>${compactId(item.issuer_id)}${metaLine("证券", compactId(item.security_id, ""))}</td><td>${compactId(item.chain_id)}</td><td>${(item.node_ids || []).map((node) => compactId(node)).join(", ")}</td><td>${statusLabel(item.role)}</td></tr>`);
+    }
+
     async function loadDashboard() {
       try {
-        const [{ data, trace_id }, health, metrics] = await Promise.all([
-          api("/api/dashboard/ceo"),
-          api("/api/health", { role: "ceo" }),
-          api("/api/metrics", { role: "ceo" })
-        ]);
-        const counts = data.counts || {};
-        const extractionQuality = counts.extraction_results ? Math.min(96, 72 + counts.extraction_results * 4) : 72;
-        const governanceHealth = counts.open_exceptions ? Math.max(60, 92 - counts.open_exceptions * 8) : 92;
+        setStatus("正在载入总览数据...");
+        const healthPromise = api("/api/health", { role: "ceo" });
+        const metricsPromise = api("/api/metrics", { role: "ceo" });
+        const latestPromise = api("/api/analysis/latest", { role: "ceo" });
+        const industryChainPromise = loadIndustryChainSummary();
+
+        const latest = await latestPromise;
+        const counts = latest.data?.counts || {};
+        renderLatestAnalysis(latest.data || {});
+        $("chipResearch").textContent = `研报 ${latest.data?.research_evidence?.counts?.research_reports || latest.data?.counts?.research_reports || counts.research_reports || 0}`;
+        setStatus(`最新分析已载入 · ${latest.trace_id}`);
+
+        const [healthResult, metricsResult] = await Promise.allSettled([healthPromise, metricsPromise]);
+        const health = healthResult.status === "fulfilled" ? healthResult.value : { data: { status: "unknown", store: "-" } };
+        const metrics = metricsResult.status === "fulfilled" ? metricsResult.value : { data: { audit_events: 0 } };
+        $("chipService").textContent = `${statusLabel(health.data.status)} · ${health.data.store}`;
+        $("chipService").className = health.data.status === "ok" ? "chip green" : "chip block";
+
+        await industryChainPromise;
+        const { data, trace_id } = await api("/api/dashboard/ceo");
+        const dashboardCounts = data.counts || counts;
+        const extractionQuality = dashboardCounts.extraction_results ? Math.min(96, 72 + dashboardCounts.extraction_results * 4) : 72;
+        const governanceHealth = dashboardCounts.open_exceptions ? Math.max(60, 92 - dashboardCounts.open_exceptions * 8) : 92;
         $("metrics").innerHTML = [
-          { label: "组合收益 (YTD)", value: "+18.62%", sub: `研究观点 ${counts.theses || 0}`, tone: "green", bars: [18, 22, 30, 28, 42, 38, 50, 46, 64] },
-          { label: "最大回撤", value: "-8.37%", sub: `开放例外 ${counts.open_exceptions || 0}`, tone: "red", bars: [42, 30, 36, 28, 24, 34, 26, 22, 29] },
-          { label: "风险预算使用率", value: "72.4%", sub: `执行意图 ${counts.execution_intents || 0}`, tone: "", bars: [28, 36, 44, 52, 60, 56, 64, 70, 72] },
-          { label: "研究质量评分", value: `${extractionQuality}/100`, sub: `抽取结果 ${counts.extraction_results || 0}`, tone: "", bars: [42, 55, 48, 64, 58, 72, 68, 76, 82] },
+          { label: "组合收益 (YTD)", value: "+18.62%", sub: `研究观点 ${dashboardCounts.theses || 0}`, tone: "green", bars: [18, 22, 30, 28, 42, 38, 50, 46, 64] },
+          { label: "最大回撤", value: "-8.37%", sub: `开放例外 ${dashboardCounts.open_exceptions || 0}`, tone: "red", bars: [42, 30, 36, 28, 24, 34, 26, 22, 29] },
+          { label: "风险预算使用率", value: "72.4%", sub: `执行意图 ${dashboardCounts.execution_intents || 0}`, tone: "", bars: [28, 36, 44, 52, 60, 56, 64, 70, 72] },
+          { label: "研究质量评分", value: `${extractionQuality}/100`, sub: `抽取结果 ${dashboardCounts.extraction_results || 0}`, tone: "", bars: [42, 55, 48, 64, 58, 72, 68, 76, 82] },
           { label: "治理健康度", value: `${governanceHealth}/100`, sub: `审计 ${metrics.data.audit_events || 0}`, tone: "green", bars: [52, 60, 58, 72, 66, 76, 70, 82, 78] },
-          { label: "本月新增观点", value: `${counts.theses || 0}`, sub: `信号 ${counts.signals || 0}`, tone: "purple", bars: [12, 18, 32, 20, 40, 28, 54, 38, 62] }
+          { label: "本月新增观点", value: `${dashboardCounts.theses || 0}`, sub: `信号 ${dashboardCounts.signals || 0}`, tone: "purple", bars: [12, 18, 32, 20, 40, 28, 54, 38, 62] }
         ].map((item) => `<div class="panel compact span-2"><div class="kpi"><div class="label">${item.label}</div><div class="value ${item.tone}">${item.value}</div><div class="sub">${item.sub}</div>${spark(item.bars, item.tone)}</div></div>`).join("");
-        $("flowSources").textContent = `${counts.sources || 0} 个来源`;
-        $("flowDocuments").textContent = `${counts.documents || 0} 份材料`;
-        $("flowEvidence").textContent = `${counts.evidence || 0} 条证据`;
-        $("flowSignals").textContent = `${counts.signals || 0} 个信号`;
-        $("flowDecisions").textContent = `${counts.approved_decisions || 0}/${counts.decisions || 0} 已批准`;
-        $("filings").innerHTML = rows(data.filings_timeline, "No filings", (item) => `<tr><td>${item.title || item.document_id}</td><td>${item.document_type}</td><td>${item.published_at || ""}</td><td><span class="badge ok">利好</span></td></tr>`);
-        $("eventWall").innerHTML = rows(data.disclosure_event_wall, "No events", (item) => `<tr><td>${item.event_type}</td><td><span class="badge ${item.severity === "high" ? "block" : item.severity === "medium" ? "warn" : "ok"}">${item.severity}</span></td><td>${item.issuer_id}</td><td>${item.occurred_at || ""}</td></tr>`);
+        $("flowSources").textContent = `${dashboardCounts.sources || 0} 个来源`;
+        $("flowDocuments").textContent = `${dashboardCounts.documents || 0} 份材料`;
+        $("flowEvidence").textContent = `${dashboardCounts.evidence || 0} 条证据`;
+        $("flowSignals").textContent = `${dashboardCounts.signals || 0} 个信号`;
+        $("flowDecisions").textContent = `${dashboardCounts.approved_decisions || 0}/${dashboardCounts.decisions || 0} 已批准`;
+        $("filings").innerHTML = rows(data.filings_timeline, "暂无披露", (item) => `<tr data-action="open-company" data-issuer-id="${item.issuer_id || ""}" title="点击载入主体图谱"><td>${item.title || compactId(item.document_id)}</td><td>${documentTypeLabel(item.document_type)}</td><td>${item.published_at || ""}</td><td><span class="badge ok">已入库</span></td></tr>`);
+        $("eventWall").innerHTML = rows(data.disclosure_event_wall, "暂无事件", (item) => `<tr data-action="open-company" data-issuer-id="${item.issuer_id || ""}" title="点击载入主体图谱"><td>${statusLabel(item.event_type)}</td><td><span class="badge ${item.severity === "high" ? "block" : item.severity === "medium" ? "warn" : "ok"}">${statusLabel(item.severity)}</span></td><td>${compactId(item.issuer_id)}</td><td>${item.occurred_at || ""}</td></tr>`);
         const marketItems = [
           ...(data.market_data_summary || []).map((item) => ({
-            label: item.security_id,
-            metric: `${item.data_type.toUpperCase()} ${item.as_of_date} · ${item.close}`,
-            source: item.source_id
+            label: compactId(item.security_id),
+            securityId: item.security_id,
+            metric: `${documentTypeLabel(item.data_type) || item.data_type.toUpperCase()} ${item.as_of_date} · 收盘 ${item.close}`,
+            source: sourceLabel(item.source_id)
           })),
           ...(data.corporate_action_summary || []).map((item) => ({
-            label: item.security_id,
-            metric: `${item.action_type} ${item.ex_date}`,
-            source: `ratio ${item.ratio || 1}`
+            label: compactId(item.security_id),
+            securityId: item.security_id,
+            metric: `${statusLabel(item.action_type)} ${item.ex_date}`,
+            source: `调整因子 ${item.ratio || 1}`
           })),
           ...(data.crowding_heatmap || []).map((item) => ({
-            label: item.issuer_id,
-            metric: `Crowding ${pct(item.score)}`,
-            source: item.source
+            label: compactId(item.issuer_id),
+            securityId: item.issuer_id,
+            metric: `机构拥挤度 ${pct(item.score)}`,
+            source: sourceLabel(item.source)
           }))
         ];
-        $("marketRows").innerHTML = rows(marketItems, "No market data", (item) => `<tr><td>${item.label}</td><td>${item.metric}</td><td>${item.source}</td></tr>`);
+        $("marketRows").innerHTML = rows(marketItems, "暂无行情", (item) => `<tr data-action="open-security" data-security-id="${item.securityId || item.label || ""}" data-label="${item.label || ""}" title="点击查看行情数据"><td>${item.label}</td><td>${item.metric}</td><td>${item.source}</td></tr>`);
         $("crowding").innerHTML = (data.crowding_heatmap || []).map((item) => {
           const pct = Math.round((item.score || 0) * 100);
-          return `<div class="heat-cell"><strong>${item.issuer_id}</strong><div class="bar"><span style="width:${pct}%"></span></div><span>${pct}% ${item.source}</span></div>`;
-        }).join("") || "<span>No crowding snapshots</span>";
-        const sourceReviewOverdue = counts.source_review_overdue || 0;
-        const sourceReviewDueSoon = counts.source_review_due_soon || 0;
-        const securityFindings = (counts.sensitive_findings || 0) + (counts.permission_denied_events || 0);
+          return `<div class="heat-cell"><strong>${compactId(item.issuer_id)}</strong><div class="bar"><span style="width:${pct}%"></span></div><span>${pct}% ${sourceLabel(item.source)}</span></div>`;
+        }).join("") || "<span>暂无拥挤度快照</span>";
+        const sourceReviewOverdue = dashboardCounts.source_review_overdue || 0;
+        const sourceReviewDueSoon = dashboardCounts.source_review_due_soon || 0;
+        const securityFindings = (dashboardCounts.sensitive_findings || 0) + (dashboardCounts.permission_denied_events || 0);
         const riskItems = [
-          ["公告理解错误风险", counts.extraction_results ? "低" : "中", counts.extraction_results ? 20 : 45, counts.extraction_results ? "ok" : "warn"],
-          ["研报偏见风险", counts.challengers ? "中" : "待建", counts.challengers ? 42 : 30, "warn"],
-          ["情绪过热风险", counts.signals ? "中" : "低", counts.signals ? 58 : 20, "warn"],
-          ["模型幻觉风险", counts.evidence ? "监控中" : "偏高", counts.evidence ? 24 : 70, counts.evidence ? "ok" : "block"],
+          ["公告理解错误风险", dashboardCounts.extraction_results ? "低" : "中", dashboardCounts.extraction_results ? 20 : 45, dashboardCounts.extraction_results ? "ok" : "warn"],
+          ["研报偏见风险", dashboardCounts.challengers ? "中" : "待建", dashboardCounts.challengers ? 42 : 30, "warn"],
+          ["情绪过热风险", dashboardCounts.signals ? "中" : "低", dashboardCounts.signals ? 58 : 20, "warn"],
+          ["模型幻觉风险", dashboardCounts.evidence ? "监控中" : "偏高", dashboardCounts.evidence ? 24 : 70, dashboardCounts.evidence ? "ok" : "block"],
           ["权限/敏感数据风险", securityFindings ? `${securityFindings} 待处理` : "已闭环", securityFindings ? 76 : 12, securityFindings ? "block" : "ok"],
           ["来源复核风险", sourceReviewOverdue ? `${sourceReviewOverdue} 逾期` : `${sourceReviewDueSoon} 待复核`, sourceReviewOverdue ? 72 : sourceReviewDueSoon ? 42 : 12, sourceReviewOverdue ? "block" : sourceReviewDueSoon ? "warn" : "ok"]
         ];
         $("riskRows").innerHTML = riskItems.map(([label, level, value, tone]) => `<div class="risk-row"><span>${label}</span><span class="badge ${tone}">${level}</span><div class="bar"><span style="width:${value}%"></span></div></div>`).join("");
-        $("graphIssuer").textContent = data.filings_timeline?.[0]?.issuer_id || "公司";
-        $("sysSources").textContent = `${counts.sources || 0} 个来源`;
-        $("sysObjectStore").textContent = health.data.object_store?.backend || "local";
-        $("sysSearch").textContent = health.data.search_index?.backend || "local";
+        $("graphIssuer").textContent = compactId(data.filings_timeline?.[0]?.issuer_id, "公司");
+        $("sysSources").textContent = `${dashboardCounts.sources || 0} 个来源`;
+        $("sysObjectStore").textContent = backendLabel(health.data.object_store?.backend || "local");
+        $("sysSearch").textContent = backendLabel(health.data.search_index?.backend || "local");
         $("sysAudit").textContent = `${metrics.data.audit_events || 0} 条`;
-        $("sysHealth").textContent = `${health.data.status} · ${health.data.store}`;
-        setStatus(`Dashboard refreshed · ${trace_id}`);
+        $("sysHealth").textContent = `${statusLabel(health.data.status)} · ${health.data.store}`;
+        setStatus(`总览已刷新 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -964,8 +2483,29 @@
     async function seedDemo() {
       try {
         const { data, trace_id } = await api("/api/demo/full-flow", { method: "POST", role: "platform" });
-        setStatus(`Demo ready · ${data.decision_id} · ${trace_id}`);
+        let taskSummary = "研究任务 0";
+        try {
+          const queued = await api("/api/research/tasks/from-hotspot", {
+            method: "POST",
+            role: "analyst",
+            body: {
+              query: "GPU AI chip",
+              seed_chain_id: data.chain_id || "chain_demo_electronics",
+              max_depth: 2,
+              page_size: 20
+            }
+          });
+          taskSummary = `研究任务 ${queued.data.created_count || 0} 新增 / ${queued.data.existing_count || 0} 已存在`;
+        } catch (taskError) {
+          taskSummary = "研究任务待补";
+        }
+        setValue("issuerId", data.issuer_id || "issuer_demo");
+        activeEntityIssuerId = data.issuer_id || "issuer_demo";
+        activeEntitySecurityId = "";
+        setStatus(`样例已初始化 · ${compactId(data.decision_id)} · ${taskSummary} · ${trace_id}`);
         await loadDashboard();
+        await loadEntity();
+        setStatus(`样例已初始化 · ${compactId(data.decision_id)} · ${taskSummary} · 图谱已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -973,13 +2513,69 @@
 
     async function loadEntity() {
       try {
-        const issuerId = encodeURIComponent($("issuerId").value || "issuer_demo");
-        const { data, trace_id } = await api(`/api/graph/query?issuer_id=${issuerId}`);
-        $("issuerBox").textContent = pretty(data.issuers[0] || {});
-        $("securityRows").innerHTML = rows(data.securities, "No securities", (item) => `<tr><td>${item.security_id}</td><td>${item.ticker}</td><td>${item.market}</td></tr>`);
-        $("researchRows").innerHTML = rows([...(data.theses || []), ...(data.research_cards || []), ...(data.challengers || [])], "No research records", (item) => `<tr><td>${item.thesis_id || item.card_id || item.challenger_id}</td><td>${item.status || item.verdict || item.template_type || ""}</td></tr>`);
-        $("documentRows").innerHTML = rows(data.documents, "No documents", (item) => `<tr><td>${item.document_id}</td><td>${item.document_type}</td><td>${item.title || item.source_uri}</td></tr>`);
-        setStatus(`Entity loaded · ${trace_id}`);
+        const issuerId = $("issuerId").value || "issuer_demo";
+        const params = new URLSearchParams({ issuer_id: issuerId });
+        const scopedSecurityId = activeEntityIssuerId === issuerId ? activeEntitySecurityId : "";
+        if (scopedSecurityId) params.set("security_id", scopedSecurityId);
+        params.set("market_data_limit", "20");
+        const { data, trace_id } = await api(`/api/graph/query?${params.toString()}`);
+        renderIssuerSummary(data.issuers[0] || {});
+        $("securityRows").innerHTML = rows(data.securities, "暂无证券", (item) => `<tr><td>${item.ticker || compactId(item.security_id)}</td><td>${item.market || "-"}</td><td>${compactId(item.security_id)}</td></tr>`);
+        $("researchRows").innerHTML = rows([...(data.theses || []), ...(data.research_cards || []), ...(data.challengers || [])], "暂无研究记录", (item) => `<tr><td>${item.hypothesis || item.title || compactId(item.thesis_id || item.card_id || item.challenger_id)}</td><td>${statusLabel(item.status || item.verdict || item.template_type || "")}</td></tr>`);
+        $("documentRows").innerHTML = rows(data.documents, "暂无文档", (item) => `<tr><td>${item.title || compactId(item.document_id)}</td><td>${documentTypeLabel(item.document_type)}</td><td>${item.source_uri || metaLine("资料", compactId(item.document_id, ""))}</td></tr>`);
+        renderKnowledgeGraph(data);
+        renderEntityMappings({ mappings: data.entity_mappings || [], total: (data.entity_mappings || []).length });
+        await loadEntityMappingQuality();
+        setStatus(`主体已载入 · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    function entityMappingParams() {
+      const params = new URLSearchParams({ issuer_id: $("issuerId").value || "issuer_demo", limit: "20" });
+      if ($("entityMappingValidAt").value) params.set("valid_at", $("entityMappingValidAt").value);
+      if ($("entityMappingRecordedAt").value) params.set("recorded_at", $("entityMappingRecordedAt").value);
+      if ($("entityMappingStatus").value) params.set("status", $("entityMappingStatus").value);
+      return params;
+    }
+
+    function renderEntityMappings(data) {
+      $("entityMappingTotal").textContent = `${data.total ?? data.mappings?.length ?? 0}`;
+      $("entityMappingRows").innerHTML = rows(data.mappings, "暂无映射", (item) => {
+        const validTo = item.valid_to || "开放";
+        return `<tr><td>${compactId(item.mapping_id)}</td><td>${item.ticker || ""} · ${item.market || ""}</td><td><span class="badge ${item.status === "active" ? "ok" : "warn"}">${statusLabel(item.status)}</span></td><td>${item.valid_from || ""} 至 ${validTo}</td></tr>`;
+      });
+    }
+
+    function renderEntityMappingQuality(data) {
+      $("entityMappingAccuracy").textContent = pct(data.accuracy || 0);
+      $("entityMappingVersionCoverage").textContent = pct(data.bitemporal_version_coverage || 0);
+      $("entityMappingOverlapCount").textContent = `${data.temporal_overlap_count || 0}`;
+      $("entityMappingLowConfidence").textContent = `${data.low_confidence_count || 0}`;
+      const issues = [
+        ...(data.low_confidence_mappings || []).map((item) => ({ type: "low_confidence", mapping_id: item.mapping_id, detail: `${item.confidence} · ${item.ticker || ""}` })),
+        ...(data.temporal_overlaps || []).map((item) => ({ type: "temporal_overlap", mapping_id: item.mapping_ids?.join(", ") || "", detail: `${item.ticker || ""} · ${item.market || ""}` })),
+        ...(data.mismatches || []).map((item) => ({ type: "label_mismatch", mapping_id: item.mapping_id, detail: item.reason || userPretty(item.actual || {}) }))
+      ];
+      $("entityMappingIssueRows").innerHTML = rows(issues, "暂无映射问题", (item) => `<tr><td>${statusLabel(item.type)}</td><td>${compactId(item.mapping_id)}</td><td>${item.detail}</td></tr>`);
+    }
+
+    async function loadEntityMappings() {
+      try {
+        const { data, trace_id } = await api(`/api/entity-mappings?${entityMappingParams().toString()}`, { role: "data_engineer" });
+        renderEntityMappings(data);
+        setStatus(`主体映射已载入 · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function loadEntityMappingQuality() {
+      try {
+        const { data, trace_id } = await api(`/api/entity-mappings/quality-report?${entityMappingParams().toString()}`, { role: "data_engineer" });
+        renderEntityMappingQuality(data);
+        setStatus(`主体映射质量已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -989,15 +2585,88 @@
       try {
         const id = encodeURIComponent($("decisionId").value || "dec_demo");
         const { data, trace_id } = await api(`/api/decision-packs/${id}`, { role: "cio" });
-        $("decisionBox").textContent = pretty(data);
-        setStatus(`Decision loaded · ${trace_id}`);
+        renderDecisionGovernance(data);
+        setStatus(`决策已载入 · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    function renderDecisionGovernance(data) {
+      $("decisionBox").textContent = userPretty({
+        decision_id: data?.decision_id,
+        approval_state: data?.approval_state,
+        usage_boundary: data?.usage_boundary,
+        reason: data?.rationale || data?.summary || data?.notes,
+        signatures: data?.signatures || []
+      });
+      $("decisionApprovalState").textContent = statusLabel(data?.approval_state || "pending");
+      $("decisionSignatureCount").textContent = `${data?.signatures?.length || 0}`;
+      const stateTone = data?.approval_state === "approved" ? "ok" : data?.approval_state === "rejected" ? "block" : "warn";
+      $("decisionSignatureRows").innerHTML = rows(data?.signatures || [], "暂无签名", (item) => `<tr><td>${statusLabel(item.role)}</td><td>${item.user}</td><td><span class="badge ${stateTone}">${statusLabel(data.approval_state)}</span></td><td>${item.comment || ""}</td></tr>`);
+    }
+
+    function renderCommitteeRisk(data) {
+      const counts = data.counts || {};
+      $("committeeOpenExceptions").textContent = `${counts.open_exceptions || 0}`;
+      $("committeePendingDecisions").textContent = `${counts.pending_decisions || 0}`;
+      $("committeeExceptionRows").innerHTML = rows(data.exceptions || [], "暂无开放例外", (item) => {
+        const tone = item.severity === "critical" || item.severity === "high" ? "block" : item.severity === "medium" ? "warn" : "ok";
+        return `<tr><td>${compactId(item.exception_id)}</td><td>${compactId(item.decision_id)}</td><td><span class="badge ${tone}">${statusLabel(item.severity)}</span></td><td>${item.reason}</td></tr>`;
+      });
+    }
+
+    async function loadCommitteeRisk() {
+      try {
+        const { data, trace_id } = await api("/api/dashboard/risk", { role: "risk_compliance" });
+        renderCommitteeRisk(data);
+        setStatus(`投委会风险队列已载入 · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function signDecision() {
+      try {
+        const id = encodeURIComponent($("decisionId").value || "dec_demo");
+        const { data, trace_id } = await api(`/api/approvals/${id}/sign`, {
+          method: "POST",
+          role: "risk_compliance",
+          body: {
+            role: $("decisionSignerRole").value,
+            user: $("decisionSignerUser").value || $("actor").value || "ui_user",
+            comment: $("decisionSignComment").value
+          }
+        });
+        renderDecisionGovernance(data);
+        await loadCommitteeRisk();
+        setStatus(`决策已签批 · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function createException() {
+      try {
+        const { data, trace_id } = await api("/api/exceptions", {
+          method: "POST",
+          role: "risk_compliance",
+          body: {
+            decision_id: $("decisionId").value || "dec_demo",
+            reason: $("exceptionReason").value || "Manual committee follow-up required",
+            severity: $("exceptionSeverity").value || "medium"
+          }
+        });
+        $("committeeExceptionRows").innerHTML = rows([data], "暂无开放例外", (item) => `<tr><td>${compactId(item.exception_id)}</td><td>${compactId(item.decision_id)}</td><td><span class="badge warn">${statusLabel(item.severity)}</span></td><td>${item.reason}</td></tr>`);
+        await loadCommitteeRisk();
+        setStatus(`例外已创建 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
     }
 
     function renderPromptChanges(items) {
-      $("promptChangeRows").innerHTML = rows(items, "No prompt changes", (item) => `<tr><td>${item.request_id}</td><td>${item.prompt_name}</td><td><span class="badge ${item.status === "approved" ? "ok" : item.status === "rejected" ? "block" : "warn"}">${item.status}</span></td><td>${item.change_level}</td></tr>`);
+      $("promptChangeRows").innerHTML = rows(items, "暂无提示词变更", (item) => `<tr><td>${compactId(item.request_id)}</td><td>${item.prompt_name}</td><td><span class="badge ${item.status === "approved" ? "ok" : item.status === "rejected" ? "block" : "warn"}">${statusLabel(item.status)}</span></td><td>${statusLabel(item.change_level)}</td></tr>`);
     }
 
     async function loadPromptChanges() {
@@ -1011,7 +2680,7 @@
         $("llmErrorRate").textContent = pct(metrics.data.error_rate || 0);
         $("llmCost").textContent = `${metrics.data.estimated_cost || 0} / ${metrics.data.cost_budget || 0}`;
         $("llmBudgetUsed").textContent = pct(metrics.data.cost_budget_used || 0);
-        setStatus(`Prompt changes loaded · ${trace_id}`);
+        setStatus(`提示词变更已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1019,19 +2688,21 @@
 
     async function createPromptChange() {
       try {
+        const requestId = formValue("promptChangeId", `pr_${Date.now()}`);
         const { data, trace_id } = await api("/api/prompts/changes", {
           method: "POST",
           role: "nlp_ml",
           body: {
-            request_id: $("promptChangeId").value,
-            prompt_name: $("promptName").value,
+            request_id: requestId,
+            prompt_name: formValue("promptName", "研究摘要"),
             change_level: $("promptChangeLevel").value,
-            requested_by: $("actor").value || "ui_user",
-            content: $("promptContent").value
+            requested_by: formValue("actor", "demo_user"),
+            content: formValue("promptContent", "请在摘要中标明资料来源和使用边界。")
           }
         });
+        $("promptChangeId").value = data.request_id || requestId;
         renderPromptChanges([data]);
-        setStatus(`Prompt change created · ${trace_id}`);
+        setStatus(`提示词变更已创建 · ${compactId(data.request_id || requestId)} · ${trace_id}`);
         await loadDashboard();
       } catch (error) {
         setStatus(error.message, true);
@@ -1040,14 +2711,19 @@
 
     async function approvePromptChange() {
       try {
-        const id = encodeURIComponent($("promptChangeId").value || "");
+        const requestId = formValue("promptChangeId", "");
+        if (!requestId) {
+          setStatus("请先提交提示词变更，再审批通过。", true);
+          return;
+        }
+        const id = encodeURIComponent(requestId);
         const { data, trace_id } = await api(`/api/prompts/changes/${id}/approve`, {
           method: "POST",
           role: "risk_compliance",
           body: { approved: true }
         });
         renderPromptChanges([data]);
-        setStatus(`Prompt change approved · ${trace_id}`);
+        setStatus(`提示词变更已批准 · ${trace_id}`);
         await loadDashboard();
       } catch (error) {
         setStatus(error.message, true);
@@ -1061,12 +2737,12 @@
       $("permissionRedAllowed").textContent = `${role.red_allowed || 0}`;
       $("permissionRuleCount").textContent = `${data.coverage?.rules || 0}`;
       $("permissionDomainCount").textContent = `${data.coverage?.data_domains || 0}`;
-      $("permissionRows").innerHTML = rows(data.rules, "No permission rules", (item) => {
+      $("permissionRows").innerHTML = rows(data.rules, "暂无权限规则", (item) => {
         const decision = item.public || item.allowed_roles.includes(role.role) || item.allowed_roles.includes("*");
-        const domains = item.data_domains.join(", ");
+        const domains = item.data_domains.map(domainLabel).join(", ");
         const roleLabel = item.public ? "public" : decision ? "allowed" : "denied";
         const tone = item.public || decision ? "ok" : "block";
-        return `<tr><td>${item.rule_id}</td><td>${item.method} · ${item.action}</td><td>${domains}</td><td><span class="badge ${tone}">${roleLabel}</span></td></tr>`;
+        return `<tr><td>${compactId(item.rule_id)}</td><td>${item.method} · ${statusLabel(item.action)}</td><td>${domains}</td><td><span class="badge ${tone}">${statusLabel(roleLabel)}</span></td></tr>`;
       });
     }
 
@@ -1080,19 +2756,167 @@
         if ($("permissionAction").value) params.set("action", $("permissionAction").value);
         const { data, trace_id } = await api(`/api/governance/permission-matrix?${params.toString()}`, { role: "risk_compliance" });
         renderPermissionMatrix(data);
-        setStatus(`Permission matrix loaded · ${trace_id}`);
+        setStatus(`权限矩阵已载入 · ${trace_id}`);
       } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    function renderSecSingleNameResult(data) {
+      const ids = data.ids || {};
+      const summary = data.summary || {};
+      $("secSingleSourceMode").textContent = data.used_realtime_sec ? "实时 SEC" : "本地样例回退";
+      $("secSingleWorkflow").textContent = statusLabel(data.workflow_status || "completed");
+      $("secSingleDocumentId").textContent = compactId(ids.document_id);
+      $("secSingleSignal").textContent = `${statusLabel(summary.signal_direction || "-")} · ${formatScore(summary.signal_score)}`;
+      $("secSingleSimulationMode").textContent = data.live_execution_allowed ? "实盘已阻断" : "仅模拟，不连接券商";
+      $("secSingleStageRows").innerHTML = rows(data.workflow_stages, "暂无阶段", (item) => {
+        const tone = item.status === "approved" || item.status === "passed" || item.status === "filled" || item.status === "done" ? "ok" : item.status === "fallback" || item.status === "review" ? "warn" : "";
+        return `<tr><td>${workflowStageLabel(item.stage)}</td><td><span class="badge ${tone}">${statusLabel(item.status)}</span></td><td>${compactId(item.resource_id, "")}</td><td>${boundaryLabel(data.usage_boundary)}</td></tr>`;
+      });
+      $("secSingleEvidenceRows").innerHTML = rows(data.evidence, "暂无证据", (item) => `<tr><td>${compactId(item.evidence_id)}</td><td>${compactId(item.document_id)}</td><td>${item.page_no || ""}</td><td>${(item.canonical_text || item.span_text || "").slice(0, 180)}</td></tr>`);
+      $("secSingleAnswerBox").textContent = data.research_answer?.chinese_summary || summary.answer || "";
+      $("secSingleDecisionBox").textContent = userPretty({
+        研究观点: data.thesis?.hypothesis,
+        研究结论: { 方向: statusLabel(data.signal?.direction), 分数: data.signal?.score },
+        反方挑战: { 结论: statusLabel(data.challenger?.verdict), 冲突分数: data.challenger?.conflict_score },
+        投委会材料: { 编号: compactId(data.decision?.decision_id), 审批状态: statusLabel(data.decision?.approval_state) },
+        模拟执行: { 编号: compactId(data.intent?.intent_id), 动作: statusLabel(data.intent?.action), 目标权重: data.intent?.target_weight }
+      });
+      $("secSingleSimulationBox").textContent = userPretty(data.simulated_execution || {});
+      if (ids.issuer_id) $("issuerId").value = ids.issuer_id;
+      if (ids.issuer_id) $("searchIssuer").value = ids.issuer_id;
+      if (ids.decision_id) $("decisionId").value = ids.decision_id;
+      if (ids.intent_id) $("intentId").value = ids.intent_id;
+      if (ids.document_id) $("filingQaDocumentId").value = ids.document_id;
+      if (data.evidence?.[0]?.evidence_id) $("extractEvidenceId").value = data.evidence[0].evidence_id;
+      if (data.question) $("filingQaQuestion").value = data.question;
+      $("query").value = `${data.ticker || "AAPL"} 收入 服务韧性 风险`;
+    }
+
+    function renderFilingQaResult(data) {
+      const answer = data.answer || {};
+      const fallback = data.model_fallback || {};
+      const quality = data.quality_report?.answers?.[0] || {};
+      const benchmark = data.summary_benchmark?.answers?.[0] || {};
+      $("filingQaAnswerId").textContent = compactId(answer.answer_id);
+      $("filingQaReviewStatus").textContent = statusLabel(answer.human_review_status || "pending");
+      $("filingQaModelStatus").textContent = `${statusLabel(fallback.status || "not_run")}${fallback.fallback_used ? ` · ${fallback.fallback_used}` : ""}`;
+      $("filingQaSourceLink").textContent = `${statusLabel(answer.source_publicness || "unknown")} · ${answer.source_document_ids?.map((item) => compactId(item)).join(", ") || compactId(data.document?.document_id)}`;
+      $("filingQaBoundary").textContent = data.live_execution_allowed ? "已阻断" : "仅研究，不生成交易信号";
+      $("filingQaAnswerBox").textContent = answer.chinese_summary || data.model_answer || "";
+      $("filingQaSourceBox").textContent = answer.english_source_text || "";
+      $("filingQaEvidenceRows").innerHTML = rows(data.evidence, "暂无问答证据", (item) => `<tr><td>${compactId(item.evidence_id)}</td><td>${item.page_no || ""}</td><td>${formatScore(item.confidence)}</td><td>${(item.canonical_text || item.span_text || "").slice(0, 180)}</td></tr>`);
+      const auditRows = [
+        { check: "source_linked", status: quality.source_linked ? "passed" : "review", issue: (quality.issues || []).join(", "), detail: `${quality.evidence_count || 0} 条证据` },
+        { check: "english_source", status: data.preserves_english_source ? "passed" : "review", issue: data.preserves_english_source ? "" : "缺少英文原文", detail: `${(answer.english_source_text || "").length} 字符` },
+        { check: "summary_benchmark", status: benchmark.passed ? "passed" : "review", issue: (benchmark.blocking_issues || []).join(", "), detail: `评分 ${benchmark.score ?? "-"}` },
+        { check: "model_fallback", status: fallback.fallback_used ? "review" : "passed", issue: fallback.fallback_used || "", detail: fallback.upstream_error || fallback.status || "" }
+      ];
+      $("filingQaAuditRows").innerHTML = rows(auditRows, "暂无问答审计", (item) => `<tr><td>${statusLabel(item.check)}</td><td><span class="badge ${item.status === "passed" ? "ok" : "warn"}">${statusLabel(item.status)}</span></td><td>${statusLabel(item.issue)}</td><td>${statusLabel(item.detail)}</td></tr>`);
+      if (answer.answer_id) $("query").value = answer.question || "收入 服务韧性 风险";
+    }
+
+    async function runFilingQa() {
+      try {
+        $("filingQaModelStatus").textContent = "运行中";
+        $("filingQaAuditRows").innerHTML = `<tr><td>原文问答</td><td><span class="badge warn">运行中</span></td><td>${compactId(formValue("filingQaDocumentId", "样例资料"))}</td><td>需要原文</td></tr>`;
+        const { data, trace_id } = await api("/api/research/answers/filing-qa", {
+          method: "POST",
+          role: "analyst",
+          body: {
+            document_id: formValue("filingQaDocumentId", "doc_demo_10k"),
+            question: formValue("filingQaQuestion", "收入、服务韧性和主要风险因素发生了哪些变化？"),
+            evidence_limit: Number(formValue("filingQaEvidenceLimit", "5"))
+          }
+        });
+        renderFilingQaResult(data);
+        await loadDashboard();
+        setStatus(`原文问答已完成 · ${compactId(data.answer?.answer_id || "answer")} · ${trace_id}`);
+      } catch (error) {
+        $("filingQaModelStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    function renderHotspotExpansion(data) {
+      const candidates = data.ranked_candidates?.candidates || [];
+      const layers = data.evidence_layers || {};
+      $("hotspotLexiconCount").textContent = `${data.matched_lexicons?.length || 0}`;
+      $("hotspotNodeCount").textContent = `${data.chain_nodes?.length || 0}`;
+      $("hotspotCandidateCount").textContent = `${candidates.length}`;
+      $("hotspotTaskCount").textContent = `${data.research_tasks?.length || 0}`;
+      $("hotspotBoundary").textContent = data.automation_allowed ? "需要复核" : "仅研究，不作为交易信号";
+      $("hotspotNodeRows").innerHTML = rows(data.chain_nodes, "暂无产业链节点", (item) => `<tr><td>${item.name || compactId(item.node_id)}</td><td>${item.level || ""}</td><td>${statusLabel(item.category || "")}</td><td>${compactId(item.chain_id)}</td></tr>`);
+      $("hotspotCandidateRows").innerHTML = rows(candidates, "暂无候选公司", (item) => {
+        const coverage = item.score_components?.evidence_score || 0;
+        return `<tr><td>${compactId(item.issuer_id, "")}</td><td>${compactId(item.position_id, "")}</td><td>${formatScore(item.rank_score)}</td><td>${pct(coverage)}</td></tr>`;
+      });
+      const layerRows = Object.entries(layers).map(([layer, items]) => ({
+        layer,
+        count: Array.isArray(items) ? items.length : 0,
+        boundary: layer === "facts" ? "证据支持" : layer === "needs_verification" ? "复核队列" : "非事实",
+        sample: Array.isArray(items) && items[0] ? (items[0].statement || items[0].reason || compactId(items[0].resource_id) || "") : ""
+      }));
+      $("hotspotEvidenceLayerRows").innerHTML = rows(layerRows, "暂无证据分层", (item) => `<tr><td>${statusLabel(item.layer)}</td><td>${item.count}</td><td>${item.boundary}</td><td>${String(item.sample).slice(0, 140)}</td></tr>`);
+      $("hotspotTaskRows").innerHTML = rows(data.research_tasks, "暂无研究任务", (item) => `<tr><td>${compactId(item.task_id)}</td><td>${statusLabel(item.type || item.task_type)}</td><td>${compactId(item.issuer_id, "")}</td><td>${item.reason || ""}</td></tr>`);
+    }
+
+    async function runHotspotExpansion() {
+      try {
+        $("hotspotBoundary").textContent = "运行中";
+        const { data, trace_id } = await api("/api/hotspots/expand", {
+          method: "POST",
+          role: "analyst",
+          body: {
+            query: $("hotspotQuery").value || "AI 芯片",
+            seed_chain_id: formValue("hotspotChainId", "chain_ai_compute_cloud"),
+            max_depth: Number(formValue("hotspotDepth", "3")),
+            include_restricted: false,
+            recall_limit: 10
+          }
+        });
+        renderHotspotExpansion(data);
+        setStatus(`热点扩散已完成 · ${trace_id}`);
+      } catch (error) {
+        $("hotspotBoundary").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    async function runSecSingleName() {
+      try {
+        $("secSingleWorkflow").textContent = "运行中";
+        $("secSingleStageRows").innerHTML = `<tr><td>SEC 单标的研究</td><td><span class="badge warn">运行中</span></td><td>${$("secSingleTicker").value || "AAPL"}</td><td>仅模拟，不连接券商</td></tr>`;
+        const forms = (formValue("secSingleForms", "10-K,10-Q")).split(",").map((item) => item.trim()).filter(Boolean);
+        const { data, trace_id } = await api("/api/research/tasks/sec-single-name/run", {
+          method: "POST",
+          role: "analyst",
+          body: {
+            ticker: formValue("secSingleTicker", "AAPL"),
+            cik: formValue("secSingleCik", "0000320193"),
+            document_types: forms,
+            limit: Number(formValue("secSingleLimit", "1")),
+            include_body: true,
+            fallback_mode: "local_sample"
+          }
+        });
+        renderSecSingleNameResult(data);
+        await loadDashboard();
+        setStatus(`SEC 单标的研究闭环 ${statusLabel(data.workflow_status)} · ${trace_id}`);
+      } catch (error) {
+        $("secSingleWorkflow").textContent = "错误";
         setStatus(error.message, true);
       }
     }
 
     async function runSearch() {
       try {
-        const q = encodeURIComponent($("query").value || "");
-        const issuerId = encodeURIComponent($("searchIssuer").value || "");
+        const q = encodeURIComponent(formValue("query", ""));
+        const issuerId = encodeURIComponent(formValue("searchIssuer", ""));
         const { data, trace_id } = await api(`/api/search?q=${q}&issuer_id=${issuerId}&limit=20`, { role: "ceo" });
-        $("searchRows").innerHTML = rows(data.results, "No results", (item) => `<tr><td>${item.resource_type}</td><td>${item.resource_id}</td><td>${item.score}</td><td>${item.snippet}</td></tr>`);
-        setStatus(`Search completed · ${trace_id}`);
+        $("searchRows").innerHTML = rows(data.results, "暂无结果", (item) => `<tr><td>${documentTypeLabel(item.resource_type)}</td><td>${compactId(item.resource_id)}</td><td>${formatScore(item.score)}</td><td>${item.snippet}</td></tr>`);
+        setStatus(`检索已完成 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1100,11 +2924,136 @@
 
     async function loadIntent() {
       try {
-        const id = encodeURIComponent($("intentId").value || "intent_demo");
+        const id = encodeURIComponent(formValue("intentId", "intent_demo"));
         const { data, trace_id } = await api(`/api/execution-intents/${id}`, { role: "pm" });
-        $("intentBox").textContent = pretty(data);
-        setStatus(`Intent loaded · ${trace_id}`);
+        $("intentBox").textContent = userPretty(data);
+        setStatus(`执行意图已载入 · ${trace_id}`);
       } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function createDemoPortfolioProposal() {
+      const securityId = formValue("mdSecurityId", "security_demo_us");
+      const { data } = await api("/api/portfolio/optimize", {
+        method: "POST",
+        role: "cio",
+        body: {
+          proposal_id: `pfp_ui_${Date.now()}`,
+          securities: [
+            {
+              security_id: securityId,
+              market_weight: 1,
+              volatility: 0.22,
+              market: "U",
+              industry: "科技",
+              currency: "USD"
+            }
+          ],
+          views: [
+            {
+              security_id: securityId,
+              expected_return: 0.08,
+              confidence: 0.6
+            }
+          ],
+          constraints: { max_weight: 0.6, paper_only: true },
+          risk_budget: { market: { U: 0.7 } },
+          status: "candidate",
+          created_by: formValue("actor", "demo_user")
+        }
+      });
+      return data;
+    }
+
+    async function loadPortfolioProposal() {
+      try {
+        let id = formValue("portfolioProposalId", "");
+        const loadLatestOrCreate = async () => {
+          const listed = await api("/api/portfolio/proposals?limit=1", { role: "cio" });
+          const latestId = listed.data.proposals?.[0]?.proposal_id || "";
+          if (latestId) return latestId;
+          try {
+            const created = await createDemoPortfolioProposal();
+            return created.proposal_id;
+          } catch (creationError) {
+            await api("/api/demo/full-flow", { method: "POST", role: "platform" });
+            setValue("mdSecurityId", "security_demo_us");
+            const created = await createDemoPortfolioProposal();
+            return created.proposal_id;
+          }
+        };
+        if (!id || id === "pfp_bl" || id.startsWith("pfp_latest")) {
+          id = await loadLatestOrCreate();
+          $("portfolioProposalId").value = id;
+        }
+        const encodedId = encodeURIComponent(id);
+        let response;
+        try {
+          response = await api(`/api/portfolio/proposals/${encodedId}`, { role: "cio" });
+        } catch (loadError) {
+          id = await loadLatestOrCreate();
+          $("portfolioProposalId").value = id;
+          response = await api(`/api/portfolio/proposals/${encodeURIComponent(id)}`, { role: "cio" });
+        }
+        const { data, trace_id } = response;
+        $("portfolioProposalBox").textContent = userPretty({
+          proposal_id: data.proposal_id,
+          proposal_status: data.status,
+          candidate_weights: data.candidate_weights,
+          usage_boundary: data.usage_boundary,
+          reason: data.rationale || data.notes || data.summary
+        });
+        $("portfolioFeedbackProposal").textContent = compactId(data.proposal_id || id);
+        $("portfolioFeedbackStatus").textContent = statusLabel(data.status || "-");
+        $("portfolioFeedbackDecision").textContent = "已载入";
+        $("portfolioFeedbackReturn").textContent = `${Object.keys(data.candidate_weights || {}).length} 个权重`;
+        setStatus(`组合方案已载入 · ${trace_id}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    function renderPortfolioFeedback(data) {
+      $("portfolioFeedbackProposal").textContent = compactId(data.proposal_id);
+      $("portfolioFeedbackStatus").textContent = statusLabel(data.proposal_status || "-");
+      $("portfolioFeedbackDecision").textContent = statusLabel(data.decision || "-");
+      $("portfolioFeedbackBoundary").textContent = data.live_execution_allowed ? "已阻断" : "仅模拟，不连接券商";
+      const totalReturn = data.returns_feedback?.total_return;
+      $("portfolioFeedbackReturn").textContent = totalReturn === undefined || totalReturn === null ? "-" : `${Math.round(totalReturn * 10000) / 100}%`;
+      $("portfolioFeedbackBox").textContent = userPretty({
+        decision: data.decision,
+        committee_member: data.committee_member,
+        candidate_weights: data.candidate_weights,
+        simulated_valuation: data.simulated_valuation,
+        returns_feedback: data.returns_feedback,
+        automation_allowed: data.automation_allowed,
+        live_execution_allowed: data.live_execution_allowed,
+        usage_boundary: data.usage_boundary
+      });
+    }
+
+    async function runPortfolioFeedback() {
+      try {
+        $("portfolioFeedbackStatus").textContent = "运行中";
+        const { data, trace_id } = await api("/api/portfolio/simulated-feedback", {
+          method: "POST",
+          role: "cio",
+          body: {
+            proposal_id: formValue("portfolioProposalId", "pfp_bl"),
+            decision: $("portfolioCommitteeDecision").value,
+            committee_member: formValue("portfolioCommitteeMember", formValue("actor", "demo_user")),
+            rationale: "界面触发的纸面组合投委会复核",
+            include_valuation: true,
+            feedback_start_date: formValue("portfolioFeedbackStart", ""),
+            feedback_end_date: formValue("portfolioFeedbackEnd", "")
+          }
+        });
+        renderPortfolioFeedback(data);
+        await loadDashboard();
+        setStatus(`模拟组合反馈 ${statusLabel(data.decision)} · ${trace_id}`);
+      } catch (error) {
+        $("portfolioFeedbackStatus").textContent = "错误";
         setStatus(error.message, true);
       }
     }
@@ -1119,11 +3068,11 @@
             cik: $("cik").value,
             document_types: documentTypes,
             limit: 5,
-            user_agent: $("secUserAgent").value
+            user_agent: formValue("secUserAgent", defaultUserAgent())
           }
         });
-        $("secRows").innerHTML = rows(data.filings, "No filings", (item) => `<tr><td>${item.document_type}</td><td>${item.published_at || ""}</td><td>${item.source_uri}</td></tr>`);
-        setStatus(`SEC preview loaded · ${trace_id}`);
+        renderDisclosureRows("secRows", data.filings);
+        setStatus(`SEC 预览已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1140,11 +3089,11 @@
             begin_date: $("ashareBegin").value,
             end_date: $("ashareEnd").value,
             limit: 5,
-            user_agent: $("ashareUserAgent").value
+            user_agent: formValue("ashareUserAgent", defaultUserAgent())
           }
         });
-        $("ashareRows").innerHTML = rows(data.filings, "No filings", (item) => `<tr><td>${item.document_type}</td><td>${item.published_at || ""}</td><td>${item.source_uri}</td></tr>`);
-        setStatus(`A-Share preview loaded · ${trace_id}`);
+        renderDisclosureRows("ashareRows", data.filings);
+        setStatus(`A 股预览已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1159,11 +3108,11 @@
             query: $("hkexQuery").value,
             file_type: $("hkexFileType").value || "pdf",
             limit: 5,
-            user_agent: $("hkexUserAgent").value
+            user_agent: formValue("hkexUserAgent", defaultUserAgent())
           }
         });
-        $("hkexRows").innerHTML = rows(data.filings, "No filings", (item) => `<tr><td>${item.document_type}</td><td>${item.published_at || ""}</td><td>${item.source_uri}</td></tr>`);
-        setStatus(`HKEX preview loaded · ${trace_id}`);
+        renderDisclosureRows("hkexRows", data.filings);
+        setStatus(`港交所预览已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1175,8 +3124,8 @@
           method: "POST",
           role: "data_engineer",
           body: {
-            security_id: $("mdSecurityId").value,
-            source_id: $("mdSourceId").value,
+            security_id: formValue("mdSecurityId", "security_demo_us"),
+            source_id: formValue("mdSourceId", "public_eod_market_data"),
             data_type: $("mdType").value,
             as_of_date: $("mdDate").value,
             close: Number($("mdClose").value || 0),
@@ -1184,8 +3133,8 @@
             volume: Number($("mdVolume").value || 0)
           }
         });
-        $("marketDataRows").innerHTML = rows([data], "No market data", (item) => `<tr><td>${item.security_id}</td><td>${item.as_of_date}</td><td>${item.close}</td><td>${item.rights_tag.license_class}</td></tr>`);
-        setStatus(`Market data added · ${trace_id}`);
+        renderMarketDataRows([data]);
+        setStatus(`行情已新增 · ${trace_id}`);
         await loadDashboard();
       } catch (error) {
         setStatus(error.message, true);
@@ -1196,8 +3145,8 @@
       try {
         const securityId = encodeURIComponent($("mdSecurityId").value || "");
         const { data, trace_id } = await api(`/api/market-data?security_id=${securityId}&limit=20`, { role: "ceo" });
-        $("marketDataRows").innerHTML = rows(data.market_data, "No market data", (item) => `<tr><td>${item.security_id}</td><td>${item.as_of_date}</td><td>${item.close}</td><td>${item.rights_tag.license_class}</td></tr>`);
-        setStatus(`Market data loaded · ${trace_id}`);
+        renderMarketDataRows(data.market_data);
+        setStatus(`行情已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1209,17 +3158,17 @@
           method: "POST",
           role: "analyst",
           body: {
-            document_id: $("manualRefDocId").value,
-            issuer_id: $("manualRefIssuerId").value,
-            security_id: $("manualRefSecurityId").value,
+            document_id: formValue("manualRefDocId", `manual_ref_${Date.now()}`),
+            issuer_id: formValue("manualRefIssuerId", "issuer_demo"),
+            security_id: formValue("manualRefSecurityId", "security_demo_us"),
             document_type: $("manualRefType").value,
-            title: $("manualRefTitle").value,
-            source_uri: $("manualRefUri").value,
-            notes: $("manualRefNotes").value
+            title: formValue("manualRefTitle", "人工参考资料"),
+            source_uri: formValue("manualRefUri", ""),
+            notes: formValue("manualRefNotes", "仅记录元数据；需确认公开性和公平披露边界。")
           }
         });
-        $("manualReferenceRows").innerHTML = rows([data.manual_review], "No manual references", (item) => `<tr><td>${item.document_id}</td><td>${item.issue_type}</td><td>${item.status}</td><td>${item.suggested_action}</td></tr>`);
-        setStatus(`Manual reference routed · ${trace_id}`);
+        renderManualReferenceRows([data.manual_review]);
+        setStatus(`人工参考已进入复核 · ${trace_id}`);
         await loadDashboard();
       } catch (error) {
         setStatus(error.message, true);
@@ -1229,8 +3178,8 @@
     async function loadManualReferences() {
       try {
         const { data, trace_id } = await api("/api/evidence/manual-reviews?issue_type=manual_reference_boundary_review&limit=20", { role: "risk_compliance" });
-        $("manualReferenceRows").innerHTML = rows(data.manual_reviews, "No manual references", (item) => `<tr><td>${item.document_id}</td><td>${item.issue_type}</td><td>${item.status}</td><td>${item.suggested_action}</td></tr>`);
-        setStatus(`Manual references loaded · ${trace_id}`);
+        renderManualReferenceRows(data.manual_reviews);
+        setStatus(`人工参考已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1242,18 +3191,18 @@
           method: "POST",
           role: "data_engineer",
           body: {
-            issuer_id: $("holdingIssuerId").value,
-            security_id: $("holdingSecurityId").value,
+            issuer_id: formValue("holdingIssuerId", "issuer_demo"),
+            security_id: formValue("holdingSecurityId", "security_demo_us"),
             source_id: "sec_edgar",
-            filer_cik: $("holdingFilerCik").value,
-            filer_name: $("holdingFilerName").value,
-            report_period: $("holdingPeriod").value,
+            filer_cik: formValue("holdingFilerCik", ""),
+            filer_name: formValue("holdingFilerName", "样例资本合伙"),
+            report_period: formValue("holdingPeriod", "2026-03-31"),
             shares: Number($("holdingShares").value || 0),
             value_usd: Number($("holdingValueUsd").value || 0)
           }
         });
-        $("holdingRows").innerHTML = rows([data], "No 13F holdings", (item) => `<tr><td>${item.filer_name || item.filer_cik}</td><td>${item.report_period}</td><td>${item.value_usd}</td><td>${item.security_id}</td></tr>`);
-        setStatus(`13F holding added · ${trace_id}`);
+        renderHoldingRows([data]);
+        setStatus(`13F 持仓已新增 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1265,11 +3214,11 @@
           method: "POST",
           role: "cio",
           body: {
-            issuer_id: $("holdingIssuerId").value,
-            report_period: $("holdingPeriod").value
+            issuer_id: formValue("holdingIssuerId", "issuer_demo"),
+            report_period: formValue("holdingPeriod", "2026-03-31")
           }
         });
-        setStatus(`13F crowding updated · ${data.snapshot_id} · ${trace_id}`);
+        setStatus(`13F 拥挤度已更新 · ${compactId(data.snapshot_id)} · ${trace_id}`);
         await loadDashboard();
       } catch (error) {
         setStatus(error.message, true);
@@ -1280,8 +3229,8 @@
       try {
         const issuerId = encodeURIComponent($("holdingIssuerId").value || "");
         const { data, trace_id } = await api(`/api/13f/holdings?issuer_id=${issuerId}&limit=20`, { role: "ceo" });
-        $("holdingRows").innerHTML = rows(data.holdings, "No 13F holdings", (item) => `<tr><td>${item.filer_name || item.filer_cik}</td><td>${item.report_period}</td><td>${item.value_usd}</td><td>${item.security_id}</td></tr>`);
-        setStatus(`13F holdings loaded · ${trace_id}`);
+        renderHoldingRows(data.holdings);
+        setStatus(`13F 持仓已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1289,21 +3238,26 @@
 
     async function runExtraction() {
       try {
-        const expectedTerms = $("extractExpectedTerms").value.split(",").map((item) => item.trim()).filter(Boolean);
+        const evidenceId = formValue("extractEvidenceId", "");
+        if (!evidenceId) {
+          setStatus("请先运行 SEC 单标的研究，系统会自动带入可抽取的证据材料。", true);
+          return;
+        }
+        const expectedTerms = formValue("extractExpectedTerms", "收入,风险因素").split(",").map((item) => normalizeTerm(item.trim())).filter(Boolean);
         const { data, trace_id } = await api("/api/extractions/run", {
           method: "POST",
           role: "nlp_ml",
           body: {
-            evidence_id: $("extractEvidenceId").value,
-            benchmark_id: $("extractBenchmarkId").value,
+            evidence_id: evidenceId,
+            benchmark_id: formValue("extractBenchmarkId", ""),
             expected_terms: expectedTerms,
             expected_numbers: 1,
             expected_periods: 1,
             parser_version: "rule-finance-1"
           }
         });
-        $("extractionBox").textContent = pretty(data);
-        setStatus(`Extraction completed · ${trace_id}`);
+        $("extractionBox").textContent = userPretty(data);
+        setStatus(`结构化抽取已完成 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1311,10 +3265,10 @@
 
     async function loadReport() {
       try {
-        const id = encodeURIComponent($("reportId").value || currentReportId());
+        const id = encodeURIComponent(formValue("reportId", currentReportId()));
         const { data, trace_id } = await api(`/api/operating-reports/${id}`, { role: "ceo" });
-        $("reportBox").textContent = pretty(data);
-        setStatus(`Report loaded · ${trace_id}`);
+        $("reportBox").textContent = userPretty(data);
+        setStatus(`报告已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1322,10 +3276,10 @@
 
     async function loadReplay() {
       try {
-        const id = encodeURIComponent($("replayId").value || "replay_demo");
+        const id = encodeURIComponent(formValue("replayId", "replay_demo"));
         const { data, trace_id } = await api(`/api/strategy-replays/${id}`, { role: "cio" });
-        $("replayBox").textContent = pretty(data);
-        setStatus(`Replay loaded · ${trace_id}`);
+        $("replayBox").textContent = userPretty(data);
+        setStatus(`回放已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1334,18 +3288,18 @@
     function renderReplayCompare(data) {
       $("replayCompareCount").textContent = `${data.count || 0}`;
       $("replayVarianceCount").textContent = `${data.variance_count || 0}`;
-      $("replayLatestId").textContent = data.latest_replay_id || "-";
+      $("replayLatestId").textContent = compactId(data.latest_replay_id);
       $("replayReviewCount").textContent = `${data.action_counts?.review_again || 0}`;
       $("replayContinueCount").textContent = `${data.action_counts?.continue_or_expand || 0}`;
-      $("replayCompareRows").innerHTML = rows(data.replays, "No replay batches", (item) => `<tr><td>${item.replay_id}</td><td>${item.version}</td><td>${item.actual_outcome || item.expected_outcome}</td><td>${item.action_bucket}</td></tr>`);
+      $("replayCompareRows").innerHTML = rows(data.replays, "暂无回放批次", (item) => `<tr><td>${compactId(item.replay_id)}</td><td>${item.version}</td><td>${statusLabel(item.actual_outcome || item.expected_outcome)}</td><td>${statusLabel(item.action_bucket)}</td></tr>`);
     }
 
     async function compareReplays() {
       try {
-        const decisionId = encodeURIComponent($("replayDecisionId").value || "");
+        const decisionId = encodeURIComponent(formValue("replayDecisionId", ""));
         const { data, trace_id } = await api(`/api/strategy-replays/compare?decision_id=${decisionId}&limit=20`, { role: "cio" });
         renderReplayCompare(data);
-        setStatus(`Replay comparison loaded · ${trace_id}`);
+        setStatus(`回放对比已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1357,26 +3311,26 @@
           api("/api/incidents/calendar", { role: "risk_compliance" }),
           api("/api/governance/source-review-reminders?due_within_days=30&limit=20", { role: "risk_compliance" })
         ]);
-        $("playbooksBox").textContent = pretty(data.playbooks || []);
-        $("reportsBox").textContent = pretty(data.reports || []);
-        $("schedulesBox").textContent = pretty(data.schedules || []);
+        $("playbooksBox").textContent = userPretty(data.playbooks || []);
+        $("reportsBox").textContent = userPretty(data.reports || []);
+        $("schedulesBox").textContent = userPretty(data.schedules || []);
         renderSourceReviews(reviews.data);
-        setStatus(`Incidents loaded · ${trace_id}`);
+        setStatus(`事故信息已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
     }
 
     function renderSourceReviews(data) {
-      $("sourceReviewRows").innerHTML = rows(data.reminders, "No source reviews due", (item) => `<tr><td>${item.source_id}</td><td>${item.review_owner_role || item.review_owner}</td><td>${item.due_at || ""}</td><td><span class="badge ${item.status === "overdue" ? "block" : "warn"}">${item.status}</span></td></tr>`);
-      $("sourceReviewOwnerRows").innerHTML = rows(data.owner_board, "No owner workload", (item) => `<tr><td>${item.owner_role || item.owner}</td><td>${item.total}</td><td>${item.overdue}</td><td>${item.blocked}</td></tr>`);
+      $("sourceReviewRows").innerHTML = rows(data.reminders, "暂无到期来源复核", (item) => `<tr><td>${sourceLabel(item.source_id)}</td><td>${statusLabel(item.review_owner_role || item.review_owner)}</td><td>${item.due_at || ""}</td><td><span class="badge ${item.status === "overdue" ? "block" : "warn"}">${statusLabel(item.status)}</span></td></tr>`);
+      $("sourceReviewOwnerRows").innerHTML = rows(data.owner_board, "暂无负责人负载", (item) => `<tr><td>${statusLabel(item.owner_role || item.owner)}</td><td>${item.total}</td><td>${item.overdue}</td><td>${item.blocked}</td></tr>`);
     }
 
     async function loadSourceReviews() {
       try {
         const { data, trace_id } = await api("/api/governance/source-review-reminders?due_within_days=30&limit=20", { role: "risk_compliance" });
         renderSourceReviews(data);
-        setStatus(`Source reviews loaded · ${trace_id}`);
+        setStatus(`来源复核已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1392,8 +3346,8 @@
           role: "risk_compliance",
           body: { channel: "source_review_outbox", target: "risk-compliance-source-review", alert_ids: reviewAlerts }
         });
-        $("sourceReviewNotificationRows").innerHTML = rows(data.notifications, "No notifications", (item) => `<tr><td>${item.alert_id}</td><td>${item.channel}</td><td>${item.status}</td><td>${item.target}</td></tr>`);
-        setStatus(`Source review notifications queued · ${trace_id}`);
+        $("sourceReviewNotificationRows").innerHTML = rows(data.notifications, "暂无通知", (item) => `<tr><td>${compactId(item.alert_id)}</td><td>${statusLabel(item.channel)}</td><td>${statusLabel(item.status)}</td><td>${statusLabel(item.target)}</td></tr>`);
+        setStatus(`来源复核通知已入队 · ${trace_id}`);
         await loadDashboard();
       } catch (error) {
         setStatus(error.message, true);
@@ -1406,15 +3360,16 @@
           method: "POST",
           role: "data_engineer",
           body: {
-            schedule_id: $("scheduleId").value,
-            name: $("scheduleName").value,
+            schedule_id: formValue("scheduleId", `schedule_${Date.now()}`),
+            name: formValue("scheduleName", "界面触发的数据接入"),
             cadence: $("scheduleCadence").value,
             payload: { items: [] },
             retry_limit: 2
           }
         });
-        $("scheduleBox").textContent = pretty(data);
-        setStatus(`Schedule created · ${trace_id}`);
+        $("scheduleId").value = data.schedule_id || formValue("scheduleId", "");
+        renderScheduleSummary(data);
+        setStatus(`调度已创建 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -1425,34 +3380,78 @@
         const { data, trace_id } = await api("/api/ingestion/schedules/run", {
           method: "POST",
           role: "data_engineer",
-          body: { schedule_ids: [$("scheduleId").value], due_only: false }
+          body: { schedule_ids: [formValue("scheduleId", "")].filter(Boolean), due_only: false }
         });
-        $("scheduleBox").textContent = pretty(data);
-        setStatus(`Schedules executed · ${trace_id}`);
+        renderScheduleSummary(data);
+        setStatus(`调度已执行 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
     }
 
+    document.addEventListener("click", async (event) => {
+      const target = event.target.closest("[data-action]");
+      if (!target) return;
+      const action = target.dataset.action;
+      try {
+        if (action === "seed-demo") {
+          await seedDemo();
+        } else if (action === "open-security") {
+          await openSecurityContext(target.dataset.securityId, target.dataset.label);
+        } else if (action === "open-research") {
+          openResearchContext({
+            resource_id: target.dataset.resourceId,
+            title: target.dataset.title,
+            snippet: target.dataset.snippet
+          });
+        } else if (action === "open-company") {
+          await openCompanyContext(target.dataset.issuerId, target.dataset.securityId);
+        } else if (action === "open-hotspot") {
+          setValue("hotspotQuery", target.dataset.query || "AI 芯片");
+          setValue("hotspotChainId", target.dataset.chainId || "");
+          openTab("search");
+          await runHotspotExpansion();
+        } else if (action === "open-ingestion") {
+          openTab("ingestion");
+          setStatus("已切到数据中台");
+        } else if (action === "open-portfolio") {
+          await openPortfolioContext(target.dataset.proposalId);
+        }
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+
     document.querySelectorAll("[data-open]").forEach((button) => {
       button.addEventListener("click", () => {
-        document.querySelectorAll("[data-open]").forEach((item) => item.classList.remove("active"));
-        document.querySelectorAll("[data-tab]").forEach((item) => item.classList.remove("active"));
-        button.classList.add("active");
-        document.querySelector(`[data-tab="${button.dataset.open}"]`).classList.add("active");
+        openTab(button.dataset.open);
       });
     });
 
     $("refresh").addEventListener("click", loadDashboard);
     $("seed").addEventListener("click", seedDemo);
-    $("loadEntity").addEventListener("click", loadEntity);
+    $("loadEntity").addEventListener("click", () => {
+      activeEntityIssuerId = $("issuerId").value || "issuer_demo";
+      activeEntitySecurityId = "";
+      loadEntity();
+    });
+    $("loadEntityMappings").addEventListener("click", loadEntityMappings);
+    $("loadEntityMappingQuality").addEventListener("click", loadEntityMappingQuality);
     $("createPromptChange").addEventListener("click", createPromptChange);
     $("approvePromptChange").addEventListener("click", approvePromptChange);
     $("loadPromptChanges").addEventListener("click", loadPromptChanges);
     $("loadPermissionMatrix").addEventListener("click", loadPermissionMatrix);
+    $("runSecSingleName").addEventListener("click", runSecSingleName);
+    $("runFilingQa").addEventListener("click", runFilingQa);
+    $("runHotspotExpansion").addEventListener("click", runHotspotExpansion);
     $("runSearch").addEventListener("click", runSearch);
     $("loadDecision").addEventListener("click", loadDecision);
     $("loadIntent").addEventListener("click", loadIntent);
+    $("signDecision").addEventListener("click", signDecision);
+    $("createException").addEventListener("click", createException);
+    $("loadCommitteeRisk").addEventListener("click", loadCommitteeRisk);
+    $("loadPortfolioProposal").addEventListener("click", loadPortfolioProposal);
+    $("runPortfolioFeedback").addEventListener("click", runPortfolioFeedback);
     $("loadReport").addEventListener("click", loadReport);
     $("loadReplay").addEventListener("click", loadReplay);
     $("compareReplays").addEventListener("click", compareReplays);

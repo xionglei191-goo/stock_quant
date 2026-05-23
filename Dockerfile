@@ -13,7 +13,7 @@ ENV AI_QUANT_DB=/data/state.db
 ENV AI_QUANT_OBJECT_STORE=/data/objects
 ENV AI_QUANT_HOST=0.0.0.0
 
-RUN python -m pip install --no-cache-dir "psycopg[binary]>=3.1"
+RUN python -m pip install --no-cache-dir "psycopg[binary]==3.3.4"
 
 EXPOSE 8000
 

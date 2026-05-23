@@ -1,0 +1,446 @@
+{
+  "next_gate": "fill real artifact URIs in this plan, run production_evidence_plan_check.py --require-filled-uris, then use production_release_gate.py or production_evidence_plan_to_manifest.py plus production_closure_manifest_check.py before production_closure.py against the real staging URL",
+  "plan_id": "production_external_evidence_collection_plan",
+  "production_boundary": "this plan is a collection checklist only; it is not release evidence",
+  "task_count": 17,
+  "tasks": [
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "sample_manifest_uri",
+        "chinese_sample_set_uri",
+        "english_sample_set_uri",
+        "annotation_manual_uri",
+        "bbox_gold_uri",
+        "table_cell_gold_uri",
+        "summary_quality_uri",
+        "regression_baseline_uri"
+      ],
+      "artifact_uri_template": {
+        "annotation_manual_uri": "s3://<production-evidence-bucket>/<release-id>/T-402/annotation_manual_uri",
+        "bbox_gold_uri": "s3://<production-evidence-bucket>/<release-id>/T-402/bbox_gold_uri",
+        "chinese_sample_set_uri": "s3://<production-evidence-bucket>/<release-id>/T-402/chinese_sample_set_uri",
+        "english_sample_set_uri": "s3://<production-evidence-bucket>/<release-id>/T-402/english_sample_set_uri",
+        "regression_baseline_uri": "s3://<production-evidence-bucket>/<release-id>/T-402/regression_baseline_uri",
+        "sample_manifest_uri": "s3://<production-evidence-bucket>/<release-id>/T-402/sample_manifest_uri",
+        "summary_quality_uri": "s3://<production-evidence-bucket>/<release-id>/T-402/summary_quality_uri",
+        "table_cell_gold_uri": "s3://<production-evidence-bucket>/<release-id>/T-402/table_cell_gold_uri"
+      },
+      "external_evidence_blockers": [
+        "300-500 real CN filing/report samples",
+        "English SEC sample set",
+        "human annotation manual",
+        "OCR bbox/table cell gold labels",
+        "summary quality samples",
+        "regression baseline report"
+      ],
+      "owner_role": "NLP/ML 负责人",
+      "readiness_endpoint": "/api/benchmarks/{benchmark_id}/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-402"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "postgres_smoke_uri",
+        "s3_smoke_uri",
+        "opensearch_smoke_uri",
+        "capacity_baseline_uri",
+        "backup_restore_uri",
+        "least_privilege_policy_uri"
+      ],
+      "artifact_uri_template": {
+        "backup_restore_uri": "s3://<production-evidence-bucket>/<release-id>/T-404/backup_restore_uri",
+        "capacity_baseline_uri": "s3://<production-evidence-bucket>/<release-id>/T-404/capacity_baseline_uri",
+        "least_privilege_policy_uri": "s3://<production-evidence-bucket>/<release-id>/T-404/least_privilege_policy_uri",
+        "opensearch_smoke_uri": "s3://<production-evidence-bucket>/<release-id>/T-404/opensearch_smoke_uri",
+        "postgres_smoke_uri": "s3://<production-evidence-bucket>/<release-id>/T-404/postgres_smoke_uri",
+        "s3_smoke_uri": "s3://<production-evidence-bucket>/<release-id>/T-404/s3_smoke_uri"
+      },
+      "external_evidence_blockers": [
+        "PostgreSQL/S3/OpenSearch real environment smoke",
+        "capacity and latency baseline",
+        "backup restore drill"
+      ],
+      "owner_role": "平台负责人",
+      "readiness_endpoint": "/api/governance/storage-readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-404"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "batch_parse_artifact_uri",
+        "gold_mapping_uri",
+        "unmapped_review_queue_uri"
+      ],
+      "artifact_uri_template": {
+        "batch_parse_artifact_uri": "s3://<production-evidence-bucket>/<release-id>/T-405/batch_parse_artifact_uri",
+        "gold_mapping_uri": "s3://<production-evidence-bucket>/<release-id>/T-405/gold_mapping_uri",
+        "unmapped_review_queue_uri": "s3://<production-evidence-bucket>/<release-id>/T-405/unmapped_review_queue_uri"
+      },
+      "external_evidence_blockers": [
+        "real Form 13F large sample parse run",
+        "CUSIP/FIGI/issuer gold mapping accuracy evidence"
+      ],
+      "owner_role": "数据工程",
+      "readiness_endpoint": "/api/13f/filings/mapping-readiness",
+      "status": "blocked_external_evidence",
+      "task_id": "T-405"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "batch_mapping_artifact_uri",
+        "entity_page_acceptance_uri",
+        "neo4j_sync_artifact_uri",
+        "qdrant_sync_artifact_uri"
+      ],
+      "artifact_uri_template": {
+        "batch_mapping_artifact_uri": "s3://<production-evidence-bucket>/<release-id>/T-406/batch_mapping_artifact_uri",
+        "entity_page_acceptance_uri": "s3://<production-evidence-bucket>/<release-id>/T-406/entity_page_acceptance_uri",
+        "neo4j_sync_artifact_uri": "s3://<production-evidence-bucket>/<release-id>/T-406/neo4j_sync_artifact_uri",
+        "qdrant_sync_artifact_uri": "s3://<production-evidence-bucket>/<release-id>/T-406/qdrant_sync_artifact_uri"
+      },
+      "external_evidence_blockers": [
+        "ADR/Chinese ADR real batch mapping evidence",
+        "entity page browser acceptance",
+        "Neo4j external sync evidence",
+        "Qdrant external sync evidence"
+      ],
+      "owner_role": "数据工程",
+      "readiness_endpoint": "/api/entity-mappings/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-406"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "query_gold_refs_uri",
+        "llm_rerank_eval_uri",
+        "research_task_queue_uri"
+      ],
+      "artifact_uri_template": {
+        "llm_rerank_eval_uri": "s3://<production-evidence-bucket>/<release-id>/T-406A/llm_rerank_eval_uri",
+        "query_gold_refs_uri": "s3://<production-evidence-bucket>/<release-id>/T-406A/query_gold_refs_uri",
+        "research_task_queue_uri": "s3://<production-evidence-bucket>/<release-id>/T-406A/research_task_queue_uri"
+      },
+      "external_evidence_blockers": [
+        "real hotspot query/gold reference LLM rerank evaluation"
+      ],
+      "owner_role": "分析师",
+      "readiness_endpoint": "/api/hotspots/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-406A"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "browser_acceptance_uri",
+        "screenshot_manifest_uri",
+        "cross_browser_matrix_uri",
+        "real_data_workflow_uri",
+        "visual_overflow_review_uri",
+        "access_control_review_uri"
+      ],
+      "artifact_uri_template": {
+        "access_control_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-407/access_control_review_uri",
+        "browser_acceptance_uri": "s3://<production-evidence-bucket>/<release-id>/T-407/browser_acceptance_uri",
+        "cross_browser_matrix_uri": "s3://<production-evidence-bucket>/<release-id>/T-407/cross_browser_matrix_uri",
+        "real_data_workflow_uri": "s3://<production-evidence-bucket>/<release-id>/T-407/real_data_workflow_uri",
+        "screenshot_manifest_uri": "s3://<production-evidence-bucket>/<release-id>/T-407/screenshot_manifest_uri",
+        "visual_overflow_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-407/visual_overflow_review_uri"
+      },
+      "external_evidence_blockers": [
+        "non-local real-volume UI workflow acceptance",
+        "desktop/mobile cross-browser matrix artifact"
+      ],
+      "owner_role": "平台负责人",
+      "readiness_endpoint": "/api/readiness/ui-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-407"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "performance_reconciliation_uri",
+        "ledger_extract_uri",
+        "board_pack_uri",
+        "strategy_replay_uri"
+      ],
+      "artifact_uri_template": {
+        "board_pack_uri": "s3://<production-evidence-bucket>/<release-id>/T-408/board_pack_uri",
+        "ledger_extract_uri": "s3://<production-evidence-bucket>/<release-id>/T-408/ledger_extract_uri",
+        "performance_reconciliation_uri": "s3://<production-evidence-bucket>/<release-id>/T-408/performance_reconciliation_uri",
+        "strategy_replay_uri": "s3://<production-evidence-bucket>/<release-id>/T-408/strategy_replay_uri"
+      },
+      "external_evidence_blockers": [
+        "performance reconciliation",
+        "NAV/ledger reconciliation",
+        "board pack artifact",
+        "large replay acceptance"
+      ],
+      "owner_role": "CIO",
+      "readiness_endpoint": "/api/portfolio/attribution/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-408"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "solver_artifact_uri",
+        "comparison_report_uri",
+        "constraint_report_uri"
+      ],
+      "artifact_uri_template": {
+        "comparison_report_uri": "s3://<production-evidence-bucket>/<release-id>/T-409/comparison_report_uri",
+        "constraint_report_uri": "s3://<production-evidence-bucket>/<release-id>/T-409/constraint_report_uri",
+        "solver_artifact_uri": "s3://<production-evidence-bucket>/<release-id>/T-409/solver_artifact_uri"
+      },
+      "external_evidence_blockers": [
+        "production PyPortfolioOpt/CVXPY solver comparison",
+        "solver version/parameter artifact"
+      ],
+      "owner_role": "CIO",
+      "readiness_endpoint": "/api/portfolio/optimizer/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-409"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "model_quality_eval_uri",
+        "fallback_comparison_uri",
+        "summary_rubric_uri"
+      ],
+      "artifact_uri_template": {
+        "fallback_comparison_uri": "s3://<production-evidence-bucket>/<release-id>/T-410/fallback_comparison_uri",
+        "model_quality_eval_uri": "s3://<production-evidence-bucket>/<release-id>/T-410/model_quality_eval_uri",
+        "summary_rubric_uri": "s3://<production-evidence-bucket>/<release-id>/T-410/summary_rubric_uri"
+      },
+      "external_evidence_blockers": [
+        "real model quality evaluation",
+        "fallback comparison at scale"
+      ],
+      "owner_role": "NLP/ML 负责人",
+      "readiness_endpoint": "/api/research/answers/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-410"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "collector_evidence_uri",
+        "logs_backend_uri",
+        "query_evidence_uri",
+        "retention_policy_uri",
+        "external_alert_evidence_uri",
+        "drill_evidence_uri"
+      ],
+      "artifact_uri_template": {
+        "collector_evidence_uri": "s3://<production-evidence-bucket>/<release-id>/T-411/collector_evidence_uri",
+        "drill_evidence_uri": "s3://<production-evidence-bucket>/<release-id>/T-411/drill_evidence_uri",
+        "external_alert_evidence_uri": "s3://<production-evidence-bucket>/<release-id>/T-411/external_alert_evidence_uri",
+        "logs_backend_uri": "s3://<production-evidence-bucket>/<release-id>/T-411/logs_backend_uri",
+        "query_evidence_uri": "s3://<production-evidence-bucket>/<release-id>/T-411/query_evidence_uri",
+        "retention_policy_uri": "s3://<production-evidence-bucket>/<release-id>/T-411/retention_policy_uri"
+      },
+      "external_evidence_blockers": [
+        "non-local OTel collector backend query evidence",
+        "retention policy execution",
+        "external alert delivery evidence"
+      ],
+      "owner_role": "平台负责人",
+      "readiness_endpoint": "/api/observability/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-411"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "production_parameters_uri",
+        "secret_manager_evidence_uri",
+        "backup_restore_evidence_uri",
+        "capacity_baseline_uri",
+        "release_checklist_uri",
+        "canary_plan_uri",
+        "rollback_plan_uri"
+      ],
+      "artifact_uri_template": {
+        "backup_restore_evidence_uri": "s3://<production-evidence-bucket>/<release-id>/T-412/backup_restore_evidence_uri",
+        "canary_plan_uri": "s3://<production-evidence-bucket>/<release-id>/T-412/canary_plan_uri",
+        "capacity_baseline_uri": "s3://<production-evidence-bucket>/<release-id>/T-412/capacity_baseline_uri",
+        "production_parameters_uri": "s3://<production-evidence-bucket>/<release-id>/T-412/production_parameters_uri",
+        "release_checklist_uri": "s3://<production-evidence-bucket>/<release-id>/T-412/release_checklist_uri",
+        "rollback_plan_uri": "s3://<production-evidence-bucket>/<release-id>/T-412/rollback_plan_uri",
+        "secret_manager_evidence_uri": "s3://<production-evidence-bucket>/<release-id>/T-412/secret_manager_evidence_uri"
+      },
+      "external_evidence_blockers": [
+        "production parameter confirmation",
+        "external secret manager integration",
+        "backup restore artifact",
+        "release checklist",
+        "canary/rollback artifact"
+      ],
+      "owner_role": "平台负责人",
+      "readiness_endpoint": "/api/readiness/deployment-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-412"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "policy_review_uri",
+        "source_review_uri",
+        "manual_reference_review_uri",
+        "research_governance_uri"
+      ],
+      "artifact_uri_template": {
+        "manual_reference_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-414/manual_reference_review_uri",
+        "policy_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-414/policy_review_uri",
+        "research_governance_uri": "s3://<production-evidence-bucket>/<release-id>/T-414/research_governance_uri",
+        "source_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-414/source_review_uri"
+      },
+      "external_evidence_blockers": [
+        "citation boundary policy review artifact",
+        "source review artifact",
+        "manual reference reviewed-empty artifact where applicable"
+      ],
+      "owner_role": "风险/合规",
+      "readiness_endpoint": "/api/research/citation-boundary/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-414"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "endpoint_artifact_uri",
+        "stability_artifact_uri",
+        "rate_limit_artifact_uri",
+        "license_review_uri",
+        "field_sample_uri"
+      ],
+      "artifact_uri_template": {
+        "endpoint_artifact_uri": "s3://<production-evidence-bucket>/<release-id>/T-416/endpoint_artifact_uri",
+        "field_sample_uri": "s3://<production-evidence-bucket>/<release-id>/T-416/field_sample_uri",
+        "license_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-416/license_review_uri",
+        "rate_limit_artifact_uri": "s3://<production-evidence-bucket>/<release-id>/T-416/rate_limit_artifact_uri",
+        "stability_artifact_uri": "s3://<production-evidence-bucket>/<release-id>/T-416/stability_artifact_uri"
+      },
+      "external_evidence_blockers": [
+        "connector endpoint availability artifacts",
+        "endpoint stability artifacts",
+        "rate-limit/quota verification",
+        "license/TOS reviews",
+        "field sample artifacts for every approved connector"
+      ],
+      "owner_role": "数据工程",
+      "readiness_endpoint": "/api/connectors/astock/verification-readiness",
+      "status": "blocked_external_evidence",
+      "task_id": "T-416"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "real_model_quality_uri",
+        "fallback_quality_uri",
+        "llm_gateway_smoke_uri",
+        "budget_sync_evidence_uri"
+      ],
+      "artifact_uri_template": {
+        "budget_sync_evidence_uri": "s3://<production-evidence-bucket>/<release-id>/T-418/budget_sync_evidence_uri",
+        "fallback_quality_uri": "s3://<production-evidence-bucket>/<release-id>/T-418/fallback_quality_uri",
+        "llm_gateway_smoke_uri": "s3://<production-evidence-bucket>/<release-id>/T-418/llm_gateway_smoke_uri",
+        "real_model_quality_uri": "s3://<production-evidence-bucket>/<release-id>/T-418/real_model_quality_uri"
+      },
+      "external_evidence_blockers": [
+        "real model quality evaluation",
+        "fallback comparison at scale",
+        "LLM gateway smoke",
+        "budget sync artifact"
+      ],
+      "owner_role": "NLP/ML 负责人",
+      "readiness_endpoint": "/api/llm/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-418"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "neo4j_sync_artifact_uri",
+        "qdrant_sync_artifact_uri",
+        "throughput_baseline_uri",
+        "failure_recovery_uri"
+      ],
+      "artifact_uri_template": {
+        "failure_recovery_uri": "s3://<production-evidence-bucket>/<release-id>/T-419/failure_recovery_uri",
+        "neo4j_sync_artifact_uri": "s3://<production-evidence-bucket>/<release-id>/T-419/neo4j_sync_artifact_uri",
+        "qdrant_sync_artifact_uri": "s3://<production-evidence-bucket>/<release-id>/T-419/qdrant_sync_artifact_uri",
+        "throughput_baseline_uri": "s3://<production-evidence-bucket>/<release-id>/T-419/throughput_baseline_uri"
+      },
+      "external_evidence_blockers": [
+        "Neo4j/Qdrant non-local sync artifact",
+        "batch throughput baseline",
+        "failure injection/retry recovery evidence"
+      ],
+      "owner_role": "平台负责人",
+      "readiness_endpoint": "/api/graph-vector/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-419"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "scheduler_deployment_uri",
+        "worker_pool_uri",
+        "external_sensor_uri",
+        "backfill_drill_uri",
+        "openlineage_client_uri",
+        "mlflow_registry_uri"
+      ],
+      "artifact_uri_template": {
+        "backfill_drill_uri": "s3://<production-evidence-bucket>/<release-id>/T-420/backfill_drill_uri",
+        "external_sensor_uri": "s3://<production-evidence-bucket>/<release-id>/T-420/external_sensor_uri",
+        "mlflow_registry_uri": "s3://<production-evidence-bucket>/<release-id>/T-420/mlflow_registry_uri",
+        "openlineage_client_uri": "s3://<production-evidence-bucket>/<release-id>/T-420/openlineage_client_uri",
+        "scheduler_deployment_uri": "s3://<production-evidence-bucket>/<release-id>/T-420/scheduler_deployment_uri",
+        "worker_pool_uri": "s3://<production-evidence-bucket>/<release-id>/T-420/worker_pool_uri"
+      },
+      "external_evidence_blockers": [
+        "Airflow/Dagster/Cron deployment evidence",
+        "external sensor connectivity",
+        "distributed worker queue isolation",
+        "large-window backfill drill",
+        "OpenLineage/MLflow real client evidence"
+      ],
+      "owner_role": "平台负责人",
+      "readiness_endpoint": "/api/orchestration/readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-420"
+    },
+    {
+      "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
+      "artifact_fields": [
+        "secret_manager_evidence_uri",
+        "least_privilege_policy_uri",
+        "external_delete_evidence_uri",
+        "permission_review_uri"
+      ],
+      "artifact_uri_template": {
+        "external_delete_evidence_uri": "s3://<production-evidence-bucket>/<release-id>/T-421/external_delete_evidence_uri",
+        "least_privilege_policy_uri": "s3://<production-evidence-bucket>/<release-id>/T-421/least_privilege_policy_uri",
+        "permission_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-421/permission_review_uri",
+        "secret_manager_evidence_uri": "s3://<production-evidence-bucket>/<release-id>/T-421/secret_manager_evidence_uri"
+      },
+      "external_evidence_blockers": [
+        "external KMS/secret manager evidence",
+        "external API key least privilege review",
+        "object store/search external delete executor evidence"
+      ],
+      "owner_role": "风险/合规",
+      "readiness_endpoint": "/api/governance/security-readiness-report",
+      "status": "blocked_external_evidence",
+      "task_id": "T-421"
+    }
+  ]
+}

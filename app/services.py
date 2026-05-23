@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import hashlib
 import json
 import os
 import re
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from email.message import EmailMessage
 from smtplib import SMTP, SMTPException, SMTP_SSL
@@ -19,8 +20,9 @@ from .errors import ComplianceGateError, ConflictError, NotFoundError, Permissio
 from .connectors import AStockSupplementalRegistry, ConnectorRegistry
 from .document_parser import PaddleOCRParser
 from .llm_gateway import LLMGateway
+from .readiness_artifacts import is_external_artifact_uri
 from .research_reports import cheap_fingerprint, content_sha256, infer_report_metadata, iter_report_files, report_id_for_path, safe_source_part
-from .tdx_market_data import TDXMarketDataAdapter, TDXVipdocAdapter
+from .tdx_market_data import TDXVipdocAdapter
 from .models import (
     AuditEvent,
     AlertNotification,
@@ -187,8 +189,8 @@ class SystemService:
         self.supplemental_connectors = AStockSupplementalRegistry()
         self.llm_gateway = LLMGateway()
         self.document_parser = PaddleOCRParser()
-        self.tdx_market_data = TDXMarketDataAdapter()
-        self.tdx_vipdoc = TDXVipdocAdapter()
+        self.tdx_market_data = TDXVipdocAdapter()
+        self.tdx_vipdoc = self.tdx_market_data
         self.object_store = create_object_store_from_env(Path.cwd() / "data" / "objects")
         self.search_index = create_search_index_from_env()
         self.local_search_index = LocalSearchIndex()
@@ -290,6 +292,21 @@ class SystemService:
                 "output_schema": {
                     "required": ["answer", "english_source_quotes", "evidence_ids"],
                     "acceptance_thresholds": {"min_evidence_ids": 1, "must_preserve_english_source": True, "max_unsupported_claims": 0},
+                },
+            },
+            {
+                "template_id": "llmtpl_search_rerank_v1",
+                "task_type": "search_rerank",
+                "prompt_name": "semantic-rerank",
+                "content": "你是检索重排助手，只能根据查询与候选相关性排序，不得把候选描述当作事实或交易信号。\n\n查询：{{query}}\n\n候选：\n{{candidate_rows}}\n\n请只输出 JSON，字段为 ordered_resource_ids、rationale、boundary_notes。",
+                "data_domains": ["research", "search_index"],
+                "allowed_roles": ["CEO", "CIO", "PM", "分析师", "海外研究负责人"],
+                "risk_level": "medium",
+                "fallback_chain": ["rule_summary", "manual_review"],
+                "input_schema": {"required": ["query", "candidate_rows"], "source_boundary": "ordering_only"},
+                "output_schema": {
+                    "required": ["ordered_resource_ids", "rationale", "boundary_notes"],
+                    "acceptance_thresholds": {"min_ordered_resource_ids": 1, "must_preserve_boundary": True, "human_review_required": True},
                 },
             },
             {
@@ -920,6 +937,96 @@ class SystemService:
             "external_delivery_ready": bool(channel and target),
         }
 
+    def llm_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        self._reject_secret_rotation_payload_values(payload)
+        artifacts = self._llm_readiness_artifact_uris(payload)
+        templates = list(self.store.llm_task_templates.values())
+        template_summary = self._llm_template_readiness_summary(templates)
+        prompt_summary = self._llm_prompt_governance_summary()
+        run_summary = self._llm_run_traceability_summary()
+        review_queue = self.llm_task_review_queue({"limit": payload.get("review_limit", 1000)})
+        metrics = self.llm_task_metrics()
+        escalations = self.llm_task_escalation_report(
+            {
+                "limit": payload.get("escalation_limit", 1000),
+                "review_backlog_threshold": payload.get("review_backlog_threshold", 0),
+                "fallback_rate_threshold": payload.get("fallback_rate_threshold", 0.15),
+                "error_rate_threshold": payload.get("error_rate_threshold", 0.2),
+            }
+        )
+        budget = self.llm_budget_approvals_payload({"limit": 1000})
+        budget_sync = self._llm_budget_sync_summary()
+        research_quality = self.research_answer_quality_report({"limit": payload.get("answer_limit", 1000)})
+        summary_benchmark = self.research_answer_summary_benchmark({"limit": payload.get("answer_limit", 1000)})
+        challenger = self._llm_high_risk_challenger_summary()
+        gateway = self._llm_gateway_config(payload)
+        min_template_count = int(payload.get("min_template_count", 6))
+        review_triaged = int(review_queue["pending_review"]) == 0 or bool(artifacts.get("review_queue_evidence_uri"))
+        escalation_ready = int(escalations["escalation_count"]) == 0 or bool(artifacts.get("review_queue_evidence_uri")) or budget_sync["notification_count"] > 0
+        gates = [
+            self._readiness_numeric_gate("approved_template_count", template_summary["approved_count"], min_template_count, ">=", "approved production LLM task templates"),
+            self._readiness_numeric_gate("approved_template_coverage", template_summary["approved_template_coverage"], 1.0, ">=", "all registered LLM task templates are approved or deprecated outside production"),
+            self._readiness_numeric_gate("prompt_traceability_rate", template_summary["prompt_traceability_rate"], 1.0, ">=", "approved templates reference approved prompt change records"),
+            self._readiness_numeric_gate("pending_prompt_changes", float(prompt_summary["pending"]), 0.0, "==", "no pending prompt changes before production"),
+            self._readiness_numeric_gate("high_risk_template_control_coverage", template_summary["high_risk_control_coverage"], 1.0, ">=", "high-risk templates require human review and manual fallback"),
+            self._readiness_numeric_gate("llm_run_traceability_rate", run_summary["traceability_rate"], 1.0, ">=", "LLM runs retain template, prompt version, model, latency, and cost metadata"),
+            self._readiness_numeric_gate("research_answer_version_metadata_rate", float(summary_benchmark["metrics"]["version_metadata_rate"]), 1.0, ">=", "research answers keep summary/prompt/model version metadata"),
+            self._readiness_numeric_gate("high_risk_challenger_coverage", challenger["coverage"], 1.0, ">=", "high-risk research conclusions have challenger/red-team coverage"),
+            self._readiness_bool_gate("llm_gateway_configured", gateway["configured"], "LLM gateway endpoint and key are configured outside request payloads"),
+            self._readiness_bool_gate("production_llm_gateway_evidence_uri", bool(artifacts.get("production_llm_gateway_evidence_uri")), "production/staging LLM gateway smoke evidence URI"),
+            self._readiness_bool_gate("prompt_inventory_uri", bool(artifacts.get("prompt_inventory_uri")), "approved prompt inventory artifact URI"),
+            self._readiness_bool_gate("model_quality_evaluation_uri", bool(artifacts.get("model_quality_evaluation_uri")), "real model quality evaluation artifact URI"),
+            self._readiness_bool_gate("fallback_quality_evaluation_uri", bool(artifacts.get("fallback_quality_evaluation_uri")), "fallback strategy large-sample quality comparison artifact URI"),
+            self._readiness_bool_gate("review_queue_triaged", review_triaged, "LLM manual review queue is empty or externally triaged"),
+            self._readiness_bool_gate("escalation_channel_ready", escalation_ready, "LLM escalation outbox or triage evidence is available"),
+            self._readiness_bool_gate("budget_sync_outbox_record", budget_sync["notification_count"] > 0, "LLM budget approval sync outbox record exists"),
+            self._readiness_bool_gate("budget_sync_evidence_uri", bool(artifacts.get("budget_sync_evidence_uri")) and budget_sync["notification_count"] > 0, "external finance/cloud LLM budget sync evidence URI linked to sync outbox record"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_llm_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "artifact_uris": artifacts,
+            "gateway": gateway,
+            "prompt_governance": prompt_summary,
+            "templates": template_summary,
+            "runs": run_summary,
+            "metrics": metrics,
+            "review_queue": {
+                "pending_review": review_queue["pending_review"],
+                "reason_counts": review_queue["reason_counts"],
+                "sample_runs": review_queue["runs"][:5],
+            },
+            "escalations": {
+                "escalation_count": escalations["escalation_count"],
+                "external_delivery_ready": escalations["external_delivery_ready"],
+            },
+            "budget": {
+                "pending": budget["pending"],
+                "approved": budget["approved"],
+                "effective_cost_budget": budget["effective_cost_budget"],
+                "sync": budget_sync,
+            },
+            "research_answers": {
+                "total": research_quality["total"],
+                "source_link_rate": research_quality["source_link_rate"],
+                "review_coverage": research_quality["review_coverage"],
+                "summary_pass_rate": summary_benchmark["pass_rate"],
+                "version_metadata_rate": summary_benchmark["metrics"]["version_metadata_rate"],
+            },
+            "challenger": challenger,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "llm_readiness_report_tracks_prompt_model_challenger_budget_and_review_evidence_without_calling_external_models",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "llm_readiness_report", "llm_governance", "production_llm", source="llm_gateway", approval_state="ready" if ready else "missing_evidence")
+        return report
+
     def _render_llm_prompt(self, template: str, variables: Mapping[str, Any]) -> str:
         rendered = template
         for key, value in variables.items():
@@ -1110,6 +1217,124 @@ class SystemService:
 
     def _llm_escalation_target(self, severity: str, policy: Mapping[str, Any]) -> str:
         return str(policy.get("targets", {}).get(severity, "llm-review-queue"))
+
+    def _llm_readiness_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "production_llm_gateway_evidence_uri": ["production_llm_gateway_evidence_uri", "llm_gateway_smoke_uri", "gateway_smoke_uri"],
+            "prompt_inventory_uri": ["prompt_inventory_uri", "approved_prompt_inventory_uri", "prompt_governance_uri"],
+            "model_quality_evaluation_uri": ["model_quality_evaluation_uri", "llm_quality_report_uri", "quality_evaluation_uri"],
+            "fallback_quality_evaluation_uri": ["fallback_quality_evaluation_uri", "fallback_comparison_uri", "fallback_quality_uri"],
+            "review_queue_evidence_uri": ["review_queue_evidence_uri", "manual_review_triage_uri", "review_triage_uri"],
+            "budget_sync_evidence_uri": ["budget_sync_evidence_uri", "finance_budget_sync_uri", "cloud_budget_sync_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _llm_template_readiness_summary(self, templates: list[LLMTaskTemplate]) -> dict[str, Any]:
+        approved = [item for item in templates if item.status == "approved"]
+        production_candidates = [item for item in templates if item.status != "deprecated"]
+        traceable = [
+            item
+            for item in approved
+            if item.approved_prompt_change_id
+            and item.approved_prompt_change_id in self.store.prompt_changes
+            and self.store.prompt_changes[item.approved_prompt_change_id].status == "approved"
+        ]
+        schema_complete = [
+            item
+            for item in approved
+            if bool(item.input_schema.get("required")) and bool(item.output_schema.get("required"))
+        ]
+        high_risk = [item for item in approved if item.risk_level in {"high", "critical"}]
+        high_risk_controlled = [
+            item
+            for item in high_risk
+            if "manual_review" in item.fallback_chain
+            and bool(dict(item.output_schema.get("acceptance_thresholds", {})).get("human_review_required"))
+        ]
+        return {
+            "count": len(templates),
+            "approved_count": len(approved),
+            "production_candidate_count": len(production_candidates),
+            "approved_template_coverage": round(len(approved) / max(1, len(production_candidates)), 4) if production_candidates else 1.0,
+            "prompt_traceability_rate": round(len(traceable) / max(1, len(approved)), 4) if approved else 1.0,
+            "schema_complete_rate": round(len(schema_complete) / max(1, len(approved)), 4) if approved else 1.0,
+            "high_risk_count": len(high_risk),
+            "high_risk_control_coverage": round(len(high_risk_controlled) / max(1, len(high_risk)), 4) if high_risk else 1.0,
+            "task_types": sorted({item.task_type for item in approved}),
+            "unapproved_template_ids": sorted(item.template_id for item in production_candidates if item.status != "approved"),
+        }
+
+    def _llm_prompt_governance_summary(self) -> dict[str, Any]:
+        changes = list(self.store.prompt_changes.values())
+        by_status: dict[str, int] = {}
+        for change in changes:
+            by_status[change.status] = by_status.get(change.status, 0) + 1
+        return {
+            "total": len(changes),
+            "pending": by_status.get("pending", 0),
+            "approved": by_status.get("approved", 0),
+            "rejected": by_status.get("rejected", 0),
+            "by_status": by_status,
+        }
+
+    def _llm_run_traceability_summary(self) -> dict[str, Any]:
+        runs = list(self.store.llm_task_runs.values())
+        traceable = [
+            run
+            for run in runs
+            if run.template_id
+            and run.template_id in self.store.llm_task_templates
+            and run.prompt_version
+            and run.model
+            and run.latency_ms >= 0
+            and run.estimated_input_tokens >= 0
+            and run.estimated_output_tokens >= 0
+            and run.estimated_cost >= 0
+        ]
+        fallback_runs = [run for run in runs if run.fallback_used]
+        review_required = [run for run in runs if run.human_review_required]
+        return {
+            "count": len(runs),
+            "traceable_count": len(traceable),
+            "traceability_rate": round(len(traceable) / max(1, len(runs)), 4) if runs else 1.0,
+            "fallback_count": len(fallback_runs),
+            "human_review_required_count": len(review_required),
+        }
+
+    def _llm_high_risk_challenger_summary(self) -> dict[str, Any]:
+        theses = list(self.store.theses.values())
+        high_risk = [item for item in theses if item.confidence < 0.5 or item.status in {"review", "approved"}]
+        challenged = {item.thesis_id for item in self.store.challengers.values()}
+        covered = [item for item in high_risk if item.thesis_id in challenged]
+        return {
+            "high_risk_count": len(high_risk),
+            "covered_count": len(covered),
+            "missing_thesis_ids": sorted(item.thesis_id for item in high_risk if item.thesis_id not in challenged),
+            "coverage": round(len(covered) / max(1, len(high_risk)), 4) if high_risk else 1.0,
+        }
+
+    def _llm_budget_sync_summary(self) -> dict[str, Any]:
+        notifications = [item for item in self.store.alert_notifications.values() if item.channel == "budget_sync_outbox" or item.payload.get("type") == "llm_budget_external_sync"]
+        return {
+            "notification_count": len(notifications),
+            "pending_count": sum(1 for item in notifications if item.status == "pending"),
+            "sent_count": sum(1 for item in notifications if item.status == "sent"),
+            "failed_count": sum(1 for item in notifications if item.status == "failed"),
+            "targets": sorted({item.target for item in notifications if item.target}),
+        }
+
+    def _llm_gateway_config(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        override = payload.get("gateway", payload.get("llm_gateway", {}))
+        config = dict(override) if isinstance(override, Mapping) else {}
+        base_url = str(payload.get("base_url") or config.get("base_url") or self.llm_gateway.base_url).strip()
+        configured = self.llm_gateway.describe()["configured"] or self._truthy(payload.get("gateway_configured", config.get("configured", False)))
+        return {
+            "base_url_redacted": self._redacted_endpoint(base_url),
+            "default_model": self.llm_gateway.default_model,
+            "timeout_seconds": self.llm_gateway.timeout,
+            "configured": bool(configured and base_url),
+            "api_key_redacted": True,
+        }
 
     def _severity_rank(self, severity: str) -> int:
         return {"low": 1, "medium": 2, "high": 3, "critical": 4}.get(str(severity), 0)
@@ -1470,6 +1695,127 @@ class SystemService:
             "usage_boundary": "built_in_executor_runs_whitelisted_local_tasks_only_external_schedulers_remain_recommended_for_distributed_production",
         }
 
+    def backfill_workflow_definition(self, dag_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        workflow = self.store.workflow_definitions.get(dag_id)
+        if workflow is None:
+            raise NotFoundError(f"workflow definition {dag_id} not found")
+        if workflow.status != "active" and not self._truthy(payload.get("allow_inactive", False)):
+            raise ComplianceGateError("workflow definition must be active before backfill")
+        run_dates = self._workflow_backfill_dates(payload, workflow=workflow)
+        if not run_dates:
+            raise ValidationError("workflow backfill requires at least one run date")
+        if len(run_dates) > 1 and (str(payload.get("run_id", "")).strip() or str(payload.get("idempotency_key", "")).strip()):
+            raise ValidationError("workflow backfill run_id and idempotency_key overrides are only allowed for a single run date")
+
+        task_by_id = {str(task.get("task_id", "")).strip(): dict(task) for task in workflow.tasks if str(task.get("task_id", "")).strip()}
+        if len(task_by_id) != len([task for task in workflow.tasks if str(task.get("task_id", "")).strip()]):
+            raise ValidationError("workflow task_id values must be unique before backfill")
+        selected_task_ids, selection = self._workflow_execution_selection(workflow, payload, task_by_id)
+        selected_task_id_set = set(selected_task_ids)
+        dry_run = self._truthy(payload.get("dry_run", True))
+        force = self._truthy(payload.get("force", False))
+        execute = self._truthy(payload.get("execute", False)) and not dry_run
+        as_of_field = str(payload.get("as_of_field", "as_of_date")).strip() or "as_of_date"
+        idempotency_prefix = str(payload.get("idempotency_prefix", f"backfill:{dag_id}")).strip() or f"backfill:{dag_id}"
+        run_id_prefix = self._safe_identifier(str(payload.get("run_id_prefix", f"wfrun_backfill_{dag_id}"))).lower()
+        input_template = dict(payload.get("inputs", {})) if isinstance(payload.get("inputs", {}), Mapping) else {}
+        task_status_overrides = dict(payload.get("task_statuses", {})) if isinstance(payload.get("task_statuses", {}), Mapping) else {}
+        planned_task_statuses = {
+            task_id: "queued" if task_id in selected_task_id_set else "skipped"
+            for task_id in task_by_id
+        }
+        planned_task_statuses.update({str(key): str(value) for key, value in task_status_overrides.items() if str(key) in task_by_id})
+        output_refs = [str(item) for item in payload.get("output_refs", [])]
+
+        planned: list[dict[str, Any]] = []
+        created_runs: list[WorkflowRun] = []
+        reused_runs: list[WorkflowRun] = []
+        skipped: list[dict[str, Any]] = []
+        for run_date in run_dates:
+            date_key = run_date.isoformat()
+            inputs = {
+                **input_template,
+                as_of_field: date_key,
+                "backfill": {
+                    "dag_id": dag_id,
+                    "run_date": date_key,
+                    "as_of_field": as_of_field,
+                    "selection": selection,
+                    "queue_isolation": bool(selection["queues"]),
+                    "dry_run": dry_run,
+                    "executor": "built_in_lightweight_backfill_planner",
+                },
+            }
+            idempotency_key = str(payload.get("idempotency_key", "")).strip()
+            if not idempotency_key:
+                idempotency_key = f"{idempotency_prefix}:{date_key}:{','.join(selected_task_ids)}:{','.join(selection['queues']) or 'all'}"
+            run_id = str(payload.get("run_id", "")).strip()
+            if not run_id:
+                run_id = f"{run_id_prefix}_{date_key.replace('-', '')}"
+            existing = next((item for item in self.store.workflow_runs.values() if item.dag_id == dag_id and item.idempotency_key == idempotency_key), None)
+            plan_row = {
+                "run_date": date_key,
+                "run_id": run_id,
+                "dag_id": dag_id,
+                "idempotency_key": idempotency_key,
+                "inputs": to_plain(inputs),
+                "task_ids": selected_task_ids,
+                "queues": selection["queues"],
+                "queue_isolation": bool(selection["queues"]),
+                "partial_execution": len(selected_task_ids) < len(task_by_id),
+                "task_statuses": dict(planned_task_statuses),
+                "existing_run_id": existing.run_id if existing else "",
+                "action": "reuse_existing" if existing and not force else ("execute" if execute else "plan_only"),
+            }
+            planned.append(plan_row)
+            if dry_run or not execute:
+                continue
+            if existing and not force:
+                reused_runs.append(existing)
+                skipped.append({"run_date": date_key, "run_id": existing.run_id, "reason": "idempotent_run_exists"})
+                continue
+            run_payload = {
+                "run_id": run_id,
+                "inputs": inputs,
+                "idempotency_key": idempotency_key,
+                "force": force,
+                "status": str(payload.get("status", "queued")),
+                "task_statuses": planned_task_statuses,
+                "output_refs": output_refs,
+                "started_at": payload.get("started_at", utcnow()),
+                "completed_at": payload.get("completed_at", utcnow()),
+            }
+            run = self.run_workflow_definition(dag_id, run_payload, actor=actor)
+            created_runs.append(run)
+
+        self._audit(actor, "backfill_workflow_definition", "workflow_definition", dag_id, approval_state="dry_run" if dry_run else "created")
+        return {
+            "dag_id": dag_id,
+            "dry_run": dry_run,
+            "execute": execute,
+            "planned_count": len(planned),
+            "created_count": len(created_runs),
+            "reused_count": len(reused_runs),
+            "skipped_count": len(skipped),
+            "plan": planned,
+            "runs": [to_plain(item) for item in created_runs],
+            "reused_runs": [to_plain(item) for item in reused_runs],
+            "skipped": skipped,
+            "selection": selection,
+            "adapter_recommendation": {
+                "current_phase": "lightweight_backfill_planner",
+                "external_scheduler_required_for": [
+                    "distributed_workers",
+                    "cross_system_sensors",
+                    "large_backfill_windows",
+                    "production_queue_isolation",
+                ],
+                "airflow_dagster_trigger_suggestion": "materialize one planned run per execution_date and map queues to external worker pools when scale exceeds local executor capacity",
+            },
+            "usage_boundary": "built_in_backfill_planner_records_or_plans_workflow_runs_only_external_scheduler_required_for_distributed_production",
+        }
+
     def retry_workflow_run(self, run_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> WorkflowRun:
         payload = payload or {}
         failed_run = self.store.workflow_runs.get(run_id)
@@ -1680,6 +2026,235 @@ class SystemService:
                 "airflow_dagster_trigger": "multiple cross-system DAGs, schedule backfills, task-level retries, or queue isolation requirements",
             },
         }
+
+    def workflow_scheduler_handoff(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        filters = filters or {}
+        dag_id = str(filters.get("dag_id", "")).strip()
+        status = str(filters.get("status", "")).strip()
+        include_paused = self._truthy(filters.get("include_paused", False))
+        include_backfill_plan = self._truthy(filters.get("include_backfill_plan", True))
+        horizon_days = int(filters.get("horizon_days", 14))
+        backfill_window_days = self._bounded_limit(filters.get("backfill_window_days", 30), max_value=366)
+        as_of = parse_datetime(filters.get("as_of")) if filters.get("as_of") else utcnow()
+        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
+
+        workflows = list(self.store.workflow_definitions.values())
+        if dag_id:
+            workflows = [item for item in workflows if item.dag_id == dag_id]
+        if status:
+            workflows = [item for item in workflows if item.status == status]
+        if not include_paused:
+            workflows = [item for item in workflows if item.status == "active"]
+        workflows = sorted(workflows, key=lambda item: item.dag_id)[:limit]
+
+        workflow_rows: list[dict[str, Any]] = []
+        all_queues: dict[str, dict[str, Any]] = {}
+        unresolved_sensors: list[dict[str, str]] = []
+        total_backfill_candidates = 0
+        scheduled_count = 0
+        manual_count = 0
+        for workflow in workflows:
+            graph = self._workflow_dependency_graph_row(workflow, include_runs=True, include_lineage=True)
+            last_run = self._workflow_last_run(workflow.dag_id)
+            upcoming = self._workflow_upcoming_runs(workflow, as_of=as_of, horizon_days=horizon_days, limit=10)
+            if upcoming:
+                scheduled_count += 1
+            if workflow.cadence == "manual":
+                manual_count += 1
+            queues = self._workflow_queue_plan(workflow)
+            for queue_name, queue_row in queues.items():
+                aggregate = all_queues.setdefault(
+                    queue_name,
+                    {
+                        "queue": queue_name,
+                        "worker_pool": f"wf_{queue_name}_pool",
+                        "task_count": 0,
+                        "dag_ids": [],
+                        "task_types": [],
+                        "requires_external_worker_pool": queue_name != "default",
+                    },
+                )
+                aggregate["task_count"] += queue_row["task_count"]
+                aggregate["dag_ids"] = self._unique_strings([*aggregate["dag_ids"], workflow.dag_id])
+                aggregate["task_types"] = self._unique_strings([*aggregate["task_types"], *queue_row["task_types"]])
+            for missing in graph["unresolved_dependencies"]:
+                unresolved_sensors.append(
+                    {
+                        "dag_id": workflow.dag_id,
+                        "task_id": missing["task_id"],
+                        "sensor_id": missing["missing_dependency"],
+                        "recommended_adapter": "ExternalTaskSensor_or_Dagster_sensor",
+                    }
+                )
+            backfill_plan = self._workflow_scheduler_backfill_preview(
+                workflow,
+                as_of=as_of,
+                window_days=backfill_window_days,
+                include_plan=include_backfill_plan,
+            )
+            total_backfill_candidates += backfill_plan["candidate_count"]
+            workflow_rows.append(
+                {
+                    "dag_id": workflow.dag_id,
+                    "name": workflow.name,
+                    "status": workflow.status,
+                    "cadence": workflow.cadence,
+                    "owner_role": workflow.owner_role,
+                    "task_count": len(workflow.tasks),
+                    "queues": list(queues.values()),
+                    "queue_isolation_required": len(queues) > 1 or any(queue != "default" for queue in queues),
+                    "external_sensor_count": len(graph["unresolved_dependencies"]),
+                    "external_sensors": [item for item in unresolved_sensors if item["dag_id"] == workflow.dag_id],
+                    "latest_run_id": last_run.run_id if last_run else "",
+                    "latest_run_status": last_run.status if last_run else "",
+                    "upcoming_runs": [item.isoformat() for item in upcoming],
+                    "backfill": backfill_plan,
+                    "adapter_contract": {
+                        "airflow_dag_id": workflow.dag_id,
+                        "dagster_job": workflow.dag_id,
+                        "cron_schedule": self._workflow_cron_schedule(workflow.cadence),
+                        "idempotency_key_fields": workflow.idempotency_key_fields,
+                        "lineage_namespace": str(filters.get("namespace", "ai-native-quant-org")),
+                        "run_endpoint": f"/api/orchestration/dags/{workflow.dag_id}/run",
+                        "execute_endpoint": f"/api/orchestration/dags/{workflow.dag_id}/execute",
+                        "backfill_endpoint": f"/api/orchestration/dags/{workflow.dag_id}/backfill",
+                    },
+                    "handoff_status": "ready_for_external_scheduler_design" if workflow.status == "active" else "paused_or_inactive",
+                }
+            )
+
+        orchestrator = self._workflow_scheduler_choice(
+            workflow_count=len(workflow_rows),
+            queue_count=len(all_queues),
+            sensor_count=len(unresolved_sensors),
+            backfill_candidate_count=total_backfill_candidates,
+        )
+        missing_external_evidence = [
+            "production_or_staging_airflow_dagster_or_cron_endpoint",
+            "worker_pool_deployment_and_queue_binding_evidence",
+            "external_sensor_connectivity_evidence" if unresolved_sensors else "",
+            "large_window_backfill_run_artifact_uri" if total_backfill_candidates else "",
+            "openlineage_mlflow_real_client_delivery_evidence",
+        ]
+        missing_external_evidence = [item for item in missing_external_evidence if item]
+        self._audit(
+            actor,
+            "export_workflow_scheduler_handoff",
+            "workflow_definition",
+            dag_id or "batch",
+            approval_state=f"workflows={len(workflow_rows)};orchestrator={orchestrator['recommended']}",
+        )
+        return {
+            "as_of": as_of.isoformat(),
+            "workflow_count": len(workflow_rows),
+            "scheduled_count": scheduled_count,
+            "manual_count": manual_count,
+            "queue_count": len(all_queues),
+            "external_sensor_count": len(unresolved_sensors),
+            "backfill_candidate_count": total_backfill_candidates,
+            "recommended_orchestrator": orchestrator,
+            "worker_pools": sorted(all_queues.values(), key=lambda item: item["queue"]),
+            "external_sensors": unresolved_sensors,
+            "workflows": workflow_rows,
+            "missing_external_evidence": missing_external_evidence,
+            "automation_allowed": False,
+            "external_deployment_required": True,
+            "usage_boundary": "scheduler_handoff_is_a_planning_contract_not_an_external_airflow_dagster_cron_deployment",
+        }
+
+    def orchestration_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        self._reject_secret_rotation_payload_values(payload)
+        handoff = self.workflow_scheduler_handoff(payload, actor=actor)
+        dependency_graph = self.workflow_dependency_graph(payload)
+        sla = self.workflow_sla_report({"include_all": False, "limit": payload.get("sla_limit", 1000), "as_of": payload.get("as_of", "")})
+        openlineage_export = self.workflow_openlineage_export({"limit": payload.get("lineage_limit", 1000), "namespace": payload.get("namespace", "ai-native-quant-org")}, actor=actor)
+        mlflow_export = self.mlflow_model_registry_export({"limit": payload.get("model_limit", 1000), "registered_model_prefix": payload.get("registered_model_prefix", "ai_quant")}, actor=actor)
+        artifacts = self._orchestration_artifact_uris(payload)
+        adapters = self._orchestration_adapter_config(payload)
+        outbox = self._orchestration_outbox_summary()
+        replay = self._orchestration_replay_summary()
+        model_registry = self._orchestration_model_registry_summary(mlflow_export)
+        workflow_count = int(handoff["workflow_count"])
+        active_workflows = [item for item in self.store.workflow_definitions.values() if item.status == "active"]
+        run_count = len(self.store.workflow_runs)
+        lineage_event_count = len(self.store.lineage_events)
+        min_workflow_count = int(payload.get("min_workflow_count", 1))
+        min_lineage_events = int(payload.get("min_lineage_event_count", 1))
+        external_sensor_count = int(handoff["external_sensor_count"])
+        backfill_candidate_count = int(handoff["backfill_candidate_count"])
+        queue_count = int(handoff["queue_count"])
+        sla_breaches = list(sla.get("runs", []))
+        sla_clear_or_incident = not sla_breaches or all(row.get("incident_report_id") for row in sla_breaches)
+        gates = [
+            self._readiness_numeric_gate("active_workflow_count", len(active_workflows), min_workflow_count, ">=", "active workflow definitions registered"),
+            self._readiness_numeric_gate("workflow_run_count", run_count, 1, ">=", "workflow runs recorded for replay/governance"),
+            self._readiness_bool_gate("dependency_graph_acyclic", int(dependency_graph["cycle_count"]) == 0, "workflow dependency graph has no cycles"),
+            self._readiness_bool_gate("unresolved_dependency_mapped_to_sensors", external_sensor_count >= int(dependency_graph["unresolved_dependency_count"]), "unresolved dependencies mapped to external sensor contracts"),
+            self._readiness_bool_gate("sla_breaches_have_incidents", sla_clear_or_incident, "failed/SLA-breached workflow runs have incident records"),
+            self._readiness_bool_gate("replay_retry_evidence", replay["retry_run_count"] > 0 or bool(artifacts.get("replay_runbook_uri")), "failed/needs_review workflows can be replayed or have replay runbook evidence"),
+            self._readiness_numeric_gate("lineage_event_count", lineage_event_count, min_lineage_events, ">=", "task-level lineage events recorded"),
+            self._readiness_numeric_gate("openlineage_export_count", int(openlineage_export["count"]), 1, ">=", "OpenLineage-compatible payload export contains events"),
+            self._readiness_numeric_gate("mlflow_model_export_count", int(mlflow_export["count"]), 1, ">=", "MLflow registry-compatible model payload export contains models"),
+            self._readiness_numeric_gate("approved_model_artifact_coverage", model_registry["approved_artifact_coverage"], 1.0, ">=", "approved model versions have artifact URIs and registry payload"),
+            self._readiness_bool_gate("scheduler_deployment_evidence_uri", bool(artifacts.get("scheduler_deployment_uri")), "Airflow/Dagster/Cron production or staging deployment evidence URI"),
+            self._readiness_bool_gate("worker_pool_evidence_uri", bool(artifacts.get("worker_pool_evidence_uri")), "distributed worker pool and queue binding evidence URI, including reviewed single-queue deployments"),
+            self._readiness_bool_gate("external_sensor_evidence_uri", bool(artifacts.get("external_sensor_evidence_uri")), "external sensor connectivity or reviewed-empty sensor evidence URI"),
+            self._readiness_bool_gate("backfill_drill_evidence_uri", bool(artifacts.get("backfill_drill_uri")), "large-window backfill drill or reviewed-not-required artifact URI"),
+            self._readiness_bool_gate("openlineage_real_delivery", bool(artifacts.get("openlineage_delivery_evidence_uri")) and adapters["openlineage"]["non_local_configured"], "real OpenLineage client/sender delivery evidence"),
+            self._readiness_bool_gate("mlflow_real_registry", bool(artifacts.get("mlflow_registry_evidence_uri")) and adapters["mlflow"]["non_local_configured"], "real MLflow registry/catalog connectivity evidence"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_orchestration_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "artifact_uris": artifacts,
+            "adapters": adapters,
+            "workflow_summary": {
+                "workflow_count": workflow_count,
+                "active_workflow_count": len(active_workflows),
+                "run_count": run_count,
+                "queue_count": queue_count,
+                "external_sensor_count": external_sensor_count,
+                "backfill_candidate_count": backfill_candidate_count,
+                "recommended_orchestrator": handoff["recommended_orchestrator"],
+            },
+            "dependency_graph": {
+                "workflow_count": dependency_graph["workflow_count"],
+                "task_count": dependency_graph["task_count"],
+                "edge_count": dependency_graph["edge_count"],
+                "unresolved_dependency_count": dependency_graph["unresolved_dependency_count"],
+                "cycle_count": dependency_graph["cycle_count"],
+            },
+            "sla": {
+                "breach_count": sla["breach_count"],
+                "incident_needed_count": sla["incident_needed_count"],
+                "breaches": sla_breaches[:5],
+            },
+            "replay": replay,
+            "lineage": {
+                "lineage_event_count": lineage_event_count,
+                "openlineage_export_count": openlineage_export["count"],
+                "openlineage_export_event_count": openlineage_export["lineage_event_count"],
+                "outbox": outbox["openlineage"],
+            },
+            "model_registry": {
+                **model_registry,
+                "mlflow_export_count": mlflow_export["count"],
+                "outbox": outbox["mlflow"],
+            },
+            "handoff_missing_external_evidence": handoff["missing_external_evidence"],
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "external_deployment_required": True,
+            "usage_boundary": "orchestration_readiness_report_checks_scheduler_lineage_registry_replay_and_external_evidence_without_deploying_airflow_dagster_mlflow_or_openlineage",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "orchestration_readiness_report", "orchestration", "workflow_lineage_model_registry", source="orchestration_governance", approval_state="ready" if ready else "missing_evidence")
+        return report
 
     def workflow_dependency_graph(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -2536,6 +3111,119 @@ class SystemService:
             "output_ref_count": sum(len(item.output_refs) for item in events),
         }
 
+    def _workflow_queue_plan(self, workflow: WorkflowDefinition) -> dict[str, dict[str, Any]]:
+        queues: dict[str, dict[str, Any]] = {}
+        for task in workflow.tasks:
+            queue = self._workflow_task_queue(task)
+            task_type = self._workflow_task_type(task)
+            row = queues.setdefault(
+                queue,
+                {
+                    "queue": queue,
+                    "worker_pool": f"wf_{queue}_pool",
+                    "task_count": 0,
+                    "task_ids": [],
+                    "task_types": [],
+                    "max_attempts": 1,
+                    "requires_external_worker_pool": queue != "default",
+                },
+            )
+            row["task_count"] += 1
+            row["task_ids"].append(str(task.get("task_id", "")).strip())
+            row["task_types"] = self._unique_strings([*row["task_types"], task_type])
+            row["max_attempts"] = max(row["max_attempts"], int(self._workflow_task_retry_policy(task).get("max_attempts", 1)))
+        return queues
+
+    def _workflow_scheduler_backfill_preview(
+        self,
+        workflow: WorkflowDefinition,
+        *,
+        as_of: Any,
+        window_days: int,
+        include_plan: bool,
+    ) -> dict[str, Any]:
+        if workflow.cadence == "manual":
+            return {"candidate_count": 0, "planned_dates": [], "requires_backfill": False, "reason": "manual_workflow"}
+        last_logical_date = self._workflow_latest_logical_run_date(workflow)
+        start_date = last_logical_date + timedelta(days=1) if last_logical_date else as_of.date()
+        end_date = min(as_of.date(), start_date + timedelta(days=max(0, window_days - 1)))
+        if start_date > end_date:
+            return {"candidate_count": 0, "planned_dates": [], "requires_backfill": False, "reason": "no_gap_after_latest_run"}
+        dates = self._workflow_backfill_dates(
+            {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "cadence": workflow.cadence,
+                "max_runs": window_days,
+            },
+            workflow=workflow,
+        )
+        planned_dates = [item.isoformat() for item in dates] if include_plan else []
+        return {
+            "candidate_count": len(dates),
+            "planned_dates": planned_dates,
+            "requires_backfill": bool(dates),
+            "reason": "latest_run_gap" if last_logical_date else "no_previous_run",
+            "preview_endpoint": f"/api/orchestration/dags/{workflow.dag_id}/backfill",
+        }
+
+    def _workflow_latest_logical_run_date(self, workflow: WorkflowDefinition) -> date | None:
+        dates: list[date] = []
+        date_fields = self._unique_strings([*workflow.idempotency_key_fields, "as_of_date", "run_date", "date"])
+        for run in self.store.workflow_runs.values():
+            if run.dag_id != workflow.dag_id:
+                continue
+            backfill = run.inputs.get("backfill", {})
+            if isinstance(backfill, Mapping) and backfill.get("run_date"):
+                dates.append(self._workflow_backfill_date(backfill["run_date"]))
+                continue
+            for field in date_fields:
+                if run.inputs.get(field):
+                    dates.append(self._workflow_backfill_date(run.inputs[field]))
+                    break
+            else:
+                dates.append(parse_datetime(run.started_at).date())
+        return max(dates) if dates else None
+
+    def _workflow_cron_schedule(self, cadence: str) -> str:
+        cadence = str(cadence).strip().lower()
+        if cadence == "hourly":
+            return "0 * * * *"
+        if cadence == "daily":
+            return "0 9 * * *"
+        if cadence == "business_daily":
+            return "0 9 * * 1-5"
+        if cadence == "weekly":
+            return "0 9 * * 1"
+        if cadence == "monthly":
+            return "0 9 1 * *"
+        return ""
+
+    def _workflow_scheduler_choice(
+        self,
+        *,
+        workflow_count: int,
+        queue_count: int,
+        sensor_count: int,
+        backfill_candidate_count: int,
+    ) -> dict[str, Any]:
+        if sensor_count or queue_count > 2 or backfill_candidate_count > 30:
+            recommended = "airflow_or_dagster"
+            reason = "external_sensors_worker_pools_or_large_backfills"
+        elif workflow_count <= 3 and queue_count <= 1 and backfill_candidate_count == 0:
+            recommended = "cron_plus_api"
+            reason = "simple_cadence_without_external_dependencies"
+        else:
+            recommended = "airflow_or_dagster"
+            reason = "multi_dag_governance_and_lineage_handoff"
+        return {
+            "recommended": recommended,
+            "reason": reason,
+            "cron_allowed_for_simple_dags": recommended == "cron_plus_api",
+            "airflow_fit": "strong" if recommended == "airflow_or_dagster" else "optional",
+            "dagster_fit": "strong" if recommended == "airflow_or_dagster" else "optional",
+        }
+
     def _workflow_upcoming_runs(self, workflow: WorkflowDefinition, *, as_of: Any, horizon_days: int, limit: int) -> list[Any]:
         cadence = workflow.cadence.strip().lower()
         if cadence == "manual":
@@ -2555,6 +3243,66 @@ class SystemService:
             candidate = self._advance_workflow_schedule(candidate, cadence)
             guard += 1
         return upcoming
+
+    def _workflow_backfill_dates(self, payload: Mapping[str, Any], *, workflow: WorkflowDefinition) -> list[date]:
+        raw_dates = payload.get("run_dates", payload.get("dates"))
+        dates: list[date] = []
+        if isinstance(raw_dates, str):
+            raw_values = [item for item in re.split(r"[,\s]+", raw_dates) if item]
+        elif isinstance(raw_dates, (list, tuple, set)):
+            raw_values = list(raw_dates)
+        elif raw_dates is None:
+            raw_values = []
+        else:
+            raw_values = [raw_dates]
+        for value in raw_values:
+            dates.append(self._workflow_backfill_date(value))
+        if dates:
+            return sorted(set(dates))
+
+        start_value = payload.get("start_date", payload.get("from_date"))
+        end_value = payload.get("end_date", payload.get("to_date", start_value))
+        if not start_value:
+            raise ValidationError("workflow backfill requires run_dates or start_date")
+        start_date = self._workflow_backfill_date(start_value)
+        end_date = self._workflow_backfill_date(end_value)
+        if start_date > end_date:
+            raise ValidationError("workflow backfill start_date must be on or before end_date")
+        cadence = str(payload.get("cadence", workflow.cadence)).strip().lower() or workflow.cadence.strip().lower()
+        max_runs = self._bounded_limit(payload.get("max_runs", 90), max_value=366)
+        current = start_date
+        guard = 0
+        while current <= end_date and len(dates) < max_runs and guard < 1000:
+            if cadence != "business_daily" or current.weekday() < 5:
+                dates.append(current)
+            current = self._advance_workflow_schedule_date(current, cadence)
+            guard += 1
+        return sorted(set(dates))
+
+    def _workflow_backfill_date(self, value: Any) -> date:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return parse_datetime(str(value)).date()
+
+    def _advance_workflow_schedule_date(self, value: date, cadence: str) -> date:
+        if cadence == "hourly":
+            return value + timedelta(days=1)
+        if cadence in {"daily", "business_daily"}:
+            return value + timedelta(days=1)
+        if cadence == "weekly":
+            return value + timedelta(days=7)
+        if cadence == "monthly":
+            month = value.month + 1
+            year = value.year
+            if month > 12:
+                month = 1
+                year += 1
+            return value.replace(year=year, month=month, day=min(value.day, 28))
+        if cadence == "manual":
+            return value + timedelta(days=1)
+        return value + timedelta(days=1)
 
     def _advance_workflow_schedule(self, value: Any, cadence: str) -> Any:
         if cadence == "hourly":
@@ -2925,16 +3673,17 @@ class SystemService:
 
     def parse_document_with_paddleocr(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
         optional_payload = self._document_parser_optional_payload(payload)
+        retry_attempts = self._document_parse_retry_attempts(payload.get("retry_attempts", payload.get("retry_limit", 0)))
         document_id = str(payload.get("document_id", "")).strip()
         file_url = str(payload.get("file_url") or payload.get("fileUrl") or "").strip()
         if document_id:
             document = self.store.documents.get(document_id)
             if document is None:
                 raise NotFoundError(f"document {document_id} not found")
-            result = self._parse_document_with_paddleocr(document, optional_payload=optional_payload, use_cache=self._truthy(payload.get("use_cache", True)))
+            result = self._parse_document_with_paddleocr(document, optional_payload=optional_payload, use_cache=self._truthy(payload.get("use_cache", True)), retry_attempts=retry_attempts)
             resource_id = document_id
         elif file_url:
-            result = self._parse_url_with_paddleocr(file_url, optional_payload=optional_payload, use_cache=self._truthy(payload.get("use_cache", True)))
+            result = self._parse_url_with_paddleocr(file_url, optional_payload=optional_payload, use_cache=self._truthy(payload.get("use_cache", True)), retry_attempts=retry_attempts)
             resource_id = file_url
         else:
             raise ValidationError("document parser requires document_id or file_url")
@@ -3610,6 +4359,86 @@ class SystemService:
             "usage_boundary": "opentelemetry_submissions_are_outbox_records_until_external_collector_is_configured",
         }
 
+    def observability_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        log_export = self.structured_logs_export(
+            {
+                "sources": payload.get("sources", ["audit", "alerts", "workflow", "notifications"]),
+                "limit": payload.get("log_limit", 200),
+            },
+            actor=actor,
+        )
+        otel_export = self.opentelemetry_logs_export(
+            {
+                "sources": payload.get("sources", ["audit", "alerts", "workflow", "notifications"]),
+                "limit": payload.get("log_limit", 200),
+                "service_name": payload.get("service_name", "ai-quant"),
+                "service_namespace": payload.get("service_namespace", "ai-native-quant-org"),
+                "environment": payload.get("environment", "staging"),
+            },
+            actor=actor,
+        )
+        artifacts = self._observability_artifact_uris(payload)
+        collector = self._observability_collector_config(payload)
+        retention_policy = self._observability_retention_policy(payload)
+        playbooks = self._observability_playbook_rows(payload)
+        playbook_coverage = self._observability_playbook_coverage(playbooks)
+        drill_summary = self._observability_drill_summary(payload)
+        notification_summary = self._observability_external_notification_summary(payload)
+        otel_check = self.store.readiness_checks.get("otel_collector_drill")
+        otel_check_passed = self._deployment_check_passed(otel_check)
+        min_playbooks = int(payload.get("min_playbook_count", 5))
+        gates = [
+            self._readiness_numeric_gate("structured_log_count", int(log_export["count"]), 1, ">=", "audit/alert/workflow/notification structured logs exported"),
+            self._readiness_numeric_gate("otel_log_count", int(otel_export["log_count"]), 1, ">=", "OTLP log payload contains records"),
+            self._readiness_bool_gate("non_local_collector_configured", collector["non_local_configured"], "non-local staging/production OpenTelemetry collector endpoints"),
+            self._readiness_bool_gate("collector_evidence_uri", bool(artifacts.get("collector_evidence_uri")) or otel_check_passed, "collector connectivity/drill evidence URI"),
+            self._readiness_bool_gate("metrics_endpoint_configured", bool(collector["metrics_endpoint"]), "OpenTelemetry metrics endpoint"),
+            self._readiness_bool_gate("traces_endpoint_configured", bool(collector["traces_endpoint"]), "OpenTelemetry traces endpoint"),
+            self._readiness_bool_gate("logs_backend_storage", bool(artifacts.get("logs_backend_uri")), "collector backend log storage URI"),
+            self._readiness_bool_gate("query_evidence_uri", bool(artifacts.get("query_evidence_uri")), "collector backend query evidence URI"),
+            self._readiness_bool_gate("retention_policy", retention_policy["configured"], "log retention policy and evidence URI"),
+            self._readiness_bool_gate("external_alert_delivery_record", notification_summary["external_channel_ready"], "sent external alert notification record"),
+            self._readiness_bool_gate("external_alert_channel", notification_summary["external_channel_ready"] and bool(artifacts.get("external_alert_evidence_uri")), "real external alert route/channel evidence URI linked to delivery record"),
+            self._readiness_numeric_gate("incident_playbook_count", len(playbooks), min_playbooks, ">=", "required incident playbook count"),
+            self._readiness_numeric_gate("playbook_owner_sla_stop_rollback_coverage", playbook_coverage, 1.0, ">=", "owner, SLA, stop-the-bleed action, and rollback action coverage"),
+            self._readiness_numeric_gate("quarterly_drill_coverage", drill_summary["coverage"], 1.0, ">=", "quarterly incident drill coverage"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_production_observability": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "collector": collector,
+            "retention_policy": retention_policy,
+            "artifact_uris": artifacts,
+            "structured_logs": {
+                "count": log_export["count"],
+                "content_sha256": log_export["content_sha256"],
+                "sources": log_export["sources"],
+                "schema_version": log_export["adapter"]["schema_version"],
+            },
+            "otel_logs": {
+                "log_count": otel_export["log_count"],
+                "content_sha256": otel_export["content_sha256"],
+                "format": otel_export["adapter"]["format"],
+            },
+            "notifications": notification_summary,
+            "playbook_count": len(playbooks),
+            "playbook_coverage": playbook_coverage,
+            "playbooks": playbooks,
+            "drill_summary": drill_summary,
+            "otel_readiness_check": to_plain(otel_check) if otel_check else None,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "observability_readiness_report_tracks_external_collector_storage_retention_and_alert_channel_evidence_without_calling_production_systems",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "observability_readiness_report", "observability", "production_monitoring", source="observability", approval_state="ready" if ready else "missing_evidence")
+        return report
+
     def data_security_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         resource_type_filter = str(filters.get("resource_type", "")).strip()
@@ -3619,9 +4448,10 @@ class SystemService:
         limit = self._bounded_limit(filters.get("limit", 100), 1000)
         scan_char_limit = self._bounded_limit(filters.get("scan_char_limit", 20000), 200000)
 
-        resources = self._data_security_scan_resources(scan_char_limit=scan_char_limit)
-        if resource_type_filter:
-            resources = [item for item in resources if item["resource_type"] == resource_type_filter]
+        resources = self._data_security_scan_resources(
+            scan_char_limit=scan_char_limit,
+            resource_types={resource_type_filter} if resource_type_filter else set(),
+        )
         if issuer_id_filter:
             resources = [item for item in resources if item["issuer_id"] == issuer_id_filter]
         if source_id_filter:
@@ -3712,6 +4542,86 @@ class SystemService:
             rows.append(row)
         rows.sort(key=lambda item: (bool(item["overdue"]), bool(item["due_soon"]), str(item.get("next_rotation_due_at", ""))), reverse=True)
         return {"count": len(rows), "overdue": overdue, "due_soon": due_soon, "rotations": rows[:limit]}
+
+    def security_readiness_report(self, payload: Mapping[str, Any] | None = None, *, permission_matrix: Mapping[str, Any] | None = None, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        self._reject_secret_rotation_payload_values(payload)
+        source_governance = self.source_governance_report({})
+        audit = self.audit_completeness_report({})
+        data_security = self.data_security_report({"limit": payload.get("scan_limit", 1000)})
+        secret_rotations = self.secret_rotations_payload({"limit": 1000})
+        cache_runs = self.cache_retention_runs_payload({"limit": 1000})
+        artifacts = self._security_artifact_uris(payload)
+        external = self._security_external_controls(payload)
+        storage_policy = self.storage_policy_templates_payload(payload.get("storage_policy", {}) if isinstance(payload.get("storage_policy", {}), Mapping) else {})
+        red_zone_training_records = self._red_zone_training_records()
+        permission_denied_events = sum(1 for item in self.store.audit_log if item.action == "permission_denied")
+        permission_red_team = self.store.readiness_checks.get("permission_red_team_test")
+        permission_red_team_passed = self._deployment_check_passed(permission_red_team)
+        matrix = dict(permission_matrix or {})
+        red_allowed = sum(int(row.get("red_allowed", 0)) for row in matrix.get("summary_by_role", []) if row.get("role") not in {"system"})
+        gates = [
+            self._readiness_numeric_gate("red_zone_training_records", float(red_zone_training_records), 0.0, "==", "red-zone data cannot enter automated/training paths"),
+            self._readiness_numeric_gate("audit_completeness", float(audit["coverage"]), 1.0, ">=", "critical audit fields coverage"),
+            self._readiness_bool_gate("data_security_no_critical_findings", int(data_security.get("by_severity", {}).get("critical", 0)) == 0, "no secret/API-key literal findings"),
+            self._readiness_bool_gate("permission_matrix_present", bool(matrix.get("rules")), "API gateway permission matrix generated"),
+            self._readiness_bool_gate("permission_denied_audited", permission_denied_events > 0 or permission_red_team_passed, "permission red-team denial/audit evidence"),
+            self._readiness_bool_gate("secret_rotation_metadata", secret_rotations["count"] > 0 and secret_rotations["overdue"] == 0, "external secret manager rotation metadata"),
+            self._readiness_bool_gate("secret_manager_evidence_uri", bool(artifacts.get("secret_manager_evidence_uri")) and bool(external["secret_manager_provider"]), "external KMS/secret manager evidence URI"),
+            self._readiness_bool_gate("least_privilege_policy", bool(artifacts.get("least_privilege_policy_uri")) and storage_policy["checks"]["s3_delete_object_not_granted"] and storage_policy["checks"]["postgres_no_drop_grant_for_app_role"], "least-privilege API/storage/search policy evidence"),
+            self._readiness_bool_gate("source_governance_coverage", float(source_governance.get("coverage", 0.0)) >= float(payload.get("min_source_governance_coverage", 0.95)), "source provenance/TOS/field whitelist/cache boundary coverage"),
+            self._readiness_bool_gate("external_delete_evidence", cache_runs["executed_outside_app"] > 0 and bool(artifacts.get("external_delete_evidence_uri")), "object/search/KMS-DLP external delete executor evidence"),
+            self._readiness_bool_gate("red_domain_access_reviewed", red_allowed >= 0 and bool(artifacts.get("permission_review_uri")), "red-domain access review evidence URI"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_security_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "artifact_uris": artifacts,
+            "external_controls": external,
+            "source_governance": {
+                "coverage": source_governance["coverage"],
+                "automation_ready_coverage": source_governance["automation_ready_coverage"],
+                "review_coverage": source_governance["review_coverage"],
+                "review_overdue": source_governance["review_overdue"],
+            },
+            "audit": {
+                "coverage": audit["coverage"],
+                "total": audit["total"],
+                "complete": audit["complete"],
+            },
+            "data_security": {
+                "total": data_security["total"],
+                "by_severity": data_security["by_severity"],
+            },
+            "permission": {
+                "permission_denied_events": permission_denied_events,
+                "permission_red_team_record": to_plain(permission_red_team) if permission_red_team else None,
+                "red_allowed_non_system": red_allowed,
+                "rule_count": len(matrix.get("rules", [])),
+            },
+            "secret_rotation_summary": {
+                "count": secret_rotations["count"],
+                "overdue": secret_rotations["overdue"],
+                "due_soon": secret_rotations["due_soon"],
+            },
+            "cache_retention_summary": {
+                "count": cache_runs["count"],
+                "approval_required": cache_runs["approval_required"],
+                "executed_outside_app": cache_runs["executed_outside_app"],
+            },
+            "storage_policy_checks": storage_policy["checks"],
+            "red_zone_training_records": red_zone_training_records,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "security_readiness_report_records_metadata_and_external_evidence_without_secret_values_or_in_app_physical_delete",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "security_readiness_report", "governance", "security", source="security_governance", approval_state="ready" if ready else "missing_evidence")
+        return report
 
     def cache_retention_report(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         filters = filters or {}
@@ -4242,6 +5152,148 @@ class SystemService:
             },
         }
 
+    def storage_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        self._reject_secret_rotation_payload_values(payload)
+        health = self.health()
+        artifacts = self._storage_readiness_artifact_uris(payload)
+        runtime = self._storage_runtime_summary(payload, health)
+        policy = self.storage_policy_templates_payload(payload.get("storage_policy", {}) if isinstance(payload.get("storage_policy", {}), Mapping) else {})
+        capacity = self.store.readiness_checks.get("capacity_latency_report")
+        backup_restore = self.store.readiness_checks.get("backup_restore_drill")
+        real_smoke = self.store.readiness_checks.get("real_data_smoke_test")
+        migration_summary = self._storage_migration_evidence_summary(payload)
+        search_summary = self._storage_search_summary(payload)
+        object_summary = self._storage_object_summary(payload)
+        gates = [
+            self._readiness_bool_gate("postgres_runtime_or_config", runtime["postgres_configured"] and runtime["postgres_non_local"], "non-local PostgreSQL runtime or DSN/config evidence is present"),
+            self._readiness_bool_gate("s3_object_store_config_or_evidence", runtime["s3_configured"] and runtime["s3_non_local"], "non-local S3-compatible object store config evidence"),
+            self._readiness_bool_gate("opensearch_config_or_evidence", runtime["opensearch_configured"] and runtime["opensearch_non_local"], "non-local OpenSearch config evidence"),
+            self._readiness_bool_gate("least_privilege_templates", policy["checks"]["s3_delete_object_not_granted"] and policy["checks"]["s3_full_access_not_granted"] and policy["checks"]["postgres_no_drop_grant_for_app_role"], "least-privilege policy templates for S3/OpenSearch/PostgreSQL"),
+            self._readiness_bool_gate("least_privilege_policy_uri", bool(artifacts.get("least_privilege_policy_uri")), "real environment least-privilege policy artifact URI"),
+            self._readiness_bool_gate("postgres_migration_evidence", migration_summary["present"], "PostgreSQL schema migration dry-run/apply/rollback evidence URI"),
+            self._readiness_bool_gate("real_data_smoke_record", self._deployment_check_passed(real_smoke), "real data smoke readiness checklist record"),
+            self._readiness_bool_gate("capacity_latency_record", self._deployment_check_passed(capacity), "capacity/latency readiness checklist record"),
+            self._readiness_bool_gate("capacity_baseline_uri", self._external_artifact_uri(capacity.evidence_uri if capacity else "") or bool(artifacts.get("capacity_baseline_uri")), "capacity baseline artifact URI"),
+            self._readiness_bool_gate("backup_restore_record", self._deployment_check_passed(backup_restore), "backup restore readiness checklist record"),
+            self._readiness_bool_gate("backup_restore_uri", self._external_artifact_uri(backup_restore.evidence_uri if backup_restore else "") or bool(artifacts.get("backup_restore_uri")), "backup/restore drill artifact URI"),
+            self._readiness_bool_gate("postgres_smoke_uri", bool(artifacts.get("postgres_smoke_uri")), "PostgreSQL connect/query smoke artifact URI"),
+            self._readiness_bool_gate("s3_smoke_uri", bool(artifacts.get("s3_smoke_uri")) and object_summary["external_smoke_present"], "S3 put/get/checksum smoke artifact URI with metrics"),
+            self._readiness_bool_gate("opensearch_smoke_uri", bool(artifacts.get("opensearch_smoke_uri")) and search_summary["external_smoke_present"], "OpenSearch bulk/search smoke artifact URI with metrics"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_storage_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "artifact_uris": artifacts,
+            "runtime": runtime,
+            "policy_checks": policy["checks"],
+            "migration": migration_summary,
+            "object_store": object_summary,
+            "search_index": search_summary,
+            "readiness_records": {
+                "real_data_smoke_test": to_plain(real_smoke) if real_smoke else None,
+                "capacity_latency_report": to_plain(capacity) if capacity else None,
+                "backup_restore_drill": to_plain(backup_restore) if backup_restore else None,
+            },
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "storage_readiness_report_checks_state_object_search_evidence_without_running_pressure_tests_or_touching_external_backends",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "storage_readiness_report", "storage", "postgres_s3_opensearch", source="storage_governance", approval_state="ready" if ready else "missing_evidence")
+        return report
+
+    def _storage_readiness_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "postgres_smoke_uri": ["postgres_smoke_uri", "postgresql_smoke_uri", "state_store_smoke_uri"],
+            "s3_smoke_uri": ["s3_smoke_uri", "object_store_smoke_uri", "minio_smoke_uri"],
+            "opensearch_smoke_uri": ["opensearch_smoke_uri", "search_smoke_uri", "fulltext_search_smoke_uri"],
+            "capacity_baseline_uri": ["capacity_baseline_uri", "capacity_latency_uri", "pressure_test_uri"],
+            "backup_restore_uri": ["backup_restore_uri", "backup_restore_evidence_uri", "restore_drill_uri"],
+            "least_privilege_policy_uri": ["least_privilege_policy_uri", "storage_policy_uri", "iam_policy_uri"],
+            "postgres_migration_uri": ["postgres_migration_uri", "schema_migration_uri", "migration_dry_run_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _storage_runtime_summary(self, payload: Mapping[str, Any], health: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("runtime", payload.get("environment", {}))
+        runtime = dict(raw) if isinstance(raw, Mapping) else {}
+        postgres_endpoint = str(payload.get("postgres_endpoint") or runtime.get("postgres_endpoint") or runtime.get("postgres_dsn") or os.environ.get("AI_QUANT_POSTGRES_DSN", "") or os.environ.get("AI_QUANT_DATABASE_URL", "")).strip()
+        s3_endpoint = str(payload.get("s3_endpoint") or runtime.get("s3_endpoint") or os.environ.get("AI_QUANT_S3_ENDPOINT", "")).strip()
+        opensearch_endpoint = str(payload.get("opensearch_endpoint") or runtime.get("opensearch_endpoint") or os.environ.get("AI_QUANT_OPENSEARCH_URL", "")).strip()
+        store_name = str(health.get("store", ""))
+        object_store = dict(health.get("object_store", {}))
+        search_index = dict(health.get("search_index", {}))
+        postgres_configured = self._truthy(payload.get("postgres_configured", runtime.get("postgres_configured", False))) or store_name == "PostgreSQLStore" or bool(postgres_endpoint)
+        s3_configured = self._truthy(payload.get("s3_configured", runtime.get("s3_configured", False))) or object_store.get("backend") == "s3" or bool(s3_endpoint)
+        opensearch_configured = self._truthy(payload.get("opensearch_configured", runtime.get("opensearch_configured", False))) or search_index.get("backend") == "opensearch" or bool(opensearch_endpoint)
+        return {
+            "store": store_name,
+            "object_store_backend": str(object_store.get("backend", "")),
+            "search_backend": str(search_index.get("backend", "")),
+            "postgres_configured": postgres_configured,
+            "s3_configured": s3_configured,
+            "opensearch_configured": opensearch_configured,
+            "postgres_endpoint_redacted": self._redacted_endpoint(postgres_endpoint),
+            "s3_endpoint_redacted": self._redacted_endpoint(s3_endpoint),
+            "opensearch_endpoint_redacted": self._redacted_endpoint(opensearch_endpoint),
+            "postgres_non_local": self._non_local_endpoint(postgres_endpoint),
+            "s3_non_local": self._non_local_endpoint(s3_endpoint),
+            "opensearch_non_local": self._non_local_endpoint(opensearch_endpoint),
+            "sensitive_values_redacted": True,
+        }
+
+    def _storage_migration_evidence_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        artifacts = self._storage_readiness_artifact_uris(payload)
+        raw = payload.get("migration", payload.get("postgres_migration", {}))
+        migration = dict(raw) if isinstance(raw, Mapping) else {}
+        dry_run = self._truthy(payload.get("migration_dry_run", migration.get("dry_run", False)))
+        applied = self._truthy(payload.get("migration_applied", migration.get("applied", False)))
+        rollback_recorded = self._truthy(payload.get("rollback_recorded", migration.get("rollback_recorded", migration.get("rolled_back_record", False))))
+        artifact_present = bool(artifacts.get("postgres_migration_uri"))
+        return {
+            "present": artifact_present,
+            "postgres_migration_uri": artifacts.get("postgres_migration_uri", ""),
+            "dry_run": dry_run,
+            "applied": applied,
+            "rollback_recorded": rollback_recorded,
+            "inline_migration_complete": dry_run and applied and rollback_recorded,
+        }
+
+    def _storage_search_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("opensearch_smoke", payload.get("search_smoke", {}))
+        smoke = dict(raw) if isinstance(raw, Mapping) else {}
+        indexed = int(smoke.get("indexed", smoke.get("indexed_count", 0)) or 0)
+        search_hits = int(smoke.get("search_hits", smoke.get("hit_count", 0)) or 0)
+        status = str(smoke.get("status", "")).strip().lower()
+        return {
+            "backend": self.search_index.describe().get("backend", ""),
+            "external_smoke_present": indexed > 0 and search_hits > 0 and status in {"", "passed", "ok", "success"},
+            "indexed": indexed,
+            "search_hits": search_hits,
+            "status": status,
+        }
+
+    def _storage_object_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("s3_smoke", payload.get("object_store_smoke", {}))
+        smoke = dict(raw) if isinstance(raw, Mapping) else {}
+        put_ok = self._truthy(smoke.get("put_ok", smoke.get("put", False)))
+        get_ok = self._truthy(smoke.get("get_ok", smoke.get("get", False)))
+        checksum_ok = self._truthy(smoke.get("checksum_ok", smoke.get("sha256_verified", False)))
+        status = str(smoke.get("status", "")).strip().lower()
+        return {
+            "backend": self.object_store.describe().get("backend", ""),
+            "external_smoke_present": put_ok and get_ok and checksum_ok and status in {"", "passed", "ok", "success"},
+            "put_ok": put_ok,
+            "get_ok": get_ok,
+            "checksum_ok": checksum_ok,
+            "status": status,
+        }
+
     def record_permission_denied(self, method: str, path: str, *, role: str, actor: str = "system") -> None:
         self._audit(
             actor,
@@ -4252,8 +5304,12 @@ class SystemService:
             approval_state=f"role={role}",
         )
 
-    def _data_security_scan_resources(self, *, scan_char_limit: int) -> list[dict[str, Any]]:
+    def _data_security_scan_resources(self, *, scan_char_limit: int, resource_types: set[str] | None = None) -> list[dict[str, Any]]:
         resources: list[dict[str, Any]] = []
+        resource_types = resource_types or set()
+
+        def include(resource_type: str) -> bool:
+            return not resource_types or resource_type in resource_types
 
         def add_resource(
             *,
@@ -4284,48 +5340,51 @@ class SystemService:
                 }
             )
 
-        for document in self.store.documents.values():
-            add_resource(
-                resource_type="document",
-                resource_id=document.document_id,
-                document_id=document.document_id,
-                issuer_id=document.issuer_id,
-                source_id=document.source_id,
-                field_name="body",
-                text=document.body or self._document_object_text(document),
-                rights_tag=document.rights_tag,
-            )
-        for evidence in self.store.evidence.values():
-            document = self.store.documents.get(evidence.document_id)
-            add_resource(
-                resource_type="evidence",
-                resource_id=evidence.evidence_id,
-                document_id=evidence.document_id,
-                issuer_id=document.issuer_id if document else "",
-                source_id=document.source_id if document else "",
-                field_name="span_text",
-                text="\n".join(part for part in [evidence.span_text, evidence.canonical_text] if part),
-                rights_tag=document.rights_tag if document else None,
-            )
-        for answer in self.store.research_answers.values():
-            source_id = ""
-            rights_tag = None
-            for document_id in answer.source_document_ids:
-                document = self.store.documents.get(document_id)
-                if document:
-                    source_id = document.source_id
-                    rights_tag = document.rights_tag
-                    break
-            add_resource(
-                resource_type="research_answer",
-                resource_id=answer.answer_id,
-                document_id=",".join(answer.source_document_ids),
-                issuer_id=answer.issuer_id,
-                source_id=source_id,
-                field_name="answer_text",
-                text=f"{answer.english_source_text}\n{answer.chinese_summary}",
-                rights_tag=rights_tag,
-            )
+        if include("document"):
+            for document in self.store.documents.values():
+                add_resource(
+                    resource_type="document",
+                    resource_id=document.document_id,
+                    document_id=document.document_id,
+                    issuer_id=document.issuer_id,
+                    source_id=document.source_id,
+                    field_name="body",
+                    text=document.body or self._document_object_text(document),
+                    rights_tag=document.rights_tag,
+                )
+        if include("evidence"):
+            for evidence in self.store.evidence.values():
+                document = self.store.documents.get(evidence.document_id)
+                add_resource(
+                    resource_type="evidence",
+                    resource_id=evidence.evidence_id,
+                    document_id=evidence.document_id,
+                    issuer_id=document.issuer_id if document else "",
+                    source_id=document.source_id if document else "",
+                    field_name="span_text",
+                    text="\n".join(part for part in [evidence.span_text, evidence.canonical_text] if part),
+                    rights_tag=document.rights_tag if document else None,
+                )
+        if include("research_answer"):
+            for answer in self.store.research_answers.values():
+                source_id = ""
+                rights_tag = None
+                for document_id in answer.source_document_ids:
+                    document = self.store.documents.get(document_id)
+                    if document:
+                        source_id = document.source_id
+                        rights_tag = document.rights_tag
+                        break
+                add_resource(
+                    resource_type="research_answer",
+                    resource_id=answer.answer_id,
+                    document_id=",".join(answer.source_document_ids),
+                    issuer_id=answer.issuer_id,
+                    source_id=source_id,
+                    field_name="answer_text",
+                    text=f"{answer.english_source_text}\n{answer.chinese_summary}",
+                    rights_tag=rights_tag,
+                )
         return resources
 
     def _sensitive_findings_for_text(self, text: str, *, resource: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -4572,8 +5631,8 @@ class SystemService:
                     "adjusted_close": "adjusted_close",
                     "volume": "volume",
                 },
-                "provenance_ref": "local://data/local/tdx/market_data.duckdb",
-                "source_tos_uri": "https://www.tdx.com.cn/",
+                "provenance_ref": "local://data/local/tdx/vipdoc",
+                "source_tos_uri": "https://www.tdx.com.cn/article/vipdata.html",
                 "usage_scope": "public_or_local_eod_internal_research_backtest_risk",
                 "rights_tag": {
                     "license_class": "public_eod_reference",
@@ -4601,6 +5660,37 @@ class SystemService:
                 "usage_scope": "simulated_trading_only_no_live_broker_execution",
                 "rights_tag": {
                     "license_class": "internal_simulated_execution",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+            },
+            {
+                "source_id": "yahoo_chart_us_eod",
+                "source_type": "public_market_data",
+                "description": "Yahoo Finance chart endpoint US EOD/delayed market data for local research and simulated portfolio analysis only.",
+                "risk_level": "yellow",
+                "field_mapping": {
+                    "ticker": "symbol",
+                    "as_of_date": "timestamp",
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "close": "close",
+                    "adjusted_close": "adjclose",
+                    "volume": "volume",
+                },
+                "field_whitelist": ["ticker", "as_of_date", "open", "high", "low", "close", "adjusted_close", "volume"],
+                "provenance_ref": "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+                "source_tos_uri": "https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html",
+                "usage_scope": "local_research_simulated_portfolio_only_not_production_market_data_license",
+                "collection_method": "public_chart_endpoint",
+                "robots_policy": "needs_periodic_review",
+                "review_owner_role": "数据工程",
+                "rights_tag": {
+                    "license_class": "candidate_us_eod_reference",
                     "training_allowed": False,
                     "redistribution_allowed": False,
                     "display_use": "allowed",
@@ -4667,6 +5757,7 @@ class SystemService:
         return created
 
     def seed_astock_connectors(self, *, actor: str = "system") -> list[AStockConnectorDefinition]:
+        # Only seed the free/public connector subset used in the production closure.
         defaults = [
             ("eastmoney_research", "eastmoney", "research_discovery", 10, False, {"title": "title", "url": "source_uri", "published_at": "published_at"}),
             ("cninfo_announcements", "cninfo", "announcement", 20, False, {"security_code": "ticker", "title": "title", "url": "source_uri"}),
@@ -4675,7 +5766,16 @@ class SystemService:
             ("baidu_concepts", "baidu_stock", "concept_fund_flow", 50, False, {"concept": "theme", "net_inflow": "net_inflow"}),
             ("dragon_tiger_list", "exchange_public", "dragon_tiger_list", 60, False, {"trade_date": "as_of_date", "security_code": "ticker"}),
             ("unlock_calendar", "exchange_public", "unlock_calendar", 70, False, {"unlock_date": "event_date", "security_code": "ticker"}),
-            ("iwencai_optional", "iwencai", "query", 90, True, {"query": "query", "rows": "rows"}),
+            ("efinance_eastmoney_history", "efinance", "eastmoney_kline_history", 80, False, {"日期": "as_of_date", "开盘": "open", "最高": "high", "最低": "low", "收盘": "close", "成交量": "volume", "成交额": "amount"}),
+            ("efinance_eastmoney_base_info", "efinance", "eastmoney_base_info", 90, False, {"股票代码": "ticker", "股票名称": "security_name", "市盈率": "pe_ttm", "市净率": "pb", "总市值": "market_cap"}),
+            ("efinance_eastmoney_board", "efinance", "eastmoney_belong_board", 100, False, {"板块名称": "theme", "板块类型": "block_type", "股票代码": "ticker"}),
+            ("akshare_em_history", "akshare", "eastmoney_kline_history", 110, False, {"日期": "as_of_date", "开盘": "open", "最高": "high", "最低": "low", "收盘": "close", "成交量": "volume", "成交额": "amount"}),
+            ("akshare_em_spot", "akshare", "eastmoney_spot_snapshot", 120, False, {"代码": "ticker", "名称": "security_name", "最新价": "close", "市盈率-动态": "pe_ttm", "市净率": "pb", "总市值": "market_cap"}),
+            ("akshare_chip_distribution", "akshare", "eastmoney_chip_distribution", 130, False, {"日期": "as_of_date", "获利比例": "profit_ratio", "平均成本": "average_cost"}),
+            ("akshare_hot_rank", "akshare", "eastmoney_xueqiu_hot_rank", 140, False, {"代码": "ticker", "股票简称": "security_name", "排名": "rank", "最新价": "close"}),
+            ("akshare_limit_up_pool", "akshare", "eastmoney_limit_up_pool", 150, False, {"代码": "ticker", "名称": "security_name", "涨停原因类别": "theme", "首次封板时间": "event_time"}),
+            ("baostock_eod_history", "baostock", "ashare_eod_history", 160, False, {"date": "as_of_date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume", "amount": "amount"}),
+            ("baostock_stock_basic", "baostock", "ashare_stock_basic", 170, False, {"code": "ticker", "code_name": "security_name", "ipoDate": "ipo_date", "outDate": "delist_date", "type": "security_type"}),
         ]
         created: list[AStockConnectorDefinition] = []
         for connector_id, provider, endpoint_type, priority, requires_key, mapping in defaults:
@@ -4784,6 +5884,94 @@ class SystemService:
             self._audit(actor, "verify_astock_connector", "astock_connector", connector.connector_id, source=connector.provider, approval_state=status)
         return {"updated": [to_plain(item) for item in updated], "total": len(updated)}
 
+    def astock_connector_verification_readiness(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        connector_ids = self._workflow_filter_values(payload.get("connector_ids", payload.get("connector_id", [])))
+        provider = str(payload.get("provider", "")).strip()
+        connectors = list(self.store.astock_connectors.values())
+        if connector_ids:
+            missing = [connector_id for connector_id in connector_ids if connector_id not in self.store.astock_connectors]
+            if missing:
+                raise NotFoundError(f"A-stock connector(s) not found: {', '.join(missing)}")
+            connectors = [self.store.astock_connectors[connector_id] for connector_id in connector_ids]
+        if provider:
+            connectors = [item for item in connectors if item.provider == provider]
+        if not connectors and self._truthy(payload.get("seed_if_empty", False)):
+            connectors = self.seed_astock_connectors(actor=actor)
+        sample_rows = payload.get("sample_rows", payload.get("rows", {}))
+        artifact_uris = self._astock_verification_artifact_uris(payload)
+        rows: list[dict[str, Any]] = []
+        ready_count = 0
+        missing_counts: dict[str, int] = {}
+        for connector in sorted(connectors, key=lambda item: item.priority):
+            source = self.store.sources.get(connector.source_id)
+            if source is None:
+                raise NotFoundError(f"source {connector.source_id} not found")
+            connector_samples = self._astock_readiness_sample_rows(connector.connector_id, sample_rows)
+            normalized_rows = [self._normalize_astock_connector_row(connector, row) for row in connector_samples if isinstance(row, Mapping)]
+            mapped_fields = sorted({field for row in normalized_rows for field in row if field not in {"connector_id", "provider", "endpoint_type", "source_id", "rights_tag", "raw_keys", "usage_boundary"}})
+            required_targets = sorted({str(target) for target in connector.field_mapping.values() if str(target)})
+            missing_fields = [field for field in required_targets if field not in mapped_fields]
+            artifacts = self._astock_connector_artifacts(connector.connector_id, artifact_uris)
+            blockers = self._astock_automation_blockers(connector, source)
+            gates = [
+                self._readiness_bool_gate("verification_passed", connector.status == "verified" and connector.last_check_status == "passed", "connector verification status"),
+                self._readiness_bool_gate("sample_rows_present", bool(normalized_rows), "field sample rows captured"),
+                self._readiness_bool_gate("field_mapping_covered", bool(required_targets) and not missing_fields, "sample rows cover mapped target fields"),
+                self._readiness_bool_gate("rate_limit_declared", int(connector.rate_limit_per_minute) > 0, "rate limit declared"),
+                self._readiness_bool_gate("allowed_use_declared", bool(connector.allowed_use), "allowed use declared"),
+                self._readiness_bool_gate("license_boundary_clear", source.risk_level != "red" and connector.rights_tag.display_use != "blocked" and not connector.rights_tag.training_allowed and not connector.rights_tag.redistribution_allowed, "license/TOS boundary"),
+                self._readiness_bool_gate("real_endpoint_artifact_uri", bool(artifacts.get("endpoint_artifact_uri")), "real endpoint availability artifact URI"),
+                self._readiness_bool_gate("endpoint_stability_artifact_uri", bool(artifacts.get("stability_artifact_uri")), "multi-run endpoint stability artifact URI"),
+                self._readiness_bool_gate("rate_limit_verification_artifact_uri", bool(artifacts.get("rate_limit_artifact_uri")), "rate-limit/quota verification artifact URI"),
+                self._readiness_bool_gate("license_review_artifact_uri", bool(artifacts.get("license_review_uri")), "license/TOS review artifact URI"),
+                self._readiness_bool_gate("field_sample_artifact_uri", bool(artifacts.get("field_sample_uri")), "field sample artifact URI"),
+            ]
+            missing = [gate["gate"] for gate in gates if not gate["passed"]]
+            for gate in missing:
+                missing_counts[gate] = missing_counts.get(gate, 0) + 1
+            ready = not missing
+            if ready:
+                ready_count += 1
+            rows.append(
+                {
+                    "connector_id": connector.connector_id,
+                    "provider": connector.provider,
+                    "endpoint_type": connector.endpoint_type,
+                    "status": connector.status,
+                    "last_check_status": connector.last_check_status,
+                    "source_id": connector.source_id,
+                    "source_risk_level": source.risk_level,
+                    "rate_limit_per_minute": connector.rate_limit_per_minute,
+                    "allowed_use": list(connector.allowed_use),
+                    "rights_tag": to_plain(connector.rights_tag),
+                    "required_fields": required_targets,
+                    "mapped_fields": mapped_fields,
+                    "missing_fields": missing_fields,
+                    "sample_row_count": len(normalized_rows),
+                    "automation_blockers": blockers,
+                    "artifact_uris": artifacts,
+                    "gates": gates,
+                    "missing_requirements": missing,
+                    "ready_for_real_connector_acceptance": ready,
+                    "automation_allowed": False,
+                    "usage_boundary": "astock_connector_readiness_is_manual_reference_acceptance_not_automated_fact_ingestion",
+                }
+            )
+        report = {
+            "connector_count": len(rows),
+            "ready_count": ready_count,
+            "missing_counts": missing_counts,
+            "connectors": rows,
+            "ready_for_real_acceptance": bool(rows) and ready_count == len(rows),
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "astock_connector_verification_readiness_requires_real_endpoint_license_and_field_sample_evidence",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "astock_connector_verification_readiness", "astock_connector", ",".join([row["connector_id"] for row in rows]) or "batch", approval_state=f"ready={ready_count};total={len(rows)}")
+        return report
+
     def fetch_astock_connector_sample(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
         connector_id = str(payload["connector_id"])
         connector = self.store.astock_connectors.get(connector_id)
@@ -4844,7 +6032,8 @@ class SystemService:
         supplemental_research and must NOT enter the automated decision chain.
 
         Supported connector_ids: eastmoney_research, cninfo_announcements,
-        tencent_valuation_snapshot.
+        tencent_valuation_snapshot, ths_hot_topics, baidu_concepts,
+        dragon_tiger_list, unlock_calendar.
         """
         connector_id = str(payload.get("connector_id", ""))
         if not connector_id:
@@ -4907,6 +6096,233 @@ class SystemService:
             document_types=list(payload.get("document_types", [])) or None,
         )
         return {"filings": [to_plain(document) for document in documents]}
+
+    def parse_13f_information_table(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        source_id = str(payload.get("source_id", "sec_edgar"))
+        if source_id not in self.store.sources:
+            if source_id == "sec_edgar":
+                self.seed_default_sources(actor=actor)
+            else:
+                raise NotFoundError(f"source {source_id} not found")
+        source = self.store.sources[source_id]
+        if source.risk_level == "red":
+            raise PermissionDenied("red 13F source cannot enter research layer")
+        text, source_uri, fetch_status = self._13f_information_table_text(payload)
+        rows = self._parse_13f_information_rows(text)
+        limit = self._bounded_limit(payload.get("limit", len(rows) or 1), 5000)
+        rows = rows[:limit]
+        report_period = self._normalize_13f_report_period(payload, rows)
+        filer_cik = str(payload.get("filer_cik", "")).strip()
+        filer_name = str(payload.get("filer_name", "")).strip()
+        mapping_overrides = self._13f_mapping_overrides(payload.get("security_mappings", payload.get("mappings", [])))
+        import_enabled = self._truthy(payload.get("import_holdings", payload.get("write", False)))
+        create_missing_mappings = self._truthy(payload.get("create_missing_mappings", False))
+        parsed_rows: list[dict[str, Any]] = []
+        created: list[InstitutionalHolding] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        unmapped: list[dict[str, Any]] = []
+        mapping_counts: dict[str, int] = {}
+
+        for index, row in enumerate(rows):
+            resolved = self._resolve_13f_holding_target(row, payload, mapping_overrides)
+            mapping_counts[resolved["mapping_status"]] = mapping_counts.get(resolved["mapping_status"], 0) + 1
+            normalized = {
+                **row,
+                **resolved,
+                "row_index": index,
+                "source_id": source_id,
+                "source_uri": source_uri,
+                "report_period": report_period,
+                "filer_cik": filer_cik,
+                "filer_name": filer_name,
+            }
+            parsed_rows.append(normalized)
+            if resolved["mapping_status"] == "unmapped":
+                unmapped.append(self._13f_unmapped_row(normalized, index=index))
+                if import_enabled:
+                    skipped.append({"index": index, "reason": "unmapped_security", "cusip": row.get("cusip", ""), "name_of_issuer": row.get("name_of_issuer", "")})
+                continue
+            if not import_enabled:
+                continue
+            try:
+                if create_missing_mappings and resolved.get("mapping_status") == "provided_mapping":
+                    self._ensure_13f_entity_mapping(normalized, payload, actor=actor)
+                holding_payload = self._13f_holding_payload(normalized, payload)
+                holding_id = str(holding_payload["holding_id"])
+                if holding_id in self.store.institutional_holdings:
+                    skipped.append({"index": index, "holding_id": holding_id, "reason": "already_exists"})
+                    continue
+                created.append(self.register_13f_holding(holding_payload, actor=actor))
+            except (ValidationError, NotFoundError, PermissionDenied, ConflictError) as exc:
+                errors.append({"index": index, "error": str(exc), "cusip": row.get("cusip", ""), "name_of_issuer": row.get("name_of_issuer", "")})
+
+        result = {
+            "source_id": source_id,
+            "source_uri": source_uri,
+            "fetch_status": fetch_status,
+            "filer_cik": filer_cik,
+            "filer_name": filer_name,
+            "report_period": report_period,
+            "row_count": len(parsed_rows),
+            "total_value_usd": round(sum(float(row.get("value_usd", 0.0) or 0.0) for row in parsed_rows), 6),
+            "mapping_counts": mapping_counts,
+            "unmapped_count": len(unmapped),
+            "unmapped": unmapped,
+            "rows": parsed_rows,
+            "created": [to_plain(item) for item in created],
+            "created_count": len(created),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+            "errors": errors,
+            "failed_count": len(errors),
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "13f_information_table_import_is_research_and_crowding_risk_only_not_trade_signal",
+        }
+        self._audit(
+            actor,
+            "parse_13f_information_table",
+            "institutional_holding",
+            str(payload.get("filing_id") or payload.get("document_id") or source_uri or "13f_information_table"),
+            source=source_id,
+            version="sec_13f_information_table",
+            approval_state=f"rows={len(parsed_rows)};created={len(created)};unmapped={len(unmapped)};failed={len(errors)}",
+        )
+        return result
+
+    def parse_13f_information_table_batch(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        filings = payload.get("filings", payload.get("items", []))
+        if not isinstance(filings, list):
+            raise ValidationError("13F batch parse requires filings list")
+        limit = self._bounded_limit(payload.get("limit", len(filings) or 1), 1000)
+        default_options = {
+            key: value
+            for key, value in payload.items()
+            if key
+            not in {
+                "filings",
+                "items",
+                "batch_id",
+                "limit",
+            }
+        }
+        results: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for index, item in enumerate(filings[:limit]):
+            if not isinstance(item, Mapping):
+                errors.append({"index": index, "error": "filing item must be an object"})
+                continue
+            try:
+                result = self.parse_13f_information_table({**default_options, **dict(item)}, actor=actor)
+                results.append(result)
+            except (ValidationError, NotFoundError, PermissionDenied, ConflictError, RuntimeError) as exc:
+                errors.append(
+                    {
+                        "index": index,
+                        "filing_id": str(item.get("filing_id", item.get("document_id", item.get("source_uri", "")))),
+                        "error": str(exc),
+                    }
+                )
+        parsed_rows = sum(int(result.get("row_count", 0)) for result in results)
+        created_count = sum(int(result.get("created_count", 0)) for result in results)
+        skipped_count = sum(int(result.get("skipped_count", 0)) for result in results)
+        unmapped_count = sum(int(result.get("unmapped_count", 0)) for result in results)
+        failed_count = len(errors) + sum(int(result.get("failed_count", 0)) for result in results)
+        mapping_counts: dict[str, int] = {}
+        for result in results:
+            for key, value in dict(result.get("mapping_counts", {})).items():
+                mapping_counts[str(key)] = mapping_counts.get(str(key), 0) + int(value)
+        mapping_rate = round((parsed_rows - unmapped_count) / max(1, parsed_rows), 4) if parsed_rows else 1.0
+        batch_id = str(payload.get("batch_id", "13f_batch_parse"))
+        self._audit(
+            actor,
+            "parse_13f_information_table_batch",
+            "institutional_holding",
+            batch_id,
+            source=str(payload.get("source_id", "sec_edgar")),
+            version="sec_13f_information_table_batch",
+            approval_state=f"filings={len(results)};rows={parsed_rows};created={created_count};unmapped={unmapped_count};failed={failed_count}",
+        )
+        return {
+            "batch_id": batch_id,
+            "filing_count": len(results),
+            "requested_count": min(limit, len(filings)),
+            "row_count": parsed_rows,
+            "created_count": created_count,
+            "skipped_count": skipped_count,
+            "unmapped_count": unmapped_count,
+            "failed_count": failed_count,
+            "mapping_counts": mapping_counts,
+            "mapping_rate": mapping_rate,
+            "results": results,
+            "errors": errors,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "13f_batch_import_is_dataset_quality_and_crowding_risk_only_not_trade_signal",
+        }
+
+    def form13f_mapping_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        batch = payload.get("batch_result", payload.get("batch", {}))
+        batch_result = dict(batch) if isinstance(batch, Mapping) else {}
+        target_filing_count = int(payload.get("target_filing_count", payload.get("min_filing_count", 100)))
+        target_row_count = int(payload.get("target_row_count", payload.get("min_row_count", 1000)))
+        min_mapping_rate = float(payload.get("min_mapping_rate", 0.98))
+        max_failed_rate = float(payload.get("max_failed_rate", 0.0))
+        max_unmapped_rate = float(payload.get("max_unmapped_rate", 1.0 - min_mapping_rate))
+        filing_count = int(payload.get("filing_count", batch_result.get("filing_count", 0)) or 0)
+        row_count = int(payload.get("row_count", batch_result.get("row_count", 0)) or 0)
+        unmapped_count = int(payload.get("unmapped_count", batch_result.get("unmapped_count", 0)) or 0)
+        failed_count = int(payload.get("failed_count", batch_result.get("failed_count", 0)) or 0)
+        mapping_counts = dict(payload.get("mapping_counts", batch_result.get("mapping_counts", {})))
+        if "mapping_rate" in payload:
+            mapping_rate = float(payload["mapping_rate"])
+        elif "mapping_rate" in batch_result:
+            mapping_rate = float(batch_result["mapping_rate"])
+        else:
+            mapping_rate = round((row_count - unmapped_count) / max(1, row_count), 4) if row_count else 0.0
+        unmapped_rate = round(unmapped_count / max(1, row_count), 6) if row_count else 0.0
+        failed_rate = round(failed_count / max(1, filing_count), 6) if filing_count else (1.0 if failed_count else 0.0)
+        artifact_uris = self._form13f_mapping_artifact_uris(payload)
+        unmapped_queue = payload.get("unmapped_queue", batch_result.get("unmapped", []))
+        if isinstance(unmapped_queue, (list, tuple, set)) and unmapped_queue:
+            unmapped_queue_count = len(unmapped_queue)
+        else:
+            unmapped_queue_count = int(payload.get("unmapped_queue_count", unmapped_count) or 0)
+        gates = [
+            self._readiness_numeric_gate("filing_count", filing_count, target_filing_count, ">=", "real Form 13F filing sample count"),
+            self._readiness_numeric_gate("row_count", row_count, target_row_count, ">=", "information table row count"),
+            self._readiness_numeric_gate("mapping_rate", mapping_rate, min_mapping_rate, ">=", "CUSIP/FIGI/issuer mapping accuracy"),
+            self._readiness_numeric_gate("unmapped_rate", unmapped_rate, max_unmapped_rate, "<=", "unmapped queue rate"),
+            self._readiness_numeric_gate("failed_rate", failed_rate, max_failed_rate, "<=", "batch parse failure rate"),
+            self._readiness_bool_gate("batch_artifact_uri", bool(artifact_uris.get("batch_artifact_uri")), "batch execution artifact URI"),
+            self._readiness_bool_gate("mapping_gold_uri", bool(artifact_uris.get("mapping_gold_uri")), "CUSIP/FIGI/issuer gold mapping artifact URI"),
+            self._readiness_bool_gate("unmapped_review_queue_uri", bool(artifact_uris.get("unmapped_review_queue_uri")), "unmapped review queue artifact URI, including reviewed empty-queue evidence"),
+        ]
+        missing = [gate for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "filing_count": filing_count,
+            "row_count": row_count,
+            "unmapped_count": unmapped_count,
+            "failed_count": failed_count,
+            "mapping_rate": round(mapping_rate, 6),
+            "unmapped_rate": unmapped_rate,
+            "failed_rate": failed_rate,
+            "mapping_counts": mapping_counts,
+            "unmapped_queue_count": unmapped_queue_count,
+            "artifact_uris": artifact_uris,
+            "gates": gates,
+            "missing_requirements": [gate["gate"] for gate in missing],
+            "ready_for_real_acceptance": ready,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "13f_mapping_readiness_tracks_real_batch_artifacts_not_trade_signal_or_live_execution",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "form13f_mapping_readiness_report", "institutional_holding", str(payload.get("batch_id", batch_result.get("batch_id", "13f_mapping_readiness"))), approval_state="ready" if ready else "missing_evidence")
+        return report
 
     def fetch_ashare_recent_filings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         security_code = str(payload["security_code"])
@@ -5390,6 +6806,16 @@ class SystemService:
         source_id = self._canonical_source_id(str(filters.get("source_id", "")).strip()) if filters.get("source_id") else ""
         data_type = str(filters.get("data_type", "")).strip()
         limit = self._bounded_limit(filters.get("limit", 50))
+        if self._market_data_direct_query_enabled():
+            points = self._query_market_data_points(
+                security_id=security_id,
+                market=market,
+                source_id=source_id,
+                data_type=data_type,
+                limit=limit,
+                descending=True,
+            )
+            return {"market_data": [to_plain(item) for item in points]}
         points = list(self.store.market_data.values())
         if security_id:
             points = [item for item in points if item.security_id == security_id]
@@ -5401,6 +6827,39 @@ class SystemService:
             points = [item for item in points if item.data_type == data_type]
         points.sort(key=lambda item: (item.as_of_date, item.security_id, item.source_id), reverse=True)
         return {"market_data": [to_plain(item) for item in points[:limit]]}
+
+    def _market_data_direct_query_enabled(self) -> bool:
+        return "market_data" in getattr(self.store, "_lazy_collections", set()) and hasattr(self.store, "query_market_data_points")
+
+    def _query_market_data_points(
+        self,
+        *,
+        security_id: str = "",
+        market: str = "",
+        source_id: str = "",
+        data_type: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        as_of_date_lte: str = "",
+        limit: int = 50,
+        descending: bool = True,
+    ) -> list[MarketDataPoint]:
+        query = getattr(self.store, "query_market_data_points")
+        return query(
+            security_id=security_id,
+            market=market,
+            source_id=source_id,
+            data_type=data_type,
+            start_date=start_date,
+            end_date=end_date,
+            as_of_date_lte=as_of_date_lte,
+            limit=limit,
+            descending=descending,
+        )
+
+    def _count_market_data_points(self, *, security_id: str = "", market: str = "", source_id: str = "", data_type: str = "") -> int:
+        counter = getattr(self.store, "count_market_data_points")
+        return int(counter(security_id=security_id, market=market, source_id=source_id, data_type=data_type))
 
     def adjusted_market_data_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -5417,16 +6876,27 @@ class SystemService:
         start_date = str(filters.get("start_date", ""))
         end_date = str(filters.get("end_date", ""))
         limit = self._bounded_limit(filters.get("limit", 500), 10000)
-        points = [
-            point
-            for point in self.store.market_data.values()
-            if point.security_id == security_id and point.source_id == source_id and point.data_type == data_type
-        ]
-        if start_date:
-            points = [point for point in points if point.as_of_date >= start_date]
-        if end_date:
-            points = [point for point in points if point.as_of_date <= end_date]
-        points.sort(key=lambda item: item.as_of_date)
+        if self._market_data_direct_query_enabled():
+            points = self._query_market_data_points(
+                security_id=security_id,
+                source_id=source_id,
+                data_type=data_type,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+                descending=False,
+            )
+        else:
+            points = [
+                point
+                for point in self.store.market_data.values()
+                if point.security_id == security_id and point.source_id == source_id and point.data_type == data_type
+            ]
+            if start_date:
+                points = [point for point in points if point.as_of_date >= start_date]
+            if end_date:
+                points = [point for point in points if point.as_of_date <= end_date]
+            points.sort(key=lambda item: item.as_of_date)
         actions = [
             action
             for action in self.store.corporate_actions.values()
@@ -5527,15 +6997,29 @@ class SystemService:
         source_id = self._canonical_source_id(str(filters.get("source_id", "")).strip()) if filters.get("source_id") else ""
         data_type = str(filters.get("data_type", "")).strip()
         max_gap_days = int(filters.get("max_gap_days", 7))
-        points = list(self.store.market_data.values())
-        if security_id:
-            points = [item for item in points if item.security_id == security_id]
-        if market:
-            points = [item for item in points if item.market == market]
-        if source_id:
-            points = [item for item in points if item.source_id == source_id]
-        if data_type:
-            points = [item for item in points if item.data_type == data_type]
+        sampled = False
+        if self._market_data_direct_query_enabled():
+            points = self._query_market_data_points(
+                security_id=security_id,
+                market=market,
+                source_id=source_id,
+                data_type=data_type,
+                limit=self._bounded_limit(filters.get("sample_limit", 10000), 10000),
+                descending=False,
+            )
+            total = self._count_market_data_points(security_id=security_id, market=market, source_id=source_id, data_type=data_type)
+            sampled = total > len(points)
+        else:
+            points = list(self.store.market_data.values())
+            if security_id:
+                points = [item for item in points if item.security_id == security_id]
+            if market:
+                points = [item for item in points if item.market == market]
+            if source_id:
+                points = [item for item in points if item.source_id == source_id]
+            if data_type:
+                points = [item for item in points if item.data_type == data_type]
+            total = len(points)
 
         invalid_ohlc: list[dict[str, Any]] = []
         source_rights_gaps: list[dict[str, Any]] = []
@@ -5604,9 +7088,10 @@ class SystemService:
             )
 
         issue_count = len(invalid_ohlc) + len(source_rights_gaps) + len(used_source_gaps) + len(date_gaps)
-        total = len(points)
         return {
             "total_points": total,
+            "sampled": sampled,
+            "sample_points": len(points),
             "quality_score": round(max(0.0, 1.0 - issue_count / max(1, total)), 4) if total else 1.0,
             "source_counts": source_counts,
             "security_counts": security_counts,
@@ -5616,6 +7101,57 @@ class SystemService:
             "source_governance_gaps": used_source_gaps[:100],
             "date_gaps": date_gaps[:100],
             "issue_count": issue_count,
+        }
+
+    def market_data_schema_coverage_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        source_format = str(filters.get("source_format", filters.get("adapter", "vipdoc"))).strip().lower()
+        if source_format not in {"vipdoc", "day", "tdx_vipdoc", ""}:
+            raise ValidationError("market data schema coverage report currently supports TDX vipdoc input")
+        source_id = self._canonical_source_id(str(filters.get("source_id", PUBLIC_EOD_MARKET_DATA_SOURCE_ID)))
+        if source_id not in self.store.sources:
+            if source_id == PUBLIC_EOD_MARKET_DATA_SOURCE_ID:
+                self.seed_default_sources(actor="system")
+            else:
+                raise NotFoundError(f"source {source_id} not found")
+        source = self.store.sources[source_id]
+        schema_samples = filters.get("schema_samples")
+        if schema_samples is not None and not isinstance(schema_samples, list):
+            raise ValidationError("schema_samples must be a list when provided")
+        report = self.tdx_market_data.schema_coverage_report(
+            schema_samples=schema_samples,
+            sample_limit=self._bounded_limit(filters.get("sample_limit", filters.get("limit", 50)), 500),
+        )
+        source_whitelist = set(source.field_whitelist)
+        required_whitelist_fields = set(report["target_fields"])
+        missing_whitelist_fields = sorted(required_whitelist_fields - source_whitelist)
+        automation_blockers: list[str] = []
+        source_gaps = self._source_governance_gaps(source)
+        if report["schema_count"] == 0:
+            automation_blockers.append("no_schema_samples")
+        if report["schema_recognition_coverage"] < 1.0:
+            automation_blockers.append("unrecognized_schema")
+        if report["target_field_coverage"] < 1.0:
+            automation_blockers.append("target_field_mapping_incomplete")
+        if missing_whitelist_fields:
+            automation_blockers.append("source_field_whitelist_missing_target_fields")
+        if source.risk_level == "red":
+            automation_blockers.append("red_source_manual_reference_only")
+        if source_gaps:
+            automation_blockers.append("source_governance_gaps")
+        automation_ready = not automation_blockers
+        return {
+            **report,
+            "source_id": source.source_id,
+            "source_type": source.source_type,
+            "risk_level": source.risk_level,
+            "source_field_whitelist": sorted(source_whitelist),
+            "missing_whitelist_fields": missing_whitelist_fields,
+            "source_governance_gaps": source_gaps,
+            "automation_ready": automation_ready,
+            "automation_blockers": automation_blockers,
+            "schema_anomaly_count": len(report["anomaly_samples"]),
+            "usage_boundary": "schema_coverage_report_only_validates_public_eod_field_mapping_no_market_data_is_imported",
         }
 
     def tdx_market_data_preview(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -5716,6 +7252,21 @@ class SystemService:
         mapping_id = str(payload.get("mapping_id", new_id("map")))
         if mapping_id in self.store.entity_mappings:
             raise ConflictError(f"entity mapping {mapping_id} already exists")
+        valid_from = parse_datetime(payload.get("valid_from")) if payload.get("valid_from") else utcnow()
+        valid_to = parse_datetime(payload.get("valid_to")) if payload.get("valid_to") else None
+        recorded_at = parse_datetime(payload.get("recorded_at")) if payload.get("recorded_at") else utcnow()
+        if valid_to is not None and valid_to <= valid_from:
+            raise ValidationError("entity mapping valid_to must be after valid_from")
+        supersedes_mapping_id = str(payload.get("supersedes_mapping_id", "")).strip()
+        if supersedes_mapping_id:
+            previous = self.store.entity_mappings.get(supersedes_mapping_id)
+            if previous is None:
+                raise NotFoundError(f"entity mapping {supersedes_mapping_id} not found")
+            if previous.issuer_id != issuer_id:
+                raise ValidationError("superseded mapping must belong to the same issuer")
+            if previous.valid_to is None or parse_datetime(previous.valid_to) > valid_from:
+                previous.valid_to = valid_from
+                previous.status = "superseded"
         mapping = EntityMapping(
             mapping_id=mapping_id,
             issuer_id=issuer_id,
@@ -5728,10 +7279,41 @@ class SystemService:
             confidence=float(payload.get("confidence", self._entity_mapping_confidence(payload))),
             source=str(payload.get("source", "entity_mapping_registry")),
             version=str(payload.get("version", "v1")),
+            valid_from=valid_from,
+            valid_to=valid_to,
+            recorded_at=recorded_at,
+            supersedes_mapping_id=supersedes_mapping_id,
+            status=str(payload.get("status", "active")),
         )
         self.store.entity_mappings[mapping.mapping_id] = mapping
         self._audit(actor, "register_entity_mapping", "mapping", mapping.mapping_id)
         return mapping
+
+    def entity_mappings_payload(self, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        issuer_id = str(payload.get("issuer_id", "")).strip()
+        ticker = str(payload.get("ticker", "")).strip().upper()
+        market = str(payload.get("market", "")).strip()
+        status = str(payload.get("status", "")).strip()
+        valid_at = parse_datetime(payload.get("valid_at")) if payload.get("valid_at") else None
+        recorded_at = parse_datetime(payload.get("recorded_at")) if payload.get("recorded_at") else None
+        limit = self._bounded_limit(payload.get("limit", 100), 1000)
+        mappings = self._filter_entity_mappings(
+            self.store.entity_mappings.values(),
+            issuer_id=issuer_id,
+            ticker=ticker,
+            market=market,
+            status=status,
+            valid_at=valid_at,
+            recorded_at=recorded_at,
+        )
+        mappings.sort(key=lambda item: (parse_datetime(item.recorded_at), parse_datetime(item.valid_from), item.mapping_id), reverse=True)
+        return {
+            "total": len(mappings),
+            "valid_at": to_plain(valid_at) if valid_at else "",
+            "recorded_at": to_plain(recorded_at) if recorded_at else "",
+            "mappings": [to_plain(item) for item in mappings[:limit]],
+        }
 
     def register_entity_mapping_batch(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
         items = payload.get("items", [])
@@ -5805,9 +7387,14 @@ class SystemService:
     def entity_mapping_quality_report(self, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = payload or {}
         issuer_id = str(payload.get("issuer_id", "")).strip()
-        mappings = list(self.store.entity_mappings.values())
-        if issuer_id:
-            mappings = [item for item in mappings if item.issuer_id == issuer_id]
+        valid_at = parse_datetime(payload.get("valid_at")) if payload.get("valid_at") else None
+        recorded_at = parse_datetime(payload.get("recorded_at")) if payload.get("recorded_at") else None
+        mappings = self._filter_entity_mappings(
+            self.store.entity_mappings.values(),
+            issuer_id=issuer_id,
+            valid_at=valid_at,
+            recorded_at=recorded_at,
+        )
         labels = payload.get("labels")
         if labels is None:
             stored_labels = list(self.store.entity_mapping_labels.values())
@@ -5818,7 +7405,7 @@ class SystemService:
         correct = 0
         mismatches: list[dict[str, Any]] = []
         if isinstance(labels, list):
-            mapping_by_id = {item.mapping_id: item for item in self.store.entity_mappings.values()}
+            mapping_by_id = {item.mapping_id: item for item in mappings}
             for label in labels:
                 if not isinstance(label, Mapping):
                     continue
@@ -5840,8 +7427,10 @@ class SystemService:
                     mismatches.append({"mapping_id": mapping.mapping_id, "expected": expected, "actual": actual})
         covered_issuers = {item.issuer_id for item in mappings}
         market_counts: dict[str, int] = {}
+        status_counts: dict[str, int] = {}
         for mapping in mappings:
             market_counts[mapping.market] = market_counts.get(mapping.market, 0) + 1
+            status_counts[mapping.status] = status_counts.get(mapping.status, 0) + 1
         low_confidence_threshold = float(payload.get("low_confidence_threshold", 0.8))
         low_confidence = [
             {
@@ -5852,24 +7441,385 @@ class SystemService:
                 "confidence": round(float(mapping.confidence), 4),
                 "source": mapping.source,
                 "version": mapping.version,
+                "valid_from": to_plain(mapping.valid_from),
+                "valid_to": to_plain(mapping.valid_to),
+                "recorded_at": to_plain(mapping.recorded_at),
             }
             for mapping in mappings
             if float(mapping.confidence) < low_confidence_threshold
         ]
+        versioned = [item for item in mappings if item.version and item.valid_from and item.recorded_at]
+        open_ended = [item for item in mappings if item.valid_to is None and item.status == "active"]
+        temporal_overlaps = self._entity_mapping_temporal_overlaps(mappings)
         average_confidence = sum(float(mapping.confidence) for mapping in mappings) / len(mappings) if mappings else 1.0
         return {
             "issuer_id": issuer_id,
+            "valid_at": to_plain(valid_at) if valid_at else "",
+            "recorded_at": to_plain(recorded_at) if recorded_at else "",
             "mappings": len(mappings),
             "covered_issuers": len(covered_issuers),
             "market_counts": market_counts,
+            "status_counts": status_counts,
             "checked_labels": checked,
             "accuracy": round(correct / max(1, checked), 4) if checked else 0.0,
             "average_confidence": round(average_confidence, 4),
+            "bitemporal_version_coverage": round(len(versioned) / max(1, len(mappings)), 4) if mappings else 1.0,
+            "active_open_ended_count": len(open_ended),
+            "temporal_overlap_count": len(temporal_overlaps),
+            "temporal_overlaps": temporal_overlaps[: self._bounded_limit(payload.get("limit", 100), 1000)],
             "low_confidence_threshold": low_confidence_threshold,
             "low_confidence_count": len(low_confidence),
             "low_confidence_mappings": low_confidence[: self._bounded_limit(payload.get("limit", 100), 1000)],
             "mismatches": mismatches,
         }
+
+    def entity_mapping_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        issuer_id = str(payload.get("issuer_id", "")).strip()
+        valid_at = parse_datetime(payload.get("valid_at")) if payload.get("valid_at") else None
+        recorded_at = parse_datetime(payload.get("recorded_at")) if payload.get("recorded_at") else None
+        quality_payload: dict[str, Any] = {
+            "issuer_id": issuer_id,
+            "low_confidence_threshold": payload.get("low_confidence_threshold", 0.8),
+            "limit": payload.get("limit", 1000),
+        }
+        if valid_at is not None:
+            quality_payload["valid_at"] = to_plain(valid_at)
+        if recorded_at is not None:
+            quality_payload["recorded_at"] = to_plain(recorded_at)
+        if "labels" in payload:
+            quality_payload["labels"] = payload.get("labels")
+        quality = self.entity_mapping_quality_report(quality_payload)
+        mappings = self._filter_entity_mappings(
+            self.store.entity_mappings.values(),
+            issuer_id=issuer_id,
+            valid_at=valid_at,
+            recorded_at=recorded_at,
+        )
+        market_summary = self._entity_mapping_market_readiness_summary(mappings, payload)
+        label_summary = self._entity_mapping_label_market_summary(payload, issuer_id, market_summary["required_markets"])
+        metadata_summary = self._entity_mapping_metadata_summary(mappings)
+        graph_filters = {"issuer_id": issuer_id, "include_details": False, "limit": payload.get("graph_limit", 1000)}
+        traceability = self.graph_traceability_report(graph_filters)
+        edge_quality = self._entity_mapping_edge_quality_summary(payload, mappings)
+        graph_export = self._entity_mapping_graph_export_summary(payload, mappings, actor=actor)
+        vector_filters: dict[str, Any] = {
+            "issuer_id": issuer_id,
+            "include_restricted": payload.get("include_restricted", False),
+        }
+        resource_types = payload.get("vector_resource_types", payload.get("resource_types", []))
+        if isinstance(resource_types, list):
+            vector_filters["resource_types"] = resource_types
+        if payload.get("collection"):
+            vector_filters["collection"] = payload.get("collection")
+        qdrant_export = self.qdrant_vector_export(vector_filters, actor=actor)
+        adapters = self._graph_vector_adapter_config(payload)
+        artifacts = self._entity_mapping_readiness_artifact_uris(payload)
+        min_accuracy = float(payload.get("min_accuracy", 0.98))
+        min_traceability = float(payload.get("min_traceability_rate", 0.95))
+        min_traceable_resources = int(payload.get("min_traceable_resource_count", 1))
+        min_edge_coverage = float(payload.get("min_edge_metadata_coverage", 1.0))
+        min_mapping_count = int(payload.get("min_mapping_count", max(1, len(market_summary["required_markets"]))))
+        min_label_count = int(payload.get("min_label_count", max(1, len(market_summary["required_markets"]))))
+        min_graph_nodes = int(payload.get("min_graph_node_count", 1))
+        min_vector_points = int(payload.get("min_vector_point_count", 1))
+        gates = [
+            self._readiness_numeric_gate("entity_mapping_count", float(quality["mappings"]), float(min_mapping_count), ">=", "registered EntityMapping records after requested bitemporal filters"),
+            self._readiness_numeric_gate("required_market_coverage", market_summary["coverage"], float(payload.get("min_market_coverage", 1.0)), ">=", "A/H/U or configured required market coverage"),
+            self._readiness_numeric_gate("checked_gold_label_count", float(quality["checked_labels"]), float(min_label_count), ">=", "manual gold labels available for mapping accuracy"),
+            self._readiness_numeric_gate("gold_label_market_coverage", label_summary["coverage"], float(payload.get("min_label_market_coverage", 1.0)), ">=", "gold labels cover required A/H/U markets"),
+            self._readiness_numeric_gate("entity_mapping_accuracy", float(quality["accuracy"]), min_accuracy, ">=", "gold-label entity mapping accuracy"),
+            self._readiness_numeric_gate("source_metadata_coverage", metadata_summary["source_metadata_coverage"], float(payload.get("min_source_metadata_coverage", 1.0)), ">=", "mapping source/version/confidence/ticker/market metadata coverage"),
+            self._readiness_numeric_gate("identifier_coverage", metadata_summary["identifier_coverage"], float(payload.get("min_identifier_coverage", 1.0)), ">=", "mapping records retain LEI/CIK/FIGI/ISIN/ticker identifiers"),
+            self._readiness_numeric_gate("bitemporal_version_coverage", float(quality["bitemporal_version_coverage"]), float(payload.get("min_bitemporal_version_coverage", 1.0)), ">=", "valid_from/recorded_at/version coverage for bitemporal lookup"),
+            self._readiness_numeric_gate("temporal_overlap_count", float(quality["temporal_overlap_count"]), 0.0, "==", "no overlapping active business-time mapping versions"),
+            self._readiness_numeric_gate("low_confidence_mapping_count", float(quality["low_confidence_count"]), 0.0, "==", "no unresolved low-confidence mappings under the readiness threshold"),
+            self._readiness_numeric_gate("label_mismatch_count", float(len(quality["mismatches"])), 0.0, "==", "gold-label mismatches resolved before production"),
+            self._readiness_numeric_gate("graph_traceable_resource_count", float(sum(int(value) for value in traceability["counts"].values() if not str(value).startswith("untraceable_"))), float(min_traceable_resources), ">=", "traceability report includes thesis, decision, or research-answer resources"),
+            self._readiness_numeric_gate("graph_traceability_rate", float(traceability["traceability_rate"]), min_traceability, ">=", "thesis/decision/research-answer graph links trace to evidence and documents"),
+            self._readiness_numeric_gate("edge_metadata_coverage", float(edge_quality["edge_metadata_coverage"]), min_edge_coverage, ">=", "graph edges contain source, timestamp, version, and confidence"),
+            self._readiness_numeric_gate("neo4j_graph_node_count", float(graph_export["node_count"]), float(min_graph_nodes), ">=", "Neo4j-compatible graph export includes subject-page nodes"),
+            self._readiness_numeric_gate("neo4j_graph_relationship_count", float(graph_export["relationship_count"]), 1.0, ">=", "Neo4j-compatible graph export includes subject-page relationships"),
+            self._readiness_numeric_gate("qdrant_vector_point_count", float(qdrant_export["point_count"]), float(min_vector_points), ">=", "Qdrant-compatible vector export includes searchable subject evidence"),
+            self._readiness_bool_gate("neo4j_non_local_config", adapters["neo4j"]["non_local_configured"], "non-local Neo4j staging/production endpoint configured"),
+            self._readiness_bool_gate("qdrant_non_local_config", adapters["qdrant"]["non_local_configured"], "non-local Qdrant staging/production endpoint configured"),
+            self._readiness_bool_gate("real_batch_mapping_artifact_uri", bool(artifacts.get("real_batch_mapping_artifact_uri")), "real ADR/China/A-H-U batch mapping run artifact URI"),
+            self._readiness_bool_gate("adr_china_queue_mapping_uri", bool(artifacts.get("adr_china_queue_mapping_uri")), "ADR/China concept mapping queue review artifact URI"),
+            self._readiness_bool_gate("mapping_gold_uri", bool(artifacts.get("mapping_gold_uri")), "entity mapping gold-label sample artifact URI"),
+            self._readiness_bool_gate("entity_page_acceptance_uri", bool(artifacts.get("entity_page_acceptance_uri")), "production subject-page browser acceptance artifact URI"),
+            self._readiness_bool_gate("graph_adapter_evidence_uri", bool(artifacts.get("graph_adapter_evidence_uri")), "external graph adapter sync evidence URI"),
+            self._readiness_bool_gate("vector_adapter_evidence_uri", bool(artifacts.get("vector_adapter_evidence_uri")), "external vector adapter sync evidence URI"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_entity_graph_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "quality_report": {
+                "mappings": quality["mappings"],
+                "covered_issuers": quality["covered_issuers"],
+                "market_counts": quality["market_counts"],
+                "checked_labels": quality["checked_labels"],
+                "accuracy": quality["accuracy"],
+                "average_confidence": quality["average_confidence"],
+                "bitemporal_version_coverage": quality["bitemporal_version_coverage"],
+                "temporal_overlap_count": quality["temporal_overlap_count"],
+                "low_confidence_count": quality["low_confidence_count"],
+                "mismatch_count": len(quality["mismatches"]),
+            },
+            "market_summary": market_summary,
+            "label_summary": label_summary,
+            "metadata_summary": metadata_summary,
+            "graph_traceability": {
+                "traceability_rate": traceability["traceability_rate"],
+                "counts": traceability["counts"],
+            },
+            "edge_quality": {
+                "edge_metadata_coverage": edge_quality["edge_metadata_coverage"],
+                "total_edges": edge_quality["total_edges"],
+                "missing_counts": edge_quality["missing_counts"],
+            },
+            "graph_export": {
+                "node_count": graph_export["node_count"],
+                "relationship_count": graph_export["relationship_count"],
+                "content_sha256": graph_export["content_sha256"],
+                "format": graph_export["adapter"]["format"],
+            },
+            "vector_export": {
+                "point_count": qdrant_export["point_count"],
+                "content_sha256": qdrant_export["content_sha256"],
+                "format": qdrant_export["adapter"]["format"],
+                "rights_filter": qdrant_export["rights_filter"],
+            },
+            "adapters": adapters,
+            "artifact_uris": artifacts,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "entity_mapping_readiness_report_validates_ahu_accuracy_bitemporal_graph_traceability_and_external_adapter_evidence_without_calling_production_graph_or_vector_databases",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "entity_mapping_readiness_report", "entity_mapping", issuer_id or "A_H_U", source="entity_mapping_governance", approval_state="ready" if ready else "missing_evidence")
+        return report
+
+    def _entity_mapping_readiness_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "real_batch_mapping_artifact_uri": ["real_batch_mapping_artifact_uri", "batch_mapping_uri", "adr_china_batch_mapping_uri", "batch_artifact_uri"],
+            "adr_china_queue_mapping_uri": ["adr_china_queue_mapping_uri", "adr_queue_mapping_uri", "china_concept_queue_uri", "mapping_queue_uri"],
+            "mapping_gold_uri": ["mapping_gold_uri", "gold_label_uri", "entity_mapping_gold_uri", "gold_sample_uri"],
+            "entity_page_acceptance_uri": ["entity_page_acceptance_uri", "subject_page_acceptance_uri", "browser_acceptance_uri", "ui_acceptance_uri"],
+            "graph_adapter_evidence_uri": ["graph_adapter_evidence_uri", "neo4j_sync_artifact_uri", "neo4j_artifact_uri", "graph_sync_artifact_uri"],
+            "vector_adapter_evidence_uri": ["vector_adapter_evidence_uri", "qdrant_sync_artifact_uri", "qdrant_artifact_uri", "vector_sync_artifact_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _entity_mapping_market_readiness_summary(self, mappings: list[EntityMapping], payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw_required = payload.get("required_markets", ["A", "H", "U"])
+        if isinstance(raw_required, str):
+            required_markets = self._unique_strings(part.upper() for part in re.split(r"[,;/\s]+", raw_required) if part.strip())
+        elif isinstance(raw_required, list):
+            required_markets = self._unique_strings(str(item).strip().upper() for item in raw_required if str(item).strip())
+        else:
+            required_markets = ["A", "H", "U"]
+        market_counts: dict[str, int] = {}
+        for mapping in mappings:
+            market = str(mapping.market).strip().upper()
+            if not market:
+                continue
+            market_counts[market] = market_counts.get(market, 0) + 1
+        covered = [market for market in required_markets if market_counts.get(market, 0) > 0]
+        missing = [market for market in required_markets if market not in covered]
+        coverage = round(len(covered) / max(1, len(required_markets)), 4) if required_markets else 1.0
+        return {
+            "required_markets": required_markets,
+            "market_counts": market_counts,
+            "covered_required_markets": covered,
+            "missing_required_markets": missing,
+            "coverage": coverage,
+        }
+
+    def _entity_mapping_label_market_summary(self, payload: Mapping[str, Any], issuer_id: str, required_markets: list[str]) -> dict[str, Any]:
+        labels = payload.get("labels")
+        if not isinstance(labels, list):
+            stored_labels = list(self.store.entity_mapping_labels.values())
+            if issuer_id:
+                stored_labels = [item for item in stored_labels if item.issuer_id == issuer_id]
+            labels = [to_plain(item) for item in stored_labels]
+        market_counts: dict[str, int] = {}
+        for label in labels:
+            if not isinstance(label, Mapping):
+                continue
+            market = str(label.get("market", "")).strip().upper()
+            if not market:
+                continue
+            market_counts[market] = market_counts.get(market, 0) + 1
+        covered = [market for market in required_markets if market_counts.get(market, 0) > 0]
+        missing = [market for market in required_markets if market not in covered]
+        coverage = round(len(covered) / max(1, len(required_markets)), 4) if required_markets else 1.0
+        return {
+            "label_count": len([item for item in labels if isinstance(item, Mapping)]),
+            "market_counts": market_counts,
+            "covered_required_markets": covered,
+            "missing_required_markets": missing,
+            "coverage": coverage,
+        }
+
+    def _entity_mapping_metadata_summary(self, mappings: list[EntityMapping]) -> dict[str, Any]:
+        total = len(mappings)
+        source_complete = 0
+        identifier_complete = 0
+        bitemporal_complete = 0
+        for mapping in mappings:
+            if (
+                str(mapping.source).strip()
+                and str(mapping.version).strip()
+                and str(mapping.ticker).strip()
+                and str(mapping.market).strip()
+                and float(mapping.confidence) > 0.0
+            ):
+                source_complete += 1
+            if any(str(getattr(mapping, field, "")).strip() for field in ["lei", "cik", "figi", "isin", "ticker"]):
+                identifier_complete += 1
+            if str(mapping.version).strip() and mapping.valid_from and mapping.recorded_at:
+                bitemporal_complete += 1
+        return {
+            "mapping_count": total,
+            "source_metadata_complete": source_complete,
+            "identifier_complete": identifier_complete,
+            "bitemporal_complete": bitemporal_complete,
+            "source_metadata_coverage": round(source_complete / max(1, total), 4) if total else 1.0,
+            "identifier_coverage": round(identifier_complete / max(1, total), 4) if total else 1.0,
+            "bitemporal_coverage": round(bitemporal_complete / max(1, total), 4) if total else 1.0,
+        }
+
+    def _entity_mapping_graph_export_summary(self, payload: Mapping[str, Any], mappings: list[EntityMapping], *, actor: str) -> dict[str, Any]:
+        if mappings:
+            issuer_ids = sorted({mapping.issuer_id for mapping in mappings})
+            nodes = 0
+            relationships = 0
+            content_hashes: list[str] = []
+            fmt = "neo4j_bulk_upsert_compatible"
+            for issuer_id in issuer_ids:
+                export = self.graph_neo4j_export({"issuer_id": issuer_id}, actor=actor)
+                nodes += int(export["node_count"])
+                relationships += int(export["relationship_count"])
+                content_hashes.append(str(export["content_sha256"]))
+                fmt = str(export["adapter"]["format"])
+            return {
+                "node_count": nodes,
+                "relationship_count": relationships,
+                "content_sha256": self._payload_sha256({"issuer_ids": issuer_ids, "hashes": content_hashes}),
+                "adapter": {"format": fmt},
+            }
+        issuer_id = str(payload.get("issuer_id", "")).strip()
+        export = self.graph_neo4j_export({"issuer_id": issuer_id}, actor=actor)
+        return {
+            "node_count": int(export["node_count"]),
+            "relationship_count": int(export["relationship_count"]),
+            "content_sha256": str(export["content_sha256"]),
+            "adapter": {"format": str(export["adapter"]["format"])},
+        }
+
+    def _entity_mapping_edge_quality_summary(self, payload: Mapping[str, Any], mappings: list[EntityMapping]) -> dict[str, Any]:
+        if not mappings:
+            return self.graph_edge_quality_report({"issuer_id": str(payload.get("issuer_id", "")).strip(), "limit": payload.get("edge_limit", 1000)})
+        all_edges: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for issuer_id in sorted({mapping.issuer_id for mapping in mappings}):
+            graph = self.query_graph({"issuer_id": issuer_id})
+            for edge in graph.get("edges", []):
+                if not isinstance(edge, Mapping):
+                    continue
+                key = (str(edge.get("type", "")), str(edge.get("from", "")), str(edge.get("to", "")))
+                if key in seen:
+                    continue
+                seen.add(key)
+                all_edges.append(dict(edge))
+        required_fields = ["source", "timestamp", "version", "confidence"]
+        issues: list[dict[str, Any]] = []
+        missing_counts = {field: 0 for field in required_fields}
+        for edge in all_edges:
+            missing = [field for field in required_fields if edge.get(field) in {"", None}]
+            for field in missing:
+                missing_counts[field] += 1
+            if missing:
+                issues.append(
+                    {
+                        "type": edge.get("type", ""),
+                        "from": edge.get("from", ""),
+                        "to": edge.get("to", ""),
+                        "missing_fields": missing,
+                    }
+                )
+        total = len(all_edges)
+        complete = total - len(issues)
+        limit = self._bounded_limit(payload.get("edge_limit", 1000), 1000)
+        return {
+            "total_edges": total,
+            "complete_edges": complete,
+            "edge_metadata_coverage": round(complete / max(1, total), 4) if total else 1.0,
+            "required_fields": required_fields,
+            "missing_counts": missing_counts,
+            "issues": issues[:limit],
+        }
+
+    def _filter_entity_mappings(
+        self,
+        values: Any,
+        *,
+        issuer_id: str = "",
+        ticker: str = "",
+        market: str = "",
+        status: str = "",
+        valid_at: Any = None,
+        recorded_at: Any = None,
+    ) -> list[EntityMapping]:
+        mappings = list(values)
+        if issuer_id:
+            mappings = [item for item in mappings if item.issuer_id == issuer_id]
+        if ticker:
+            mappings = [item for item in mappings if item.ticker.upper() == ticker]
+        if market:
+            mappings = [item for item in mappings if item.market == market]
+        if status:
+            mappings = [item for item in mappings if item.status == status]
+        if valid_at is not None:
+            mappings = [item for item in mappings if self._entity_mapping_valid_at(item, valid_at)]
+        if recorded_at is not None:
+            mappings = [item for item in mappings if parse_datetime(item.recorded_at) <= recorded_at]
+        return mappings
+
+    def _entity_mapping_valid_at(self, mapping: EntityMapping, valid_at: Any) -> bool:
+        valid_from = parse_datetime(mapping.valid_from)
+        valid_to = parse_datetime(mapping.valid_to) if mapping.valid_to else None
+        return valid_from <= valid_at and (valid_to is None or valid_at < valid_to)
+
+    def _entity_mapping_temporal_overlaps(self, mappings: list[EntityMapping]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, str, str, str], list[EntityMapping]] = {}
+        for mapping in mappings:
+            key = (mapping.issuer_id, mapping.ticker, mapping.market, mapping.figi or mapping.isin or mapping.cik or mapping.lei)
+            grouped.setdefault(key, []).append(mapping)
+        overlaps: list[dict[str, Any]] = []
+        for key, group in grouped.items():
+            if len(group) < 2:
+                continue
+            group.sort(key=lambda item: parse_datetime(item.valid_from))
+            for left, right in zip(group, group[1:]):
+                left_to = parse_datetime(left.valid_to) if left.valid_to else None
+                if left_to is None or left_to > parse_datetime(right.valid_from):
+                    overlaps.append(
+                        {
+                            "issuer_id": key[0],
+                            "ticker": key[1],
+                            "market": key[2],
+                            "left_mapping_id": left.mapping_id,
+                            "right_mapping_id": right.mapping_id,
+                            "left_valid_to": to_plain(left.valid_to),
+                            "right_valid_from": to_plain(right.valid_from),
+                        }
+                    )
+        return overlaps
 
     def ingest_document(self, payload: Mapping[str, Any], *, actor: str = "system") -> Document:
         document = payload if isinstance(payload, Document) else Document.from_dict(payload)
@@ -6671,7 +8621,7 @@ class SystemService:
         locator_source = "rule_text"
         if not chunks and self.document_parser.configured():
             try:
-                parsed = self._parse_document_with_paddleocr(document)
+                parsed = self._parse_document_with_paddleocr(document, retry_attempts=1)
                 source_text = str(parsed.get("text", ""))
                 chunks = chunk_text_by_page(source_text)
                 parsed_pages = [dict(page) for page in parsed.get("pages", []) if isinstance(page, Mapping)]
@@ -6933,6 +8883,194 @@ class SystemService:
         self._audit(actor, "create_manual_reference", "document", document.document_id, source=source.source_type, version=rights_tag.license_class, approval_state=review.status)
         return {"document": to_plain(document), "manual_review": to_plain(review)}
 
+    def citation_boundary_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        self.seed_default_sources(actor=actor)
+        source_ids = self._citation_boundary_source_ids(payload)
+        source_summary = self._citation_boundary_source_summary(source_ids)
+        manual_summary = self._citation_boundary_manual_reference_summary()
+        governance = self.research_report_governance_report(payload)
+        viewpoints = self.research_report_viewpoint_report(payload)
+        answers = self.research_answer_quality_report(payload)
+        artifacts = self._citation_boundary_artifact_uris(payload)
+        red_zone_training_records = self._citation_boundary_training_or_fact_records()
+        min_review_coverage = float(payload.get("min_source_review_coverage", 1.0))
+        min_answer_review_coverage = float(payload.get("min_answer_review_coverage", 1.0))
+        min_answer_link_rate = float(payload.get("min_answer_source_link_rate", 1.0))
+        gates = [
+            self._readiness_bool_gate("canonical_sources_seeded", source_summary["canonical_sources_seeded"], "public webcast, manual transcript reference, and local research report sources are registered"),
+            self._readiness_numeric_gate("source_review_coverage", source_summary["review_coverage"], min_review_coverage, ">=", "citation-boundary sources have current risk/compliance reviews"),
+            self._readiness_numeric_gate("source_review_blocker_count", float(source_summary["blocker_count"]), 0.0, "==", "no TOS/robots/publicness/usage blockers on citation-boundary sources"),
+            self._readiness_numeric_gate("manual_reference_body_count", float(manual_summary["manual_reference_body_count"]), 0.0, "==", "manual/private transcript references are metadata-only"),
+            self._readiness_numeric_gate("manual_reference_review_coverage", manual_summary["review_coverage"], 1.0, ">=", "manual reference records have boundary review records"),
+            self._readiness_numeric_gate("research_report_rights_issue_count", float(governance["stale_count"] + governance["missing_document_count"] + sum(1 for row in governance.get("reports", []) if "rights_boundary_needs_review" in row.get("issues", []))), 0.0, "==", "research reports are current, linked, and local-reference-only"),
+            self._readiness_bool_gate("research_viewpoints_reference_only", viewpoints.get("automation_allowed") is False and "not_fact_source" in str(viewpoints.get("usage_boundary", "")), "research report viewpoints remain reference/opinion only"),
+            self._readiness_numeric_gate("research_answer_source_link_rate", float(answers["source_link_rate"]), min_answer_link_rate, ">=", "research answers retain English source evidence and document links"),
+            self._readiness_numeric_gate("research_answer_review_coverage", float(answers["review_coverage"]), min_answer_review_coverage, ">=", "research answers are human reviewed before production use"),
+            self._readiness_numeric_gate("restricted_answer_missing_citation_limit", float(sum(1 for row in answers.get("answers", []) if "missing_restricted_citation_limit" in row.get("issues", []))), 0.0, "==", "restricted/local-reference answer quotes have citation length limits"),
+            self._readiness_numeric_gate("red_zone_training_records", float(red_zone_training_records), 0.0, "==", "red/manual/private sources do not enter training or automated fact paths"),
+            self._readiness_bool_gate("citation_policy_artifact_uri", bool(artifacts.get("citation_policy_uri")), "current transcript/research citation policy artifact URI"),
+            self._readiness_bool_gate("source_review_artifact_uri", bool(artifacts.get("source_review_uri")), "source publicness/TOS/robots review artifact URI"),
+            self._readiness_bool_gate("manual_reference_review_artifact_uri", bool(artifacts.get("manual_reference_review_uri")), "manual reference boundary review or reviewed-empty artifact URI"),
+            self._readiness_bool_gate("research_report_governance_artifact_uri", bool(artifacts.get("research_report_governance_uri")), "research report governance/bias review or reviewed-empty artifact URI"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_citation_boundary_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "source_summary": source_summary,
+            "manual_reference_summary": manual_summary,
+            "research_report_governance": {
+                "count": governance["count"],
+                "stale_count": governance["stale_count"],
+                "missing_document_count": governance["missing_document_count"],
+                "concentration_issues": governance["concentration_issues"],
+                "automation_allowed": governance["automation_allowed"],
+            },
+            "research_viewpoints": {
+                "count": viewpoints["count"],
+                "topic_count": viewpoints["topic_count"],
+                "bias_alert_count": viewpoints["bias_alert_count"],
+                "automation_allowed": viewpoints["automation_allowed"],
+            },
+            "research_answers": {
+                "total": answers["total"],
+                "pending_review": answers["pending_review"],
+                "source_link_rate": answers["source_link_rate"],
+                "review_coverage": answers["review_coverage"],
+                "citation_truncated": answers["citation_truncated"],
+            },
+            "red_zone_training_records": red_zone_training_records,
+            "artifact_uris": artifacts,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "citation_boundary_readiness_report_keeps_transcripts_and_research_reports_as_public_or_local_reference_layers_not_fact_training_or_trade_inputs",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "citation_boundary_readiness_report", "research_boundary", "transcripts_research_reports", source="citation_governance", approval_state="ready" if ready else "missing_evidence")
+        return report
+
+    def _citation_boundary_source_ids(self, payload: Mapping[str, Any]) -> list[str]:
+        raw = payload.get("source_ids", [])
+        if isinstance(raw, str):
+            supplied = [item for item in re.split(r"[,;/\s]+", raw) if item.strip()]
+        elif isinstance(raw, list):
+            supplied = [str(item) for item in raw if str(item).strip()]
+        else:
+            supplied = []
+        defaults = ["company_public_webcast", MANUAL_TRANSCRIPT_REFERENCE_SOURCE_ID, LOCAL_RESEARCH_REPORT_SOURCE_ID]
+        return self._unique_strings([self._canonical_source_id(item) for item in [*defaults, *supplied]])
+
+    def _citation_boundary_source_summary(self, source_ids: list[str]) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        reviewed = 0
+        blocker_count = 0
+        for source_id in source_ids:
+            source = self.store.sources.get(source_id)
+            if source is None:
+                rows.append({"source_id": source_id, "present": False, "reviewed": False, "blocked_reasons": ["missing_source"]})
+                blocker_count += 1
+                continue
+            latest_review = max(
+                [review for review in self.store.source_reviews.values() if review.source_id == source_id],
+                key=lambda item: parse_datetime(item.reviewed_at),
+                default=None,
+            )
+            blockers = self._source_governance_gaps(source)
+            if latest_review:
+                reviewed += 1
+                blockers.extend(self._source_review_blockers(latest_review))
+            else:
+                blockers.append("missing_review")
+            if source_id in {MANUAL_TRANSCRIPT_REFERENCE_SOURCE_ID, LOCAL_RESEARCH_REPORT_SOURCE_ID}:
+                allowed = (
+                    source.rights_tag.training_allowed is False
+                    and source.rights_tag.redistribution_allowed is False
+                    and source.rights_tag.display_use == "restricted"
+                    and source.rights_tag.derived_data_use == "restricted"
+                    and source.usage_scope in {"manual_reference_only", "local_reference_citation_tracking_only"}
+                )
+                if not allowed:
+                    blockers.append("manual_or_research_boundary_not_restricted")
+            elif source_id == "company_public_webcast":
+                if source.rights_tag.training_allowed or source.rights_tag.redistribution_allowed or source.rights_tag.derived_data_use != "restricted":
+                    blockers.append("public_webcast_boundary_too_permissive")
+            blocker_count += len(blockers)
+            rows.append(
+                {
+                    "source_id": source_id,
+                    "present": True,
+                    "risk_level": source.risk_level,
+                    "source_type": source.source_type,
+                    "usage_scope": source.usage_scope,
+                    "license_class": source.rights_tag.license_class,
+                    "reviewed": latest_review is not None,
+                    "latest_review_status": latest_review.status if latest_review else "",
+                    "blocked_reasons": blockers,
+                }
+            )
+        return {
+            "source_ids": source_ids,
+            "canonical_sources_seeded": all(row["present"] for row in rows),
+            "reviewed_sources": reviewed,
+            "review_coverage": round(reviewed / max(1, len(source_ids)), 4),
+            "blocker_count": blocker_count,
+            "sources": rows,
+        }
+
+    def _citation_boundary_manual_reference_summary(self) -> dict[str, Any]:
+        docs = [
+            document
+            for document in self.store.documents.values()
+            if document.source_id == MANUAL_TRANSCRIPT_REFERENCE_SOURCE_ID
+            or self.store.sources.get(document.source_id, None) and self.store.sources[document.source_id].risk_level == "red"
+        ]
+        manual_reviews_by_doc = {
+            review.document_id: review
+            for review in self.store.manual_reviews.values()
+            if review.issue_type == "manual_reference_boundary_review"
+        }
+        body_count = sum(1 for document in docs if document.body.strip())
+        reviewed_count = sum(1 for document in docs if document.document_id in manual_reviews_by_doc)
+        open_review_count = sum(1 for document in docs if manual_reviews_by_doc.get(document.document_id) and manual_reviews_by_doc[document.document_id].status == "open")
+        return {
+            "manual_reference_count": len(docs),
+            "manual_reference_body_count": body_count,
+            "boundary_review_count": reviewed_count,
+            "open_boundary_review_count": open_review_count,
+            "review_coverage": round(reviewed_count / max(1, len(docs)), 4) if docs else 1.0,
+        }
+
+    def _citation_boundary_training_or_fact_records(self) -> int:
+        count = 0
+        for document in self.store.documents.values():
+            source = self.store.sources.get(document.source_id)
+            if document.rights_tag.training_allowed:
+                count += 1
+                continue
+            if source and source.risk_level == "red" and document.body.strip():
+                count += 1
+                continue
+            if document.source_id == MANUAL_TRANSCRIPT_REFERENCE_SOURCE_ID and document.body.strip():
+                count += 1
+        for report in self.store.research_reports.values():
+            source = self.store.sources.get(report.source_id)
+            if report.rights_tag.training_allowed or (source and source.risk_level == "red"):
+                count += 1
+        return count
+
+    def _citation_boundary_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "citation_policy_uri": ["citation_policy_uri", "transcript_policy_uri", "research_citation_policy_uri"],
+            "source_review_uri": ["source_review_uri", "source_governance_uri", "tos_robots_review_uri"],
+            "manual_reference_review_uri": ["manual_reference_review_uri", "manual_boundary_review_uri", "private_transcript_review_uri"],
+            "research_report_governance_uri": ["research_report_governance_uri", "research_report_review_uri", "viewpoint_bias_review_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
     def evidence_quality_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         issuer_id = str(filters.get("issuer_id", "")).strip()
@@ -6955,6 +9093,7 @@ class SystemService:
         document_ids_with_evidence = {item.document_id for item in evidence}
         documents_with_evidence = len(document_ids_with_evidence)
         avg_confidence = sum(item.confidence for item in evidence) / len(evidence) if evidence else 0.0
+        bbox_validation = self._bbox_gold_label_validation(evidence, filters)
         return {
             "issuer_id": issuer_id,
             "documents": len(documents),
@@ -6972,6 +9111,7 @@ class SystemService:
             "open_manual_reviews": len(open_reviews),
             "parse_failure_rate": round(len({item.document_id for item in open_reviews}) / max(1, len(documents)), 4) if documents else 0.0,
             "issue_counts": issue_counts,
+            "bbox_gold_validation": bbox_validation,
         }
 
     def _evidence_has_structured_locator(self, evidence: Evidence) -> bool:
@@ -7003,6 +9143,108 @@ class SystemService:
                 if isinstance(bbox, Mapping) and bbox:
                     count += 1
         return count
+
+    def _bbox_gold_label_validation(self, evidence: list[Evidence], filters: Mapping[str, Any]) -> dict[str, Any]:
+        labels = filters.get("bbox_gold_labels", filters.get("gold_labels", []))
+        if labels is None:
+            labels = []
+        if not isinstance(labels, list):
+            raise ValidationError("bbox_gold_labels must be a list when provided")
+        min_iou = float(filters.get("min_bbox_iou", 0.5))
+        evidence_by_id = {item.evidence_id: item for item in evidence}
+        evidence_by_document_page: dict[tuple[str, int], list[Evidence]] = {}
+        for item in evidence:
+            evidence_by_document_page.setdefault((item.document_id, int(item.page_no or 0)), []).append(item)
+        rows: list[dict[str, Any]] = []
+        for index, label in enumerate(labels, start=1):
+            if not isinstance(label, Mapping):
+                rows.append({"label_index": index, "matched": False, "issue": "label_must_be_object", "iou": 0.0})
+                continue
+            expected_bbox = self._normalize_gold_bbox(label.get("bbox", label.get("expected_bbox", {})))
+            expected_page = int(label.get("page_no", label.get("page", 0)) or 0)
+            expected_document_id = str(label.get("document_id", "")).strip()
+            candidates: list[Evidence] = []
+            evidence_id = str(label.get("evidence_id", "")).strip()
+            if evidence_id and evidence_id in evidence_by_id:
+                candidates = [evidence_by_id[evidence_id]]
+            elif expected_document_id and expected_page:
+                candidates = evidence_by_document_page.get((expected_document_id, expected_page), [])
+            elif expected_document_id:
+                candidates = [item for item in evidence if item.document_id == expected_document_id]
+            else:
+                candidates = evidence
+            best: tuple[float, Evidence | None, dict[str, Any]] = (0.0, None, {})
+            for candidate in candidates:
+                actual_bbox = self._evidence_bbox(candidate)
+                iou = self._bbox_iou(actual_bbox, expected_bbox)
+                if iou > best[0]:
+                    best = (iou, candidate, actual_bbox)
+            matched = best[0] >= min_iou
+            rows.append(
+                {
+                    "label_index": index,
+                    "document_id": expected_document_id or (best[1].document_id if best[1] else ""),
+                    "page_no": expected_page,
+                    "expected_bbox": expected_bbox,
+                    "matched_evidence_id": best[1].evidence_id if best[1] else "",
+                    "actual_bbox": best[2],
+                    "iou": round(best[0], 4),
+                    "matched": matched,
+                    "issue": "" if matched else "bbox_iou_below_threshold_or_missing_evidence",
+                }
+            )
+        matched_count = sum(1 for row in rows if row["matched"])
+        average_iou = sum(float(row["iou"]) for row in rows) / len(rows) if rows else 0.0
+        return {
+            "label_count": len(rows),
+            "matched_count": matched_count,
+            "min_iou": min_iou,
+            "bbox_hit_rate": round(matched_count / max(1, len(rows)), 4) if rows else 1.0,
+            "average_iou": round(average_iou, 4),
+            "failures": [row for row in rows if not row["matched"]],
+            "labels": rows,
+        }
+
+    def _evidence_bbox(self, evidence: Evidence) -> dict[str, Any]:
+        bbox = evidence.locator.get("bbox", {}) if isinstance(evidence.locator, Mapping) else {}
+        if isinstance(bbox, Mapping) and bbox:
+            return self._normalize_gold_bbox(bbox)
+        return {}
+
+    def _normalize_gold_bbox(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, Mapping):
+            x = float(value.get("x", 0) or 0)
+            y = float(value.get("y", 0) or 0)
+            if "width" in value or "height" in value:
+                width = float(value.get("width", 0) or 0)
+                height = float(value.get("height", 0) or 0)
+            else:
+                width = float(value.get("right", value.get("x2", x)) or x) - x
+                height = float(value.get("bottom", value.get("y2", y)) or y) - y
+            return {"x": x, "y": y, "width": max(0.0, width), "height": max(0.0, height)}
+        if isinstance(value, list) and len(value) >= 4:
+            x1, y1, x2, y2 = [float(item or 0) for item in value[:4]]
+            return {"x": x1, "y": y1, "width": max(0.0, x2 - x1), "height": max(0.0, y2 - y1)}
+        return {}
+
+    def _bbox_iou(self, left: Mapping[str, Any], right: Mapping[str, Any]) -> float:
+        if not left or not right:
+            return 0.0
+        left_x1 = float(left.get("x", 0) or 0)
+        left_y1 = float(left.get("y", 0) or 0)
+        left_x2 = left_x1 + float(left.get("width", 0) or 0)
+        left_y2 = left_y1 + float(left.get("height", 0) or 0)
+        right_x1 = float(right.get("x", 0) or 0)
+        right_y1 = float(right.get("y", 0) or 0)
+        right_x2 = right_x1 + float(right.get("width", 0) or 0)
+        right_y2 = right_y1 + float(right.get("height", 0) or 0)
+        intersection_width = max(0.0, min(left_x2, right_x2) - max(left_x1, right_x1))
+        intersection_height = max(0.0, min(left_y2, right_y2) - max(left_y1, right_y1))
+        intersection = intersection_width * intersection_height
+        left_area = max(0.0, left_x2 - left_x1) * max(0.0, left_y2 - left_y1)
+        right_area = max(0.0, right_x2 - right_x1) * max(0.0, right_y2 - right_y1)
+        union = left_area + right_area - intersection
+        return intersection / union if union > 0 else 0.0
 
     def _create_manual_review(
         self,
@@ -7061,12 +9303,20 @@ class SystemService:
             raise ValidationError("optional_payload must be an object")
         return dict(raw)
 
+    def _document_parse_retry_attempts(self, value: Any) -> int:
+        try:
+            attempts = int(value or 0)
+        except (TypeError, ValueError):
+            raise ValidationError("retry_attempts must be an integer") from None
+        return max(0, min(3, attempts))
+
     def _parse_document_with_paddleocr(
         self,
         document: Document,
         *,
         optional_payload: Mapping[str, Any] | None = None,
         use_cache: bool = True,
+        retry_attempts: int = 0,
     ) -> dict[str, Any]:
         cache_key = self._document_parse_cache_key("document", document.document_id, document.content_sha256 or document.object_uri or document.source_uri, optional_payload)
         if use_cache and cache_key in self.document_parse_cache:
@@ -7081,7 +9331,7 @@ class SystemService:
                 filename = Path(urlparse(document.object_uri).path).name or f"{document.document_id}.pdf"
                 return self._cache_document_parse_result(
                     cache_key,
-                    self.document_parser.parse_bytes(data, filename=filename, optional_payload=optional_payload),
+                    self._run_document_parse_with_retries(lambda: self.document_parser.parse_bytes(data, filename=filename, optional_payload=optional_payload), retry_attempts=retry_attempts),
                     started=started,
                     cache_enabled=use_cache,
                 )
@@ -7089,23 +9339,40 @@ class SystemService:
         if source_uri.startswith(("http://", "https://")):
             return self._cache_document_parse_result(
                 cache_key,
-                self.document_parser.parse_url(source_uri, optional_payload=optional_payload),
+                self._run_document_parse_with_retries(lambda: self.document_parser.parse_url(source_uri, optional_payload=optional_payload), retry_attempts=retry_attempts),
                 started=started,
                 cache_enabled=use_cache,
             )
         raise ValidationError("document has no readable object_uri or http(s) source_uri for PaddleOCR parsing")
 
-    def _parse_url_with_paddleocr(self, file_url: str, *, optional_payload: Mapping[str, Any] | None = None, use_cache: bool = True) -> dict[str, Any]:
+    def _parse_url_with_paddleocr(self, file_url: str, *, optional_payload: Mapping[str, Any] | None = None, use_cache: bool = True, retry_attempts: int = 0) -> dict[str, Any]:
         cache_key = self._document_parse_cache_key("url", file_url, file_url, optional_payload)
         if use_cache and cache_key in self.document_parse_cache:
             return {**self.document_parse_cache[cache_key], "cache_hit": True}
         started = time.perf_counter()
         return self._cache_document_parse_result(
             cache_key,
-            self.document_parser.parse_url(file_url, optional_payload=optional_payload),
+            self._run_document_parse_with_retries(lambda: self.document_parser.parse_url(file_url, optional_payload=optional_payload), retry_attempts=retry_attempts),
             started=started,
             cache_enabled=use_cache,
         )
+
+    def _run_document_parse_with_retries(self, operation: Any, *, retry_attempts: int = 0) -> dict[str, Any]:
+        max_attempts = max(1, min(4, int(retry_attempts) + 1))
+        errors: list[str] = []
+        for attempt in range(1, max_attempts + 1):
+            try:
+                result = dict(operation())
+                result["retry_attempts"] = attempt - 1
+                result["attempt_count"] = attempt
+                if errors:
+                    result["retry_errors"] = errors
+                return result
+            except ValidationError as exc:
+                errors.append(str(exc))
+                if attempt >= max_attempts:
+                    raise ValidationError(f"PaddleOCR parsing failed after {max_attempts} attempt(s): {'; '.join(errors)}") from exc
+        raise ValidationError("PaddleOCR parsing failed")
 
     def _cache_document_parse_result(self, cache_key: str, result: Mapping[str, Any], *, started: float, cache_enabled: bool) -> dict[str, Any]:
         enriched = dict(result)
@@ -8218,6 +10485,16 @@ class SystemService:
             "theme_exposure": self._portfolio_group_exposure(rounded_weights, securities, "theme"),
             "currency_exposure": self._portfolio_group_exposure(rounded_weights, securities, "currency"),
             "risk_contribution": self._portfolio_risk_contribution(rounded_weights, securities),
+            "security_risk_inputs": {
+                security_id: {
+                    "volatility": round(float(item["volatility"]), 8),
+                    "variance": round(float(item["variance"]), 8),
+                    "market": item.get("market", ""),
+                    "currency": item.get("currency", ""),
+                    "industry": item.get("industry", ""),
+                }
+                for security_id, item in securities.items()
+            },
             "turnover": round(self._portfolio_turnover(rounded_weights, constraints.get("current_weights", payload.get("current_weights", {}))), 6),
             "stress_report": self._portfolio_stress_report(rounded_weights, payload.get("stress_scenarios", [])),
             "walk_forward": self._portfolio_walk_forward(rounded_weights, payload.get("return_history", {})),
@@ -8240,6 +10517,599 @@ class SystemService:
         self.store.portfolio_proposals[proposal.proposal_id] = proposal
         self._audit(actor, "run_portfolio_optimizer", "portfolio_proposal", proposal.proposal_id, approval_state=proposal.status)
         return proposal
+
+    def portfolio_optimizer_compare_report(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        proposal = self._portfolio_proposal_for_report(payload)
+        candidate_weights = {str(key): float(value) for key, value in proposal.candidate_weights.items()}
+        if not candidate_weights:
+            raise ValidationError("portfolio optimizer compare requires candidate weights")
+        universe = [security_id for security_id in proposal.universe if security_id in candidate_weights]
+        if not universe:
+            universe = list(candidate_weights)
+        baseline_method = str(payload.get("baseline_method", "equal_weight")).strip().lower()
+        baseline_weights = self._portfolio_baseline_weights(proposal, universe, baseline_method)
+        external_solver = self._portfolio_external_solver_result(payload, proposal, universe)
+        external_weights = external_solver["weights"]
+        comparisons = [
+            self._portfolio_weight_comparison_row(
+                "candidate",
+                candidate_weights,
+                baseline_weights,
+                proposal,
+                reference_label=f"baseline:{baseline_method}",
+            )
+        ]
+        if external_weights:
+            comparisons.append(
+                self._portfolio_weight_comparison_row(
+                    str(external_solver["optimizer"]),
+                    external_weights,
+                    candidate_weights,
+                    proposal,
+                    reference_label="candidate",
+                )
+            )
+        constraint_report = self._portfolio_compare_constraint_report(candidate_weights, proposal)
+        result = {
+            "proposal_id": proposal.proposal_id,
+            "status": proposal.status,
+            "candidate_weights": {key: round(value, 6) for key, value in sorted(candidate_weights.items())},
+            "baseline_method": baseline_method,
+            "baseline_weights": {key: round(value, 6) for key, value in sorted(baseline_weights.items())},
+            "external_optimizer_supplied": bool(external_weights),
+            "external_optimizer": external_solver,
+            "comparisons": comparisons,
+            "constraint_report": constraint_report,
+            "diagnostics": {
+                "optimizer_method": proposal.diagnostics.get("method", ""),
+                "view_count": len(proposal.diagnostics.get("view_diagnostics", [])),
+                "cash_weight": proposal.diagnostics.get("cash_weight", 0.0),
+                "constraint_shadow_prices": proposal.diagnostics.get("constraint_shadow_prices", []),
+            },
+            "simulation_only": True,
+            "live_execution_allowed": False,
+            "automation_allowed": False,
+            "usage_boundary": "portfolio_optimizer_compare_is_paper_research_only_not_trade_signal",
+        }
+        self._audit(actor, "portfolio_optimizer_compare_report", "portfolio_proposal", proposal.proposal_id, approval_state="paper_compare")
+        return result
+
+    def portfolio_optimizer_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        compare_result = dict(payload.get("compare_result", payload.get("comparison", {}))) if isinstance(payload.get("compare_result", payload.get("comparison", {})), Mapping) else {}
+        proposal_id = str(payload.get("proposal_id", compare_result.get("proposal_id", ""))).strip()
+        external_optimizer = dict(payload.get("external_optimizer", compare_result.get("external_optimizer", {}))) if isinstance(payload.get("external_optimizer", compare_result.get("external_optimizer", {})), Mapping) else {}
+        optimizer_name = str(payload.get("external_optimizer_name", external_optimizer.get("optimizer", ""))).strip() or "external_solver"
+        solver_status = str(payload.get("solver_status", external_optimizer.get("status", ""))).strip() or "missing"
+        diagnostics = dict(external_optimizer.get("diagnostics", {})) if isinstance(external_optimizer.get("diagnostics", {}), Mapping) else {}
+        artifact_uris = self._portfolio_optimizer_artifact_uris(payload)
+        solver_version = str(payload.get("solver_version", payload.get("version", diagnostics.get("version", "")))).strip()
+        solver_parameters = payload.get("solver_parameters", payload.get("parameters", payload.get("params", {})))
+        has_solver_parameters = isinstance(solver_parameters, Mapping) and bool(solver_parameters)
+        has_weights = bool(external_optimizer.get("weights") or payload.get("solver_weights") or payload.get("external_optimizer_weights"))
+        constraint_report = payload.get("constraint_report", compare_result.get("constraint_report", {}))
+        has_constraint_report = isinstance(constraint_report, Mapping) and bool(constraint_report)
+        simulation_only = bool(compare_result.get("simulation_only", payload.get("simulation_only", True)))
+        live_execution_allowed = bool(compare_result.get("live_execution_allowed", payload.get("live_execution_allowed", False)))
+        automation_allowed = bool(compare_result.get("automation_allowed", payload.get("automation_allowed", False)))
+        accepted_statuses = {"solved", "supplied"}
+        gates = [
+            self._readiness_bool_gate("proposal_id", bool(proposal_id), "PortfolioProposal identifier for solver comparison"),
+            self._readiness_bool_gate("external_solver_status", solver_status in accepted_statuses, "external solver completed or caller supplied production result"),
+            self._readiness_bool_gate("solver_weights", has_weights, "external solver weights captured"),
+            self._readiness_bool_gate("solver_version", bool(solver_version), "CVXPY/PyPortfolioOpt or external solver version"),
+            self._readiness_bool_gate("solver_parameters", has_solver_parameters, "solver parameters and objective settings archived"),
+            self._readiness_bool_gate("solver_artifact_uri", bool(artifact_uris.get("solver_artifact_uri")), "solver output artifact URI"),
+            self._readiness_bool_gate("comparison_artifact_uri", bool(artifact_uris.get("comparison_artifact_uri")), "candidate/baseline/external comparison artifact URI"),
+            self._readiness_bool_gate("constraint_report_artifact_uri", bool(artifact_uris.get("constraint_report_artifact_uri")), "portfolio constraint report artifact URI"),
+            self._readiness_bool_gate("constraint_report", has_constraint_report, "constraint report persisted with comparison"),
+            self._readiness_bool_gate("paper_only_boundary", simulation_only and not live_execution_allowed and not automation_allowed, "paper-only no-broker execution boundary"),
+        ]
+        missing = [gate for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "proposal_id": proposal_id,
+            "optimizer": optimizer_name,
+            "solver_status": solver_status,
+            "solver_version": solver_version,
+            "solver_parameters": to_plain(solver_parameters) if isinstance(solver_parameters, Mapping) else {},
+            "artifact_uris": artifact_uris,
+            "diagnostics": diagnostics,
+            "gates": gates,
+            "missing_requirements": [gate["gate"] for gate in missing],
+            "ready_for_production_comparison_archive": ready,
+            "simulation_only": True,
+            "live_execution_allowed": False,
+            "automation_allowed": False,
+            "usage_boundary": "portfolio_optimizer_readiness_archives_paper_solver_comparison_not_live_execution",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "portfolio_optimizer_readiness_report", "portfolio_proposal", proposal_id or "portfolio_optimizer", approval_state="ready" if ready else "missing_evidence")
+        return report
+
+    def portfolio_forward_report(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        proposal = self._portfolio_proposal_for_report(payload)
+        weights = payload.get("weights", proposal.candidate_weights)
+        if isinstance(weights, Mapping):
+            holdings = [{"security_id": str(security_id), "weight": float(weight)} for security_id, weight in weights.items() if float(weight) > 0]
+        else:
+            holdings = weights
+        if not isinstance(holdings, list) or not holdings:
+            raise ValidationError("portfolio forward report requires proposal weights or holdings")
+        returns_payload = dict(payload)
+        returns_payload["holdings"] = holdings
+        if not returns_payload.get("start_date") and payload.get("forward_start_date"):
+            returns_payload["start_date"] = payload.get("forward_start_date")
+        if not returns_payload.get("end_date") and payload.get("forward_end_date"):
+            returns_payload["end_date"] = payload.get("forward_end_date")
+        returns_result = self.portfolio_returns_payload(returns_payload)
+        benchmark_result: dict[str, Any] = {}
+        benchmark_weights = payload.get("benchmark_weights", {})
+        if isinstance(benchmark_weights, Mapping) and benchmark_weights:
+            benchmark_payload = dict(returns_payload)
+            benchmark_payload["holdings"] = [{"security_id": str(security_id), "weight": float(weight)} for security_id, weight in benchmark_weights.items() if float(weight) > 0]
+            benchmark_result = self.portfolio_returns_payload(benchmark_payload)
+        tracking_metrics = self._portfolio_forward_tracking_metrics(returns_result, benchmark_result)
+        review_flags = self._portfolio_forward_review_flags(returns_result, benchmark_result, payload, tracking_metrics)
+        result = {
+            "proposal_id": proposal.proposal_id,
+            "proposal_status": proposal.status,
+            "start_date": str(returns_payload.get("start_date", "")),
+            "end_date": str(returns_payload.get("end_date", "")),
+            "weights": returns_result.get("weights", {}),
+            "return_count": returns_result.get("return_count", 0),
+            "total_return": returns_result.get("total_return", 0.0),
+            "volatility": returns_result.get("volatility", 0.0),
+            "max_drawdown": returns_result.get("max_drawdown", 0.0),
+            "benchmark_total_return": benchmark_result.get("total_return") if benchmark_result else None,
+            "active_return": round(tracking_metrics["active_return"], 8) if tracking_metrics["active_return"] is not None else None,
+            "tracking_error": tracking_metrics["tracking_error"],
+            "information_ratio": tracking_metrics["information_ratio"],
+            "aligned_date_count": tracking_metrics["aligned_date_count"],
+            "attribution": returns_result.get("attribution", {}),
+            "returns": returns_result.get("returns", []),
+            "coverage": returns_result.get("coverage", {}),
+            "review_flags": review_flags,
+            "simulation_only": True,
+            "live_execution_allowed": False,
+            "automation_allowed": False,
+            "usage_boundary": "portfolio_forward_report_is_simulated_tracking_only_not_live_execution",
+        }
+        self._audit(actor, "portfolio_forward_report", "portfolio_proposal", proposal.proposal_id, approval_state=f"return_count={result['return_count']};flags={len(review_flags)}")
+        return result
+
+    def _portfolio_proposal_for_report(self, payload: Mapping[str, Any]) -> PortfolioProposal:
+        proposal_id = str(payload.get("proposal_id") or payload.get("portfolio_proposal_id") or "").strip()
+        if not proposal_id:
+            raise ValidationError("portfolio report requires proposal_id")
+        proposal = self.store.portfolio_proposals.get(proposal_id)
+        if proposal is None:
+            raise NotFoundError(f"portfolio proposal {proposal_id} not found")
+        return proposal
+
+    def _portfolio_baseline_weights(self, proposal: PortfolioProposal, universe: list[str], baseline_method: str) -> dict[str, float]:
+        universe = [security_id for security_id in universe if security_id in self.store.securities]
+        if not universe:
+            raise ValidationError("portfolio baseline requires a non-empty universe")
+        method = baseline_method.strip().lower()
+        if method in {"equal", "equal_weight", "equal-weight", "market_weight", "market"}:
+            return {security_id: round(1.0 / len(universe), 8) for security_id in universe}
+        if method in {"candidate", "candidate_weight", "proposal", "proposal_weight"}:
+            source = {security_id: float(proposal.candidate_weights.get(security_id, 0.0)) for security_id in universe}
+        elif method in {"prior", "prior_return", "prior_returns"}:
+            source = {security_id: max(0.0, float(proposal.prior_returns.get(security_id, 0.0))) for security_id in universe}
+        elif method in {"posterior", "posterior_return", "posterior_returns"}:
+            source = {security_id: max(0.0, float(proposal.posterior_returns.get(security_id, 0.0))) for security_id in universe}
+        else:
+            raise ValidationError("unsupported baseline_method")
+        total = sum(source.values())
+        if total <= 0:
+            return {security_id: round(1.0 / len(universe), 8) for security_id in universe}
+        return {security_id: round(value / total, 8) for security_id, value in source.items()}
+
+    def _optional_external_optimizer_weights(self, raw: Any, universe: list[str]) -> dict[str, float]:
+        if not raw:
+            return {}
+        source: Any = raw
+        if isinstance(source, Mapping):
+            if isinstance(source.get("weights"), Mapping):
+                source = source.get("weights")
+            elif isinstance(source.get("candidate_weights"), Mapping):
+                source = source.get("candidate_weights")
+        weights: dict[str, float] = {}
+        if isinstance(source, Mapping):
+            for security_id, value in source.items():
+                security_id = str(security_id)
+                if security_id not in universe:
+                    continue
+                weight = float(value)
+                if weight < 0:
+                    raise ValidationError("external optimizer weights must be non-negative")
+                weights[security_id] = weight
+        elif isinstance(source, list):
+            for item in source:
+                if not isinstance(item, Mapping):
+                    continue
+                security_id = str(item.get("security_id", item.get("ticker", item.get("symbol", "")))).strip()
+                if not security_id or security_id not in universe:
+                    continue
+                weight = float(item.get("weight", item.get("target_weight", 0.0)))
+                if weight < 0:
+                    raise ValidationError("external optimizer weights must be non-negative")
+                weights[security_id] = weight
+        else:
+            return {}
+        total = sum(weights.values())
+        if total <= 0:
+            return {}
+        return {security_id: round(weight / total, 8) for security_id, weight in weights.items()}
+
+    def _portfolio_optimizer_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "solver_artifact_uri": ["solver_artifact_uri", "external_solver_artifact_uri", "artifact_uri"],
+            "comparison_artifact_uri": ["comparison_artifact_uri", "optimizer_compare_artifact_uri", "report_uri"],
+            "constraint_report_artifact_uri": ["constraint_report_artifact_uri", "constraint_report_uri", "constraints_artifact_uri", "risk_constraint_report_uri"],
+            "parameter_artifact_uri": ["parameter_artifact_uri", "solver_parameters_uri", "params_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _portfolio_external_solver_result(self, payload: Mapping[str, Any], proposal: PortfolioProposal, universe: list[str]) -> dict[str, Any]:
+        supplied = self._optional_external_optimizer_weights(payload.get("external_optimizer_weights", payload.get("solver_weights", {})), universe)
+        optimizer_name = str(payload.get("external_optimizer_name", payload.get("external_optimizer", ""))).strip()
+        if supplied:
+            return {
+                "optimizer": optimizer_name or "external_solver",
+                "status": "supplied",
+                "weights": supplied,
+                "diagnostics": {"source": "request_payload", "dependency": "caller_supplied"},
+            }
+        if not self._truthy(payload.get("run_external_optimizer", False)):
+            return {
+                "optimizer": optimizer_name or "external_solver",
+                "status": "not_requested",
+                "weights": {},
+                "diagnostics": {"source": "not_requested"},
+            }
+        requested = (optimizer_name or "cvxpy").lower()
+        if requested in {"cvxpy", "cvx", "quadratic"}:
+            return self._portfolio_cvxpy_solver_result(payload, proposal, universe)
+        if requested in {"pypfopt", "pyportfolioopt", "efficientfrontier"}:
+            return self._portfolio_pypfopt_solver_result(payload, proposal, universe)
+        raise ValidationError("unsupported external_optimizer_name")
+
+    def _portfolio_cvxpy_solver_result(self, payload: Mapping[str, Any], proposal: PortfolioProposal, universe: list[str]) -> dict[str, Any]:
+        try:
+            import cvxpy as cp  # type: ignore[import-not-found]
+        except ImportError:
+            return {
+                "optimizer": "cvxpy",
+                "status": "unavailable",
+                "weights": {},
+                "diagnostics": {
+                    "dependency": "cvxpy",
+                    "install_hint": "pip install cvxpy",
+                    "reason": "cvxpy_not_installed",
+                    "paper_compare_continues": True,
+                },
+            }
+        if len(universe) == 0:
+            raise ValidationError("cvxpy external optimizer requires non-empty universe")
+        returns = [float(proposal.posterior_returns.get(security_id, proposal.prior_returns.get(security_id, 0.0))) for security_id in universe]
+        variances = [self._proposal_security_variance(proposal, security_id) for security_id in universe]
+        max_weight = float(proposal.constraints.get("max_weight", 1.0))
+        restricted = {str(item) for item in proposal.constraints.get("restricted_securities", [])}
+        risk_penalty = float(payload.get("external_risk_penalty", 1.0))
+        weights = cp.Variable(len(universe), nonneg=True)
+        objective = cp.Maximize(cp.sum(cp.multiply(returns, weights)) - risk_penalty * cp.sum(cp.multiply(variances, cp.square(weights))))
+        constraints = [cp.sum(weights) <= 1.0]
+        for index, security_id in enumerate(universe):
+            constraints.append(weights[index] <= (0.0 if security_id in restricted else max_weight))
+        problem = cp.Problem(objective, constraints)
+        try:
+            solver_name = str(payload.get("cvxpy_solver", "")).strip() or None
+            problem.solve(solver=solver_name) if solver_name else problem.solve()
+        except Exception as exc:  # pragma: no cover - depends on installed solvers
+            return {
+                "optimizer": "cvxpy",
+                "status": "failed",
+                "weights": {},
+                "diagnostics": {"dependency": "cvxpy", "error": str(exc), "paper_compare_continues": True},
+            }
+        if weights.value is None or problem.status not in {"optimal", "optimal_inaccurate"}:
+            return {
+                "optimizer": "cvxpy",
+                "status": str(problem.status or "failed"),
+                "weights": {},
+                "diagnostics": {"dependency": "cvxpy", "objective_value": problem.value, "paper_compare_continues": True},
+            }
+        raw = {security_id: max(0.0, float(weights.value[index])) for index, security_id in enumerate(universe)}
+        normalized = self._optional_external_optimizer_weights(raw, universe)
+        return {
+            "optimizer": "cvxpy",
+            "status": "solved",
+            "weights": normalized,
+            "diagnostics": {"dependency": "cvxpy", "problem_status": problem.status, "objective_value": round(float(problem.value or 0.0), 8)},
+        }
+
+    def _portfolio_pypfopt_solver_result(self, payload: Mapping[str, Any], proposal: PortfolioProposal, universe: list[str]) -> dict[str, Any]:
+        try:
+            from pypfopt import EfficientFrontier  # type: ignore[import-not-found]
+        except ImportError:
+            return {
+                "optimizer": "pypfopt",
+                "status": "unavailable",
+                "weights": {},
+                "diagnostics": {
+                    "dependency": "PyPortfolioOpt",
+                    "install_hint": "pip install PyPortfolioOpt",
+                    "reason": "pypfopt_not_installed",
+                    "paper_compare_continues": True,
+                },
+            }
+        try:
+            import pandas as pd  # type: ignore[import-not-found]
+        except ImportError:
+            return {
+                "optimizer": "pypfopt",
+                "status": "unavailable",
+                "weights": {},
+                "diagnostics": {
+                    "dependency": "pandas",
+                    "install_hint": "pip install pandas PyPortfolioOpt",
+                    "reason": "pandas_not_installed",
+                    "paper_compare_continues": True,
+                },
+            }
+        expected_returns = {security_id: float(proposal.posterior_returns.get(security_id, proposal.prior_returns.get(security_id, 0.0))) for security_id in universe}
+        covariance = {
+            left: {right: (self._proposal_security_variance(proposal, left) if left == right else 0.0) for right in universe}
+            for left in universe
+        }
+        try:
+            ef = EfficientFrontier(pd.Series(expected_returns), pd.DataFrame(covariance), weight_bounds=(0.0, float(proposal.constraints.get("max_weight", 1.0))))
+            ef.max_sharpe()
+            cleaned = ef.clean_weights() if self._truthy(payload.get("pypfopt_clean_weights", True)) else ef.weights
+        except Exception as exc:  # pragma: no cover - depends on optional dependency internals
+            return {
+                "optimizer": "pypfopt",
+                "status": "failed",
+                "weights": {},
+                "diagnostics": {"dependency": "PyPortfolioOpt", "error": str(exc), "paper_compare_continues": True},
+            }
+        normalized = self._optional_external_optimizer_weights(cleaned, universe)
+        return {
+            "optimizer": "pypfopt",
+            "status": "solved",
+            "weights": normalized,
+            "diagnostics": {"dependency": "PyPortfolioOpt", "method": "max_sharpe"},
+        }
+
+    def _proposal_security_variance(self, proposal: PortfolioProposal, security_id: str) -> float:
+        risk_inputs = proposal.diagnostics.get("security_risk_inputs", {})
+        if isinstance(risk_inputs, Mapping) and isinstance(risk_inputs.get(security_id), Mapping):
+            return max(float(risk_inputs[security_id].get("variance", 0.0)), 1e-8)
+        covariance = proposal.diagnostics.get("covariance", {})
+        if isinstance(covariance, Mapping):
+            shrunk = covariance.get("shrunk_covariance", {})
+            if isinstance(shrunk, Mapping) and isinstance(shrunk.get(security_id), Mapping):
+                return max(float(shrunk[security_id].get(security_id, 0.0)), 1e-8)
+        return 0.04
+
+    def _portfolio_weight_comparison_row(
+        self,
+        optimizer_label: str,
+        weights: Mapping[str, float],
+        reference_weights: Mapping[str, float],
+        proposal: PortfolioProposal,
+        *,
+        reference_label: str,
+    ) -> dict[str, Any]:
+        universe = sorted(set(weights) | set(reference_weights))
+        if not universe:
+            raise ValidationError("portfolio comparison requires weights")
+        candidate = {security_id: max(0.0, float(weights.get(security_id, 0.0))) for security_id in universe}
+        reference = {security_id: max(0.0, float(reference_weights.get(security_id, 0.0))) for security_id in universe}
+        candidate_total = sum(candidate.values())
+        reference_total = sum(reference.values())
+        if candidate_total <= 0 or reference_total <= 0:
+            raise ValidationError("portfolio comparison requires positive normalized weights")
+        candidate = {security_id: value / candidate_total for security_id, value in candidate.items()}
+        reference = {security_id: value / reference_total for security_id, value in reference.items()}
+        score_source = {
+            security_id: float(proposal.posterior_returns.get(security_id, proposal.prior_returns.get(security_id, 0.0)))
+            for security_id in universe
+        }
+        candidate_score = sum(candidate[security_id] * score_source[security_id] for security_id in universe)
+        reference_score = sum(reference[security_id] * score_source[security_id] for security_id in universe)
+        restricted = {str(item) for item in proposal.constraints.get("restricted_securities", [])}
+        max_weight_limit = float(proposal.constraints.get("max_weight", 1.0))
+        candidate_restricted_weight = sum(candidate.get(security_id, 0.0) for security_id in restricted)
+        candidate_breaches = sorted([security_id for security_id, weight in candidate.items() if weight > max_weight_limit + 1e-6])
+        top_security_id = max(candidate, key=candidate.get)
+        return {
+            "optimizer": optimizer_label,
+            "reference": reference_label,
+            "security_count": len(candidate),
+            "reference_security_count": len(reference),
+            "weight_sum": round(sum(candidate.values()), 8),
+            "reference_weight_sum": round(sum(reference.values()), 8),
+            "top_security_id": top_security_id,
+            "top_weight": round(candidate[top_security_id], 8),
+            "l1_distance_to_reference": round(sum(abs(candidate[security_id] - reference[security_id]) for security_id in universe) / 2, 8),
+            "concentration": round(sum(weight * weight for weight in candidate.values()), 8),
+            "expected_return_proxy": round(candidate_score, 8),
+            "reference_expected_return_proxy": round(reference_score, 8),
+            "expected_return_delta": round(candidate_score - reference_score, 8),
+            "restricted_security_weight": round(candidate_restricted_weight, 8),
+            "max_weight_limit": round(max_weight_limit, 8),
+            "max_weight_breach_count": len(candidate_breaches),
+            "max_weight_breach_securities": candidate_breaches,
+            "weights": {security_id: round(candidate[security_id], 8) for security_id in universe if candidate[security_id] > 0},
+            "reference_weights": {security_id: round(reference[security_id], 8) for security_id in universe if reference[security_id] > 0},
+        }
+
+    def _portfolio_compare_constraint_report(self, weights: Mapping[str, float], proposal: PortfolioProposal) -> dict[str, Any]:
+        universe = [security_id for security_id in proposal.universe if security_id in self.store.securities] or list(weights)
+        candidate = {security_id: max(0.0, float(weights.get(security_id, 0.0))) for security_id in universe}
+        total = sum(candidate.values())
+        if total <= 0:
+            raise ValidationError("portfolio constraint report requires positive weights")
+        candidate = {security_id: value / total for security_id, value in candidate.items()}
+        securities = {
+            security_id: {
+                "market": self.store.securities[security_id].market,
+                "currency": self.store.securities[security_id].currency,
+            }
+            for security_id in universe
+            if security_id in self.store.securities
+        }
+        max_weight_limit = float(proposal.constraints.get("max_weight", 1.0))
+        restricted = {str(item) for item in proposal.constraints.get("restricted_securities", [])}
+        restricted_violations = [security_id for security_id in sorted(restricted) if candidate.get(security_id, 0.0) > 1e-6]
+        max_weight_breaches = [security_id for security_id, weight in candidate.items() if weight > max_weight_limit + 1e-6]
+        market_budget = self._budget_map(proposal.constraints.get("market_budget") or proposal.risk_budget.get("market") or proposal.risk_budget.get("markets"))
+        currency_budget = self._budget_map(proposal.constraints.get("currency_budget") or proposal.risk_budget.get("currency") or proposal.risk_budget.get("currencies"))
+        market_exposure = self._portfolio_group_exposure(candidate, securities, "market")
+        currency_exposure = self._portfolio_group_exposure(candidate, securities, "currency")
+        budget_breaches: list[dict[str, Any]] = []
+        for scope, exposures, budgets in [
+            ("market", market_exposure, market_budget),
+            ("currency", currency_exposure, currency_budget),
+        ]:
+            for group, limit in budgets.items():
+                exposure = float(exposures.get(group, 0.0))
+                if exposure > float(limit) + 1e-6:
+                    budget_breaches.append(
+                        {
+                            "scope": scope,
+                            "group": group,
+                            "limit": round(float(limit), 8),
+                            "exposure": round(exposure, 8),
+                            "breach": round(exposure - float(limit), 8),
+                        }
+                    )
+        return {
+            "max_weight_limit": round(max_weight_limit, 8),
+            "restricted_securities": sorted(restricted),
+            "restricted_security_violations": restricted_violations,
+            "restricted_security_count": len(restricted_violations),
+            "max_weight_breach_securities": sorted(max_weight_breaches),
+            "market_exposure": market_exposure,
+            "currency_exposure": currency_exposure,
+            "budget_breaches": budget_breaches,
+            "diagnostic_exposure": {
+                "market_exposure": proposal.diagnostics.get("market_exposure", {}),
+                "industry_exposure": proposal.diagnostics.get("industry_exposure", {}),
+                "theme_exposure": proposal.diagnostics.get("theme_exposure", {}),
+                "currency_exposure": proposal.diagnostics.get("currency_exposure", {}),
+            },
+            "constraint_shadow_prices": proposal.diagnostics.get("constraint_shadow_prices", []),
+        }
+
+    def _portfolio_forward_tracking_metrics(self, returns_result: Mapping[str, Any], benchmark_result: Mapping[str, Any]) -> dict[str, Any]:
+        candidate_map = {
+            str(row.get("as_of_date", "")): float(row.get("return", 0.0))
+            for row in returns_result.get("returns", [])
+            if str(row.get("as_of_date", ""))
+        }
+        benchmark_map = {
+            str(row.get("as_of_date", "")): float(row.get("return", 0.0))
+            for row in benchmark_result.get("returns", [])
+            if str(row.get("as_of_date", ""))
+        }
+        aligned_dates = sorted(set(candidate_map) & set(benchmark_map))
+        active_series = [candidate_map[as_of_date] - benchmark_map[as_of_date] for as_of_date in aligned_dates]
+        active_return = self._compound_return(active_series) if active_series else None
+        tracking_error = self._series_volatility(active_series) if active_series else None
+        information_ratio = (active_return / tracking_error) if active_return is not None and tracking_error not in {None, 0} else None
+        return {
+            "aligned_dates": aligned_dates,
+            "aligned_date_count": len(aligned_dates),
+            "active_return_series": [round(value, 8) for value in active_series],
+            "active_return": active_return,
+            "tracking_error": round(tracking_error, 8) if tracking_error is not None else None,
+            "information_ratio": round(information_ratio, 8) if information_ratio is not None else None,
+        }
+
+    def _portfolio_forward_review_flags(
+        self,
+        returns_result: Mapping[str, Any],
+        benchmark_result: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        tracking_metrics: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        metrics = dict(tracking_metrics or self._portfolio_forward_tracking_metrics(returns_result, benchmark_result))
+        flags: list[dict[str, Any]] = []
+        min_common_dates = int(payload.get("min_common_dates", 2))
+        common_dates = int(returns_result.get("coverage", {}).get("common_dates", 0))
+        if common_dates < min_common_dates:
+            flags.append(
+                {
+                    "flag": "insufficient_return_overlap",
+                    "severity": "medium",
+                    "value": common_dates,
+                    "threshold": min_common_dates,
+                    "message": "Return coverage is too short for a stable forward report.",
+                }
+            )
+        max_drawdown_threshold = float(payload.get("max_drawdown_threshold", 0.2))
+        if float(returns_result.get("max_drawdown", 0.0)) > max_drawdown_threshold:
+            flags.append(
+                {
+                    "flag": "drawdown_warning",
+                    "severity": "high",
+                    "value": round(float(returns_result.get("max_drawdown", 0.0)), 8),
+                    "threshold": round(max_drawdown_threshold, 8),
+                    "message": "Candidate drawdown exceeds the configured tolerance.",
+                }
+            )
+        max_volatility = float(payload.get("max_volatility", 0.35))
+        if float(returns_result.get("volatility", 0.0)) > max_volatility:
+            flags.append(
+                {
+                    "flag": "volatility_warning",
+                    "severity": "medium",
+                    "value": round(float(returns_result.get("volatility", 0.0)), 8),
+                    "threshold": round(max_volatility, 8),
+                    "message": "Candidate volatility exceeds the configured tolerance.",
+                }
+            )
+        if benchmark_result:
+            max_tracking_error = float(payload.get("max_tracking_error", 0.05))
+            tracking_error = metrics.get("tracking_error")
+            if tracking_error is not None and float(tracking_error) > max_tracking_error:
+                flags.append(
+                    {
+                        "flag": "tracking_error_warning",
+                        "severity": "medium",
+                        "value": round(float(tracking_error), 8),
+                        "threshold": round(max_tracking_error, 8),
+                        "message": "Active return volatility exceeds the configured tolerance.",
+                    }
+                )
+            min_active_return = float(payload.get("min_active_return", 0.0))
+            active_return = metrics.get("active_return")
+            if active_return is not None and float(active_return) < min_active_return:
+                flags.append(
+                    {
+                        "flag": "active_return_shortfall",
+                        "severity": "high",
+                        "value": round(float(active_return), 8),
+                        "threshold": round(min_active_return, 8),
+                        "message": "Candidate underperforms the benchmark over the reporting horizon.",
+                    }
+                )
+        if not returns_result.get("returns"):
+            flags.append(
+                {
+                    "flag": "empty_return_series",
+                    "severity": "high",
+                    "value": 0,
+                    "threshold": 1,
+                    "message": "No return series was produced for the supplied holdings.",
+                }
+            )
+        return flags
 
     def portfolio_attribution_backfill(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
         """Backfill simulated portfolio performance attribution to operating reports (T-408).
@@ -8332,6 +11202,54 @@ class SystemService:
             "simulation_only": True,
             "live_execution_allowed": False,
         }
+
+    def portfolio_attribution_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        self._reject_secret_rotation_payload_values(payload)
+        artifacts = self._portfolio_attribution_artifact_uris(payload)
+        report_summary = self._portfolio_attribution_report_summary()
+        replay_summary = self._portfolio_attribution_replay_summary(payload)
+        ledger_summary = self._portfolio_attribution_ledger_summary(payload)
+        forward_summary = self._portfolio_attribution_forward_summary(payload)
+        min_report_count = int(payload.get("min_report_count", 1))
+        min_replay_count = int(payload.get("min_replay_count", 1))
+        min_transaction_count = int(payload.get("min_transaction_count", 1))
+        gates = [
+            self._readiness_numeric_gate("operating_report_count", report_summary["report_count"], min_report_count, ">=", "operating reports exist for attribution review"),
+            self._readiness_numeric_gate("attribution_annotation_coverage", report_summary["attribution_annotation_coverage"], 1.0, ">=", "operating reports include portfolio attribution annotations"),
+            self._readiness_numeric_gate("published_report_approval_coverage", report_summary["published_approval_coverage"], 1.0, ">=", "published operating reports retain CEO/CIO/risk approval signatures"),
+            self._readiness_bool_gate("red_flags_resolved_or_owned", report_summary["red_flags_resolved_or_owned"], "each operating report red flag has owner and due date or is resolved"),
+            self._readiness_numeric_gate("strategy_replay_count", replay_summary["replay_count"], min_replay_count, ">=", "strategy replay records exist for post-decision review"),
+            self._readiness_bool_gate("strategy_replay_variance_reviewed", replay_summary["variance_reviewed"], "strategy replay variance rows include reason and next action"),
+            self._readiness_numeric_gate("simulated_ledger_transaction_count", ledger_summary["transaction_count"], min_transaction_count, ">=", "simulated/backtest portfolio ledger is available"),
+            self._readiness_bool_gate("ledger_source_boundary", ledger_summary["source_boundary_ok"], "ledger sources are simulated/public/backtest and not live broker feeds"),
+            self._readiness_bool_gate("forward_attribution_evidence", forward_summary["present"], "portfolio forward report is present in readiness payload or records"),
+            self._readiness_bool_gate("forward_attribution_artifact_uri", bool(artifacts.get("forward_attribution_uri")), "portfolio forward attribution artifact URI"),
+            self._readiness_bool_gate("performance_reconciliation_uri", bool(artifacts.get("performance_reconciliation_uri")), "performance/NAV reconciliation artifact URI"),
+            self._readiness_bool_gate("ledger_extract_artifact_uri", bool(artifacts.get("ledger_extract_uri")), "simulated ledger extract artifact URI"),
+            self._readiness_bool_gate("strategy_replay_artifact_uri", bool(artifacts.get("strategy_replay_uri")), "strategy replay comparison artifact URI"),
+            self._readiness_bool_gate("board_pack_artifact_uri", bool(artifacts.get("board_pack_uri")), "published board pack artifact URI"),
+            self._readiness_bool_gate("external_account_blocked", not ledger_summary["live_broker_source_seen"], "no real broker or live trading account source is used"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_attribution_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "artifact_uris": artifacts,
+            "operating_reports": report_summary,
+            "strategy_replays": replay_summary,
+            "ledger": ledger_summary,
+            "forward_attribution": forward_summary,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "portfolio_attribution_readiness_report_checks_simulated_ledger_reports_replays_and_external_reconciliation_without_broker_access",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "portfolio_attribution_readiness_report", "portfolio_attribution", "production_readiness", approval_state="ready" if ready else "missing_evidence")
+        return report
 
     def portfolio_simulated_feedback(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
         """Investment committee UI approval entry and simulated portfolio feedback (T-409).
@@ -8545,6 +11463,117 @@ class SystemService:
             for group_key, groups_for_key in attribution.items()
         }
 
+    def _portfolio_attribution_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "performance_reconciliation_uri": ["performance_reconciliation_uri", "nav_reconciliation_uri", "performance_attribution_uri"],
+            "forward_attribution_uri": ["forward_attribution_uri", "forward_report_uri", "attribution_report_uri"],
+            "board_pack_uri": ["board_pack_uri", "operating_report_board_pack_uri", "board_pack_artifact_uri"],
+            "ledger_extract_uri": ["ledger_extract_uri", "portfolio_ledger_uri", "simulated_ledger_uri"],
+            "strategy_replay_uri": ["strategy_replay_uri", "replay_compare_uri", "strategy_replay_artifact_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _portfolio_attribution_report_summary(self) -> dict[str, Any]:
+        reports = list(self.store.operating_reports.values())
+        annotated_ids: set[str] = set()
+        for item in reports:
+            annotations = getattr(item, "annotations", {})
+            if isinstance(annotations, Mapping) and isinstance(annotations.get("portfolio_attribution"), Mapping) and annotations["portfolio_attribution"].get("attribution"):
+                annotated_ids.add(item.report_id)
+        published = [item for item in reports if item.status == "published"]
+        approved_published = [item for item in published if item.approvals]
+        red_flags = [flag for item in reports for flag in item.red_flags]
+        red_flags_owned = [
+            flag
+            for flag in red_flags
+            if str(flag.get("status", "open")) == "resolved" or (str(flag.get("owner_role") or flag.get("owner") or "").strip() and str(flag.get("due_date") or flag.get("due") or "").strip())
+        ]
+        board_pack_exports = [
+            event
+            for event in self.store.audit_log
+            if event.action == "export_operating_report_board_pack" and event.resource_type == "operating_report"
+        ]
+        return {
+            "report_count": len(reports),
+            "published_count": len(published),
+            "attribution_annotated_count": len(annotated_ids),
+            "attribution_annotation_coverage": round(len(annotated_ids) / max(1, len(reports)), 4) if reports else 0.0,
+            "published_approval_coverage": round(len(approved_published) / max(1, len(published)), 4) if published else 1.0,
+            "red_flag_count": len(red_flags),
+            "red_flags_resolved_or_owned": len(red_flags_owned) == len(red_flags),
+            "board_pack_export_count": len(board_pack_exports),
+            "report_ids_missing_attribution": sorted(item.report_id for item in reports if item.report_id not in annotated_ids),
+        }
+
+    def _portfolio_attribution_replay_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        compare = self.strategy_replay_compare_report({"limit": payload.get("replay_limit", 100)})
+        rows = list(compare.get("replays", []))
+        variance_rows = [row for row in rows if str(row.get("variance_reason", "")).strip()]
+        reviewed = [
+            row
+            for row in variance_rows
+            if str(row.get("next_action", "")).strip() and str(row.get("actual_outcome", "")).strip()
+        ]
+        return {
+            "replay_count": int(compare["count"]),
+            "variance_count": int(compare["variance_count"]),
+            "variance_reviewed_count": len(reviewed),
+            "variance_reviewed": len(reviewed) == len(variance_rows),
+            "latest_replay_id": str(compare.get("latest_replay_id", "")),
+            "action_counts": dict(compare.get("action_counts", {})),
+        }
+
+    def _portfolio_attribution_ledger_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        account_id = str(payload.get("account_id", "")).strip()
+        strategy_id = str(payload.get("strategy_id", "")).strip()
+        filters = {"account_id": account_id, "strategy_id": strategy_id, "limit": payload.get("ledger_limit", 1000)}
+        ledger = self.portfolio_transactions_payload(filters)
+        transactions = list(self.store.portfolio_transactions.values())
+        if account_id:
+            transactions = [item for item in transactions if item.account_id == account_id]
+        if strategy_id:
+            transactions = [item for item in transactions if item.strategy_id == strategy_id]
+        source_ids = sorted({item.source_id for item in transactions if item.source_id})
+        source_types = sorted({self.store.sources[item.source_id].source_type for item in transactions if item.source_id in self.store.sources})
+        live_markers = {"broker", "live_broker", "live_trading", "real_account", "execution_broker"}
+        live_seen = any(marker in str(value).lower() for value in [*source_ids, *source_types] for marker in live_markers)
+        allowed = all(
+            (
+                not item.source_id
+                or item.source_id in {SIMULATED_TRADE_SOURCE_ID, PUBLIC_EOD_MARKET_DATA_SOURCE_ID}
+                or (item.source_id in self.store.sources and self.store.sources[item.source_id].source_type in {"simulated", "market_data", "regulatory", "manual_reference"})
+            )
+            for item in transactions
+        )
+        return {
+            "transaction_count": int(ledger["total"]),
+            "source_ids": source_ids,
+            "source_types": source_types,
+            "source_boundary_ok": allowed and not live_seen,
+            "live_broker_source_seen": live_seen,
+        }
+
+    def _portfolio_attribution_forward_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("forward_report", payload.get("forward_attribution", {}))
+        data = dict(raw) if isinstance(raw, Mapping) else {}
+        if not data:
+            return {
+                "present": False,
+                "return_count": 0,
+                "has_attribution": False,
+                "simulation_only": True,
+                "live_execution_allowed": False,
+            }
+        attribution = data.get("attribution", {})
+        return {
+            "present": True,
+            "return_count": int(data.get("return_count", 0) or 0),
+            "has_attribution": isinstance(attribution, Mapping) and bool(attribution),
+            "simulation_only": self._truthy(data.get("simulation_only", True)),
+            "live_execution_allowed": self._truthy(data.get("live_execution_allowed", False)),
+            "review_flag_count": len(data.get("review_flags", [])) if isinstance(data.get("review_flags", []), list) else 0,
+        }
+
     def portfolio_valuation_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         holdings = payload.get("holdings", [])
         if not isinstance(holdings, list) or not holdings:
@@ -8714,6 +11743,76 @@ class SystemService:
         self.store.portfolio_transactions[transaction.transaction_id] = transaction
         self._audit(actor, "register_portfolio_transaction", "portfolio_transaction", transaction.transaction_id, source=source.source_type, approval_state=transaction.side)
         return transaction
+
+    def import_portfolio_transactions(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        rows = payload.get("rows", payload.get("items", []))
+        if not isinstance(rows, list):
+            raise ValidationError("portfolio transaction import requires rows list")
+        dry_run = self._truthy(payload.get("dry_run", False))
+        source_id = self._canonical_source_id(str(payload.get("source_id", SIMULATED_TRADE_SOURCE_ID)))
+        if source_id not in self.store.sources:
+            if source_id in {SIMULATED_TRADE_SOURCE_ID, PUBLIC_EOD_MARKET_DATA_SOURCE_ID}:
+                self.seed_default_sources(actor=actor)
+            else:
+                raise NotFoundError(f"source {source_id} not found")
+        source = self.store.sources[source_id]
+        if source.risk_level == "red":
+            raise PermissionDenied("red transaction source cannot enter portfolio ledger")
+        account_id = str(payload.get("account_id", ""))
+        strategy_id = str(payload.get("strategy_id", ""))
+        security_map = payload.get("security_map", {})
+        if not isinstance(security_map, Mapping):
+            raise ValidationError("security_map must be an object when provided")
+        created: list[PortfolioTransaction] = []
+        normalized_rows: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for index, row in enumerate(rows):
+            if not isinstance(row, Mapping):
+                errors.append({"index": index, "error": "row must be an object"})
+                continue
+            try:
+                normalized = self._normalize_portfolio_transaction_row(
+                    row,
+                    index=index,
+                    source_id=source_id,
+                    account_id=account_id,
+                    strategy_id=str(row.get("strategy_id", strategy_id)),
+                    security_map=security_map,
+                )
+                if normalized["transaction_id"] in self.store.portfolio_transactions and self._truthy(payload.get("skip_existing", True)):
+                    skipped.append({"index": index, "transaction_id": normalized["transaction_id"], "reason": "already_exists"})
+                    continue
+                normalized_rows.append(normalized)
+                if not dry_run:
+                    created.append(self.register_portfolio_transaction(normalized, actor=actor))
+            except (ValidationError, NotFoundError, PermissionDenied, ConflictError) as exc:
+                errors.append({"index": index, "error": str(exc), "raw": dict(row)})
+        self._audit(
+            actor,
+            "import_portfolio_transactions",
+            "portfolio_transaction",
+            str(payload.get("batch_id", "portfolio_transaction_import")),
+            source=source.source_type,
+            approval_state=f"created={len(created)};normalized={len(normalized_rows)};failed={len(errors)};dry_run={str(dry_run).lower()}",
+        )
+        return {
+            "dry_run": dry_run,
+            "source_id": source_id,
+            "source_type": source.source_type,
+            "source_rows": len(rows),
+            "normalized_count": len(normalized_rows),
+            "created_count": len(created),
+            "skipped_count": len(skipped),
+            "failed_count": len(errors),
+            "normalized": normalized_rows,
+            "created": [to_plain(item) for item in created],
+            "skipped": skipped,
+            "errors": errors,
+            "simulation_only": True,
+            "live_execution_allowed": False,
+            "usage_boundary": "portfolio_transaction_import_accepts_simulated_or_backtest_ledgers_only_no_broker_execution",
+        }
 
     def portfolio_transactions_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -9064,6 +12163,73 @@ class SystemService:
         self._audit(actor, "run_benchmark_suite", "benchmark", benchmark_id, approval_state=benchmark.status)
         return run
 
+    def benchmark_readiness_report(self, benchmark_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        benchmark = self.store.benchmarks.get(benchmark_id)
+        if benchmark is None:
+            raise NotFoundError(f"benchmark {benchmark_id} not found")
+        target_sample_size = int(payload.get("target_sample_size", payload.get("min_sample_size", 300)))
+        min_chinese_samples = int(payload.get("min_chinese_samples", 150))
+        min_english_samples = int(payload.get("min_english_samples", 150))
+        target_sample_size = max(1, target_sample_size)
+        active_samples = [item for item in self.store.benchmark_samples.values() if item.benchmark_id == benchmark_id and item.status == "active"]
+        language_counts: dict[str, int] = {}
+        for sample in active_samples:
+            language_counts[sample.language] = language_counts.get(sample.language, 0) + 1
+        latest_run = max(
+            [item for item in self.store.benchmark_runs.values() if item.benchmark_id == benchmark_id],
+            key=lambda item: parse_datetime(item.created_at),
+            default=None,
+        )
+        latest_metrics = dict(latest_run.metrics) if latest_run else {}
+        artifact_uris = self._benchmark_artifact_uris(payload)
+        gold_labels = self._benchmark_gold_label_summary(payload)
+        summary_samples = payload.get("summary_samples", payload.get("summary_quality_samples", []))
+        summary_sample_count = len(summary_samples) if isinstance(summary_samples, (list, tuple, set)) else int(payload.get("summary_sample_count", 0) or 0)
+        gates = [
+            self._benchmark_readiness_gate("sample_size", len(active_samples), target_sample_size, ">=", "300-500 real Chinese filings/annual reports and English SEC disclosures"),
+            self._benchmark_readiness_gate("chinese_sample_count", language_counts.get("zh", 0) + language_counts.get("zh-cn", 0), min_chinese_samples, ">=", "Chinese announcements/annual reports"),
+            self._benchmark_readiness_gate("english_sample_count", language_counts.get("en", 0), min_english_samples, ">=", "English SEC disclosure sample set"),
+            self._benchmark_readiness_bool_gate("sample_manifest_artifact", bool(artifact_uris.get("sample_manifest_uri")), "benchmark sample manifest artifact URI"),
+            self._benchmark_readiness_bool_gate("chinese_sample_set_artifact", bool(artifact_uris.get("chinese_sample_set_uri")), "Chinese filing/annual-report sample set artifact URI"),
+            self._benchmark_readiness_bool_gate("english_sample_set_artifact", bool(artifact_uris.get("english_sample_set_uri")), "English SEC disclosure sample set artifact URI"),
+            self._benchmark_readiness_bool_gate("annotation_manual", bool(artifact_uris.get("annotation_manual_uri")), "manual annotation guideline artifact URI"),
+            self._benchmark_readiness_bool_gate("ocr_bbox_gold_labels", bool(artifact_uris.get("bbox_gold_uri")), "OCR/layout bbox gold label artifact URI"),
+            self._benchmark_readiness_bool_gate("table_cell_gold_labels", bool(artifact_uris.get("table_cell_gold_uri")), "table cell gold label artifact URI"),
+            self._benchmark_readiness_bool_gate("summary_quality_samples", bool(artifact_uris.get("summary_quality_uri")), "summary quality sample-set artifact URI"),
+            self._benchmark_readiness_bool_gate("regression_baseline_artifact", bool(artifact_uris.get("baseline_report_uri") or artifact_uris.get("regression_baseline_uri")), "regression baseline report artifact URI"),
+            self._benchmark_readiness_bool_gate("latest_run_present", latest_run is not None, "benchmark suite has been executed"),
+        ]
+        if latest_run:
+            for metric, threshold in benchmark.threshold.items():
+                if isinstance(latest_metrics.get(metric), (int, float)):
+                    gates.append(self._benchmark_readiness_gate(f"metric_{metric}", float(latest_metrics[metric]), float(threshold), ">=", f"{metric} threshold"))
+        missing = [gate for gate in gates if not gate["passed"]]
+        readiness = not missing
+        report = {
+            "benchmark_id": benchmark_id,
+            "task_type": benchmark.task_type,
+            "language": benchmark.language,
+            "target_sample_size": target_sample_size,
+            "active_sample_count": len(active_samples),
+            "language_counts": language_counts,
+            "latest_run_id": latest_run.run_id if latest_run else "",
+            "latest_run_passed": latest_run.passed if latest_run else False,
+            "latest_metrics": latest_metrics,
+            "gold_labels": gold_labels,
+            "artifact_uris": artifact_uris,
+            "summary_sample_count": summary_sample_count,
+            "gates": gates,
+            "missing_requirements": [gate["gate"] for gate in missing],
+            "ready_for_real_acceptance": readiness,
+            "external_artifact_required": True,
+            "automation_allowed": False,
+            "usage_boundary": "benchmark_readiness_report_tracks_real_sample_and_gold_label_evidence_not_a_substitute_for_running_300_500_real_samples",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "benchmark_readiness_report", "benchmark", benchmark_id, approval_state="ready" if readiness else "missing_evidence")
+        return report
+
     def extract_structured_facts(self, payload: Mapping[str, Any], *, actor: str = "system") -> ExtractionResult:
         evidence_id = str(payload["evidence_id"])
         evidence = self.store.evidence.get(evidence_id)
@@ -9085,6 +12251,8 @@ class SystemService:
         numbers = self._extract_numbers(text, evidence=evidence)
         periods = self._extract_periods(text, evidence=evidence)
         tables = self._extract_tables(text, evidence=evidence)
+        if self._truthy(payload.get("include_adjacent_tables", False)):
+            tables = self._merge_cross_page_tables(self._adjacent_document_tables(evidence, base_tables=tables))
         metrics = self._extraction_metrics(
             terms=terms,
             numbers=numbers,
@@ -9177,6 +12345,564 @@ class SystemService:
                 continue
             created.append(self.register_template(item, actor=actor))
         return created
+
+    def run_sec_single_name_research(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        """Run the first productized single-name SEC research loop.
+
+        This intentionally composes existing ingestion/evidence/research/
+        committee/simulation primitives instead of introducing a parallel
+        research object model.
+        """
+        payload = payload or {}
+        ticker = str(payload.get("ticker", "AAPL") or "AAPL").strip().upper()
+        ticker_slug = self._safe_identifier(ticker).lower()
+        raw_cik = str(payload.get("cik", "0000320193") or "0000320193").strip()
+        cik = raw_cik.zfill(10) if raw_cik.isdigit() else raw_cik
+        issuer_id = str(payload.get("issuer_id") or f"issuer_{ticker_slug}").strip()
+        security_id = str(payload.get("security_id") or f"security_{ticker_slug}_us").strip()
+        company_name = str(payload.get("company_name") or ("Apple Inc." if ticker == "AAPL" else f"{ticker} Inc."))
+        document_types = self._sec_single_name_document_types(payload.get("document_types", ["10-K", "10-Q"]))
+        limit = self._bounded_limit(payload.get("limit", 1), 5)
+        include_body = self._truthy(payload.get("include_body", True))
+        fallback_mode = str(payload.get("fallback_mode", "local_sample")).strip() or "local_sample"
+        force_fallback = self._truthy(payload.get("force_fallback", False))
+        question = str(
+            payload.get("question")
+            or "What changed in revenue, services resilience, and key risk factors?"
+        ).strip()
+        trade_date = str(payload.get("trade_date", "2026-05-14"))
+
+        self.seed_default_sources(actor=actor)
+        self.seed_default_templates(actor=actor)
+        issuer = self._ensure_sec_single_name_issuer(
+            issuer_id=issuer_id,
+            ticker=ticker,
+            cik=cik,
+            company_name=company_name,
+            actor=actor,
+        )
+        security = self._ensure_sec_single_name_security(
+            security_id=security_id,
+            issuer_id=issuer_id,
+            ticker=ticker,
+            actor=actor,
+        )
+        self._ensure_sec_single_name_market_data(security_id=security_id, trade_date=trade_date, payload=payload, actor=actor)
+
+        ingestion_result: dict[str, Any] = {"created": [], "skipped": []}
+        documents: list[Document] = []
+        used_realtime_sec = False
+        fallback_reason = ""
+        if not force_fallback:
+            try:
+                ingestion_result = self.ingest_sec_recent_filings(
+                    {
+                        "issuer_id": issuer_id,
+                        "security_id": security_id,
+                        "cik": cik,
+                        "document_types": document_types,
+                        "limit": limit,
+                        "include_body": include_body,
+                        "max_body_bytes": int(payload.get("max_body_bytes", 2_000_000)),
+                        "user_agent": self._sec_user_agent(payload),
+                    },
+                    actor=actor,
+                )
+                used_realtime_sec = True
+                documents = self._sec_single_name_documents(
+                    issuer_id=issuer_id,
+                    security_id=security_id,
+                    document_types=document_types,
+                    limit=limit,
+                )
+                if not documents:
+                    fallback_reason = "SEC ingestion returned no matching documents"
+            except Exception as exc:
+                fallback_reason = f"{type(exc).__name__}: {exc}"
+
+        if documents and not any((document.body or self._document_object_text(document)).strip() for document in documents):
+            fallback_reason = fallback_reason or "SEC ingestion returned documents without extractable body"
+            documents = []
+
+        if not documents:
+            if fallback_mode != "local_sample":
+                raise ValidationError(f"SEC single-name research found no usable filing: {fallback_reason or 'no SEC document'}")
+            sample = self._ensure_sec_single_name_sample_document(
+                issuer_id=issuer_id,
+                security_id=security_id,
+                ticker=ticker,
+                cik=cik,
+                company_name=company_name,
+                actor=actor,
+            )
+            documents = [sample]
+            used_realtime_sec = False
+            fallback_reason = fallback_reason or "SEC realtime document unavailable; used local SEC-like sample"
+
+        evidence, extraction_errors = self._sec_single_name_evidence(documents, actor=actor)
+        if not evidence and fallback_mode == "local_sample" and not any(document.version == "local_sec_sample" for document in documents):
+            fallback_reason = fallback_reason or "; ".join(extraction_errors) or "SEC evidence extraction produced no evidence"
+            sample = self._ensure_sec_single_name_sample_document(
+                issuer_id=issuer_id,
+                security_id=security_id,
+                ticker=ticker,
+                cik=cik,
+                company_name=company_name,
+                actor=actor,
+            )
+            documents = [sample]
+            used_realtime_sec = False
+            evidence, extraction_errors = self._sec_single_name_evidence(documents, actor=actor)
+        if not evidence:
+            raise ValidationError(f"SEC single-name research requires extractable evidence: {'; '.join(extraction_errors) or 'none'}")
+
+        research_evidence = self._sec_single_name_ranked_evidence(evidence, question=question, limit=5)
+        evidence_ids = [item.evidence_id for item in research_evidence]
+        document = documents[0]
+        run_key = self._safe_identifier(f"{ticker}_{document.document_id}").lower()[:80]
+        scorecard_id = f"score_sec_single_{ticker_slug}"
+        if scorecard_id not in self.store.scorecards:
+            self.register_scorecard(
+                {
+                    "profile_id": scorecard_id,
+                    "strategy_type": "long",
+                    "name": f"{ticker} SEC Single-Name Scorecard",
+                    "weights": {"quality": 0.38, "valuation": 0.22, "catalyst": 0.22, "risk": 0.18},
+                    "threshold_long": 0.58,
+                },
+                actor=actor,
+            )
+
+        answer_id = f"ans_sec_single_{run_key}"
+        if answer_id in self.store.research_answers:
+            answer = self.store.research_answers[answer_id]
+        else:
+            answer = self.create_research_answer(
+                {
+                    "answer_id": answer_id,
+                    "issuer_id": issuer_id,
+                    "question": question,
+                    "evidence_ids": evidence_ids,
+                    "summary_version": "sec-single-name-summary-v1",
+                    "prompt_version": "sec-single-name-rule-v1",
+                    "model_version": "rule-summary-v1",
+                    "human_review_status": str(payload.get("human_review_status", "approved")),
+                    "reviewer": str(payload.get("reviewer", actor)),
+                },
+                actor=actor,
+            )
+
+        thesis_id = f"thesis_sec_single_{run_key}"
+        if thesis_id in self.store.theses:
+            thesis = self.store.theses[thesis_id]
+        else:
+            thesis = self.create_thesis(
+                {
+                    "thesis_id": thesis_id,
+                    "issuer_id": issuer_id,
+                    "horizon": "mid",
+                    "hypothesis": str(
+                        payload.get("hypothesis")
+                        or f"{company_name}'s services resilience can support medium-term earnings quality, while risk factors require valuation discipline."
+                    ),
+                    "catalyst": ["SEC filing refresh", "services resilience", "installed base monetization"],
+                    "evidence_ids": evidence_ids,
+                    "falsifiers": ["services growth decelerates", "regulatory risk increases", "hardware demand shock"],
+                    "risk_factors": ["valuation", "supply chain", "regulatory scrutiny"],
+                    "owner": str(payload.get("owner", actor)),
+                    "status": "review",
+                },
+                actor=actor,
+            )
+
+        signal_id = f"sig_sec_single_{run_key}"
+        if signal_id in self.store.signals:
+            signal = self.store.signals[signal_id]
+        else:
+            signal = self.run_scoring(
+                {
+                    "signal_id": signal_id,
+                    "thesis_id": thesis_id,
+                    "strategy_type": "long",
+                    "profile_id": scorecard_id,
+                    "factor_scores": {"quality": 0.78, "valuation": 0.58, "catalyst": 0.66, "risk": 0.52},
+                    "source_model": "sec-single-name-scorecard",
+                    "model_version": "sec-single-name-v1",
+                    "rationale": "Public SEC evidence supports a long-only research review; output remains paper-only.",
+                },
+                actor=actor,
+            )
+
+        challenger_id = f"chg_sec_single_{run_key}"
+        if challenger_id in self.store.challengers:
+            challenger = self.store.challengers[challenger_id]
+        else:
+            challenger = self.run_challenger(
+                {
+                    "challenger_id": challenger_id,
+                    "thesis_id": thesis_id,
+                    "source_conflict": 0.16,
+                    "valuation_gap": 0.36,
+                    "narrative_divergence": 0.25,
+                    "policy_risk": 0.28,
+                    "note": "SEC single-name challenger flags valuation and regulatory sensitivity without blocking the paper review.",
+                },
+                actor=actor,
+            )
+
+        card_id = f"card_sec_single_{run_key}"
+        if card_id in self.store.research_cards:
+            research_card = self.store.research_cards[card_id]
+        else:
+            research_card = self.create_research_card(
+                {
+                    "card_id": card_id,
+                    "template_id": "tpl_company_default",
+                    "thesis_id": thesis_id,
+                    "title": f"{ticker} SEC single-name research card",
+                    "fields": {
+                        "summary": answer.chinese_summary,
+                        "valuation": "Paper-only review requires valuation discipline before any simulated feedback.",
+                        "risk": "Regulatory, supply-chain, and hardware demand risks remain active falsifiers.",
+                        "evidence": ", ".join(evidence_ids),
+                    },
+                },
+                actor=actor,
+            )
+
+        decision_id = f"dec_sec_single_{run_key}"
+        if decision_id in self.store.decisions:
+            decision = self.store.decisions[decision_id]
+        else:
+            decision = self.build_decision_pack(
+                {
+                    "decision_id": decision_id,
+                    "signal_ids": [signal_id],
+                    "risk_checks": ["reg_fd", "non_display", "source_publicness"],
+                    "red_team_note": "SEC single-name workflow approved only for paper research and simulated feedback.",
+                    "non_display_requested": False,
+                },
+                actor=actor,
+            )
+        signed_roles = {signature.role for signature in decision.signatures}
+        if "风险/合规" not in signed_roles:
+            decision = self.sign_decision(
+                decision_id,
+                {"role": "风险/合规", "user": str(payload.get("risk_user", "risk_sec_single")), "comment": "SEC public-source and non-display boundary checked."},
+                actor=actor,
+            )
+        if "CEO" not in {signature.role for signature in decision.signatures}:
+            decision = self.sign_decision(
+                decision_id,
+                {"role": "CEO", "user": str(payload.get("ceo_user", "ceo_sec_single")), "comment": "Approved for paper execution intent only."},
+                actor=actor,
+            )
+
+        intent_id = f"intent_sec_single_{run_key}"
+        if intent_id in self.store.execution_intents:
+            intent = self.store.execution_intents[intent_id]
+        else:
+            intent = self.create_execution_intent(
+                {
+                    "intent_id": intent_id,
+                    "decision_id": decision_id,
+                    "security_id": security_id,
+                    "action": str(payload.get("action", "buy")),
+                    "target_weight": float(payload.get("target_weight", 0.03)),
+                    "rationale": "Approved SEC single-name research pack; simulated feedback only.",
+                },
+                actor=actor,
+            )
+
+        simulation = self._sec_single_name_simulation(intent, payload=payload, trade_date=trade_date, actor=actor)
+        task = self._sec_single_name_task(
+            task_id=f"rtask_sec_single_{ticker_slug}",
+            issuer_id=issuer_id,
+            security_id=security_id,
+            evidence_ids=evidence_ids,
+            metadata={
+                "ticker": ticker,
+                "cik": cik,
+                "document_id": document.document_id,
+                "answer_id": answer.answer_id,
+                "thesis_id": thesis.thesis_id,
+                "signal_id": signal.signal_id,
+                "challenger_id": challenger.challenger_id,
+                "decision_id": decision.decision_id,
+                "intent_id": intent.intent_id,
+                "used_realtime_sec": used_realtime_sec,
+                "fallback_reason": fallback_reason,
+            },
+            reason=f"Run {company_name} SEC single-name research loop from filing to simulated feedback.",
+            actor=actor,
+        )
+
+        workflow_status = "completed_with_fallback" if fallback_reason else "completed"
+        self._audit(actor, "run_sec_single_name_research", "research_task", task.task_id, source="sec_single_name_workbench", approval_state=workflow_status)
+        return {
+            "workflow_status": workflow_status,
+            "used_realtime_sec": used_realtime_sec,
+            "source_mode": "realtime_sec" if used_realtime_sec else "local_sec_sample",
+            "fallback_reason": fallback_reason,
+            "fallback_mode": fallback_mode,
+            "ticker": ticker,
+            "cik": cik,
+            "simulation_only": True,
+            "live_execution_allowed": False,
+            "usage_boundary": "sec_single_name_research_simulated_only_no_broker_execution",
+            "ids": {
+                "issuer_id": issuer.issuer_id,
+                "security_id": security.security_id,
+                "document_id": document.document_id,
+                "evidence_ids": evidence_ids,
+                "answer_id": answer.answer_id,
+                "thesis_id": thesis.thesis_id,
+                "signal_id": signal.signal_id,
+                "challenger_id": challenger.challenger_id,
+                "research_card_id": research_card.card_id,
+                "decision_id": decision.decision_id,
+                "intent_id": intent.intent_id,
+                "task_id": task.task_id,
+            },
+            "summary": {
+                "company": company_name,
+                "question": question,
+                "answer": answer.chinese_summary,
+                "hypothesis": thesis.hypothesis,
+                "signal_direction": signal.direction,
+                "signal_score": round(signal.score, 4),
+                "challenger_verdict": challenger.verdict,
+                "decision_state": decision.approval_state,
+                "evidence_count": len(evidence),
+                "document_count": len(documents),
+            },
+            "workflow_stages": [
+                {"stage": "issuer_security", "status": "passed", "resource_id": f"{issuer.issuer_id}/{security.security_id}"},
+                {"stage": "sec_ingestion", "status": "passed" if used_realtime_sec else "fallback", "resource_id": document.document_id},
+                {"stage": "evidence_extraction", "status": "passed", "resource_id": ",".join(evidence_ids)},
+                {"stage": "research_answer", "status": answer.human_review_status, "resource_id": answer.answer_id},
+                {"stage": "thesis_scoring_challenger", "status": challenger.verdict, "resource_id": f"{thesis.thesis_id}/{signal.signal_id}/{challenger.challenger_id}"},
+                {"stage": "committee_pack", "status": decision.approval_state, "resource_id": decision.decision_id},
+                {"stage": "simulated_feedback", "status": str(simulation.get("execution", {}).get("status", "filled")), "resource_id": str(simulation.get("execution", {}).get("execution_id", ""))},
+            ],
+            "ingestion": ingestion_result,
+            "extraction_errors": extraction_errors,
+            "issuer": to_plain(issuer),
+            "security": to_plain(security),
+            "document": to_plain(document),
+            "documents": [to_plain(item) for item in documents],
+            "evidence": [to_plain(item) for item in research_evidence],
+            "research_answer": to_plain(answer),
+            "thesis": to_plain(thesis),
+            "signal": to_plain(signal),
+            "challenger": to_plain(challenger),
+            "research_card": to_plain(research_card),
+            "decision": to_plain(decision),
+            "decision_pack": to_plain(decision),
+            "intent": to_plain(intent),
+            "simulated_execution": simulation,
+            "task": to_plain(task),
+        }
+
+    def _sec_single_name_document_types(self, value: Any) -> list[str]:
+        if isinstance(value, str):
+            raw = [item.strip() for item in value.split(",")]
+        elif isinstance(value, list):
+            raw = [str(item).strip() for item in value]
+        else:
+            raw = []
+        return [item.upper() for item in raw if item] or ["10-K", "10-Q"]
+
+    def _ensure_sec_single_name_issuer(self, *, issuer_id: str, ticker: str, cik: str, company_name: str, actor: str) -> Issuer:
+        issuer = self.store.issuers.get(issuer_id)
+        if issuer is not None:
+            return issuer
+        return self.register_issuer(
+            {
+                "issuer_id": issuer_id,
+                "legal_name": company_name,
+                "aliases": [ticker, company_name.replace(" Inc.", "")],
+                "market": ["U"],
+                "cik": cik,
+                "country": "US",
+            },
+            actor=actor,
+        )
+
+    def _ensure_sec_single_name_security(self, *, security_id: str, issuer_id: str, ticker: str, actor: str) -> Security:
+        security = self.store.securities.get(security_id)
+        if security is not None:
+            return security
+        return self.register_security(
+            {
+                "security_id": security_id,
+                "issuer_id": issuer_id,
+                "ticker": ticker,
+                "figi": "BBG000B9XRY4" if ticker == "AAPL" else "",
+                "isin": "US0378331005" if ticker == "AAPL" else "",
+                "exchange": "NASDAQ",
+                "currency": "USD",
+                "market": "U",
+            },
+            actor=actor,
+        )
+
+    def _ensure_sec_single_name_market_data(self, *, security_id: str, trade_date: str, payload: Mapping[str, Any], actor: str) -> None:
+        if self._latest_market_data_point(security_id, source_id=PUBLIC_EOD_MARKET_DATA_SOURCE_ID, data_type="eod", as_of_date=trade_date):
+            return
+        close = float(payload.get("fallback_close", payload.get("fill_price", 189.98)))
+        data_id = str(payload.get("market_data_id", f"md_sec_single_{self._safe_identifier(security_id).lower()}_{trade_date}_eod"))
+        if data_id in self.store.market_data:
+            return
+        self.register_market_data_point(
+            {
+                "data_id": data_id,
+                "security_id": security_id,
+                "source_id": PUBLIC_EOD_MARKET_DATA_SOURCE_ID,
+                "as_of_date": trade_date,
+                "data_type": "eod",
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "adjusted_close": close,
+                "volume": float(payload.get("fallback_volume", 45_000_000)),
+            },
+            actor=actor,
+        )
+
+    def _sec_single_name_documents(self, *, issuer_id: str, security_id: str, document_types: list[str], limit: int) -> list[Document]:
+        types = set(document_types)
+        rows = [
+            document
+            for document in self.store.documents.values()
+            if document.issuer_id == issuer_id
+            and document.security_id == security_id
+            and document.source_id == "sec_edgar"
+            and document.document_type in types
+            and document.version != "local_sec_sample"
+        ]
+        rows.sort(key=lambda item: (to_plain(item.published_at), item.document_id), reverse=True)
+        return rows[:limit]
+
+    def _ensure_sec_single_name_sample_document(self, *, issuer_id: str, security_id: str, ticker: str, cik: str, company_name: str, actor: str) -> Document:
+        document_id = f"doc_sec_single_{self._safe_identifier(ticker).lower()}_local_10k"
+        existing = self.store.documents.get(document_id)
+        if existing is not None:
+            return existing
+        source = self.store.sources["sec_edgar"]
+        body = (
+            f"{company_name} Form 10-K local SEC sample. In fiscal 2025, revenue grew as Services revenue, "
+            "installed-base engagement, and subscription activity remained resilient. Gross margin benefited from "
+            "a richer services mix and disciplined operating expenses.\n\n"
+            "Management noted that product cycles, foreign exchange, and supply constraints can affect quarterly "
+            "results. The filing highlights risk factors including regulatory scrutiny, supply chain concentration, "
+            "component availability, platform policy changes, and macro demand volatility.\f"
+            "Research use note: this fallback sample is deterministic and is used only when realtime SEC retrieval "
+            "or body extraction is unavailable. It preserves the public SEC evidence workflow shape while keeping "
+            "all downstream portfolio actions simulated."
+        )
+        return self.ingest_document(
+            {
+                "document_id": document_id,
+                "issuer_id": issuer_id,
+                "security_id": security_id,
+                "source_id": "sec_edgar",
+                "source_type": "regulatory",
+                "document_type": "10-K",
+                "source_uri": f"local://samples/sec/{cik}/{ticker.lower()}-10k-fallback",
+                "title": f"{company_name} fallback SEC 10-K sample",
+                "body": body,
+                "rights_tag": to_plain(source.rights_tag),
+                "published_at": "2026-05-14",
+                "language": "en",
+                "version": "local_sec_sample",
+            },
+            actor=actor,
+        )
+
+    def _sec_single_name_evidence(self, documents: list[Document], *, actor: str) -> tuple[list[Evidence], list[str]]:
+        evidence: list[Evidence] = []
+        errors: list[str] = []
+        for document in documents:
+            existing = [item for item in self.store.evidence.values() if item.document_id == document.document_id]
+            if existing:
+                evidence.extend(existing)
+                continue
+            try:
+                evidence.extend(self.extract_evidence(document.document_id, actor=actor, parser_version="sec-single-name-v1", model_version="rule-sec-single-name-v1"))
+            except (ValidationError, NotFoundError) as exc:
+                errors.append(f"{document.document_id}:{exc}")
+        return evidence, errors
+
+    def _sec_single_name_ranked_evidence(self, evidence: list[Evidence], *, question: str, limit: int) -> list[Evidence]:
+        question_terms = [term.lower() for term in re.findall(r"[\w]+", question) if len(term) >= 4]
+        priority_terms = question_terms + ["revenue", "services", "risk", "factor", "margin", "supply", "regulatory"]
+
+        def score(item: Evidence) -> tuple[int, float]:
+            text = (item.canonical_text or item.span_text).lower()
+            return sum(1 for term in priority_terms if term in text), item.confidence
+
+        ranked = sorted(evidence, key=score, reverse=True)
+        return ranked[:limit] if ranked else []
+
+    def _sec_single_name_simulation(self, intent: ExecutionIntent, *, payload: Mapping[str, Any], trade_date: str, actor: str) -> dict[str, Any]:
+        existing = [item for item in self.store.simulated_executions.values() if item.intent_id == intent.intent_id]
+        if existing:
+            existing.sort(key=lambda item: (item.created_at, item.execution_id), reverse=True)
+            execution = existing[0]
+            transaction = self.store.portfolio_transactions.get(execution.transaction_id)
+            return {
+                "execution": to_plain(execution),
+                "transaction": to_plain(transaction) if transaction else {},
+                "intent": to_plain(intent),
+                "mode": "simulated",
+                "live_execution_allowed": False,
+                "usage_boundary": "simulated_trade_only_no_broker_order_or_live_execution",
+            }
+        return self.simulate_execution_intent(
+            intent.intent_id,
+            {
+                "mode": "simulated",
+                "quantity": float(payload.get("quantity", 10)),
+                "trade_date": trade_date,
+                "account_id": str(payload.get("account_id", "sec_single_name_paper")),
+                "created_by": str(payload.get("created_by", actor)),
+                "market_data_source_id": PUBLIC_EOD_MARKET_DATA_SOURCE_ID,
+            },
+            actor=actor,
+        )
+
+    def _sec_single_name_task(
+        self,
+        *,
+        task_id: str,
+        issuer_id: str,
+        security_id: str,
+        evidence_ids: list[str],
+        metadata: Mapping[str, Any],
+        reason: str,
+        actor: str,
+    ) -> ResearchTask:
+        if task_id not in self.store.research_tasks:
+            self.register_research_task(
+                {
+                    "task_id": task_id,
+                    "task_type": "sec_single_name_research",
+                    "source": "sec_single_name_workbench",
+                    "issuer_id": issuer_id,
+                    "security_id": security_id,
+                    "reason": reason,
+                    "status": "in_progress",
+                    "priority": 90,
+                },
+                actor=actor,
+            )
+        return self.update_research_task_status(
+            task_id,
+            {"status": "done", "assignee": actor, "evidence_ids": evidence_ids, "metadata": dict(metadata)},
+            actor=actor,
+        )
 
     def seed_demo_full_flow(self, *, actor: str = "system") -> dict[str, Any]:
         self.seed_default_sources(actor=actor)
@@ -9625,6 +13351,116 @@ class SystemService:
         )
         return answer
 
+    def create_filing_qa_answer(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        document_id = str(payload.get("document_id", "")).strip()
+        if not document_id:
+            raise ValidationError("document_id is required")
+        document = self.store.documents.get(document_id)
+        if document is None:
+            raise NotFoundError(f"document {document_id} not found")
+        question = str(payload.get("question", "")).strip()
+        if not question:
+            raise ValidationError("question is required")
+        if document.language not in {"en", "mixed"}:
+            raise ValidationError("filing QA requires English-first source documents")
+
+        evidence = [item for item in self.store.evidence.values() if item.document_id == document_id]
+        if not evidence or self._truthy(payload.get("refresh_evidence", False)):
+            evidence = self.extract_evidence(
+                document_id,
+                actor=actor,
+                parser_version=str(payload.get("parser_version", "filing-qa-v1")),
+                model_version=str(payload.get("evidence_model_version", "rule-filing-qa-v1")),
+            )
+        selected_evidence = self._filing_qa_evidence(
+            evidence,
+            question=question,
+            limit=self._bounded_limit(payload.get("evidence_limit", 5), max_value=20),
+        )
+        if not selected_evidence:
+            raise ValidationError("filing QA requires extractable English evidence")
+
+        source_text = "\n".join(item.canonical_text or item.span_text for item in selected_evidence)
+        llm_run: LLMTaskRun | None = None
+        model_answer = ""
+        if self._truthy(payload.get("run_model", True)):
+            if "llmtpl_filing_qa_v1" not in self.store.llm_task_templates:
+                self.seed_default_llm_task_templates(actor=actor)
+            llm_run = self.run_llm_task(
+                {
+                    "run_id": str(payload.get("llm_run_id", new_id("llmrun_filing_qa"))),
+                    "template_id": "llmtpl_filing_qa_v1",
+                    "role": str(payload.get("template_role", "分析师")),
+                    "variables": {"question": question, "source_text": source_text},
+                    "temperature": float(payload.get("temperature", 0.1)),
+                    "human_review_required": True,
+                },
+                actor=actor,
+            )
+            model_answer = self._llm_output_text(llm_run.output).strip()
+
+        answer_payload: dict[str, Any] = {
+            "answer_id": str(payload.get("answer_id", new_id("ans_filing_qa"))),
+            "issuer_id": str(payload.get("issuer_id") or document.issuer_id),
+            "question": question,
+            "evidence_ids": [item.evidence_id for item in selected_evidence],
+            "summary_version": str(payload.get("summary_version", "filing-qa-summary-v1")),
+            "prompt_version": str(payload.get("prompt_version") or (llm_run.prompt_version if llm_run else "filing-qa-v1")),
+            "model_version": str(payload.get("model_version") or (llm_run.model if llm_run else "rule-filing-qa-v1")),
+            "human_review_status": str(payload.get("human_review_status", "pending")),
+            "citation_char_limit": payload.get("citation_char_limit", 600),
+        }
+        if payload.get("chinese_summary"):
+            answer_payload["chinese_summary"] = str(payload["chinese_summary"])
+        elif model_answer and llm_run and llm_run.output.get("mode") == "llm":
+            answer_payload["chinese_summary"] = model_answer
+        answer = self.create_research_answer(answer_payload, actor=actor)
+
+        quality_report = self.research_answer_quality_report({"answer_id": answer.answer_id, "limit": 1})
+        summary_benchmark = self.research_answer_summary_benchmark({"answer_id": answer.answer_id, "limit": 1})
+        model_fallback = {
+            "enabled": bool(llm_run),
+            "status": llm_run.status if llm_run else "not_run",
+            "fallback_used": llm_run.fallback_used if llm_run else "",
+            "human_review_required": llm_run.human_review_required if llm_run else True,
+            "upstream_error": llm_run.error if llm_run else "",
+        }
+        self._audit(
+            actor,
+            "create_filing_qa_answer",
+            "research_answer",
+            answer.answer_id,
+            source=document.source_id,
+            version=answer.summary_version,
+            model_version=answer.model_version,
+            prompt_version=answer.prompt_version,
+            approval_state=answer.human_review_status,
+        )
+        return {
+            "answer": to_plain(answer),
+            "document": {
+                "document_id": document.document_id,
+                "issuer_id": document.issuer_id,
+                "security_id": document.security_id,
+                "document_type": document.document_type,
+                "source_id": document.source_id,
+                "source_type": document.source_type,
+                "source_uri": document.source_uri,
+                "title": document.title,
+                "language": document.language,
+            },
+            "evidence": [to_plain(item) for item in selected_evidence],
+            "llm_run": to_plain(llm_run) if llm_run else None,
+            "model_answer": model_answer,
+            "model_fallback": model_fallback,
+            "quality_report": quality_report,
+            "summary_benchmark": summary_benchmark,
+            "preserves_english_source": bool(answer.english_source_text.strip()),
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "filing_qa_research_only_original_text_required_no_trade_signal",
+        }
+
     def research_answer_payload(self, answer_id: str) -> dict[str, Any]:
         answer = self.store.research_answers.get(answer_id)
         if answer is None:
@@ -9634,11 +13470,14 @@ class SystemService:
     def research_answer_quality_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         issuer_id = str(filters.get("issuer_id", "")).strip()
+        answer_id = str(filters.get("answer_id", "")).strip()
         review_status = str(filters.get("human_review_status", filters.get("status", ""))).strip()
         limit = self._bounded_limit(filters.get("limit", 100), 1000)
         answers = list(self.store.research_answers.values())
         if issuer_id:
             answers = [item for item in answers if item.issuer_id == issuer_id]
+        if answer_id:
+            answers = [item for item in answers if item.answer_id == answer_id]
         if review_status:
             answers = [item for item in answers if item.human_review_status == review_status]
         rows: list[dict[str, Any]] = []
@@ -9760,6 +13599,80 @@ class SystemService:
             "answers": rows[:limit],
         }
 
+    def research_answer_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        quality = self.research_answer_quality_report(payload)
+        summary = self.research_answer_summary_benchmark(payload)
+        traceability = self.graph_traceability_report({"issuer_id": str(payload.get("issuer_id", "")).strip(), "include_details": False})
+        artifacts = self._research_answer_readiness_artifact_uris(payload)
+        min_answer_count = int(payload.get("min_answer_count", 1))
+        min_summary_pass_rate = float(payload.get("min_summary_pass_rate", 1.0))
+        min_average_score = float(payload.get("min_average_score", payload.get("min_score", 0.8)))
+        min_anchor_coverage = float(payload.get("min_anchor_coverage", 0.2))
+        summary_rows = [row for row in summary.get("answers", []) if isinstance(row, Mapping)]
+        missing_english = sum(1 for row in summary_rows if "missing_english_source_text" in row.get("blocking_issues", []) or int(row.get("english_source_chars", 0)) <= 0)
+        missing_chinese = sum(1 for row in summary_rows if "missing_chinese_summary" in row.get("blocking_issues", []) or int(row.get("chinese_summary_chars", 0)) <= 0)
+        missing_version = sum(1 for row in summary_rows if not row.get("version_metadata_complete"))
+        overconfident = int(summary.get("metrics", {}).get("overconfident_language", 0))
+        low_anchor = sum(1 for row in summary_rows if float(row.get("english_anchor_coverage", 1.0)) < min_anchor_coverage)
+        gates = [
+            self._readiness_numeric_gate("research_answer_count", float(quality["total"]), float(min_answer_count), ">=", "critical research answers exist for audit"),
+            self._readiness_numeric_gate("source_link_rate", float(quality["source_link_rate"]), float(payload.get("min_source_link_rate", 1.0)), ">=", "answers link to English evidence and source documents"),
+            self._readiness_numeric_gate("review_coverage", float(quality["review_coverage"]), float(payload.get("min_review_coverage", 1.0)), ">=", "answers are human reviewed"),
+            self._readiness_numeric_gate("pending_review_count", float(quality["pending_review"]), 0.0, "==", "no pending research answers before production"),
+            self._readiness_numeric_gate("summary_pass_rate", float(summary["pass_rate"]), min_summary_pass_rate, ">=", "summary benchmark pass rate"),
+            self._readiness_numeric_gate("summary_average_score", float(summary["average_score"]), min_average_score, ">=", "summary benchmark average score"),
+            self._readiness_numeric_gate("missing_english_source_text", float(missing_english), 0.0, "==", "English source evidence is preserved"),
+            self._readiness_numeric_gate("missing_chinese_summary", float(missing_chinese), 0.0, "==", "Chinese summary exists but cannot replace source evidence"),
+            self._readiness_numeric_gate("version_metadata_missing", float(missing_version), 0.0, "==", "summary/prompt/model versions are recorded"),
+            self._readiness_numeric_gate("overconfident_language_count", float(overconfident), 0.0, "==", "summaries avoid overconfident unsupported language"),
+            self._readiness_numeric_gate("low_anchor_coverage_count", float(low_anchor), 0.0, "==", "Chinese summaries retain English anchor terms above threshold"),
+            self._readiness_numeric_gate("research_answer_traceability_rate", float(traceability["research_answer_traceability_rate"]), float(payload.get("min_traceability_rate", 1.0)), ">=", "research answers trace to evidence and documents in graph"),
+            self._readiness_bool_gate("model_quality_evaluation_uri", bool(artifacts.get("model_quality_evaluation_uri")), "real model answer quality evaluation artifact URI"),
+            self._readiness_bool_gate("fallback_quality_evaluation_uri", bool(artifacts.get("fallback_quality_evaluation_uri")), "model fallback strategy comparison artifact URI"),
+            self._readiness_bool_gate("summary_review_policy_uri", bool(artifacts.get("summary_review_policy_uri")), "summary review policy / rubric artifact URI"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_research_answer_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "quality_report": {
+                "total": quality["total"],
+                "source_link_rate": quality["source_link_rate"],
+                "review_coverage": quality["review_coverage"],
+                "pending_review": quality["pending_review"],
+                "citation_truncated": quality["citation_truncated"],
+            },
+            "summary_benchmark": {
+                "total": summary["total"],
+                "pass_rate": summary["pass_rate"],
+                "average_score": summary["average_score"],
+                "metrics": summary["metrics"],
+            },
+            "traceability": {
+                "research_answer_traceability_rate": traceability["research_answer_traceability_rate"],
+                "counts": traceability["counts"],
+            },
+            "artifact_uris": artifacts,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "research_answer_readiness_report_requires_english_evidence_versioned_summaries_human_review_and_external_model_quality_artifacts_without_calling_models",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "research_answer_readiness_report", "research_answer", str(payload.get("answer_id") or payload.get("issuer_id") or "all"), source="research_answer_governance", approval_state="ready" if ready else "missing_evidence")
+        return report
+
+    def _research_answer_readiness_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "model_quality_evaluation_uri": ["model_quality_evaluation_uri", "answer_model_quality_uri", "research_answer_quality_uri"],
+            "fallback_quality_evaluation_uri": ["fallback_quality_evaluation_uri", "fallback_comparison_uri", "answer_fallback_quality_uri"],
+            "summary_review_policy_uri": ["summary_review_policy_uri", "summary_rubric_uri", "answer_review_policy_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
     def review_research_answer(self, answer_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> ResearchAnswer:
         answer = self.store.research_answers.get(answer_id)
         if answer is None:
@@ -9838,6 +13751,344 @@ class SystemService:
         self.store.institutional_holdings[holding.holding_id] = holding
         self._audit(actor, "register_13f_holding", "institutional_holding", holding.holding_id, source=source.source_type, version=source.rights_tag.license_class)
         return holding
+
+    def _13f_information_table_text(self, payload: Mapping[str, Any]) -> tuple[str, str, str]:
+        body = payload.get("information_table_xml", payload.get("xml", payload.get("body", "")))
+        source_uri = str(payload.get("source_uri", "")).strip()
+        if body:
+            return str(body), source_uri, "provided_body"
+        document_id = str(payload.get("document_id", "")).strip()
+        if document_id:
+            document = self.store.documents.get(document_id)
+            if document is None:
+                raise NotFoundError(f"document {document_id} not found")
+            if document.body:
+                return document.body, document.source_uri, "document_body"
+            source_uri = document.source_uri or source_uri
+        if not source_uri:
+            raise ValidationError("13F parse requires information_table_xml, body, document_id, or source_uri")
+        text = self.connectors.fetch_sec_document_body(
+            source_uri,
+            user_agent=self._sec_user_agent(payload),
+            max_bytes=int(payload.get("max_body_bytes", 5_000_000)),
+        )
+        return text, source_uri, "fetched_source_uri"
+
+    def _parse_13f_information_rows(self, text: str) -> list[dict[str, Any]]:
+        normalized = str(text or "").strip()
+        if not normalized:
+            raise ValidationError("13F information table body is empty")
+        start = self._find_13f_information_table_start(normalized)
+        if start > 0:
+            normalized = normalized[start:]
+            end = self._find_13f_information_table_end(normalized)
+            if end > 0:
+                normalized = normalized[:end]
+        try:
+            root = ET.fromstring(normalized.encode("utf-8"))
+        except ET.ParseError as exc:
+            raise ValidationError(f"invalid 13F information table XML: {exc}") from exc
+        info_tables = [element for element in root.iter() if self._xml_local_name(element.tag).lower() == "infotable"]
+        rows: list[dict[str, Any]] = []
+        for index, element in enumerate(info_tables):
+            raw_value = self._xml_child_text(element, "value")
+            shares = self._float_from_text(self._xml_child_text(element, "sshPrnamt"))
+            value_usd = self._float_from_text(raw_value) * 1000.0
+            put_call = self._xml_child_text(element, "putCall")
+            row = {
+                "name_of_issuer": self._xml_child_text(element, "nameOfIssuer"),
+                "title_of_class": self._xml_child_text(element, "titleOfClass"),
+                "cusip": self._normalize_cusip(self._xml_child_text(element, "cusip")),
+                "figi": self._xml_child_text(element, "figi"),
+                "value_thousands": self._float_from_text(raw_value),
+                "value_usd": value_usd,
+                "shares": shares,
+                "share_type": self._xml_child_text(element, "sshPrnamtType"),
+                "put_call": put_call,
+                "investment_discretion": self._xml_child_text(element, "investmentDiscretion"),
+                "other_manager": self._xml_child_text(element, "otherManager"),
+                "voting_authority": self._13f_voting_authority(element),
+                "row_number": index + 1,
+            }
+            if not row["cusip"] and not row["figi"] and not row["name_of_issuer"]:
+                continue
+            if put_call:
+                row["derivative_flag"] = True
+            rows.append(row)
+        if not rows:
+            raise ValidationError("13F information table contains no infoTable rows")
+        return rows
+
+    def _find_13f_information_table_start(self, text: str) -> int:
+        for match in re.finditer(r"<([A-Za-z0-9_]+:)?informationTable\b", text):
+            return match.start()
+        return -1
+
+    def _find_13f_information_table_end(self, text: str) -> int:
+        match = re.search(r"</([A-Za-z0-9_]+:)?informationTable\s*>", text)
+        return match.end() if match else -1
+
+    def _resolve_13f_holding_target(self, row: Mapping[str, Any], payload: Mapping[str, Any], overrides: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+        explicit_issuer = str(payload.get("issuer_id", "")).strip()
+        explicit_security = str(payload.get("security_id", "")).strip()
+        cusip = str(row.get("cusip", "")).strip().upper()
+        figi = str(row.get("figi", "")).strip()
+        override = overrides.get(cusip) or overrides.get(figi.upper())
+        if override:
+            issuer_id = str(override.get("issuer_id", explicit_issuer)).strip()
+            security_id = str(override.get("security_id", explicit_security)).strip()
+            status = "provided_mapping"
+            confidence = float(override.get("confidence", 0.85) or 0.85)
+        else:
+            mapping = self._13f_entity_mapping_for_row(row)
+            security = self._13f_security_for_row(row, mapping=mapping)
+            issuer_id = mapping.issuer_id if mapping else security.issuer_id if security else explicit_issuer
+            security_id = security.security_id if security else explicit_security
+            status = "registry_mapping" if mapping or security else ""
+            confidence = mapping.confidence if mapping else 0.75 if security else 0.0
+        if not issuer_id or issuer_id not in self.store.issuers:
+            return {"issuer_id": issuer_id, "security_id": security_id, "mapping_status": "unmapped", "mapping_confidence": 0.0}
+        if not security_id or security_id not in self.store.securities:
+            return {"issuer_id": issuer_id, "security_id": security_id, "mapping_status": "unmapped", "mapping_confidence": 0.0}
+        security = self.store.securities[security_id]
+        if security.issuer_id != issuer_id:
+            return {"issuer_id": issuer_id, "security_id": security_id, "mapping_status": "issuer_security_mismatch", "mapping_confidence": 0.0}
+        return {"issuer_id": issuer_id, "security_id": security_id, "mapping_status": status or "explicit_payload", "mapping_confidence": round(float(confidence), 4)}
+
+    def _13f_mapping_overrides(self, values: Any) -> dict[str, Mapping[str, Any]]:
+        if isinstance(values, Mapping):
+            iterable = values.values()
+        elif isinstance(values, list):
+            iterable = values
+        else:
+            iterable = []
+        mappings: dict[str, Mapping[str, Any]] = {}
+        for item in iterable:
+            if not isinstance(item, Mapping):
+                continue
+            cusip = self._normalize_cusip(str(item.get("cusip", "")))
+            figi = str(item.get("figi", "")).strip().upper()
+            if cusip:
+                mappings[cusip] = item
+            if figi:
+                mappings[figi] = item
+        return mappings
+
+    def _form13f_mapping_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "batch_artifact_uri": ["batch_artifact_uri", "batch_result_uri", "artifact_uri"],
+            "mapping_gold_uri": ["mapping_gold_uri", "cusip_figi_gold_uri", "gold_mapping_uri"],
+            "unmapped_review_queue_uri": ["unmapped_review_queue_uri", "unmapped_queue_uri", "review_queue_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _readiness_numeric_gate(self, gate: str, value: float, threshold: float, operator: str, evidence: str) -> dict[str, Any]:
+        if operator == ">=":
+            passed = value >= threshold
+        elif operator == "<=":
+            passed = value <= threshold
+        else:
+            passed = value == threshold
+        return {
+            "gate": gate,
+            "value": value,
+            "threshold": threshold,
+            "operator": operator,
+            "passed": passed,
+            "evidence": evidence,
+        }
+
+    def _readiness_bool_gate(self, gate: str, passed: bool, evidence: str) -> dict[str, Any]:
+        return {
+            "gate": gate,
+            "value": bool(passed),
+            "threshold": True,
+            "operator": "is",
+            "passed": bool(passed),
+            "evidence": evidence,
+        }
+
+    def _readiness_artifact_aliases(self, payload: Mapping[str, Any], aliases: Mapping[str, list[str]]) -> dict[str, str]:
+        raw = payload.get("artifact_uris", payload.get("artifacts", {}))
+        artifacts = dict(raw) if isinstance(raw, Mapping) else {}
+        result: dict[str, str] = {}
+        for key, candidates in aliases.items():
+            value = ""
+            for candidate in candidates:
+                candidate_value = str(payload.get(candidate) or artifacts.get(candidate) or "").strip()
+                if self._external_artifact_uri(candidate_value):
+                    value = candidate_value
+                    break
+            result[key] = value
+        return result
+
+    def _external_artifact_uri(self, uri: Any) -> bool:
+        return is_external_artifact_uri(uri)
+
+    def _13f_entity_mapping_for_row(self, row: Mapping[str, Any]) -> EntityMapping | None:
+        cusip = str(row.get("cusip", "")).strip().upper()
+        figi = str(row.get("figi", "")).strip().upper()
+        issuer_name = self._normalize_name(str(row.get("name_of_issuer", "")))
+        matches: list[EntityMapping] = []
+        for mapping in self.store.entity_mappings.values():
+            if figi and mapping.figi.upper() == figi:
+                matches.append(mapping)
+                continue
+            mapping_isin = mapping.isin.upper()
+            if cusip and (mapping_isin.startswith(cusip) or mapping_isin[2:11] == cusip or mapping.figi.upper() == cusip):
+                matches.append(mapping)
+                continue
+            issuer = self.store.issuers.get(mapping.issuer_id)
+            if issuer and issuer_name and self._normalize_name(issuer.legal_name) == issuer_name:
+                matches.append(mapping)
+        matches.sort(key=lambda item: (item.confidence, item.created_at), reverse=True)
+        return matches[0] if matches else None
+
+    def _13f_security_for_row(self, row: Mapping[str, Any], *, mapping: EntityMapping | None) -> Security | None:
+        cusip = str(row.get("cusip", "")).strip().upper()
+        figi = str(row.get("figi", "")).strip().upper()
+        if mapping:
+            for security in self.store.securities.values():
+                if security.issuer_id != mapping.issuer_id:
+                    continue
+                if mapping.figi and security.figi.upper() == mapping.figi.upper():
+                    return security
+                if mapping.isin and security.isin.upper() == mapping.isin.upper():
+                    return security
+                if mapping.ticker and security.ticker.upper() == mapping.ticker.upper():
+                    return security
+        for security in self.store.securities.values():
+            if figi and security.figi.upper() == figi:
+                return security
+            security_isin = security.isin.upper()
+            if cusip and (security_isin.startswith(cusip) or security_isin[2:11] == cusip):
+                return security
+        return None
+
+    def _ensure_13f_entity_mapping(self, row: Mapping[str, Any], payload: Mapping[str, Any], *, actor: str) -> None:
+        issuer_id = str(row.get("issuer_id", "")).strip()
+        security_id = str(row.get("security_id", "")).strip()
+        if not issuer_id or not security_id or issuer_id not in self.store.issuers or security_id not in self.store.securities:
+            return
+        cusip = str(row.get("cusip", "")).strip().upper()
+        security = self.store.securities[security_id]
+        mapping_id = str(payload.get("mapping_id", "") or f"map_13f_{self._safe_identifier(issuer_id)}_{self._safe_identifier(cusip or security.security_id)}").lower()
+        if mapping_id in self.store.entity_mappings:
+            return
+        if any(
+            item.issuer_id == issuer_id
+            and ((security.figi and item.figi == security.figi) or (security.isin and item.isin == security.isin) or (security.ticker and item.ticker == security.ticker))
+            for item in self.store.entity_mappings.values()
+        ):
+            return
+        self.register_entity_mapping(
+            {
+                "mapping_id": mapping_id,
+                "issuer_id": issuer_id,
+                "figi": security.figi or str(row.get("figi", "")),
+                "isin": security.isin or cusip,
+                "ticker": security.ticker,
+                "market": security.market,
+                "confidence": float(row.get("mapping_confidence", 0.85) or 0.85),
+                "source": "sec_13f_information_table_mapping",
+                "version": str(payload.get("mapping_version", "sec-13f-v1")),
+            },
+            actor=actor,
+        )
+
+    def _13f_holding_payload(self, row: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+        report_period = str(row["report_period"])
+        filer_cik = str(row.get("filer_cik", ""))
+        issuer_id = str(row["issuer_id"])
+        security_id = str(row["security_id"])
+        cusip = str(row.get("cusip", ""))
+        holding_id = str(payload.get("holding_id", "")).strip()
+        if not holding_id:
+            raw = f"13f_{issuer_id}_{security_id}_{report_period}_{filer_cik}_{cusip}_{row.get('row_number', '')}"
+            holding_id = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_").lower()
+        return {
+            "holding_id": holding_id,
+            "issuer_id": issuer_id,
+            "security_id": security_id,
+            "source_id": str(row.get("source_id", payload.get("source_id", "sec_edgar"))),
+            "filer_cik": filer_cik,
+            "filer_name": str(row.get("filer_name", "")),
+            "report_period": report_period,
+            "shares": float(row.get("shares", 0.0) or 0.0),
+            "value_usd": float(row.get("value_usd", 0.0) or 0.0),
+            "voting_authority": str(row.get("voting_authority", "")),
+        }
+
+    def _13f_unmapped_row(self, row: Mapping[str, Any], *, index: int) -> dict[str, Any]:
+        return {
+            "index": index,
+            "name_of_issuer": row.get("name_of_issuer", ""),
+            "title_of_class": row.get("title_of_class", ""),
+            "cusip": row.get("cusip", ""),
+            "figi": row.get("figi", ""),
+            "value_usd": row.get("value_usd", 0.0),
+            "shares": row.get("shares", 0.0),
+            "reason": "missing_cusip_figi_issuer_security_mapping",
+        }
+
+    def _normalize_13f_report_period(self, payload: Mapping[str, Any], rows: list[Mapping[str, Any]]) -> str:
+        del rows
+        for field in ("report_period", "period_of_report", "report_date"):
+            value = str(payload.get(field, "")).strip()
+            if not value:
+                continue
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                return value
+            compact = re.sub(r"[^0-9]", "", value)
+            if len(compact) == 8:
+                return f"{compact[:4]}-{compact[4:6]}-{compact[6:]}"
+        raise ValidationError("13F report_period must use YYYY-MM-DD")
+
+    def _13f_voting_authority(self, element: ET.Element) -> str:
+        sole = self._xml_child_text(element, "Sole")
+        shared = self._xml_child_text(element, "Shared")
+        none = self._xml_child_text(element, "None")
+        parts = []
+        if sole:
+            parts.append(f"sole={sole}")
+        if shared:
+            parts.append(f"shared={shared}")
+        if none:
+            parts.append(f"none={none}")
+        return ";".join(parts)
+
+    def _xml_child_text(self, element: ET.Element, local_name: str) -> str:
+        for child in element.iter():
+            if child is element:
+                continue
+            if self._xml_local_name(child.tag) == local_name:
+                return (child.text or "").strip()
+        return ""
+
+    def _xml_local_name(self, tag: Any) -> str:
+        value = str(tag)
+        if "}" in value:
+            value = value.rsplit("}", maxsplit=1)[-1]
+        if ":" in value:
+            value = value.rsplit(":", maxsplit=1)[-1]
+        return value
+
+    def _float_from_text(self, value: Any) -> float:
+        text = str(value or "").replace(",", "").strip()
+        if not text:
+            return 0.0
+        if text.startswith("(") and text.endswith(")"):
+            text = f"-{text[1:-1]}"
+        try:
+            return float(text)
+        except ValueError as exc:
+            raise ValidationError(f"expected numeric value, got {value!r}") from exc
+
+    def _normalize_cusip(self, value: str) -> str:
+        return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+
+    def _normalize_name(self, value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
     def institutional_holdings_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -10398,6 +14649,9 @@ class SystemService:
             auto_action=str(payload.get("auto_action", "")),
             manual_action=str(payload.get("manual_action", "")),
             owner_role=str(payload.get("owner_role", "CRO")),
+            sla=str(payload.get("sla", payload.get("sla_target", ""))),
+            rollback_action=str(payload.get("rollback_action", payload.get("rollback", ""))),
+            severity=str(payload.get("severity", "high")),
         )
         self.store.playbooks[playbook.playbook_id] = playbook
         self._audit(actor, "register_playbook", "playbook", playbook.playbook_id)
@@ -10413,6 +14667,8 @@ class SystemService:
                 "auto_action": "route affected documents to manual review and block evidence use",
                 "manual_action": "inspect parser logs, rerun OCR, and update parser regression samples",
                 "owner_role": "NLP/ML 负责人",
+                "sla": "detect within 15m and owner triage within 30m",
+                "rollback_action": "disable the new parser path and revert to the last approved extraction artifact",
             },
             {
                 "playbook_id": "pb_data_ingestion_failure",
@@ -10421,6 +14677,8 @@ class SystemService:
                 "auto_action": "pause the affected source and keep last known good data",
                 "manual_action": "verify source TOS/provenance, rerun ingestion, and document skipped records",
                 "owner_role": "数据工程",
+                "sla": "detect within 10m and restore or quarantine within 1h",
+                "rollback_action": "disable the affected connector and restore the last known good dataset snapshot",
             },
             {
                 "playbook_id": "pb_search_degradation",
@@ -10429,6 +14687,8 @@ class SystemService:
                 "auto_action": "fallback to local search and mark restricted results",
                 "manual_action": "rebuild index, inspect embeddings/reranker, and rerun search benchmark",
                 "owner_role": "平台负责人",
+                "sla": "detect within 15m and recover accepted search path within 2h",
+                "rollback_action": "route queries to the previous index snapshot and disable degraded rerankers",
             },
             {
                 "playbook_id": "pb_llm_gateway_failure",
@@ -10437,6 +14697,8 @@ class SystemService:
                 "auto_action": "use rule summary fallback and hold high-risk outputs for review",
                 "manual_action": "check model/provider health, prompt approval, spend budget, and fallback quality",
                 "owner_role": "NLP/ML 负责人",
+                "sla": "detect within 10m and activate reviewed fallback within 30m",
+                "rollback_action": "switch to the last approved prompt/model route and keep outputs in review",
             },
             {
                 "playbook_id": "pb_permission_or_data_leak",
@@ -10445,6 +14707,8 @@ class SystemService:
                 "auto_action": "block unauthorized request and mask sensitive snippets",
                 "manual_action": "review audit trail, rotate exposed keys, delete/cache-expire sensitive records if required",
                 "owner_role": "风险/合规",
+                "sla": "detect immediately and contain exposure within 15m",
+                "rollback_action": "revoke affected credentials, remove exposed cache entries, and restore least-privilege policy",
             },
             {
                 "playbook_id": "pb_workflow_sla_breach",
@@ -10453,6 +14717,8 @@ class SystemService:
                 "auto_action": "create incident report and keep affected outputs out of production promotion",
                 "manual_action": "inspect frozen inputs, retry after owner triage, and record RCA evidence",
                 "owner_role": "平台负责人",
+                "sla": "detect within 10m and complete owner triage within 1h",
+                "rollback_action": "stop the affected DAG promotion and replay from the last successful frozen input set",
             },
         ]
         created_playbooks: list[IncidentPlaybook] = []
@@ -10462,6 +14728,13 @@ class SystemService:
             playbook = self.store.playbooks.get(item["playbook_id"])
             if playbook is None:
                 playbook = self.register_playbook(item, actor=actor)
+            else:
+                if not getattr(playbook, "sla", ""):
+                    playbook.sla = str(item.get("sla", ""))
+                if not getattr(playbook, "rollback_action", ""):
+                    playbook.rollback_action = str(item.get("rollback_action", ""))
+                if not getattr(playbook, "severity", ""):
+                    playbook.severity = str(item.get("severity", "high"))
             created_playbooks.append(playbook)
             if create_schedules:
                 schedule_id = f"drill_{playbook.incident_type}_quarterly"
@@ -10495,6 +14768,8 @@ class SystemService:
                 "auto_action": "keep the alert open and notify the owner",
                 "manual_action": "triage owner, impact, rollback, and RCA follow-up",
                 "owner_role": "风险/合规",
+                "sla": "triage within 1h",
+                "rollback_action": "hold affected output until owner confirms impact and rollback path",
             },
             actor=actor,
         )
@@ -10511,6 +14786,8 @@ class SystemService:
                 "auto_action": "create incident report and keep affected outputs out of production promotion",
                 "manual_action": "inspect frozen inputs, retry after owner triage, and record RCA evidence",
                 "owner_role": "平台负责人",
+                "sla": "detect within 10m and complete owner triage within 1h",
+                "rollback_action": "stop the affected DAG promotion and replay from the last successful frozen input set",
             },
             actor=actor,
         )
@@ -11184,6 +15461,152 @@ class SystemService:
         lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
         return "\n".join(lines)
 
+    def _observability_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "collector_evidence_uri": ["collector_evidence_uri", "otel_collector_evidence_uri", "collector_drill_uri", "otel_evidence_uri"],
+            "logs_backend_uri": ["logs_backend_uri", "log_backend_uri", "collector_backend_uri", "storage_backend_uri"],
+            "query_evidence_uri": ["query_evidence_uri", "backend_query_evidence_uri", "collector_query_uri"],
+            "retention_policy_uri": ["retention_policy_uri", "log_retention_policy_uri", "retention_evidence_uri"],
+            "external_alert_evidence_uri": ["external_alert_evidence_uri", "alert_channel_evidence_uri", "notification_delivery_evidence_uri"],
+            "drill_evidence_uri": ["drill_evidence_uri", "incident_drill_evidence_uri", "quarterly_drill_evidence_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _observability_collector_config(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("collector", payload.get("otel_collector", {}))
+        config = dict(raw) if isinstance(raw, Mapping) else {}
+        endpoint = str(payload.get("collector_endpoint") or config.get("endpoint") or config.get("logs_endpoint") or config.get("logs") or "").strip()
+        logs_endpoint = str(payload.get("logs_endpoint") or config.get("logs_endpoint") or config.get("logs") or endpoint).strip()
+        metrics_endpoint = str(payload.get("metrics_endpoint") or config.get("metrics_endpoint") or config.get("metrics") or "").strip()
+        traces_endpoint = str(payload.get("traces_endpoint") or config.get("traces_endpoint") or config.get("traces") or "").strip()
+        environment = str(payload.get("environment") or config.get("environment") or "staging").strip()
+        endpoints = [logs_endpoint, metrics_endpoint, traces_endpoint]
+        parsed_hosts = [urlparse(item).hostname or "" for item in endpoints if item]
+        local_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+        non_local = bool(logs_endpoint and metrics_endpoint and traces_endpoint and all(host and host not in local_hosts for host in parsed_hosts))
+        return {
+            "environment": environment,
+            "logs_endpoint": logs_endpoint,
+            "metrics_endpoint": metrics_endpoint,
+            "traces_endpoint": traces_endpoint,
+            "endpoint_count": sum(1 for item in endpoints if item),
+            "non_local_configured": non_local,
+            "submission_boundary": "configuration_only_no_collector_call",
+        }
+
+    def _observability_retention_policy(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("retention_policy", payload.get("log_retention_policy", {}))
+        policy = dict(raw) if isinstance(raw, Mapping) else {}
+        days = int(payload.get("retention_days") or policy.get("retention_days") or policy.get("days") or 0)
+        owner = str(payload.get("retention_owner") or policy.get("owner") or "").strip()
+        deletion = str(payload.get("retention_deletion_policy") or policy.get("deletion_policy") or policy.get("delete_after") or "").strip()
+        evidence_uri = str(payload.get("retention_policy_uri") or policy.get("evidence_uri") or policy.get("uri") or "").strip()
+        if not self._external_artifact_uri(evidence_uri):
+            evidence_uri = ""
+        configured = days > 0 and bool(owner) and bool(deletion) and bool(evidence_uri)
+        return {
+            "retention_days": days,
+            "owner": owner,
+            "deletion_policy": deletion,
+            "evidence_uri": evidence_uri,
+            "configured": configured,
+        }
+
+    def _observability_playbook_rows(self, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+        raw_overrides = payload.get("playbook_evidence", payload.get("playbooks", {}))
+        overrides: Mapping[str, Any] = raw_overrides if isinstance(raw_overrides, Mapping) else {}
+        rows: list[dict[str, Any]] = []
+        for playbook in sorted(self.store.playbooks.values(), key=lambda item: (item.incident_type, item.playbook_id)):
+            override = overrides.get(playbook.playbook_id, {})
+            if not isinstance(override, Mapping):
+                override = {}
+            owner = str(override.get("owner_role") or playbook.owner_role).strip()
+            sla = str(override.get("sla") or getattr(playbook, "sla", "")).strip()
+            stop_action = str(override.get("stop_action") or override.get("blood_stop_action") or playbook.auto_action).strip()
+            rollback_action = str(override.get("rollback_action") or getattr(playbook, "rollback_action", "")).strip()
+            row = {
+                "playbook_id": playbook.playbook_id,
+                "incident_type": playbook.incident_type,
+                "owner_role": owner,
+                "sla": sla,
+                "stop_action": stop_action,
+                "rollback_action": rollback_action,
+                "manual_action": playbook.manual_action,
+                "complete": bool(owner and sla and stop_action and rollback_action),
+            }
+            row["missing_fields"] = [key for key in ["owner_role", "sla", "stop_action", "rollback_action"] if not row[key]]
+            rows.append(row)
+        return rows
+
+    def _observability_playbook_coverage(self, rows: list[dict[str, Any]]) -> float:
+        if not rows:
+            return 0.0
+        return round(sum(1 for row in rows if row["complete"]) / len(rows), 4)
+
+    def _observability_drill_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        required_types = {item.incident_type for item in self.store.playbooks.values()}
+        schedule_types = {item.incident_type for item in self.store.drill_schedules.values() if item.cadence == "quarterly"}
+        passed_types = {item.incident_type for item in self.store.drill_schedules.values() if item.cadence == "quarterly" and item.last_result == "passed"}
+        evidence_types = set()
+        raw = payload.get("drill_results", payload.get("incident_drills", []))
+        if isinstance(raw, Mapping):
+            evidence_types = {str(key) for key, value in raw.items() if self._truthy(value)}
+        elif isinstance(raw, (list, tuple, set)):
+            for item in raw:
+                if isinstance(item, Mapping):
+                    incident_type = str(item.get("incident_type") or item.get("type") or "").strip()
+                    if incident_type and self._truthy(item.get("passed", item.get("result", "passed"))):
+                        evidence_types.add(incident_type)
+                else:
+                    evidence_types.add(str(item))
+        drill_evidence_uri = self._observability_artifact_uris(payload).get("drill_evidence_uri", "")
+        covered_types = required_types & (passed_types | evidence_types)
+        if drill_evidence_uri and required_types <= schedule_types:
+            covered_types = set(required_types)
+        missing_types = sorted(required_types - covered_types)
+        coverage = round(len(covered_types) / max(1, len(required_types)), 4) if required_types else 0.0
+        return {
+            "required_incident_types": sorted(required_types),
+            "quarterly_schedule_types": sorted(schedule_types),
+            "passed_drill_types": sorted(passed_types),
+            "evidence_types": sorted(evidence_types),
+            "drill_evidence_uri": drill_evidence_uri,
+            "coverage": coverage,
+            "missing_incident_types": missing_types,
+        }
+
+    def _observability_external_notification_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        internal_targets = {"", "internal-risk-channel", "ops-desk", "data-ingestion-oncall", "search-oncall", "llm-oncall", "ocr-parser-oncall", "workflow-oncall"}
+        providers: set[str] = set()
+        external_rows: list[dict[str, Any]] = []
+        for notification in self.store.alert_notifications.values():
+            policy = notification.payload.get("delivery_policy", {})
+            provider = str(notification.payload.get("delivery_provider") or (policy.get("provider", "") if isinstance(policy, Mapping) else "")).strip()
+            if provider:
+                providers.add(provider)
+            parsed = urlparse(notification.target)
+            external = parsed.scheme in {"http", "https"} or ("@" in notification.target) or notification.target not in internal_targets
+            if external:
+                external_rows.append(
+                    {
+                        "notification_id": notification.notification_id,
+                        "channel": notification.channel,
+                        "target": notification.target,
+                        "status": notification.status,
+                        "provider": provider,
+                    }
+                )
+        evidence_uri = self._observability_artifact_uris(payload).get("external_alert_evidence_uri", "")
+        return {
+            "notification_count": len(self.store.alert_notifications),
+            "external_candidate_count": len(external_rows),
+            "sent_external_count": sum(1 for item in external_rows if item["status"] == "sent"),
+            "providers": sorted(providers),
+            "external_channel_ready": any(item["status"] == "sent" and item["provider"] in {"webhook", "http", "https", "email", "smtp", "slack"} for item in external_rows),
+            "external_alert_evidence_uri": evidence_uri,
+            "external_notifications": external_rows[:20],
+        }
+
     def alert_notifications_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         alert_id = str(filters.get("alert_id", "")).strip()
@@ -11585,10 +16008,22 @@ class SystemService:
         return updated
 
     def create_research_tasks_from_hotspot(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
-        expansion = self.hotspot_expansion(payload, actor=actor)
+        expansion_payload = dict(payload)
+        if not self._truthy(payload.get("queue_current_page", False)):
+            expansion_payload.pop("page_token", None)
+            expansion_payload.pop("offset", None)
+        expansion = self.hotspot_expansion(expansion_payload, actor=actor)
+        raw_tasks = list(expansion.get("research_tasks", []))
+        if not self._truthy(payload.get("queue_current_page", False)):
+            next_token = expansion.get("pagination", {}).get("sections", {}).get("research_tasks", {}).get("next_page_token")
+            while next_token:
+                next_payload = {**expansion_payload, "page_token": next_token}
+                next_expansion = self.hotspot_expansion(next_payload, actor=actor)
+                raw_tasks.extend(next_expansion.get("research_tasks", []))
+                next_token = next_expansion.get("pagination", {}).get("sections", {}).get("research_tasks", {}).get("next_page_token")
         created: list[dict[str, Any]] = []
         existing: list[dict[str, Any]] = []
-        for raw_task in expansion.get("research_tasks", []):
+        for raw_task in raw_tasks:
             normalized = self._normalize_hotspot_research_task(raw_task, payload, expansion)
             task_id = normalized["task_id"]
             if task_id in self.store.research_tasks:
@@ -11625,8 +16060,51 @@ class SystemService:
             "existing_count": len(existing),
             "created_tasks": created,
             "existing_tasks": existing,
-            "source_research_task_count": len(expansion.get("research_tasks", [])),
+            "source_research_task_count": len(raw_tasks),
             "usage_boundary": "research_task_queue_for_public_analysis_and_simulated_feedback_only",
+        }
+
+    def create_research_tasks_from_hotspot_batch(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        raw_queries = payload.get("queries", [])
+        if isinstance(raw_queries, str):
+            raw_queries = [item.strip() for item in raw_queries.split(",") if item.strip()]
+        queries = [str(item).strip() for item in raw_queries if str(item).strip()]
+        if not queries:
+            raise ValidationError("hotspot batch requires queries")
+        batch_limit = self._bounded_limit(payload.get("batch_limit", len(queries)), 100)
+        queries = queries[:batch_limit]
+        base_request = {key: value for key, value in dict(payload).items() if key not in {"queries", "batch_limit"}}
+        results: list[dict[str, Any]] = []
+        created_total = 0
+        existing_total = 0
+        source_total = 0
+        for query in queries:
+            request = {**base_request, "query": query}
+            result = self.create_research_tasks_from_hotspot(request, actor=actor)
+            created_total += int(result.get("created_count", 0))
+            existing_total += int(result.get("existing_count", 0))
+            source_total += int(result.get("source_research_task_count", 0))
+            results.append(
+                {
+                    "query": result.get("query", query),
+                    "created_count": result.get("created_count", 0),
+                    "existing_count": result.get("existing_count", 0),
+                    "source_research_task_count": result.get("source_research_task_count", 0),
+                    "created_task_ids": [task.get("task_id", "") for task in result.get("created_tasks", [])],
+                    "existing_task_ids": [task.get("task_id", "") for task in result.get("existing_tasks", [])],
+                }
+            )
+        self._audit(actor, "create_research_tasks_from_hotspot_batch", "research_task_batch", f"hotspot_batch_{safe_source_part('|'.join(queries))}")
+        return {
+            "batch_id": f"hotspot_batch_{safe_source_part('|'.join(queries))}",
+            "query_count": len(queries),
+            "created_count": created_total,
+            "existing_count": existing_total,
+            "source_research_task_count": source_total,
+            "results": results,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "batch_research_task_queue_for_public_analysis_and_simulated_feedback_only",
         }
 
     def _build_research_task(self, task_id: str, task_type: str, payload: Mapping[str, Any]) -> ResearchTask:
@@ -11711,6 +16189,12 @@ class SystemService:
         seed_theme_id = str(payload.get("seed_theme_id", "")).strip()
         include_restricted = self._truthy(payload.get("include_restricted", False))
         recall_limit = self._bounded_limit(payload.get("recall_limit", 20), 100)
+        page_size = self._bounded_limit(payload.get("page_size", payload.get("limit", 50)), 200)
+        page_token = str(payload.get("page_token", payload.get("offset", "0")) or "0").strip()
+        try:
+            offset = max(0, int(page_token))
+        except ValueError as exc:
+            raise ValidationError("hotspot expansion page_token must be a non-negative integer offset") from exc
         matched_lexicons = self._matching_hotspot_lexicons(query)
         default_slots = matched_lexicons[0].default_data_slots if matched_lexicons else ["revenue_exposure", "profit_exposure", "capacity", "customers", "suppliers", "valuation_metrics"]
         required_slots = [str(item) for item in payload.get("required_data_slots", default_slots)]
@@ -11727,6 +16211,12 @@ class SystemService:
         if not matching_chains:
             nodes = matched_lexicons[0].related_chain_nodes if matched_lexicons and matched_lexicons[0].related_chain_nodes else self._default_chain_nodes_for_query(query)
             matching_chains = [IndustryChain(chain_id=f"chain_synthetic_{safe_source_part(query)}", name=f"{query} industry chain", nodes=[dict(item) for item in nodes], taxonomy_version="industry-chain-rule-template")]
+        if theme is None:
+            for chain in matching_chains:
+                root_theme_id = str(chain.root_theme_id).strip()
+                if root_theme_id and root_theme_id in self.store.macro_themes:
+                    theme = self.store.macro_themes[root_theme_id]
+                    break
 
         chain_nodes: list[dict[str, Any]] = []
         chain_edges: list[dict[str, Any]] = []
@@ -11804,23 +16294,339 @@ class SystemService:
             retrieval_recall=retrieval_recall,
             matched_lexicons=matched_lexicons,
         )
+        paged_nodes, nodes_page = self._page_rows(chain_nodes, offset=offset, page_size=page_size)
+        paged_edges, edges_page = self._page_rows(chain_edges, offset=offset, page_size=page_size)
+        paged_positions, positions_page = self._page_rows(company_positions, offset=offset, page_size=page_size)
+        paged_coverage, coverage_page = self._page_rows(data_coverage, offset=offset, page_size=page_size)
+        paged_missing_evidence, missing_page = self._page_rows(missing_evidence, offset=offset, page_size=page_size)
+        paged_research_tasks, tasks_page = self._page_rows(research_tasks, offset=offset, page_size=page_size)
+        paged_candidates, candidates_page = self._page_rows(ranked_candidates.get("candidates", []), offset=offset, page_size=page_size)
+        paged_ranked_candidates = {
+            **ranked_candidates,
+            "candidates": paged_candidates,
+        }
+        has_more = any(page["has_more"] for page in [nodes_page, edges_page, positions_page, coverage_page, candidates_page, missing_page, tasks_page])
+        next_page_token = str(offset + page_size) if has_more else None
         return {
             "query": query,
             "theme": to_plain(theme) if theme else {"name": query, "source": "ad_hoc_hotspot", "seed_theme_id": seed_theme_id},
             "matched_lexicons": [to_plain(item) for item in matched_lexicons],
-            "chain_nodes": chain_nodes,
-            "chain_edges": chain_edges,
-            "company_positions": company_positions,
-            "data_coverage": data_coverage,
+            "chain_nodes": paged_nodes,
+            "chain_edges": paged_edges,
+            "company_positions": paged_positions,
+            "data_coverage": paged_coverage,
             "retrieval_recall": retrieval_recall,
-            "ranked_candidates": ranked_candidates,
-            "missing_evidence": missing_evidence,
+            "ranked_candidates": paged_ranked_candidates,
+            "missing_evidence": paged_missing_evidence,
             "counter_theses": [{"type": "supply_chain_overreach", "question": "Does the hotspot materially affect this node's revenue/profit exposure?"}],
-            "research_tasks": research_tasks,
+            "research_tasks": paged_research_tasks,
             "evidence_layers": evidence_layers,
+            "pagination": {
+                "page_token": str(offset),
+                "page_size": page_size,
+                "next_page_token": next_page_token,
+                "has_more": has_more,
+                "sections": {
+                    "chain_nodes": nodes_page,
+                    "chain_edges": edges_page,
+                    "company_positions": positions_page,
+                    "data_coverage": coverage_page,
+                    "ranked_candidates": candidates_page,
+                    "missing_evidence": missing_page,
+                    "research_tasks": tasks_page,
+                },
+            },
             "automation_allowed": False,
             "usage_boundary": "macro_industry_chain_research_only_not_trade_signal",
         }
+
+    def hotspot_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        expansion = self.hotspot_expansion(payload, actor=actor)
+        chain_ids = self._hotspot_readiness_chain_ids(expansion, payload)
+        coverage_filter: dict[str, Any] = {}
+        if len(chain_ids) == 1:
+            coverage_filter["chain_id"] = chain_ids[0]
+        if payload.get("issuer_id"):
+            coverage_filter["issuer_id"] = payload.get("issuer_id")
+        if payload.get("security_id"):
+            coverage_filter["security_id"] = payload.get("security_id")
+        if payload.get("node_id"):
+            coverage_filter["node_id"] = payload.get("node_id")
+        required_slots = self._hotspot_expansion_required_slots(expansion, payload)
+        if required_slots:
+            coverage_filter["required_data_slots"] = required_slots
+        coverage = self.company_positions_coverage_report(coverage_filter)
+        research_queue = self._hotspot_research_queue_summary(expansion)
+        layer_summary = self._hotspot_layer_summary(expansion)
+        boundary_summary = self._hotspot_boundary_summary(expansion)
+        graph_summary = self._hotspot_graph_summary(chain_ids, payload, actor=actor)
+        rerank_summary = self._hotspot_rerank_eval_summary(payload)
+        artifacts = self._hotspot_readiness_artifact_uris(payload)
+        min_depth = int(payload.get("min_chain_depth", 3))
+        min_positions = int(payload.get("min_company_positions", 1))
+        min_slot_coverage = float(payload.get("min_slot_coverage", 1.0))
+        min_evidence_coverage = float(payload.get("min_evidence_coverage", 1.0))
+        min_recall_facts = int(payload.get("min_public_fact_count", 1))
+        min_rerank_samples = int(payload.get("min_rerank_samples", 1))
+        min_rerank_top1 = float(payload.get("min_rerank_top1_accuracy", 0.8))
+        gates = [
+            self._readiness_numeric_gate("matched_lexicon_count", float(len(expansion.get("matched_lexicons", []))), float(payload.get("min_matched_lexicons", 1)), ">=", "hotspot query maps to maintained lexicon terms/synonyms"),
+            self._readiness_numeric_gate("chain_depth", float(graph_summary["max_chain_depth"]), float(min_depth), ">=", "hotspot expansion reaches required industry-chain depth"),
+            self._readiness_numeric_gate("chain_node_count", float(graph_summary["chain_node_count"]), float(payload.get("min_chain_node_count", min_depth)), ">=", "industry chain nodes available for diffusion map"),
+            self._readiness_numeric_gate("chain_edge_count", float(graph_summary["chain_edge_count"]), float(payload.get("min_chain_edge_count", 1)), ">=", "industry chain relationships available for path traversal"),
+            self._readiness_numeric_gate("company_position_count", float(coverage["coverage"]["positions_total"]), float(min_positions), ">=", "mapped company positions for candidate universe"),
+            self._readiness_numeric_gate("company_position_slot_coverage", float(coverage["coverage"]["slot_coverage"]), min_slot_coverage, ">=", "required company positioning data slots populated"),
+            self._readiness_numeric_gate("company_position_evidence_coverage", float(coverage["coverage"]["evidence_coverage"]), min_evidence_coverage, ">=", "company positions link to evidence records"),
+            self._readiness_numeric_gate("coverage_issue_count", float(coverage["coverage"]["positions_with_issues"]), 0.0, "==", "no unresolved company positioning coverage issues"),
+            self._readiness_numeric_gate("public_fact_count", float(layer_summary["facts"]), float(min_recall_facts), ">=", "public facts/evidence recall supports hotspot map"),
+            self._readiness_numeric_gate("evidence_layer_count", float(layer_summary["present_layer_count"]), 4.0, ">=", "facts, opinions, inferences, and needs_verification layers are explicit"),
+            self._readiness_bool_gate("facts_opinions_inferences_separated", boundary_summary["separated_layers"], "facts/opinions/inferences/needs_verification are not collapsed into conclusions"),
+            self._readiness_bool_gate("needs_verification_queue_present", research_queue["source_research_task_count"] > 0, "missing evidence or mapping gaps produce research tasks"),
+            self._readiness_bool_gate("research_tasks_persisted_or_reviewed", research_queue["open_or_reviewed_count"] >= research_queue["source_research_task_count"], "hotspot research tasks are persisted or explicitly reviewed"),
+            self._readiness_bool_gate("automation_boundary_disabled", expansion.get("automation_allowed") is False, "hotspot expansion is research only and cannot trade"),
+            self._readiness_bool_gate("no_live_execution_boundary", not self._truthy(expansion.get("live_execution_allowed", False)), "hotspot readiness does not enable live execution"),
+            self._readiness_numeric_gate("graph_edge_metadata_coverage", float(graph_summary["edge_metadata_coverage"]), float(payload.get("min_edge_metadata_coverage", 1.0)), ">=", "chain graph edges retain source/timestamp/version/confidence"),
+            self._readiness_numeric_gate("llm_rerank_eval_samples", float(rerank_summary["valid_samples"]), float(min_rerank_samples), ">=", "LLM rerank/local fallback evaluated on gold query refs"),
+            self._readiness_numeric_gate("llm_rerank_top1_accuracy", float(rerank_summary["top1_accuracy"]), min_rerank_top1, ">=", "LLM rerank/local fallback top1 quality threshold"),
+            self._readiness_bool_gate("llm_rerank_eval_artifact_uri", bool(artifacts.get("llm_rerank_eval_uri")), "real large-sample LLM rerank quality evaluation artifact URI"),
+            self._readiness_bool_gate("hotspot_gold_refs_uri", bool(artifacts.get("hotspot_gold_refs_uri")), "hotspot query/gold refs artifact URI"),
+            self._readiness_bool_gate("company_position_review_uri", bool(artifacts.get("company_position_review_uri")), "company positioning review/acceptance artifact URI"),
+            self._readiness_bool_gate("chain_taxonomy_review_uri", bool(artifacts.get("chain_taxonomy_review_uri")), "industry-chain taxonomy review artifact URI"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_hotspot_research_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "query": expansion["query"],
+            "expansion_summary": {
+                "matched_lexicons": len(expansion.get("matched_lexicons", [])),
+                "chain_nodes": len(expansion.get("chain_nodes", [])),
+                "chain_edges": len(expansion.get("chain_edges", [])),
+                "company_positions": len(expansion.get("company_positions", [])),
+                "ranked_candidate_count": expansion.get("ranked_candidates", {}).get("candidate_count", 0),
+                "usage_boundary": expansion.get("usage_boundary", ""),
+            },
+            "coverage_report": {
+                "count": coverage["count"],
+                "coverage": coverage["coverage"],
+                "issue_count": len(coverage["issues"]),
+                "research_task_count": len(coverage["research_tasks"]),
+            },
+            "layer_summary": layer_summary,
+            "boundary_summary": boundary_summary,
+            "research_queue": research_queue,
+            "graph_summary": graph_summary,
+            "rerank_evaluation": rerank_summary,
+            "artifact_uris": artifacts,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "hotspot_readiness_report_validates_chain_depth_position_evidence_layer_boundaries_research_tasks_and_offline_rerank_artifacts_without_calling_models_or_trading",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "hotspot_readiness_report", "hotspot", expansion["query"], source="macro_industry_chain_governance", approval_state="ready" if ready else "missing_evidence")
+        return report
+
+    def _hotspot_readiness_chain_ids(self, expansion: Mapping[str, Any], payload: Mapping[str, Any]) -> list[str]:
+        raw = payload.get("chain_ids", [])
+        if isinstance(raw, str):
+            chain_ids = self._unique_strings(part for part in re.split(r"[,;/\s]+", raw) if part.strip())
+        elif isinstance(raw, list):
+            chain_ids = self._unique_strings(raw)
+        else:
+            chain_ids = []
+        seed_chain_id = str(payload.get("seed_chain_id", "")).strip()
+        if seed_chain_id:
+            chain_ids.append(seed_chain_id)
+        for section in ["chain_nodes", "chain_edges", "company_positions", "data_coverage", "missing_evidence", "research_tasks"]:
+            for row in expansion.get(section, []):
+                if isinstance(row, Mapping):
+                    chain_id = str(row.get("chain_id", "")).strip()
+                    if chain_id:
+                        chain_ids.append(chain_id)
+        return self._unique_strings(chain_ids)
+
+    def _hotspot_layer_summary(self, expansion: Mapping[str, Any]) -> dict[str, Any]:
+        layers = expansion.get("evidence_layers", {})
+        if not isinstance(layers, Mapping):
+            layers = {}
+        counts = {
+            "facts": len(layers.get("facts", [])) if isinstance(layers.get("facts", []), list) else 0,
+            "opinions": len(layers.get("opinions", [])) if isinstance(layers.get("opinions", []), list) else 0,
+            "inferences": len(layers.get("inferences", [])) if isinstance(layers.get("inferences", []), list) else 0,
+            "needs_verification": len(layers.get("needs_verification", [])) if isinstance(layers.get("needs_verification", []), list) else 0,
+        }
+        counts["present_layer_count"] = sum(1 for value in counts.values() if value > 0)
+        recall = expansion.get("retrieval_recall", {})
+        if isinstance(recall, Mapping):
+            counts["public_recall_count"] = len(recall.get("public_facts", [])) if isinstance(recall.get("public_facts", []), list) else 0
+            counts["research_opinion_recall_count"] = len(recall.get("research_opinions", [])) if isinstance(recall.get("research_opinions", []), list) else 0
+            counts["inference_recall_count"] = len(recall.get("inferences", [])) if isinstance(recall.get("inferences", []), list) else 0
+            counts["market_signal_recall_count"] = len(recall.get("market_signals", [])) if isinstance(recall.get("market_signals", []), list) else 0
+        return counts
+
+    def _hotspot_expansion_required_slots(self, expansion: Mapping[str, Any], payload: Mapping[str, Any]) -> list[str]:
+        raw = payload.get("required_data_slots", [])
+        if isinstance(raw, str):
+            return self._unique_strings(part for part in re.split(r"[,;/\s]+", raw) if part.strip())
+        if isinstance(raw, list) and raw:
+            return self._unique_strings(raw)
+        slots: list[str] = []
+        for row in expansion.get("data_coverage", []):
+            if not isinstance(row, Mapping):
+                continue
+            slots.extend(str(item) for item in row.get("present_slots", []) if str(item).strip())
+            slots.extend(str(item) for item in row.get("missing_slots", []) if str(item).strip())
+        return self._unique_strings(slots)
+
+    def _hotspot_boundary_summary(self, expansion: Mapping[str, Any]) -> dict[str, Any]:
+        layers = expansion.get("evidence_layers", {})
+        if not isinstance(layers, Mapping):
+            layers = {}
+        facts = [item for item in layers.get("facts", []) if isinstance(item, Mapping)]
+        opinions = [item for item in layers.get("opinions", []) if isinstance(item, Mapping)]
+        inferences = [item for item in layers.get("inferences", []) if isinstance(item, Mapping)]
+        needs_verification = [item for item in layers.get("needs_verification", []) if isinstance(item, Mapping)]
+        inference_flags = [
+            item
+            for item in inferences
+            if item.get("needs_verification") is True
+            or item.get("automation_allowed") is False
+            or "not_fact" in str(item.get("source_boundary", ""))
+        ]
+        fact_resources = {str(item.get("resource_id", "")) for item in facts if item.get("resource_id")}
+        inference_resources = {str(item.get("resource_id", "")) for item in inferences if item.get("resource_id")}
+        overlap = sorted(fact_resources & inference_resources)
+        return {
+            "facts_have_source_or_evidence": all(item.get("evidence_ids") or item.get("source_uri") or item.get("resource_type") in {"document", "evidence"} for item in facts),
+            "opinions_have_boundary": all(item.get("source_refs") or item.get("source_boundary") or item.get("resource_type") == "macro_theme" for item in opinions),
+            "inferences_need_verification": len(inference_flags) == len(inferences) if inferences else False,
+            "needs_verification_count": len(needs_verification),
+            "fact_inference_overlap": overlap,
+            "separated_layers": bool(facts) and bool(opinions) and bool(inferences) and bool(needs_verification) and not overlap,
+        }
+
+    def _hotspot_research_queue_summary(self, expansion: Mapping[str, Any]) -> dict[str, Any]:
+        source_tasks = [item for item in expansion.get("research_tasks", []) if isinstance(item, Mapping)]
+        expected_ids = {str(item.get("task_id", "")).strip() for item in source_tasks if str(item.get("task_id", "")).strip()}
+        persisted = [task for task in self.store.research_tasks.values() if task.task_id in expected_ids]
+        persisted_ids = {task.task_id for task in persisted}
+        reviewed = [task for task in persisted if task.status in {"open", "in_progress", "done", "dismissed"}]
+        return {
+            "source_research_task_count": len(source_tasks),
+            "persisted_count": len(persisted),
+            "open_or_reviewed_count": len(reviewed),
+            "missing_task_ids": sorted(expected_ids - persisted_ids),
+            "statuses": {status: sum(1 for task in persisted if task.status == status) for status in sorted({task.status for task in persisted})},
+        }
+
+    def _hotspot_graph_summary(self, chain_ids: list[str], payload: Mapping[str, Any], *, actor: str) -> dict[str, Any]:
+        if not chain_ids:
+            chain_id = str(payload.get("seed_chain_id", "")).strip()
+            if chain_id:
+                chain_ids = [chain_id]
+        node_count = 0
+        edge_count = 0
+        relationship_count = 0
+        max_depth = 0
+        all_edges: list[dict[str, Any]] = []
+        content_hashes: list[str] = []
+        for chain_id in chain_ids:
+            chain = self.store.industry_chains.get(chain_id)
+            if chain is not None:
+                node_count += len(chain.nodes)
+                edge_count += len(chain.edges)
+                for node in chain.nodes:
+                    try:
+                        max_depth = max(max_depth, int(node.get("level", 1) or 1))
+                    except (TypeError, ValueError):
+                        max_depth = max(max_depth, 1)
+            graph = self.query_graph({"chain_id": chain_id})
+            all_edges.extend([dict(edge) for edge in graph.get("edges", []) if isinstance(edge, Mapping)])
+            export = self.graph_neo4j_export({"chain_id": chain_id}, actor=actor)
+            relationship_count += int(export.get("relationship_count", 0))
+            content_hashes.append(str(export.get("content_sha256", "")))
+        required_fields = ["source", "timestamp", "version", "confidence"]
+        missing_counts = {field: 0 for field in required_fields}
+        issues = 0
+        for edge in all_edges:
+            missing = [field for field in required_fields if edge.get(field) in {"", None}]
+            if missing:
+                issues += 1
+                for field in missing:
+                    missing_counts[field] += 1
+        total_edges = len(all_edges)
+        complete_edges = total_edges - issues
+        return {
+            "chain_ids": chain_ids,
+            "chain_node_count": node_count,
+            "chain_edge_count": edge_count,
+            "max_chain_depth": max_depth,
+            "graph_edge_count": total_edges,
+            "neo4j_relationship_count": relationship_count,
+            "edge_metadata_coverage": round(complete_edges / max(1, total_edges), 4) if total_edges else 1.0,
+            "edge_missing_counts": missing_counts,
+            "content_sha256": self._payload_sha256({"chain_ids": chain_ids, "hashes": content_hashes}),
+        }
+
+    def _hotspot_rerank_eval_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        supplied = payload.get("rerank_evaluation", payload.get("llm_rerank_evaluation", {}))
+        if isinstance(supplied, Mapping) and supplied:
+            return {
+                "benchmark_id": str(supplied.get("benchmark_id", "external_llm_rerank_evaluation")),
+                "valid_samples": int(supplied.get("valid_samples", supplied.get("samples", 0)) or 0),
+                "top1_accuracy": float(supplied.get("top1_accuracy", 0.0) or 0.0),
+                "coverage_at_k": float(supplied.get("coverage_at_k", 0.0) or 0.0),
+                "mrr": float(supplied.get("mrr", 0.0) or 0.0),
+                "fallback_rate": float(supplied.get("fallback_rate", 0.0) or 0.0),
+                "parse_error_rate": float(supplied.get("parse_error_rate", 0.0) or 0.0),
+                "source": "provided_summary",
+            }
+        samples = payload.get("rerank_samples", payload.get("llm_rerank_samples", []))
+        if isinstance(samples, list) and samples:
+            report = self.semantic_llm_rerank_benchmark(
+                {
+                    "benchmark_id": str(payload.get("rerank_benchmark_id", "hotspot_llm_rerank_readiness")),
+                    "samples": samples,
+                    "run_model": self._truthy(payload.get("run_rerank_model", False)),
+                    "sample_limit": payload.get("rerank_sample_limit", len(samples)),
+                    "candidate_limit": payload.get("candidate_limit", 20),
+                    "limit": payload.get("rerank_limit", 10),
+                },
+                actor="hotspot_readiness",
+            )
+            return {
+                "benchmark_id": report["benchmark_id"],
+                "valid_samples": int(report["valid_samples"]),
+                "top1_accuracy": float(report["top1_accuracy"]),
+                "coverage_at_k": float(report["coverage_at_k"]),
+                "mrr": float(report["mrr"]),
+                "fallback_rate": float(report["fallback_rate"]),
+                "parse_error_rate": float(report["parse_error_rate"]),
+                "source": "local_offline_benchmark",
+            }
+        return {
+            "benchmark_id": "",
+            "valid_samples": 0,
+            "top1_accuracy": 0.0,
+            "coverage_at_k": 0.0,
+            "mrr": 0.0,
+            "fallback_rate": 0.0,
+            "parse_error_rate": 0.0,
+            "source": "missing",
+        }
+
+    def _hotspot_readiness_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "llm_rerank_eval_uri": ["llm_rerank_eval_uri", "rerank_quality_uri", "rerank_evaluation_uri", "llm_rerank_report_uri"],
+            "hotspot_gold_refs_uri": ["hotspot_gold_refs_uri", "gold_refs_uri", "query_gold_refs_uri", "hotspot_query_gold_uri"],
+            "company_position_review_uri": ["company_position_review_uri", "position_review_uri", "company_position_acceptance_uri"],
+            "chain_taxonomy_review_uri": ["chain_taxonomy_review_uri", "taxonomy_review_uri", "industry_chain_review_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
 
     def _hotspot_evidence_layers(
         self,
@@ -12085,20 +16891,32 @@ class SystemService:
 
         # Layer 2: evidence (public facts with locators)
         for evidence in self.store.evidence.values():
-            if not matches(evidence.text):
+            evidence_text = evidence.canonical_text or evidence.span_text
+            if not matches(evidence_text):
                 continue
-            public_facts.append(
-                {
-                    "resource_type": "evidence",
-                    "resource_id": evidence.evidence_id,
-                    "document_id": evidence.document_id,
-                    "snippet": snippet(evidence.text),
-                    "source_uri": evidence.source_uri,
-                    "source_boundary": "evidence_backed_public_or_governed_source",
-                    "term_coverage": term_coverage(evidence.text),
-                    "expanded_terms_used": len(expanded_terms) > len(base_terms),
-                }
+            document = self.store.documents.get(evidence.document_id)
+            source = self.store.sources.get(document.source_id) if document else None
+            row = {
+                "resource_type": "evidence",
+                "resource_id": evidence.evidence_id,
+                "document_id": evidence.document_id,
+                "issuer_id": document.issuer_id if document else "",
+                "security_id": document.security_id if document else "",
+                "snippet": snippet(evidence_text),
+                "source_uri": document.source_uri if document else "",
+                "term_coverage": term_coverage(evidence_text),
+                "expanded_terms_used": len(expanded_terms) > len(base_terms),
+            }
+            is_research_reference = (
+                evidence.section == "research_report_citation"
+                or bool(document and document.document_type == "research")
+                or bool(source and source.source_id == LOCAL_RESEARCH_REPORT_SOURCE_ID)
+                or bool(source and source.usage_scope == "local_reference_citation_tracking_only")
             )
+            if is_research_reference:
+                research_opinions.append({**row, "source_boundary": "local_reference_research_report"})
+            else:
+                public_facts.append({**row, "source_boundary": "evidence_backed_public_or_governed_source"})
 
         # Layer 3: research reports (→ opinions)
         for report in self.store.research_reports.values():
@@ -12120,29 +16938,31 @@ class SystemService:
 
         # Layer 4 (NEW T-406A): research answers → opinions
         for answer in self.store.research_answers.values():
-            text = f"{answer.question} {answer.answer_text}"
+            text = f"{answer.question} {answer.english_source_text} {answer.chinese_summary}"
             if not matches(text):
                 continue
-            restricted = answer.source_public is False
+            restricted = answer.source_publicness != "public"
             if restricted and not include_restricted:
                 continue
+            reviewed = answer.human_review_status == "approved"
             research_opinions.append(
                 {
                     "resource_type": "research_answer",
                     "resource_id": answer.answer_id,
+                    "issuer_id": answer.issuer_id,
                     "snippet": snippet(text),
-                    "source_boundary": "research_answer_opinion_not_fact" if not answer.source_public else "public_research_answer_opinion",
-                    "human_reviewed": answer.human_reviewed,
-                    "pending_review": answer.pending_review,
+                    "source_boundary": "public_research_answer_opinion" if answer.source_publicness == "public" else "research_answer_opinion_not_fact",
+                    "human_reviewed": reviewed,
+                    "pending_review": answer.human_review_status == "pending",
                     "term_coverage": term_coverage(text),
                     "expanded_terms_used": len(expanded_terms) > len(base_terms),
-                    "needs_verification": not answer.human_reviewed,
+                    "needs_verification": not reviewed,
                 }
             )
 
         # Layer 5 (NEW T-406A): theses → inferences (must be labelled as derived, not fact)
         for thesis in self.store.theses.values():
-            text = f"{thesis.summary} {thesis.detailed_analysis}"
+            text = f"{thesis.hypothesis} {' '.join(thesis.catalyst)} {' '.join(thesis.falsifiers)} {' '.join(thesis.risk_factors)}"
             if not matches(text):
                 continue
             inferences.append(
@@ -12162,14 +16982,15 @@ class SystemService:
 
         # Layer 6 (NEW T-406A): signals → inferences
         for signal in self.store.signals.values():
-            text = f"{signal.signal_type} {signal.summary}"
+            thesis = self.store.theses.get(signal.thesis_id)
+            text = f"{signal.signal_type} {signal.direction} {signal.rationale} {thesis.hypothesis if thesis else ''}"
             if not matches(text):
                 continue
             inferences.append(
                 {
                     "resource_type": "signal",
                     "resource_id": signal.signal_id,
-                    "issuer_id": signal.issuer_id,
+                    "issuer_id": thesis.issuer_id if thesis else "",
                     "snippet": snippet(text),
                     "source_boundary": "signal_inference_not_fact_not_tradeable",
                     "thesis_id": signal.thesis_id,
@@ -12240,6 +17061,9 @@ class SystemService:
         theme_id = str(filters.get("theme_id", "")).strip()
         chain_id = str(filters.get("chain_id", "")).strip()
         chain_node_id = str(filters.get("chain_node_id", "")).strip()
+        graph_limit = self._bounded_limit(filters["limit"], 1000) if str(filters.get("limit", "")).strip() else 0
+        market_data_limit = self._bounded_limit(filters.get("market_data_limit", 20), 200)
+        security_filter_ids: set[str] = {security_id} if security_id else set()
         data = {
             "issuers": [],
             "securities": [],
@@ -12302,7 +17126,54 @@ class SystemService:
             data["edges"].append(edge)
             edge_keys.add(edge_key)
 
+        def security_in_scope(candidate_security_id: str) -> bool:
+            return not security_filter_ids or candidate_security_id in security_filter_ids
+
+        def position_in_scope(position: CompanyPosition) -> bool:
+            return not security_filter_ids or position.security_id in security_filter_ids
+
+        def task_in_scope(task: ResearchTask) -> bool:
+            if not security_filter_ids:
+                return True
+            if task.security_id and task.security_id in security_filter_ids:
+                return True
+            if task.position_id:
+                position = self.store.company_positions.get(task.position_id)
+                return bool(position and position_in_scope(position))
+            return False
+
+        def add_security_facts(security: Security) -> None:
+            if self._market_data_direct_query_enabled():
+                points = self._query_market_data_points(security_id=security.security_id, limit=market_data_limit, descending=True)
+            else:
+                points = [
+                    point
+                    for point in sorted(self.store.market_data.values(), key=lambda item: (item.as_of_date, item.data_id), reverse=True)
+                    if point.security_id == security.security_id
+                ][:market_data_limit]
+            for point in points:
+                add_node("market_data", point.data_id, point)
+                add_edge("HAS_MARKET_DATA", security.security_id, point.data_id, as_of_date=point.as_of_date, data_type=point.data_type)
+            for action in self.store.corporate_actions.values():
+                if action.security_id == security.security_id:
+                    add_node("corporate_actions", action.action_id, action)
+                    add_edge("HAS_CORPORATE_ACTION", security.security_id, action.action_id, action_type=action.action_type, ex_date=action.ex_date)
+            for intent in self.store.execution_intents.values():
+                if intent.security_id == security.security_id:
+                    add_node("execution_intents", intent.intent_id, intent)
+                    add_edge("INTENT_ON", intent.intent_id, security.security_id, action=intent.action, target_weight=intent.target_weight)
+            for proposal in self.store.portfolio_proposals.values():
+                if security.security_id in proposal.universe or security.security_id in proposal.candidate_weights:
+                    add_node("portfolio_proposals", proposal.proposal_id, proposal)
+                    add_edge("PROPOSES_WEIGHT", proposal.proposal_id, security.security_id, weight=proposal.candidate_weights.get(security.security_id, 0.0))
+            for event in self.store.disclosure_events.values():
+                if event.security_id == security.security_id:
+                    add_node("disclosure_events", event.event_id, event)
+                    add_edge("EVENT_ON_SECURITY", event.event_id, security.security_id)
+
         def add_document_graph(document: Document) -> None:
+            if security_filter_ids and document.security_id and document.security_id not in security_filter_ids:
+                return
             add_node("documents", document.document_id, document)
             add_edge("DISCLOSES", document.issuer_id, document.document_id, as_of=to_plain(document.published_at), source_id=document.source_id)
             if document.security_id:
@@ -12359,6 +17230,8 @@ class SystemService:
             for intent in self.store.execution_intents.values():
                 if intent.decision_id != decision.decision_id:
                     continue
+                if security_filter_ids and intent.security_id and intent.security_id not in security_filter_ids:
+                    continue
                 add_node("execution_intents", intent.intent_id, intent)
                 add_edge("CREATES_INTENT", decision.decision_id, intent.intent_id, approval_state=decision.approval_state)
                 if intent.security_id:
@@ -12390,6 +17263,8 @@ class SystemService:
                     add_edge("HAS_EXCEPTION", decision.decision_id, exception.exception_id, severity=exception.severity, status=exception.status)
 
         def add_research_task_graph(task: ResearchTask) -> None:
+            if not task_in_scope(task):
+                return
             add_node("research_tasks", task.task_id, task)
             if task.chain_id:
                 add_edge("CHAIN_HAS_RESEARCH_TASK", task.chain_id, task.task_id, task_type=task.task_type, status=task.status, priority=task.priority)
@@ -12419,10 +17294,20 @@ class SystemService:
                 if theme is not None:
                     add_node("macro_themes", theme.theme_id, theme)
                     add_edge("HAS_INDUSTRY_CHAIN", theme.theme_id, chain.chain_id, source="industry_chain_registry", confidence=theme.confidence)
+            scoped_node_ids: set[str] = set()
+            if security_filter_ids:
+                for position in self.store.company_positions.values():
+                    if position.chain_id != chain.chain_id or not position_in_scope(position):
+                        continue
+                    scoped_node_ids.update(str(node_id).strip() for node_id in position.node_ids if str(node_id).strip())
+                if only_node_id:
+                    scoped_node_ids &= {only_node_id}
             node_ids: set[str] = set()
             for node in chain.nodes:
                 node_id = str(node.get("node_id", "")).strip()
                 if only_node_id and node_id != only_node_id:
+                    continue
+                if scoped_node_ids and node_id not in scoped_node_ids:
                     continue
                 if not node_id:
                     continue
@@ -12448,6 +17333,8 @@ class SystemService:
                     continue
                 if only_node_id and only_node_id not in position.node_ids:
                     continue
+                if not position_in_scope(position):
+                    continue
                 add_node("company_positions", position.position_id, position)
                 add_edge("HAS_COMPANY_POSITION", chain.chain_id, position.position_id, role=position.role, data_quality=position.data_quality)
                 issuer = self.store.issuers.get(position.issuer_id)
@@ -12472,6 +17359,8 @@ class SystemService:
                     continue
                 if only_node_id and only_node_id not in task.node_ids:
                     continue
+                if not task_in_scope(task):
+                    continue
                 add_research_task_graph(task)
 
         def add_issuer_graph(issuer: Issuer) -> None:
@@ -12479,26 +17368,39 @@ class SystemService:
             for mapping in self.store.entity_mappings.values():
                 if mapping.issuer_id == issuer.issuer_id:
                     add_node("entity_mappings", mapping.mapping_id, mapping)
-                    add_edge("HAS_MAPPING", issuer.issuer_id, mapping.mapping_id, market=mapping.market, ticker=mapping.ticker)
+                    add_edge(
+                        "HAS_MAPPING",
+                        issuer.issuer_id,
+                        mapping.mapping_id,
+                        market=mapping.market,
+                        ticker=mapping.ticker,
+                        source=mapping.source,
+                        version=mapping.version,
+                        valid_from=to_plain(mapping.valid_from),
+                        valid_to=to_plain(mapping.valid_to),
+                        recorded_at=to_plain(mapping.recorded_at),
+                        status=mapping.status,
+                        confidence=mapping.confidence,
+                    )
             issuer_security_ids: set[str] = set()
             for security in self.store.securities.values():
                 if security.issuer_id == issuer.issuer_id:
+                    if not security_in_scope(security.security_id):
+                        continue
                     issuer_security_ids.add(security.security_id)
                     add_node("securities", security.security_id, security)
                     add_edge("ISSUES", issuer.issuer_id, security.security_id, market=security.market, ticker=security.ticker)
-            for point in self.store.market_data.values():
-                if point.security_id in issuer_security_ids:
-                    add_node("market_data", point.data_id, point)
-                    add_edge("HAS_MARKET_DATA", point.security_id, point.data_id, as_of_date=point.as_of_date, data_type=point.data_type)
-            for action in self.store.corporate_actions.values():
-                if action.security_id in issuer_security_ids:
-                    add_node("corporate_actions", action.action_id, action)
-                    add_edge("HAS_CORPORATE_ACTION", action.security_id, action.action_id, action_type=action.action_type, ex_date=action.ex_date)
+            for scoped_security_id in sorted(issuer_security_ids):
+                security = self.store.securities.get(scoped_security_id)
+                if security is not None:
+                    add_security_facts(security)
             for document in self.store.documents.values():
                 if document.issuer_id == issuer.issuer_id:
                     add_document_graph(document)
             for event in self.store.disclosure_events.values():
                 if event.issuer_id == issuer.issuer_id:
+                    if security_filter_ids and event.security_id and event.security_id not in security_filter_ids:
+                        continue
                     add_node("disclosure_events", event.event_id, event)
                     add_edge("HAS_DISCLOSURE_EVENT", issuer.issuer_id, event.event_id, event_type=event.event_type, severity=event.severity)
                     add_edge("EVENT_FROM_DOCUMENT", event.event_id, event.document_id, source_id=event.source_id)
@@ -12526,6 +17428,8 @@ class SystemService:
                         add_edge("INTENT_ON", intent.intent_id, intent.security_id, action=intent.action, target_weight=intent.target_weight)
             for holding in self.store.institutional_holdings.values():
                 if holding.issuer_id == issuer.issuer_id:
+                    if security_filter_ids and holding.security_id not in security_filter_ids:
+                        continue
                     add_node("institutional_holdings", holding.holding_id, holding)
                     add_edge("HAS_13F_HOLDING", issuer.issuer_id, holding.holding_id, report_period=holding.report_period, value_usd=holding.value_usd)
                     add_edge("HOLDS_SECURITY", holding.holding_id, holding.security_id, shares=holding.shares, value_usd=holding.value_usd)
@@ -12536,6 +17440,8 @@ class SystemService:
                     if snapshot.source.upper() == "13F":
                         for holding in self.store.institutional_holdings.values():
                             if holding.issuer_id == issuer.issuer_id:
+                                if security_filter_ids and holding.security_id not in security_filter_ids:
+                                    continue
                                 add_edge("CONTRIBUTES_TO_CROWDING", holding.holding_id, snapshot.snapshot_id, report_period=holding.report_period)
             for proposal in self.store.portfolio_proposals.values():
                 proposal_security_ids = set(proposal.universe) | set(proposal.candidate_weights)
@@ -12547,11 +17453,15 @@ class SystemService:
                             add_edge("PROPOSES_WEIGHT", proposal.proposal_id, proposal_security_id, weight=weight)
             for position in self.store.company_positions.values():
                 if position.issuer_id == issuer.issuer_id:
+                    if not position_in_scope(position):
+                        continue
                     chain = self.store.industry_chains.get(position.chain_id)
                     if chain is not None:
                         add_chain_graph(chain)
             for task in self.store.research_tasks.values():
                 if task.issuer_id == issuer.issuer_id:
+                    if not task_in_scope(task):
+                        continue
                     add_research_task_graph(task)
 
         if issuer_id:
@@ -12566,26 +17476,7 @@ class SystemService:
                 if issuer:
                     add_issuer_graph(issuer)
                 else:
-                    for point in self.store.market_data.values():
-                        if point.security_id == security.security_id:
-                            add_node("market_data", point.data_id, point)
-                            add_edge("HAS_MARKET_DATA", security.security_id, point.data_id, as_of_date=point.as_of_date, data_type=point.data_type)
-                    for action in self.store.corporate_actions.values():
-                        if action.security_id == security.security_id:
-                            add_node("corporate_actions", action.action_id, action)
-                            add_edge("HAS_CORPORATE_ACTION", security.security_id, action.action_id, action_type=action.action_type, ex_date=action.ex_date)
-                    for intent in self.store.execution_intents.values():
-                        if intent.security_id == security.security_id:
-                            add_node("execution_intents", intent.intent_id, intent)
-                            add_edge("INTENT_ON", intent.intent_id, security.security_id, action=intent.action, target_weight=intent.target_weight)
-                    for proposal in self.store.portfolio_proposals.values():
-                        if security.security_id in proposal.universe or security.security_id in proposal.candidate_weights:
-                            add_node("portfolio_proposals", proposal.proposal_id, proposal)
-                            add_edge("PROPOSES_WEIGHT", proposal.proposal_id, security.security_id, weight=proposal.candidate_weights.get(security.security_id, 0.0))
-                    for event in self.store.disclosure_events.values():
-                        if event.security_id == security.security_id:
-                            add_node("disclosure_events", event.event_id, event)
-                            add_edge("EVENT_ON_SECURITY", event.event_id, security.security_id)
+                    add_security_facts(security)
         if evidence_id:
             evidence = self.store.evidence.get(evidence_id)
             if evidence:
@@ -12624,6 +17515,11 @@ class SystemService:
             chain = self.store.industry_chains.get(chain_id)
             if chain:
                 add_chain_graph(chain, only_node_id=chain_node_id)
+        if graph_limit:
+            for collection, values in data.items():
+                if len(values) <= graph_limit:
+                    continue
+                data[collection] = values[:graph_limit]
         return data
 
     def graph_neo4j_export(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
@@ -12905,6 +17801,193 @@ class SystemService:
             },
         }
 
+    def semantic_llm_rerank(self, filters: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        query = str(filters.get("q", "")).strip()
+        if not query:
+            return {"query": query, "results": []}
+        local_result = self.semantic_rerank(filters)
+        candidate_rows = list(local_result.get("results", []))
+        limit = self._bounded_limit(filters.get("limit", 10), max_value=100)
+        llm_run: LLMTaskRun | None = None
+        ordered_ids: list[str] = []
+        parse_error = ""
+        if self._truthy(filters.get("run_model", True)) and candidate_rows:
+            if "llmtpl_search_rerank_v1" not in self.store.llm_task_templates:
+                self.seed_default_llm_task_templates(actor=actor)
+            llm_run = self.run_llm_task(
+                {
+                    "run_id": str(filters.get("llm_run_id", new_id("llmrun_search_rerank"))),
+                    "template_id": "llmtpl_search_rerank_v1",
+                    "role": str(filters.get("template_role", "分析师")),
+                    "variables": {
+                        "query": query,
+                        "candidate_rows": self._semantic_llm_candidate_rows(candidate_rows),
+                    },
+                    "temperature": float(filters.get("temperature", 0.0)),
+                    "human_review_required": True,
+                },
+                actor=actor,
+            )
+            ordered_ids, parse_error = self._semantic_llm_ordered_resource_ids(llm_run, candidate_rows)
+
+        rows_by_id = {self._semantic_candidate_ref(item): dict(item) for item in candidate_rows}
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        rank = 1
+        if llm_run and llm_run.status == "succeeded" and ordered_ids and not parse_error:
+            for resource_id in ordered_ids:
+                candidate = rows_by_id.get(resource_id)
+                if not candidate or resource_id in seen:
+                    continue
+                candidate["llm_rank"] = rank
+                candidate["rerank_source"] = "llm"
+                results.append(candidate)
+                seen.add(resource_id)
+                rank += 1
+        for item in candidate_rows:
+            resource_id = self._semantic_candidate_ref(item)
+            if resource_id in seen:
+                continue
+            candidate = dict(item)
+            candidate["llm_rank"] = rank
+            candidate["rerank_source"] = "local_fallback" if llm_run else "local_only"
+            results.append(candidate)
+            seen.add(resource_id)
+            rank += 1
+        results = results[:limit]
+        fallback_used = ""
+        if llm_run and llm_run.fallback_used:
+            fallback_used = llm_run.fallback_used
+        elif llm_run and (llm_run.status != "succeeded" or parse_error):
+            fallback_used = "local_rerank"
+        elif not llm_run:
+            fallback_used = "local_rerank"
+        self._audit(
+            actor,
+            "semantic_llm_rerank",
+            "search_index",
+            query[:80] or "empty_query",
+            source="semantic_search",
+            version=llm_run.prompt_version if llm_run else "local-only",
+            model_version=llm_run.model if llm_run else "local-rerank",
+            prompt_version=llm_run.prompt_version if llm_run else "local-only",
+            approval_state=llm_run.status if llm_run else "local_only",
+        )
+        return {
+            "query": query,
+            "backend": local_result.get("backend", self.semantic_index.backend),
+            "embedding_backend": local_result.get("embedding_backend", self.semantic_index.describe()),
+            "reranker": "llm_semantic_rerank_with_local_fallback",
+            "candidate_count": local_result.get("candidate_count", len(candidate_rows)),
+            "returned_count": len(results),
+            "results": results,
+            "llm_run": to_plain(llm_run) if llm_run else None,
+            "llm_ordered_resource_ids": ordered_ids,
+            "parse_error": parse_error,
+            "fallback_used": fallback_used,
+            "human_review_required": True,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "llm_rerank_is_ordering_assist_only_not_fact_or_trade_signal",
+            "rights_filter": local_result.get("rights_filter", ""),
+            "payload_filter": local_result.get("payload_filter", {}),
+            "adapter_recommendation": {
+                **dict(local_result.get("adapter_recommendation", {})),
+                "llm_rerank_contract": "replace local fallback with approved reranker only after benchmark and human review gates pass",
+            },
+        }
+
+    def semantic_llm_rerank_benchmark(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        samples = payload.get("samples", [])
+        if not isinstance(samples, list) or not samples:
+            raise ValidationError("semantic llm rerank benchmark requires samples list")
+        sample_limit = self._bounded_limit(payload.get("sample_limit", len(samples)), max_value=500)
+        candidate_limit = self._bounded_limit(payload.get("candidate_limit", 20), max_value=200)
+        result_limit = self._bounded_limit(payload.get("limit", 10), max_value=100)
+        run_model = self._truthy(payload.get("run_model", True))
+        rows: list[dict[str, Any]] = []
+        top1_hits = 0
+        covered = 0
+        reciprocal_sum = 0.0
+        fallback_count = 0
+        parse_error_count = 0
+        llm_count = 0
+        for index, sample in enumerate(samples[:sample_limit]):
+            if not isinstance(sample, Mapping):
+                continue
+            query = str(sample.get("q", sample.get("query", ""))).strip()
+            expected_refs = self._semantic_expected_refs(sample)
+            if not query or not expected_refs:
+                rows.append({"index": index, "query": query, "expected_resource_refs": expected_refs, "status": "invalid_sample", "hit": False})
+                continue
+            rerank = self.semantic_llm_rerank(
+                {
+                    "q": query,
+                    "issuer_id": str(sample.get("issuer_id", "")),
+                    "resource_types": sample.get("resource_types", []),
+                    "include_restricted": sample.get("include_restricted", False),
+                    "candidate_limit": int(sample.get("candidate_limit", candidate_limit)),
+                    "limit": int(sample.get("limit", result_limit)),
+                    "run_model": run_model,
+                    "llm_run_id": str(sample.get("llm_run_id", f"llmrun_rerank_bm_{index}")),
+                },
+                actor=actor,
+            )
+            returned_refs = [self._semantic_candidate_ref(item) for item in rerank.get("results", [])]
+            rank = next((position + 1 for position, ref in enumerate(returned_refs) if ref in expected_refs), 0)
+            hit = rank == 1
+            top1_hits += 1 if hit else 0
+            covered += 1 if rank else 0
+            reciprocal_sum += (1.0 / rank) if rank else 0.0
+            fallback = str(rerank.get("fallback_used", ""))
+            fallback_count += 1 if fallback else 0
+            parse_error_count += 1 if rerank.get("parse_error") else 0
+            llm_count += 1 if any(item.get("rerank_source") == "llm" for item in rerank.get("results", [])) else 0
+            rows.append(
+                {
+                    "index": index,
+                    "query": query,
+                    "expected_resource_refs": expected_refs,
+                    "returned_resource_refs": returned_refs,
+                    "rank": rank,
+                    "hit": hit,
+                    "covered": bool(rank),
+                    "reciprocal_rank": round((1.0 / rank) if rank else 0.0, 6),
+                    "rerank_source": rerank["results"][0].get("rerank_source", "") if rerank.get("results") else "",
+                    "fallback_used": fallback,
+                    "parse_error": rerank.get("parse_error", ""),
+                    "candidate_count": rerank.get("candidate_count", 0),
+                    "returned_count": rerank.get("returned_count", 0),
+                }
+            )
+        total = len([row for row in rows if row.get("status") != "invalid_sample"])
+        report = {
+            "benchmark_id": str(payload.get("benchmark_id", "llm_rerank_benchmark")),
+            "samples": len(rows),
+            "valid_samples": total,
+            "top1_accuracy": round(top1_hits / max(1, total), 4),
+            "coverage_at_k": round(covered / max(1, total), 4),
+            "mrr": round(reciprocal_sum / max(1, total), 4),
+            "fallback_rate": round(fallback_count / max(1, total), 4),
+            "parse_error_rate": round(parse_error_count / max(1, total), 4),
+            "llm_ordering_rate": round(llm_count / max(1, total), 4),
+            "run_model": run_model,
+            "results": rows,
+            "human_review_required": True,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "llm_rerank_benchmark_is_offline_quality_evaluation_not_fact_or_trade_signal",
+        }
+        self._audit(
+            actor,
+            "semantic_llm_rerank_benchmark",
+            "search_index",
+            report["benchmark_id"],
+            source="semantic_search",
+            approval_state=f"samples={report['valid_samples']};top1={report['top1_accuracy']};fallback={report['fallback_rate']}",
+        )
+        return report
+
     def semantic_search_benchmark(self, filters: Mapping[str, Any]) -> dict[str, Any]:
         samples = filters.get("samples", [])
         if not isinstance(samples, list):
@@ -13024,6 +18107,74 @@ class SystemService:
             "skipped": skipped,
             "external_delivery_ready": bool(target),
         }
+
+    def graph_vector_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        graph_export = self.graph_neo4j_export(payload, actor=actor)
+        qdrant_export = self.qdrant_vector_export(payload, actor=actor)
+        traceability = self.graph_traceability_report({"include_details": False})
+        edge_quality = self.graph_edge_quality_report({"limit": payload.get("edge_limit", 1000)})
+        artifacts = self._graph_vector_artifact_uris(payload)
+        adapters = self._graph_vector_adapter_config(payload)
+        throughput = self._graph_vector_throughput(payload)
+        retry_summary = self._graph_vector_retry_summary(payload)
+        min_traceability = float(payload.get("min_traceability_rate", 0.95))
+        min_edge_coverage = float(payload.get("min_edge_metadata_coverage", 1.0))
+        min_nodes = int(payload.get("min_node_count", 1))
+        min_points = int(payload.get("min_point_count", 1))
+        gates = [
+            self._readiness_numeric_gate("neo4j_node_count", int(graph_export["node_count"]), min_nodes, ">=", "Neo4j graph export node count"),
+            self._readiness_numeric_gate("neo4j_relationship_count", int(graph_export["relationship_count"]), 1, ">=", "Neo4j graph export relationship count"),
+            self._readiness_numeric_gate("qdrant_point_count", int(qdrant_export["point_count"]), min_points, ">=", "Qdrant vector export point count"),
+            self._readiness_numeric_gate("traceability_rate", float(traceability["traceability_rate"]), min_traceability, ">=", "conclusion/research graph traceability"),
+            self._readiness_numeric_gate("edge_metadata_coverage", float(edge_quality["edge_metadata_coverage"]), min_edge_coverage, ">=", "edge source/timestamp/version/confidence coverage"),
+            self._readiness_bool_gate("rights_boundary_preserved", qdrant_export["rights_filter"] in {"restricted_excluded", "include_restricted_with_boundary_flags"} and graph_export["rights_boundary"], "source/rights/risk boundary preserved in payloads"),
+            self._readiness_bool_gate("neo4j_non_local_config", adapters["neo4j"]["non_local_configured"], "non-local Neo4j staging/production endpoint"),
+            self._readiness_bool_gate("qdrant_non_local_config", adapters["qdrant"]["non_local_configured"], "non-local Qdrant staging/production endpoint"),
+            self._readiness_bool_gate("neo4j_sync_artifact_uri", bool(artifacts.get("neo4j_sync_artifact_uri")), "Neo4j sync artifact URI"),
+            self._readiness_bool_gate("qdrant_sync_artifact_uri", bool(artifacts.get("qdrant_sync_artifact_uri")), "Qdrant sync artifact URI"),
+            self._readiness_bool_gate("throughput_baseline", throughput["present"], "batch sync throughput baseline"),
+            self._readiness_bool_gate("failure_recovery_evidence", retry_summary["recovery_evidence_present"], "failure injection and retry recovery evidence URI"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_graph_vector_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "adapters": adapters,
+            "artifact_uris": artifacts,
+            "throughput": throughput,
+            "retry_summary": retry_summary,
+            "graph_export": {
+                "node_count": graph_export["node_count"],
+                "relationship_count": graph_export["relationship_count"],
+                "content_sha256": graph_export["content_sha256"],
+                "format": graph_export["adapter"]["format"],
+            },
+            "qdrant_export": {
+                "point_count": qdrant_export["point_count"],
+                "content_sha256": qdrant_export["content_sha256"],
+                "format": qdrant_export["adapter"]["format"],
+                "rights_filter": qdrant_export["rights_filter"],
+            },
+            "traceability": {
+                "traceability_rate": traceability["traceability_rate"],
+                "counts": traceability["counts"],
+            },
+            "edge_quality": {
+                "edge_metadata_coverage": edge_quality["edge_metadata_coverage"],
+                "total_edges": edge_quality["total_edges"],
+                "missing_counts": edge_quality["missing_counts"],
+            },
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "graph_vector_readiness_report_requires_external_neo4j_qdrant_sync_evidence_and_does_not_call_external_databases",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "graph_vector_readiness_report", "graph_vector", "neo4j_qdrant", source="graph_vector_adapter", approval_state="ready" if ready else "missing_evidence")
+        return report
 
     def adapter_sync_retry_drill(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
@@ -13162,6 +18313,131 @@ class SystemService:
         )
         return {"check": to_plain(record), "breaches": breaches, "passed": status == "passed"}
 
+    def readiness_deployment_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        self._reject_secret_rotation_payload_values(payload)
+        health = self.health()
+        checklist = self.readiness_checklist_payload({})
+        evidence = self._deployment_evidence_uris(payload)
+        runtime = self._deployment_runtime_config(payload, health)
+        secret_provider = self._deployment_secret_provider(payload)
+        release_plan = self._deployment_release_plan(payload)
+        backup_restore = self.store.readiness_checks.get("backup_restore_drill")
+        capacity = self.store.readiness_checks.get("capacity_latency_report")
+        launch = self.store.readiness_checks.get("launch_checklist")
+        permission = self.store.readiness_checks.get("permission_red_team_test")
+        compliance = self.store.readiness_checks.get("compliance_review_record")
+        secret_rotations = self.secret_rotations_payload({"limit": 1000})
+        gates = [
+            self._readiness_bool_gate("production_environment_named", bool(runtime["environment"]) and runtime["environment"] not in {"local", "dev", "development"}, "production/staging environment name"),
+            self._readiness_bool_gate("postgres_config_present", runtime["postgres_configured"], "PostgreSQL DSN supplied by deployment environment"),
+            self._readiness_bool_gate("s3_object_store_config_present", runtime["s3_configured"], "S3-compatible object store parameters supplied"),
+            self._readiness_bool_gate("opensearch_config_present", runtime["opensearch_configured"], "OpenSearch parameters supplied"),
+            self._readiness_bool_gate("production_parameters_uri", bool(evidence.get("production_parameters_uri")), "production/staging environment parameter manifest artifact URI"),
+            self._readiness_bool_gate("secret_manager_config_present", bool(secret_provider["provider"]) and secret_provider["provider"] not in {"local-development-metadata-only", "local", "none"}, "external secret manager provider configured"),
+            self._readiness_bool_gate("secret_rotation_evidence", secret_rotations["count"] > 0 and bool(evidence.get("secret_manager_evidence_uri")), "external secret rotation/injection evidence URI"),
+            self._readiness_bool_gate("backup_restore_drill_record", self._deployment_check_passed(backup_restore), "backup restore readiness checklist record"),
+            self._readiness_bool_gate("backup_restore_evidence_uri", self._external_artifact_uri(backup_restore.evidence_uri if backup_restore else "") or bool(evidence.get("backup_restore_evidence_uri")), "backup/restore drill evidence URI"),
+            self._readiness_bool_gate("capacity_baseline_record", self._deployment_check_passed(capacity), "capacity baseline readiness checklist record"),
+            self._readiness_bool_gate("capacity_baseline_evidence_uri", self._external_artifact_uri(capacity.evidence_uri if capacity else "") or bool(evidence.get("capacity_baseline_uri")), "capacity baseline evidence URI"),
+            self._readiness_bool_gate("permission_red_team_record", self._deployment_check_passed(permission), "permission red-team readiness record"),
+            self._readiness_bool_gate("compliance_review_record", self._deployment_check_passed(compliance), "compliance review readiness record"),
+            self._readiness_bool_gate("launch_checklist_record", self._deployment_check_passed(launch), "CEO launch checklist readiness record"),
+            self._readiness_bool_gate("release_checklist_uri", bool(evidence.get("release_checklist_uri")), "release checklist artifact URI"),
+            self._readiness_bool_gate("canary_plan_uri", bool(evidence.get("canary_plan_uri")), "canary/gray rollout plan artifact URI"),
+            self._readiness_bool_gate("rollback_plan_uri", bool(evidence.get("rollback_plan_uri")), "rollback plan artifact URI"),
+            self._readiness_bool_gate("broker_execution_blocked", not runtime["live_execution_enabled"], "no live broker or automatic order execution"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing and float(checklist.get("coverage", 0.0)) == 1.0
+        report = {
+            "ready_for_production_deployment": ready,
+            "ready_for_launch": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "runtime": runtime,
+            "secret_manager": secret_provider,
+            "artifact_uris": evidence,
+            "release_plan": release_plan,
+            "checklist": {
+                "required": checklist["required"],
+                "passed": checklist["passed"],
+                "coverage": checklist["coverage"],
+                "pending_checklist": checklist["pending_checklist"],
+            },
+            "readiness_records": {
+                "backup_restore_drill": to_plain(backup_restore) if backup_restore else None,
+                "capacity_latency_report": to_plain(capacity) if capacity else None,
+                "permission_red_team_test": to_plain(permission) if permission else None,
+                "compliance_review_record": to_plain(compliance) if compliance else None,
+                "launch_checklist": to_plain(launch) if launch else None,
+            },
+            "secret_rotation_summary": {
+                "count": secret_rotations["count"],
+                "overdue": secret_rotations["overdue"],
+                "due_soon": secret_rotations["due_soon"],
+            },
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "deployment_report_is_release_evidence_manifest_and_does_not_expose_secret_values_or_enable_live_trading",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "readiness_deployment_report", "readiness", "deployment", approval_state="ready" if ready else "missing_evidence")
+        return report
+
+    def ui_readiness_report(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        self._reject_secret_rotation_payload_values(payload)
+        artifacts = self._ui_readiness_artifact_uris(payload)
+        static_contract = self._ui_static_contract_summary(payload)
+        screenshot_record = self.store.readiness_checks.get("production_ui_screenshot_acceptance")
+        cross_browser_record = self.store.readiness_checks.get("cross_browser_acceptance")
+        screenshot_check = self._ui_readiness_check_summary("production_ui_screenshot_acceptance", screenshot_record)
+        cross_browser_check = self._ui_readiness_check_summary("cross_browser_acceptance", cross_browser_record)
+        browser = self._ui_browser_acceptance_summary(screenshot_record, cross_browser_record, payload)
+        workflow = self._ui_workflow_evidence_summary(payload, artifacts, screenshot_record, cross_browser_record)
+        gates = [
+            self._readiness_bool_gate("static_ui_contract_valid", bool(static_contract["passed"]), "scripts/ui_static_check.py validates nav labels, status labels, ids, and JS functions"),
+            self._readiness_bool_gate("production_ui_screenshot_acceptance_record", bool(screenshot_check["effective_passed"]), "readiness checklist production_ui_screenshot_acceptance is passed and not expired"),
+            self._readiness_bool_gate("desktop_mobile_screenshots_nonblank", bool(browser["required_viewports_nonblank"]), "browser acceptance metrics include nonblank desktop and mobile screenshots"),
+            self._readiness_bool_gate("required_text_browser_acceptance", bool(browser["required_text_present"]), "browser acceptance metrics show required UI text with no missing text"),
+            self._readiness_bool_gate("cross_browser_acceptance_record", bool(cross_browser_check["effective_passed"]), "readiness checklist cross_browser_acceptance is passed and not expired"),
+            self._readiness_bool_gate("cross_browser_matrix_evidence_uri", self._external_artifact_uri(cross_browser_check["evidence_uri"]) or bool(artifacts.get("cross_browser_matrix_uri")), "cross-browser matrix artifact URI or checklist evidence URI"),
+            self._readiness_bool_gate("cross_browser_matrix_coverage", bool(browser["cross_browser_matrix_ready"]), "cross-browser matrix metrics cover required browser families and desktop/mobile viewports with no failures"),
+            self._readiness_bool_gate("real_data_ui_walkthrough_uri", bool(workflow["real_data_workflows_ready"]), "real data UI pagination/filter/error workflow evidence URI or checklist metrics"),
+            self._readiness_bool_gate("ui_data_volume_workflow", bool(workflow["real_data_step_ready"]["data_volume"]), "real data volume workflow evidence or checked dataset size metric"),
+            self._readiness_bool_gate("ui_pagination_workflow", bool(workflow["real_data_step_ready"]["pagination"]), "pagination workflow evidence or checked metric"),
+            self._readiness_bool_gate("ui_filtering_workflow", bool(workflow["real_data_step_ready"]["filtering"]), "filtering workflow evidence or checked metric"),
+            self._readiness_bool_gate("ui_error_recovery_workflow", bool(workflow["real_data_step_ready"]["error_states"]), "error and retry state workflow evidence or checked metric"),
+            self._readiness_bool_gate("visual_overflow_review_uri", bool(workflow["visual_overflow_ready"]), "desktop/mobile no-overlap and no-overflow visual review evidence"),
+            self._readiness_bool_gate("ui_text_no_overlap_review", bool(workflow["visual_step_ready"]["text_no_overlap"]), "text no-overlap review evidence or checked metric"),
+            self._readiness_bool_gate("ui_visual_no_overflow_review", bool(workflow["visual_step_ready"]["visual_no_overflow"]), "visual no-overflow review evidence or checked metric"),
+            self._readiness_bool_gate("access_control_review_uri", bool(workflow["access_control_ready"]), "UI permission/error-state acceptance evidence"),
+            self._readiness_bool_gate("ui_permission_state_review", bool(workflow["permission_state_ready"]), "UI allowed/denied permission state review evidence or checked metric"),
+        ]
+        missing = [gate["gate"] for gate in gates if not gate["passed"]]
+        ready = not missing
+        report = {
+            "ready_for_ui_production": ready,
+            "ready_for_external_acceptance": ready,
+            "missing_requirements": missing,
+            "gates": gates,
+            "artifact_uris": artifacts,
+            "static_contract": static_contract,
+            "browser_acceptance": browser,
+            "workflow_evidence": workflow,
+            "readiness_records": {
+                "production_ui_screenshot_acceptance": screenshot_check,
+                "cross_browser_acceptance": cross_browser_check,
+            },
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "ui_readiness_report_is_a_manifest_only_and_does_not_launch_browsers_or_mark_real_environment_evidence_as_passed",
+        }
+        if self._truthy(payload.get("record_readiness", False)):
+            self._audit(actor, "ui_readiness_report", "readiness", "production_ui", source="ui_readiness", approval_state="ready" if ready else "missing_evidence")
+        return report
+
     def readiness_checklist_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         status_filter = str(filters.get("status", "")).strip()
@@ -13187,6 +18463,8 @@ class SystemService:
                 effective_status = record.status
                 if record.status == "passed" and record.expires_at and record.expires_at < now:
                     effective_status = "expired"
+                elif record.status == "passed" and not self._external_artifact_uri(record.evidence_uri):
+                    effective_status = "invalid_evidence_uri"
                 row["effective_status"] = effective_status
             if status_filter and row["effective_status"] != status_filter and row["status"] != status_filter:
                 continue
@@ -13337,7 +18615,8 @@ class SystemService:
                 continue
             evidence_uri = str(row.get("evidence_uri", ""))
             effective_status = str(row.get("effective_status", "pending"))
-            missing = effective_status != "passed" or not evidence_uri
+            valid_evidence_uri = self._external_artifact_uri(evidence_uri)
+            missing = effective_status != "passed" or not valid_evidence_uri
             if missing or include_passed:
                 required_evidence.append(
                     {
@@ -13346,7 +18625,7 @@ class SystemService:
                         "owner_role": row["owner_role"],
                         "status": effective_status,
                         "evidence_uri": evidence_uri,
-                        "missing_evidence": not evidence_uri,
+                        "missing_evidence": not valid_evidence_uri,
                         "recommended_action": self._readiness_check_action(str(row["check_id"])),
                     }
                 )
@@ -13492,11 +18771,505 @@ class SystemService:
                     "check_status": evidence_status,
                     "evidence_uri": str(check.get("evidence_uri", "")),
                     "outbox_channels_ready": channel_ready,
-                    "ready": evidence_status == "passed" and bool(check.get("evidence_uri", "")) and (channel_ready is not False),
+                    "ready": evidence_status == "passed" and self._external_artifact_uri(check.get("evidence_uri", "")) and (channel_ready is not False),
                     "vision_gate_status": gate.get("status", "not_ready"),
                 }
             )
         return rows
+
+    def _deployment_evidence_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "production_parameters_uri": ["production_parameters_uri", "deployment_parameters_uri", "environment_manifest_uri"],
+            "secret_manager_evidence_uri": ["secret_manager_evidence_uri", "secret_injection_evidence_uri", "kms_evidence_uri"],
+            "backup_restore_evidence_uri": ["backup_restore_evidence_uri", "backup_restore_uri", "restore_drill_uri"],
+            "capacity_baseline_uri": ["capacity_baseline_uri", "capacity_latency_uri", "capacity_report_uri"],
+            "release_checklist_uri": ["release_checklist_uri", "launch_checklist_uri", "release_manifest_uri"],
+            "canary_plan_uri": ["canary_plan_uri", "gray_release_plan_uri", "rollout_plan_uri"],
+            "rollback_plan_uri": ["rollback_plan_uri", "rollback_drill_uri", "rollback_evidence_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _deployment_runtime_config(self, payload: Mapping[str, Any], health: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("runtime", payload.get("environment", {}))
+        config = dict(raw) if isinstance(raw, Mapping) else {}
+        environment = str(payload.get("environment_name") or config.get("name") or config.get("environment") or os.environ.get("AI_QUANT_ENV", "")).strip()
+        postgres_present = bool(payload.get("postgres_configured") or config.get("postgres_configured") or os.environ.get("AI_QUANT_POSTGRES_DSN") or os.environ.get("AI_QUANT_DATABASE_URL"))
+        s3_present = bool(payload.get("s3_configured") or config.get("s3_configured") or (os.environ.get("AI_QUANT_OBJECT_STORE_BACKEND") == "s3" and os.environ.get("AI_QUANT_S3_ENDPOINT") and os.environ.get("AI_QUANT_S3_BUCKET")))
+        opensearch_present = bool(payload.get("opensearch_configured") or config.get("opensearch_configured") or (os.environ.get("AI_QUANT_SEARCH_BACKEND") == "opensearch" and os.environ.get("AI_QUANT_OPENSEARCH_URL")))
+        live_enabled = self._truthy(payload.get("live_execution_enabled", config.get("live_execution_enabled", os.environ.get("AI_QUANT_LIVE_EXECUTION_ENABLED", False))))
+        broker_configured = self._truthy(payload.get("broker_configured", config.get("broker_configured", os.environ.get("AI_QUANT_BROKER_ENABLED", False))))
+        return {
+            "environment": environment,
+            "store": health.get("store", ""),
+            "object_store_backend": dict(health.get("object_store", {})).get("backend", ""),
+            "search_backend": dict(health.get("search_index", {})).get("backend", ""),
+            "postgres_configured": postgres_present,
+            "s3_configured": s3_present,
+            "opensearch_configured": opensearch_present,
+            "live_execution_enabled": live_enabled or broker_configured,
+            "sensitive_values_redacted": True,
+        }
+
+    def _deployment_secret_provider(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("secret_manager", payload.get("secrets", {}))
+        config = dict(raw) if isinstance(raw, Mapping) else {}
+        provider = str(payload.get("secret_manager_provider") or config.get("provider") or os.environ.get("AI_QUANT_SECRET_MANAGER_PROVIDER", "")).strip()
+        injection_mode = str(payload.get("secret_injection_mode") or config.get("injection_mode") or config.get("mode") or "").strip()
+        return {
+            "provider": provider,
+            "injection_mode": injection_mode,
+            "record_count": len(self.store.secret_rotations),
+            "metadata_only": True,
+        }
+
+    def _deployment_release_plan(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        raw = payload.get("release_plan", payload.get("release", {}))
+        plan = dict(raw) if isinstance(raw, Mapping) else {}
+        return {
+            "release_id": str(payload.get("release_id") or plan.get("release_id") or "").strip(),
+            "release_owner": str(payload.get("release_owner") or plan.get("owner") or "").strip(),
+            "canary_window": str(payload.get("canary_window") or plan.get("canary_window") or plan.get("gray_window") or "").strip(),
+            "rollback_owner": str(payload.get("rollback_owner") or plan.get("rollback_owner") or "").strip(),
+            "rollback_window": str(payload.get("rollback_window") or plan.get("rollback_window") or "").strip(),
+        }
+
+    def _deployment_check_passed(self, record: ReadinessCheckRecord | None) -> bool:
+        return bool(
+            record
+            and record.status == "passed"
+            and self._external_artifact_uri(record.evidence_uri)
+            and (not record.expires_at or record.expires_at >= utcnow())
+        )
+
+    def _ui_readiness_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "browser_acceptance_uri": ["browser_acceptance_uri", "ui_browser_acceptance_uri", "ui_acceptance_uri"],
+            "screenshot_manifest_uri": ["screenshot_manifest_uri", "ui_screenshot_manifest_uri", "production_ui_screenshot_uri"],
+            "cross_browser_matrix_uri": ["cross_browser_matrix_uri", "browser_matrix_uri", "cross_browser_acceptance_uri"],
+            "real_data_workflow_uri": ["real_data_workflow_uri", "ui_real_data_workflow_uri", "pagination_filter_workflow_uri"],
+            "data_volume_workflow_uri": ["data_volume_workflow_uri", "large_dataset_workflow_uri", "ui_data_volume_uri", "real_data_volume_uri"],
+            "pagination_workflow_uri": ["pagination_workflow_uri", "ui_pagination_workflow_uri"],
+            "filtering_workflow_uri": ["filtering_workflow_uri", "filter_workflow_uri", "ui_filtering_workflow_uri"],
+            "error_recovery_workflow_uri": ["error_recovery_workflow_uri", "error_state_workflow_uri", "retry_state_workflow_uri", "ui_error_recovery_uri"],
+            "visual_overflow_review_uri": ["visual_overflow_review_uri", "no_overflow_review_uri", "text_overlap_review_uri"],
+            "text_overlap_review_uri": ["text_overlap_review_uri", "text_no_overlap_review_uri", "no_text_overlap_review_uri"],
+            "responsive_layout_review_uri": ["responsive_layout_review_uri", "desktop_mobile_layout_review_uri", "mobile_layout_review_uri"],
+            "access_control_review_uri": ["access_control_review_uri", "ui_permission_review_uri", "error_state_review_uri"],
+            "permission_state_review_uri": ["permission_state_review_uri", "allowed_denied_state_review_uri", "ui_permission_state_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _ui_static_contract_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        run_node = self._truthy(payload.get("run_node_static_check", False))
+        try:
+            from scripts.ui_static_check import validate_ui_html
+
+            result = dict(validate_ui_html(run_node=run_node))
+            result["passed"] = True
+            result["error"] = ""
+            return result
+        except Exception as exc:  # pragma: no cover - defensive manifest path
+            return {
+                "passed": False,
+                "error": str(exc),
+                "path": str(Path(__file__).resolve().parents[1] / "app" / "static" / "index.html"),
+                "nav_labels": 0,
+                "status_labels": 0,
+                "required_ids": 0,
+                "required_functions": 0,
+                "node_check": "failed" if run_node else "skipped",
+            }
+
+    def _ui_readiness_check_summary(self, check_id: str, record: ReadinessCheckRecord | None) -> dict[str, Any]:
+        effective_passed = self._deployment_check_passed(record)
+        return {
+            "check_id": check_id,
+            "present": record is not None,
+            "status": record.status if record else "pending",
+            "effective_status": "passed" if effective_passed else "expired" if record and record.status == "passed" else record.status if record else "pending",
+            "effective_passed": effective_passed,
+            "owner": record.owner if record else "",
+            "evidence_uri": record.evidence_uri if record else "",
+            "notes": record.notes if record else "",
+            "metrics": dict(record.metrics) if record else {},
+            "measured_at": to_plain(record.measured_at) if record else None,
+            "expires_at": to_plain(record.expires_at) if record else None,
+            "updated_at": to_plain(record.updated_at) if record else None,
+        }
+
+    def _ui_browser_acceptance_summary(
+        self,
+        screenshot_record: ReadinessCheckRecord | None,
+        cross_browser_record: ReadinessCheckRecord | None,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        raw_metrics = payload.get("browser_acceptance", payload.get("ui_browser_acceptance", {}))
+        metrics: dict[str, Any] = dict(raw_metrics) if isinstance(raw_metrics, Mapping) else {}
+        for record in (screenshot_record, cross_browser_record):
+            if record and isinstance(record.metrics, Mapping):
+                for key, value in record.metrics.items():
+                    if key not in metrics or metrics.get(key) in (None, "", [], {}):
+                        metrics[key] = value
+        screenshots = [dict(item) for item in metrics.get("screenshots", []) if isinstance(item, Mapping)] if isinstance(metrics.get("screenshots", []), list) else []
+        screenshot_names = {str(item.get("name", "")).strip().lower() for item in screenshots}
+        required_viewports = {"desktop", "mobile"}
+        nonblank_names = {str(item.get("name", "")).strip().lower() for item in screenshots if self._truthy(item.get("nonblank", False))}
+        missing_text = [str(item) for item in metrics.get("missing_text", [])] if isinstance(metrics.get("missing_text", []), list) else []
+        failure_count = int(metrics.get("failure_count", len(metrics.get("failures", [])) if isinstance(metrics.get("failures", []), list) else 0) or 0)
+        status = str(metrics.get("status", "")).strip().lower()
+        required_text = metrics.get("required_text", [])
+        if isinstance(required_text, str):
+            required_text = [item.strip() for item in re.split(r"[\n,]+", required_text) if item.strip()]
+        elif not isinstance(required_text, list):
+            required_text = []
+        raw_matrix = metrics.get("browser_matrix", metrics.get("cross_browser_matrix", []))
+        if isinstance(raw_matrix, Mapping):
+            raw_rows = raw_matrix.get("rows", raw_matrix.get("browsers", raw_matrix.get("matrix", [])))
+        else:
+            raw_rows = raw_matrix
+        matrix_rows = [dict(item) for item in raw_rows if isinstance(item, Mapping)] if isinstance(raw_rows, list) else []
+        browser_values = metrics.get("browsers_checked", metrics.get("browser_families", []))
+        if isinstance(browser_values, str):
+            browser_names = [item.strip() for item in re.split(r"[\n,]+", browser_values) if item.strip()]
+        elif isinstance(browser_values, list):
+            browser_names = [str(item).strip() for item in browser_values if str(item).strip()]
+        else:
+            browser_names = []
+        viewport_values = metrics.get("viewports_checked", metrics.get("viewport_names", []))
+        if isinstance(viewport_values, str):
+            matrix_viewports = [item.strip().lower() for item in re.split(r"[\n,]+", viewport_values) if item.strip()]
+        elif isinstance(viewport_values, list):
+            matrix_viewports = [str(item).strip().lower() for item in viewport_values if str(item).strip()]
+        else:
+            matrix_viewports = []
+        for row in matrix_rows:
+            browser = str(row.get("browser", row.get("browser_family", row.get("engine", "")))).strip()
+            viewport = str(row.get("viewport", row.get("viewport_name", row.get("name", "")))).strip().lower()
+            if browser:
+                browser_names.append(browser)
+            if viewport:
+                matrix_viewports.append(viewport)
+        browser_name = str(metrics.get("browser", "")).strip()
+        if browser_name and not browser_names:
+            browser_names.append(browser_name)
+        browser_families = sorted({self._ui_browser_family_name(item) for item in browser_names if self._ui_browser_family_name(item)})
+        all_viewports = set(screenshot_names) | set(matrix_viewports)
+        try:
+            required_browser_family_count = max(1, int(payload.get("required_browser_family_count", metrics.get("required_browser_family_count", 2)) or 2))
+        except (TypeError, ValueError):
+            required_browser_family_count = 2
+        return {
+            "status": status,
+            "browser": str(metrics.get("browser", "")),
+            "ui_url": str(metrics.get("ui_url", "")),
+            "required_text_count": len(required_text),
+            "missing_text": missing_text,
+            "failure_count": failure_count,
+            "screenshot_count": len(screenshots),
+            "screenshot_names": sorted(name for name in screenshot_names if name),
+            "nonblank_screenshot_names": sorted(name for name in nonblank_names if name),
+            "required_viewports": sorted(required_viewports),
+            "missing_viewports": sorted(required_viewports - screenshot_names),
+            "required_viewports_nonblank": required_viewports <= nonblank_names,
+            "required_text_present": len(required_text) > 0 and not missing_text and failure_count == 0 and status in {"passed", "pass"},
+            "browser_matrix_count": len(matrix_rows),
+            "browser_families": browser_families,
+            "required_browser_family_count": required_browser_family_count,
+            "matrix_viewports": sorted(viewport for viewport in all_viewports if viewport),
+            "cross_browser_matrix_ready": len(browser_families) >= required_browser_family_count and required_viewports <= all_viewports and failure_count == 0,
+            "evidence_uri": str(metrics.get("evidence_uri", "")),
+        }
+
+    def _ui_browser_family_name(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        if "firefox" in text:
+            return "firefox"
+        if "webkit" in text:
+            return "webkit"
+        if "safari" in text:
+            return "safari"
+        if "edge" in text:
+            return "edge"
+        if "chrome" in text or "chromium" in text:
+            return "chromium"
+        return re.sub(r"[^a-z0-9]+", "_", text).strip("_")[:48]
+
+    def _ui_workflow_evidence_summary(
+        self,
+        payload: Mapping[str, Any],
+        artifacts: Mapping[str, str],
+        screenshot_record: ReadinessCheckRecord | None,
+        cross_browser_record: ReadinessCheckRecord | None,
+    ) -> dict[str, Any]:
+        metrics: dict[str, Any] = {}
+        for record in (screenshot_record, cross_browser_record):
+            if record and isinstance(record.metrics, Mapping):
+                metrics.update(record.metrics)
+        raw_workflow = payload.get("workflow_evidence", payload.get("real_data_workflows", {}))
+        if isinstance(raw_workflow, Mapping):
+            metrics.update(raw_workflow)
+        def metric_truthy(*keys: str) -> bool:
+            for key in keys:
+                if key in metrics:
+                    return self._truthy(metrics.get(key))
+            return False
+
+        def metric_int(*keys: str) -> int:
+            for key in keys:
+                value = metrics.get(key)
+                if value in (None, ""):
+                    continue
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    continue
+            return 0
+
+        try:
+            minimum_data_rows = max(1, int(payload.get("min_real_data_rows", metrics.get("min_real_data_rows", 1000)) or 1000))
+        except (TypeError, ValueError):
+            minimum_data_rows = 1000
+        data_volume_rows = metric_int("data_volume_rows", "large_dataset_rows", "dataset_rows", "record_count", "row_count", "sample_rows")
+        data_volume_checked = metric_truthy("data_volume_checked", "large_dataset_checked", "large_data_volume_checked") or data_volume_rows >= minimum_data_rows
+        real_data_flags = {
+            "pagination": self._truthy(metrics.get("pagination_checked", metrics.get("pagination", False))),
+            "filtering": self._truthy(metrics.get("filtering_checked", metrics.get("filters_checked", metrics.get("filtering", False)))),
+            "error_states": self._truthy(metrics.get("error_states_checked", metrics.get("error_states", False))),
+            "real_data": self._truthy(metrics.get("real_data_checked", metrics.get("real_data", False))) or data_volume_checked,
+            "data_volume": data_volume_checked,
+        }
+        real_data_workflow_uri = artifacts.get("real_data_workflow_uri", "")
+        real_data_step_ready = {
+            "data_volume": real_data_flags["data_volume"] or bool(artifacts.get("data_volume_workflow_uri") or real_data_workflow_uri),
+            "pagination": real_data_flags["pagination"] or bool(artifacts.get("pagination_workflow_uri") or real_data_workflow_uri),
+            "filtering": real_data_flags["filtering"] or bool(artifacts.get("filtering_workflow_uri") or real_data_workflow_uri),
+            "error_states": real_data_flags["error_states"] or bool(artifacts.get("error_recovery_workflow_uri") or real_data_workflow_uri),
+        }
+        permission_flags = {
+            "access_control": metric_truthy("permission_checked", "permissions_checked", "access_control_checked"),
+            "allowed_denied_states": metric_truthy("permission_states_checked", "allowed_denied_states_checked", "permission_boundary_checked"),
+            "forbidden_state": metric_truthy("permission_denied_state_checked", "denied_state_checked", "forbidden_state_checked"),
+        }
+        permission_checked = any(permission_flags.values())
+        permission_state_ready = bool(artifacts.get("permission_state_review_uri") or artifacts.get("access_control_review_uri")) or permission_checked
+        visual_flags = {
+            "text_no_overlap": metric_truthy("text_no_overlap_checked", "no_text_overlap_checked", "no_overlap_checked", "text_overlap_checked"),
+            "visual_no_overflow": metric_truthy("visual_no_overflow_checked", "no_overflow_checked", "visual_overflow_checked", "overflow_checked"),
+            "responsive_layout": metric_truthy("responsive_layout_checked", "desktop_mobile_layout_checked", "mobile_layout_checked"),
+        }
+        visual_artifact = artifacts.get("visual_overflow_review_uri", "")
+        visual_step_ready = {
+            "text_no_overlap": visual_flags["text_no_overlap"] or bool(artifacts.get("text_overlap_review_uri") or visual_artifact),
+            "visual_no_overflow": visual_flags["visual_no_overflow"] or bool(artifacts.get("responsive_layout_review_uri") or visual_artifact),
+            "responsive_layout": visual_flags["responsive_layout"] or bool(artifacts.get("responsive_layout_review_uri") or visual_artifact),
+        }
+        return {
+            "real_data_flags": real_data_flags,
+            "real_data_step_ready": real_data_step_ready,
+            "real_data_workflows_ready": all(real_data_step_ready.values()),
+            "minimum_data_rows": minimum_data_rows,
+            "data_volume_rows": data_volume_rows,
+            "permission_flags": permission_flags,
+            "permission_state_ready": permission_state_ready,
+            "visual_flags": visual_flags,
+            "visual_step_ready": visual_step_ready,
+            "visual_overflow_ready": visual_step_ready["text_no_overlap"] and visual_step_ready["visual_no_overflow"],
+            "access_control_ready": bool(artifacts.get("access_control_review_uri")) or permission_checked,
+            "real_data_workflow_uri": real_data_workflow_uri,
+            "visual_overflow_review_uri": visual_artifact,
+            "access_control_review_uri": artifacts.get("access_control_review_uri", ""),
+        }
+
+    def _orchestration_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "scheduler_deployment_uri": ["scheduler_deployment_uri", "orchestrator_deployment_uri", "airflow_dagster_cron_uri"],
+            "worker_pool_evidence_uri": ["worker_pool_evidence_uri", "queue_binding_evidence_uri", "worker_deployment_uri"],
+            "external_sensor_evidence_uri": ["external_sensor_evidence_uri", "sensor_connectivity_uri", "external_sensor_uri"],
+            "backfill_drill_uri": ["backfill_drill_uri", "large_window_backfill_uri", "backfill_artifact_uri"],
+            "openlineage_delivery_evidence_uri": ["openlineage_delivery_evidence_uri", "lineage_delivery_uri", "openlineage_client_uri"],
+            "mlflow_registry_evidence_uri": ["mlflow_registry_evidence_uri", "model_registry_evidence_uri", "mlflow_connectivity_uri"],
+            "replay_runbook_uri": ["replay_runbook_uri", "workflow_replay_runbook_uri", "retry_runbook_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _orchestration_adapter_config(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("adapters", payload.get("adapter_config", {}))
+        adapters = dict(raw) if isinstance(raw, Mapping) else {}
+        scheduler_raw = adapters.get("scheduler", {})
+        openlineage_raw = adapters.get("openlineage", {})
+        mlflow_raw = adapters.get("mlflow", {})
+        scheduler = dict(scheduler_raw) if isinstance(scheduler_raw, Mapping) else {}
+        openlineage = dict(openlineage_raw) if isinstance(openlineage_raw, Mapping) else {}
+        mlflow = dict(mlflow_raw) if isinstance(mlflow_raw, Mapping) else {}
+        scheduler_endpoint = str(payload.get("scheduler_endpoint") or scheduler.get("endpoint") or scheduler.get("url") or os.environ.get("AI_QUANT_SCHEDULER_URL", "")).strip()
+        openlineage_endpoint = str(payload.get("openlineage_endpoint") or openlineage.get("endpoint") or openlineage.get("url") or os.environ.get("AI_QUANT_OPENLINEAGE_URL", "") or os.environ.get("AI_QUANT_OPENLINEAGE_TARGET", "")).strip()
+        mlflow_endpoint = str(payload.get("mlflow_endpoint") or mlflow.get("endpoint") or mlflow.get("url") or os.environ.get("AI_QUANT_MLFLOW_TRACKING_URI", "") or os.environ.get("AI_QUANT_MLFLOW_TARGET", "")).strip()
+        return {
+            "scheduler": {
+                "endpoint_configured": bool(scheduler_endpoint),
+                "non_local_configured": self._non_local_endpoint(scheduler_endpoint),
+                "endpoint_redacted": self._redacted_endpoint(scheduler_endpoint),
+            },
+            "openlineage": {
+                "endpoint_configured": bool(openlineage_endpoint),
+                "non_local_configured": self._non_local_endpoint(openlineage_endpoint),
+                "endpoint_redacted": self._redacted_endpoint(openlineage_endpoint),
+            },
+            "mlflow": {
+                "endpoint_configured": bool(mlflow_endpoint),
+                "non_local_configured": self._non_local_endpoint(mlflow_endpoint),
+                "endpoint_redacted": self._redacted_endpoint(mlflow_endpoint),
+            },
+        }
+
+    def _orchestration_outbox_summary(self) -> dict[str, Any]:
+        def summarize(channel: str) -> dict[str, Any]:
+            notifications = [item for item in self.store.alert_notifications.values() if item.channel == channel]
+            return {
+                "channel": channel,
+                "notification_count": len(notifications),
+                "pending_count": sum(1 for item in notifications if item.status == "pending"),
+                "sent_count": sum(1 for item in notifications if item.status == "sent"),
+                "failed_count": sum(1 for item in notifications if item.status == "failed"),
+                "targets": sorted({item.target for item in notifications if item.target}),
+            }
+
+        return {
+            "openlineage": summarize("openlineage_submission_outbox"),
+            "mlflow": summarize("mlflow_registry_outbox"),
+        }
+
+    def _orchestration_replay_summary(self) -> dict[str, Any]:
+        retry_runs = [item for item in self.store.workflow_runs.values() if item.inputs.get("retry_of")]
+        retry_source_ids = {str(item.inputs.get("retry_of")) for item in retry_runs if item.inputs.get("retry_of")}
+        failed_or_review = [item for item in self.store.workflow_runs.values() if item.status in {"failed", "needs_review"} and not item.inputs.get("retry_of")]
+        return {
+            "retry_run_count": len(retry_runs),
+            "retry_source_count": len(retry_source_ids),
+            "failed_or_review_count": len(failed_or_review),
+            "unreplayed_run_ids": sorted(item.run_id for item in failed_or_review if item.run_id not in retry_source_ids),
+        }
+
+    def _orchestration_model_registry_summary(self, mlflow_export: Mapping[str, Any]) -> dict[str, Any]:
+        approved = [item for item in self.store.model_versions.values() if item.status == "approved"]
+        approved_with_artifact = [item for item in approved if item.artifact_uri]
+        prompt_linked = [item for item in approved if item.prompt_versions]
+        models = list(mlflow_export.get("models", []))
+        return {
+            "model_version_count": len(self.store.model_versions),
+            "approved_model_count": len(approved),
+            "approved_artifact_coverage": round(len(approved_with_artifact) / max(1, len(approved)), 4) if approved else 1.0,
+            "approved_prompt_link_rate": round(len(prompt_linked) / max(1, len(approved)), 4) if approved else 1.0,
+            "mlflow_payload_model_count": len(models),
+        }
+
+    def _graph_vector_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "neo4j_sync_artifact_uri": ["neo4j_sync_artifact_uri", "neo4j_artifact_uri", "graph_sync_artifact_uri"],
+            "qdrant_sync_artifact_uri": ["qdrant_sync_artifact_uri", "qdrant_artifact_uri", "vector_sync_artifact_uri"],
+            "throughput_baseline_uri": ["throughput_baseline_uri", "sync_throughput_uri", "batch_sync_baseline_uri"],
+            "failure_recovery_uri": ["failure_recovery_uri", "failure_injection_uri", "retry_recovery_uri"],
+            "permission_boundary_uri": ["permission_boundary_uri", "rights_boundary_uri", "adapter_permissions_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _graph_vector_adapter_config(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("adapters", payload.get("adapter_config", {}))
+        adapters = dict(raw) if isinstance(raw, Mapping) else {}
+        neo4j_raw = adapters.get("neo4j", {})
+        qdrant_raw = adapters.get("qdrant", {})
+        neo4j = dict(neo4j_raw) if isinstance(neo4j_raw, Mapping) else {}
+        qdrant = dict(qdrant_raw) if isinstance(qdrant_raw, Mapping) else {}
+        neo4j_endpoint = str(payload.get("neo4j_endpoint") or neo4j.get("endpoint") or neo4j.get("uri") or os.environ.get("AI_QUANT_NEO4J_HTTP_URL", "") or os.environ.get("AI_QUANT_NEO4J_SYNC_TARGET", "")).strip()
+        qdrant_endpoint = str(payload.get("qdrant_endpoint") or qdrant.get("endpoint") or qdrant.get("url") or os.environ.get("AI_QUANT_QDRANT_SYNC_TARGET", "")).strip()
+        return {
+            "neo4j": {
+                "endpoint_configured": bool(neo4j_endpoint),
+                "non_local_configured": self._non_local_endpoint(neo4j_endpoint),
+                "endpoint_redacted": self._redacted_endpoint(neo4j_endpoint),
+            },
+            "qdrant": {
+                "endpoint_configured": bool(qdrant_endpoint),
+                "non_local_configured": self._non_local_endpoint(qdrant_endpoint),
+                "endpoint_redacted": self._redacted_endpoint(qdrant_endpoint),
+            },
+        }
+
+    def _graph_vector_throughput(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("throughput", payload.get("throughput_baseline", {}))
+        data = dict(raw) if isinstance(raw, Mapping) else {}
+        graph_nodes_per_second = float(payload.get("graph_nodes_per_second", data.get("graph_nodes_per_second", data.get("nodes_per_second", 0))) or 0.0)
+        vector_points_per_second = float(payload.get("vector_points_per_second", data.get("vector_points_per_second", data.get("points_per_second", 0))) or 0.0)
+        duration_seconds = float(payload.get("duration_seconds", data.get("duration_seconds", 0)) or 0.0)
+        artifact_uri = self._graph_vector_artifact_uris(payload).get("throughput_baseline_uri", "")
+        return {
+            "graph_nodes_per_second": graph_nodes_per_second,
+            "vector_points_per_second": vector_points_per_second,
+            "duration_seconds": duration_seconds,
+            "artifact_uri": artifact_uri,
+            "present": bool(artifact_uri) and graph_nodes_per_second > 0 and vector_points_per_second > 0,
+        }
+
+    def _graph_vector_retry_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        channels = {"neo4j_graph_sync_outbox", "qdrant_vector_sync_outbox"}
+        notifications = [item for item in self.store.alert_notifications.values() if item.channel in channels]
+        failed = [item for item in notifications if item.status == "failed"]
+        sent = [item for item in notifications if item.status == "sent"]
+        recovery_uri = self._graph_vector_artifact_uris(payload).get("failure_recovery_uri", "")
+        retry_result = payload.get("retry_result", payload.get("failure_recovery", {}))
+        retried_count = int(retry_result.get("retried_count", 0)) if isinstance(retry_result, Mapping) else 0
+        return {
+            "notification_count": len(notifications),
+            "failed_count": len(failed),
+            "sent_count": len(sent),
+            "retried_count": retried_count,
+            "failure_recovery_uri": recovery_uri,
+            "recovery_evidence_present": bool(recovery_uri) and (retried_count > 0 or bool(sent)),
+        }
+
+    def _security_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "secret_manager_evidence_uri": ["secret_manager_evidence_uri", "kms_evidence_uri", "secret_rotation_evidence_uri"],
+            "least_privilege_policy_uri": ["least_privilege_policy_uri", "api_key_policy_uri", "storage_policy_uri"],
+            "external_delete_evidence_uri": ["external_delete_evidence_uri", "cache_delete_evidence_uri", "kms_dlp_delete_evidence_uri"],
+            "permission_review_uri": ["permission_review_uri", "red_domain_review_uri", "permission_red_team_uri"],
+            "data_security_scan_uri": ["data_security_scan_uri", "sensitive_scan_uri"],
+            "source_governance_uri": ["source_governance_uri", "provenance_ledger_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _security_external_controls(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        raw = payload.get("external_controls", payload.get("security_controls", {}))
+        controls = dict(raw) if isinstance(raw, Mapping) else {}
+        provider = str(payload.get("secret_manager_provider") or controls.get("secret_manager_provider") or os.environ.get("AI_QUANT_SECRET_MANAGER_PROVIDER", "")).strip()
+        api_key_scope = str(payload.get("api_key_scope") or controls.get("api_key_scope") or "").strip()
+        delete_executor = str(payload.get("delete_executor") or controls.get("delete_executor") or "").strip()
+        return {
+            "secret_manager_provider": provider,
+            "api_key_scope": api_key_scope,
+            "delete_executor": delete_executor,
+            "metadata_only": True,
+        }
+
+    def _non_local_endpoint(self, endpoint: str) -> bool:
+        parsed = urlparse(endpoint)
+        host = parsed.hostname or (endpoint.split("/")[0].split(":")[0] if endpoint else "")
+        if not host:
+            return False
+        return host not in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+    def _redacted_endpoint(self, endpoint: str) -> str:
+        if not endpoint:
+            return ""
+        parsed = urlparse(endpoint)
+        if parsed.username or parsed.password:
+            netloc = parsed.hostname or ""
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+        return endpoint
 
     def _gate(self, name: str, value: float, threshold: float, operator: str) -> dict[str, Any]:
         if operator == ">=":
@@ -13802,6 +19575,91 @@ class SystemService:
             "explanation": "semantic_score + term_coverage + resource_weight - boundary_penalty",
         }
 
+    def _semantic_candidate_ref(self, candidate: Mapping[str, Any]) -> str:
+        resource_type = str(candidate.get("resource_type", "")).strip()
+        resource_id = str(candidate.get("resource_id", "")).strip()
+        if resource_type and resource_id:
+            return f"{resource_type}:{resource_id}"
+        return resource_id or resource_type
+
+    def _semantic_llm_candidate_rows(self, candidates: list[dict[str, Any]], *, limit: int = 12) -> str:
+        rows: list[dict[str, Any]] = []
+        for candidate in candidates[:limit]:
+            rows.append(
+                {
+                    "resource_ref": self._semantic_candidate_ref(candidate),
+                    "resource_type": candidate.get("resource_type", ""),
+                    "resource_id": candidate.get("resource_id", ""),
+                    "title": candidate.get("title", ""),
+                    "score": candidate.get("score", 0.0),
+                    "rerank_score": candidate.get("rerank_score", candidate.get("score", 0.0)),
+                    "snippet": candidate.get("snippet", ""),
+                    "risk_level": candidate.get("risk_level", ""),
+                    "source_boundary": candidate.get("source_boundary", ""),
+                    "matched_terms": candidate.get("matched_terms", []),
+                    "score_components": candidate.get("score_components", {}),
+                }
+            )
+        return json.dumps(rows, ensure_ascii=False, indent=2)
+
+    def _semantic_llm_ordered_resource_ids(
+        self,
+        llm_run: LLMTaskRun,
+        candidates: list[dict[str, Any]],
+    ) -> tuple[list[str], str]:
+        text = self._llm_output_text(llm_run.output).strip()
+        if not text:
+            return [], "empty_llm_output"
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            return [], f"json_parse_error:{exc.msg}"
+        ordered: list[str] = []
+        if isinstance(payload, Mapping):
+            raw = payload.get("ordered_resource_ids", payload.get("ordered_resource_refs", []))
+            if isinstance(raw, list):
+                for item in raw:
+                    ref = str(item).strip()
+                    if ref:
+                        ordered.append(ref)
+        if not ordered:
+            return [], "missing_ordered_resource_ids"
+        candidate_refs = {self._semantic_candidate_ref(candidate): candidate for candidate in candidates}
+        resolved: list[str] = []
+        for ref in ordered:
+            if ref in candidate_refs:
+                resolved.append(ref)
+                continue
+            matches = [candidate for candidate in candidates if str(candidate.get("resource_id", "")) == ref]
+            if matches:
+                resolved.append(self._semantic_candidate_ref(matches[0]))
+        if not resolved:
+            return [], "no_candidate_ids_matched"
+        return resolved, ""
+
+    def _semantic_expected_refs(self, sample: Mapping[str, Any]) -> list[str]:
+        raw_refs = sample.get("expected_resource_refs", sample.get("expected_resource_ids", []))
+        refs: list[str] = []
+        if isinstance(raw_refs, str):
+            raw_refs = [item.strip() for item in raw_refs.split(",") if item.strip()]
+        if isinstance(raw_refs, list):
+            for item in raw_refs:
+                if isinstance(item, Mapping):
+                    resource_type = str(item.get("resource_type", "")).strip()
+                    resource_id = str(item.get("resource_id", "")).strip()
+                    if resource_type and resource_id:
+                        refs.append(f"{resource_type}:{resource_id}")
+                    continue
+                ref = str(item).strip()
+                if not ref:
+                    continue
+                if ":" in ref:
+                    refs.append(ref)
+                else:
+                    expected_type = str(sample.get("expected_resource_type", sample.get("resource_type", ""))).strip()
+                    refs.append(f"{expected_type}:{ref}" if expected_type else ref)
+        return sorted(set(refs))
+
     def _search_record_boundary(self, record: SearchRecord) -> dict[str, Any]:
         return self._search_record_boundary_by_ref(record.resource_type, record.resource_id)
 
@@ -13853,7 +19711,7 @@ class SystemService:
         failed_workflow_runs = sum(1 for item in self.store.workflow_runs.values() if item.status in {"failed", "needs_review"})
         running_workflow_runs = sum(1 for item in self.store.workflow_runs.values() if item.status in {"queued", "running"})
         workflow_sla = self.workflow_sla_report({"limit": 1000})
-        sensitive_findings = self.data_security_report({"limit": 1000})["total"]
+        sensitive_findings = self._quick_sensitive_finding_count()
         answer_quality = self.research_answer_quality_report({"limit": 1000})
         permission_denied_events = sum(1 for item in self.store.audit_log if item.action == "permission_denied")
         secret_rotations = self.secret_rotations_payload({"limit": 1000})
@@ -13887,6 +19745,34 @@ class SystemService:
             "store": type(self.store).__name__,
         }
 
+    def _market_data_count_for_dashboard(self) -> int:
+        lazy_count = int(getattr(self.store, "_lazy_market_data_count", 0) or 0)
+        if lazy_count:
+            return max(len(self.store.market_data), lazy_count)
+        if self._market_data_direct_query_enabled():
+            return self._count_market_data_points()
+        return max(len(self.store.market_data), lazy_count)
+
+    def _quick_sensitive_finding_count(self) -> int:
+        total = 0
+        for document in self.store.documents.values():
+            text = document.body or self._document_object_text(document)
+            if not text:
+                continue
+            resource = {
+                "resource_type": "document",
+                "resource_id": document.document_id,
+                "document_id": document.document_id,
+                "issuer_id": document.issuer_id,
+                "source_id": document.source_id,
+                "source_type": "",
+                "source_risk_level": "unknown",
+                "rights_tag": to_plain(document.rights_tag),
+                "field_name": "body",
+            }
+            total += len(self._sensitive_findings_for_text(text[:2000], resource=resource))
+        return total
+
     def dashboard(self) -> dict[str, Any]:
         pending_decisions = sum(1 for decision in self.store.decisions.values() if decision.approval_state == "pending")
         approved_decisions = sum(1 for decision in self.store.decisions.values() if decision.approval_state == "approved")
@@ -13894,7 +19780,7 @@ class SystemService:
         open_manual_reviews = sum(1 for item in self.store.manual_reviews.values() if item.status == "open")
         open_alerts = sum(1 for item in self.store.system_alerts.values() if item.status == "open")
         source_review_reminders = self.source_review_reminders_payload({"due_within_days": 30, "limit": 10})
-        sensitive_findings = self.data_security_report({"limit": 1000})["total"]
+        sensitive_findings = self._quick_sensitive_finding_count()
         answer_quality = self.research_answer_quality_report({"limit": 1000})
         permission_denied_events = sum(1 for item in self.store.audit_log if item.action == "permission_denied")
         market_data_summary = [
@@ -13972,12 +19858,13 @@ class SystemService:
                 "ingestion_schedules": len(self.store.ingestion_schedules),
                 "issuers": len(self.store.issuers),
                 "securities": len(self.store.securities),
-                "market_data": len(self.store.market_data),
+                "market_data": self._market_data_count_for_dashboard(),
                 "corporate_actions": len(self.store.corporate_actions),
                 "institutional_holdings": len(self.store.institutional_holdings),
                 "disclosure_events": len(self.store.disclosure_events),
                 "documents": len(self.store.documents),
                 "evidence": len(self.store.evidence),
+                "research_report_citation_evidence": sum(1 for item in self.store.evidence.values() if item.section == "research_report_citation"),
                 "manual_reviews": len(self.store.manual_reviews),
                 "open_manual_reviews": open_manual_reviews,
                 "benchmark_samples": len(self.store.benchmark_samples),
@@ -14119,6 +20006,21 @@ class SystemService:
 
     def _bounded_limit(self, value: Any, max_value: int = 100) -> int:
         return max(1, min(max_value, int(value)))
+
+    def _page_rows(self, rows: list[Any], *, offset: int, page_size: int) -> tuple[list[Any], dict[str, Any]]:
+        safe_offset = max(0, offset)
+        safe_page_size = max(1, page_size)
+        total = len(rows)
+        end = safe_offset + safe_page_size
+        next_token = str(end) if end < total else None
+        return rows[safe_offset:end], {
+            "total": total,
+            "offset": safe_offset,
+            "page_size": safe_page_size,
+            "returned": max(0, min(end, total) - min(safe_offset, total)),
+            "has_more": end < total,
+            "next_page_token": next_token,
+        }
 
     def _truthy(self, value: Any) -> bool:
         if isinstance(value, bool):
@@ -14426,6 +20328,16 @@ class SystemService:
         return sum(float(action.cash_amount or 0.0) for action in actions if action.action_type == "cash_dividend" and action.ex_date == as_of_date)
 
     def _latest_market_data_point(self, security_id: str, *, source_id: str, data_type: str, as_of_date: str) -> MarketDataPoint | None:
+        if self._market_data_direct_query_enabled():
+            points = self._query_market_data_points(
+                security_id=security_id,
+                source_id=source_id,
+                data_type=data_type,
+                as_of_date_lte=as_of_date,
+                limit=1,
+                descending=True,
+            )
+            return points[0] if points else None
         points = [
             point
             for point in self.store.market_data.values()
@@ -14565,6 +20477,109 @@ class SystemService:
         if unknown_fields:
             raise ValidationError(f"market data fields exceed source whitelist: {', '.join(unknown_fields)}")
 
+    def _normalize_portfolio_transaction_row(
+        self,
+        row: Mapping[str, Any],
+        *,
+        index: int,
+        source_id: str,
+        account_id: str,
+        strategy_id: str,
+        security_map: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        raw_security = self._first_present(row, "security_id", "symbol", "ticker", "code", "ts_code", "instrument", "asset", "sid")
+        security = self._resolve_transaction_security(str(raw_security), security_map)
+        if security is None:
+            raise NotFoundError(f"security mapping not found for transaction row {index}: {raw_security}")
+        trade_date = self._normalize_transaction_date(self._first_present(row, "trade_date", "date", "datetime", "timestamp", "filled_at", "time"))
+        raw_quantity = self._first_present(row, "quantity", "qty", "shares", "size", "volume", "amount_shares", "signed_qty", "position_delta")
+        side = self._normalize_transaction_side(
+            self._first_present(row, "side", "action", "direction", "order_side", "trade_side"),
+            signed_quantity=raw_quantity,
+        )
+        quantity = abs(float(raw_quantity or 0.0))
+        price = float(self._first_present(row, "price", "fill_price", "avg_price", "close", "execution_price") or 0.0)
+        fees = float(self._first_present(row, "fees", "fee", "commission", "cost", "transaction_cost") or 0.0)
+        row_account_id = str(self._first_present(row, "account_id", "account", "portfolio_id", "book") or account_id)
+        row_strategy_id = str(self._first_present(row, "strategy_id", "strategy", "model", "run_id") or strategy_id)
+        transaction_id = str(self._first_present(row, "transaction_id", "trade_id", "order_id", "fill_id", "id") or "").strip()
+        if not transaction_id:
+            key = f"{security.security_id}|{trade_date}|{side}|{quantity:.8f}|{price:.8f}|{row_account_id}|{row_strategy_id}|{index}"
+            transaction_id = f"ptxn_imp_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
+        return {
+            "transaction_id": transaction_id,
+            "security_id": security.security_id,
+            "trade_date": trade_date,
+            "side": side,
+            "quantity": quantity,
+            "price": price,
+            "currency": str(row.get("currency", security.currency)),
+            "fees": fees,
+            "source_id": source_id,
+            "account_id": row_account_id,
+            "strategy_id": row_strategy_id,
+            "raw_fields": {str(key): row[key] for key in row},
+        }
+
+    def _resolve_transaction_security(self, raw_security: str, security_map: Mapping[str, Any]) -> Security | None:
+        raw = str(raw_security).strip()
+        if not raw:
+            return None
+        normalized_tdx = self._normalize_tdx_symbol(raw)
+        for key in (raw, raw.upper(), raw.lower(), normalized_tdx):
+            mapped = str(security_map.get(key, "")).strip()
+            if mapped and mapped in self.store.securities:
+                return self.store.securities[mapped]
+        if raw in self.store.securities:
+            return self.store.securities[raw]
+        if normalized_tdx and normalized_tdx in self.store.securities:
+            return self.store.securities[normalized_tdx]
+        for security in self.store.securities.values():
+            if security.ticker and (security.ticker == raw or security.ticker.upper() == raw.upper()):
+                return security
+            if normalized_tdx and self._normalize_tdx_symbol(security.ticker) == normalized_tdx:
+                return security
+            if security.isin and security.isin.upper() == raw.upper():
+                return security
+            if security.figi and security.figi.upper() == raw.upper():
+                return security
+        return None
+
+    def _normalize_transaction_date(self, value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValidationError("transaction row requires trade_date")
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw[:10]):
+            return raw[:10]
+        digits = re.sub(r"\D", "", raw)
+        if len(digits) >= 8:
+            digits = digits[:8]
+            return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+        raise ValidationError("transaction trade_date must be YYYY-MM-DD or YYYYMMDD")
+
+    def _normalize_transaction_side(self, value: Any, *, signed_quantity: Any = None) -> str:
+        raw = str(value or "").strip().lower()
+        if not raw and signed_quantity is not None:
+            try:
+                return "sell" if float(signed_quantity) < 0 else "buy"
+            except (TypeError, ValueError):
+                pass
+        if raw in {"buy", "b", "long", "open_long", "1", "+1"}:
+            return "buy"
+        if raw in {"sell", "s", "short", "close_long", "-1"}:
+            return "sell"
+        raise ValidationError("transaction side must map to buy or sell")
+
+    def _first_present(self, row: Mapping[str, Any], *keys: str) -> Any:
+        lowered = {str(key).lower(): key for key in row}
+        for key in keys:
+            actual = lowered.get(key.lower())
+            if actual is not None:
+                value = row.get(actual)
+                if value is not None and value != "":
+                    return value
+        return None
+
     def _review_period(self, reviewed_at: Any) -> str:
         month = int(reviewed_at.month)
         quarter = (month - 1) // 3 + 1
@@ -14624,6 +20639,42 @@ class SystemService:
         normalized["raw_keys"] = sorted(str(key) for key in row.keys())
         normalized["usage_boundary"] = "manual_reference_or_supplemental_research_only"
         return normalized
+
+    def _astock_readiness_sample_rows(self, connector_id: str, raw: Any) -> list[Mapping[str, Any]]:
+        if isinstance(raw, Mapping):
+            value = raw.get(connector_id, raw.get("default", raw.get("rows", raw.get("sample_rows", []))))
+        else:
+            value = raw
+        if isinstance(value, Mapping):
+            return [value]
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, Mapping)]
+        return []
+
+    def _astock_verification_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = payload.get("artifact_uris", payload.get("artifacts", {}))
+        return dict(raw) if isinstance(raw, Mapping) else {}
+
+    def _astock_connector_artifacts(self, connector_id: str, artifacts: Mapping[str, Any]) -> dict[str, str]:
+        raw = artifacts.get(connector_id, {})
+        scoped = dict(raw) if isinstance(raw, Mapping) else {}
+        aliases = {
+            "endpoint_artifact_uri": ["endpoint_artifact_uri", "availability_artifact_uri", "real_endpoint_artifact_uri"],
+            "stability_artifact_uri": ["stability_artifact_uri", "stability_report_uri", "uptime_artifact_uri", "availability_window_artifact_uri", "real_endpoint_stability_uri"],
+            "rate_limit_artifact_uri": ["rate_limit_artifact_uri", "rate_limit_review_uri", "quota_review_uri", "rate_limit_evidence_uri", "throttle_policy_uri"],
+            "license_review_uri": ["license_review_uri", "tos_review_uri", "rights_review_uri"],
+            "field_sample_uri": ["field_sample_uri", "sample_artifact_uri", "schema_sample_uri"],
+        }
+        result: dict[str, str] = {}
+        for key, candidates in aliases.items():
+            value = ""
+            for candidate in candidates:
+                candidate_value = str(scoped.get(candidate) or artifacts.get(candidate) or "").strip()
+                if self._external_artifact_uri(candidate_value):
+                    value = candidate_value
+                    break
+            result[key] = value
+        return result
 
     def _astock_automation_blockers(self, connector: AStockConnectorDefinition, source: SourceDefinition) -> list[str]:
         blockers: list[str] = []
@@ -14823,12 +20874,12 @@ class SystemService:
         return list(dict.fromkeys(symbols))
 
     def _tdx_adapter(self, payload: Mapping[str, Any]) -> Any:
-        source_format = str(payload.get("source_format", payload.get("adapter", "duckdb"))).strip().lower()
-        if source_format in {"duckdb", "local_duckdb", ""}:
-            return self.tdx_market_data
+        source_format = str(payload.get("source_format", payload.get("adapter", "vipdoc"))).strip().lower()
         if source_format in {"vipdoc", "day", "tdx_vipdoc"}:
             return self.tdx_vipdoc
-        raise ValidationError("TDX source_format must be duckdb or vipdoc")
+        if source_format == "":
+            return self.tdx_vipdoc
+        raise ValidationError("TDX source_format must be vipdoc")
 
     def _resolve_tdx_security(self, symbol: str, security_map: Mapping[str, Any]) -> Security | None:
         """Resolve a TDX symbol to a registered Security.
@@ -15051,6 +21102,22 @@ class SystemService:
                 scored.append((score, item))
         scored.sort(key=lambda pair: (pair[0], pair[1].confidence), reverse=True)
         return [item for _score, item in scored[:5]]
+
+    def _filing_qa_evidence(self, evidence: list[Evidence], *, question: str, limit: int) -> list[Evidence]:
+        terms = [term.lower() for term in re.findall(r"[\w]+", question) if len(term) >= 4]
+        scored: list[tuple[int, float, int, Evidence]] = []
+        fallback: list[tuple[float, int, Evidence]] = []
+        for item in evidence:
+            text = (item.canonical_text or item.span_text).lower()
+            score = sum(1 for term in terms if term in text)
+            fallback.append((item.confidence, -item.page_no, item))
+            if score > 0:
+                scored.append((score, item.confidence, -item.page_no, item))
+        if scored:
+            scored.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+            return [item for _score, _confidence, _page_no, item in scored[:limit]]
+        fallback.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        return [item for _confidence, _page_no, item in fallback[:limit]]
 
     def _research_answer_citations(self, evidence: list[Evidence]) -> list[dict[str, Any]]:
         citations: list[dict[str, Any]] = []
@@ -15453,6 +21520,95 @@ class SystemService:
             }
         ]
 
+    def _adjacent_document_tables(self, evidence: Evidence, *, base_tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        tables_by_page_chunk: list[tuple[int, int, str, dict[str, Any]]] = []
+        for item in self.store.evidence.values():
+            if item.document_id != evidence.document_id:
+                continue
+            candidate_tables = base_tables if item.evidence_id == evidence.evidence_id else self._extract_tables(item.canonical_text or item.span_text, evidence=item)
+            if not candidate_tables:
+                continue
+            chunk_index = 0
+            if isinstance(item.locator, Mapping):
+                chunk_index = int(item.locator.get("chunk_index", 0) or 0)
+            for table in candidate_tables:
+                tables_by_page_chunk.append((int(item.page_no or 0), chunk_index, item.evidence_id, dict(table)))
+        tables_by_page_chunk.sort(key=lambda row: (row[0], row[1], row[2]))
+        return [table for _page, _chunk, _evidence_id, table in tables_by_page_chunk]
+
+    def _merge_cross_page_tables(self, tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not tables:
+            return []
+        groups: list[list[dict[str, Any]]] = []
+        for table in tables:
+            if not groups or not self._tables_can_merge(groups[-1][-1], table):
+                groups.append([table])
+            else:
+                groups[-1].append(table)
+        merged: list[dict[str, Any]] = []
+        for group in groups:
+            merged.append(self._merge_table_group(group) if len(group) > 1 else group[0])
+        return merged
+
+    def _tables_can_merge(self, left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+        left_headers = [str(item).strip().lower() for item in left.get("headers", []) if str(item).strip()]
+        right_headers = [str(item).strip().lower() for item in right.get("headers", []) if str(item).strip()]
+        if left_headers and right_headers:
+            return left_headers == right_headers
+        left_columns = self._table_column_signature(left)
+        right_columns = self._table_column_signature(right)
+        if left_columns and right_columns:
+            return left_columns == right_columns
+        return False
+
+    def _table_column_signature(self, table: Mapping[str, Any]) -> list[str]:
+        cells = table.get("cells", [])
+        if not isinstance(cells, list):
+            return []
+        columns = sorted({str(cell.get("column", "")).strip().lower() for cell in cells if isinstance(cell, Mapping) and str(cell.get("column", "")).strip()})
+        return columns
+
+    def _merge_table_group(self, tables: list[dict[str, Any]]) -> dict[str, Any]:
+        first = tables[0]
+        headers = list(first.get("headers", []))
+        rows: list[list[str]] = []
+        cells: list[dict[str, Any]] = []
+        row_offset = 0
+        source_pages: list[int] = []
+        source_bboxes: list[str] = []
+        for table in tables:
+            source_pages.append(int(table.get("page_no", 0) or 0))
+            if table.get("bbox"):
+                source_bboxes.append(str(table.get("bbox")))
+            table_rows = [list(row) for row in table.get("rows", []) if isinstance(row, list)]
+            rows.extend(table_rows)
+            for cell in table.get("cells", []):
+                if not isinstance(cell, Mapping):
+                    continue
+                merged_cell = dict(cell)
+                original_row = int(merged_cell.get("row", 0) or 0)
+                merged_cell["source_row"] = original_row
+                merged_cell["source_page_no"] = int(cell.get("page_no", table.get("page_no", 0)) or 0)
+                merged_cell["row"] = original_row + row_offset
+                if merged_cell.get("bbox") and "merged_row=" not in str(merged_cell["bbox"]):
+                    merged_cell["bbox"] = f"{merged_cell['bbox']};merged_row={merged_cell['row']}"
+                cells.append(merged_cell)
+            row_offset += int(table.get("row_count", len(table_rows)) or len(table_rows))
+        page_numbers = sorted({page for page in source_pages if page})
+        return {
+            "headers": headers,
+            "rows": rows,
+            "cells": cells,
+            "row_count": row_offset,
+            "column_count": int(first.get("column_count", len(headers)) or len(headers)),
+            "page_no": page_numbers[0] if page_numbers else int(first.get("page_no", 0) or 0),
+            "page_numbers": page_numbers,
+            "bbox": ";".join(source_bboxes),
+            "confidence": round(min(float(table.get("confidence", 0.0) or 0.0) for table in tables), 4),
+            "merged_from_table_count": len(tables),
+            "merge_strategy": "cross_page_same_headers",
+        }
+
     def _tables_from_locator(self, evidence: Evidence) -> list[dict[str, Any]]:
         tables = evidence.locator.get("tables", []) if isinstance(evidence.locator, Mapping) else []
         if not isinstance(tables, list):
@@ -15667,6 +21823,66 @@ class SystemService:
             }
         aggregate["language_metrics"] = language_metrics
         return aggregate
+
+    def _benchmark_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        aliases = {
+            "sample_manifest_uri": ["sample_manifest_uri", "sample_set_manifest_uri", "benchmark_sample_manifest_uri", "sample_catalog_uri"],
+            "chinese_sample_set_uri": ["chinese_sample_set_uri", "zh_sample_set_uri", "cn_filing_sample_set_uri", "chinese_filing_sample_set_uri"],
+            "english_sample_set_uri": ["english_sample_set_uri", "en_sample_set_uri", "sec_sample_set_uri", "english_sec_sample_set_uri"],
+            "annotation_manual_uri": ["annotation_manual_uri", "annotation_manual", "manual_uri"],
+            "bbox_gold_uri": ["bbox_gold_uri", "ocr_bbox_gold_uri", "layout_gold_uri"],
+            "table_cell_gold_uri": ["table_cell_gold_uri", "table_gold_uri"],
+            "summary_quality_uri": ["summary_quality_uri", "summary_samples_uri"],
+            "baseline_report_uri": ["baseline_report_uri", "regression_baseline_uri", "baseline_uri"],
+            "regression_baseline_uri": ["regression_baseline_uri", "baseline_report_uri", "baseline_uri"],
+        }
+        return self._readiness_artifact_aliases(payload, aliases)
+
+    def _benchmark_gold_label_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        bbox_labels = payload.get("bbox_gold_labels", payload.get("ocr_bbox_gold_labels", []))
+        table_labels = payload.get("table_cell_gold_labels", payload.get("table_gold_labels", []))
+        if isinstance(bbox_labels, Mapping):
+            bbox_label_count = len(bbox_labels)
+        elif isinstance(bbox_labels, (list, tuple, set)):
+            bbox_label_count = len(bbox_labels)
+        else:
+            bbox_label_count = int(payload.get("bbox_label_count", 0) or 0)
+        if isinstance(table_labels, Mapping):
+            table_cell_label_count = len(table_labels)
+        elif isinstance(table_labels, (list, tuple, set)):
+            table_cell_label_count = len(table_labels)
+        else:
+            table_cell_label_count = int(payload.get("table_cell_label_count", 0) or 0)
+        return {
+            "bbox_label_count": bbox_label_count,
+            "table_cell_label_count": table_cell_label_count,
+            "has_bbox_gold": bbox_label_count > 0,
+            "has_table_cell_gold": table_cell_label_count > 0,
+        }
+
+    def _benchmark_readiness_gate(self, gate: str, value: float, threshold: float, operator: str, evidence: str) -> dict[str, Any]:
+        if operator == ">=":
+            passed = value >= threshold
+        else:
+            passed = value == threshold
+        return {
+            "gate": gate,
+            "value": value,
+            "threshold": threshold,
+            "operator": operator,
+            "passed": passed,
+            "evidence": evidence,
+        }
+
+    def _benchmark_readiness_bool_gate(self, gate: str, passed: bool, evidence: str) -> dict[str, Any]:
+        return {
+            "gate": gate,
+            "value": bool(passed),
+            "threshold": True,
+            "operator": "is",
+            "passed": bool(passed),
+            "evidence": evidence,
+        }
 
     def _decision_state(self, pack: DecisionPack) -> str:
         roles = {signature.role for signature in pack.signatures}

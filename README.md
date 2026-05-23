@@ -16,6 +16,45 @@ python3 -m unittest discover -s tests
 python3 -m py_compile app/*.py tests/*.py scripts/*.py
 ```
 
+## 公开基础信息回填
+
+本机生产闭环使用公开/本地来源补齐公司基础画像，不接真实券商、不做自动下单。全量回填行业、板块、估值快照和公司详情：
+
+```bash
+python3 scripts/backfill_company_fundamentals_public.py --market both
+python3 scripts/scope_public_company_universe.py
+python3 scripts/backfill_company_financials_public.py --market A --ashare-max-pages 120
+python3 scripts/backfill_us_cik_sec.py
+python3 scripts/backfill_us_financials_sec_companyfacts.py --limit 50 --missing-only --min-market-cap 10000000000
+python3 scripts/run_us_companyfacts_batches.py --batches 3 --batch-size 100 --min-market-cap 1000000000
+python3 scripts/company_basic_info_production_audit.py
+```
+
+当前落库产物见 `artifacts/company-fundamentals-public-backfill-a.json`、`artifacts/company-fundamentals-public-backfill-u.json` 和 `artifacts/public-company-universe-scope.json`。A 股自动生产公司宇宙按当前公开公司信息命中结果收口；未命中的历史/异常 TDX 代码保留在证券目录，但退出自动产业链分析。
+A 股财务摘要已覆盖自动生产公司宇宙；美股 SEC companyfacts 已按 `missing-only` 批处理补齐到明确状态：`4945/5412` 个 US issuer 有财务摘要，`467/5412` 个明确标记为 SEC companyfacts 不可得或缺 CIK，未知缺口为 `0`。`company_basic_info_production_audit.py` 是本机生产基础信息门禁，当前输出 `ready_for_local_production_basic_info=true`。
+
+本机长期运行口径的最新闭环产物：
+
+- `artifacts/source-governance-fill.json`：31 个来源治理覆盖率 `1.0`。
+- `artifacts/local-business-acceptance.json`：业务验收 `status=passed`、`failed_count=0`。
+- `artifacts/latest-analysis/latest-analysis.json`：A 股 `600000/000001/300750/600519` 与美股 `AAPL/MSFT/NVDA/TSLA/SPY` 最新分析 `status=passed`，包含 `11702` 份本地研报和 `88515` 条受限研报引用证据的观点层召回。
+- `artifacts/local-production-audit.json`：本机生产审计 `status=passed`、`ready_for_launch=true`。
+- `artifacts/project-completion-audit.json`：本机个人生产目标 `status=achieved`。
+
+新增研报采用本机 inbox 模式，不做外部登录或下载。默认把新文件放入宿主机研报目录 `/home/xionglei/文档/6大投行研报汇总/inbox`；服务容器会通过只读挂载在 `/data/local/research_reports/inbox` 扫描同一批文件。先 dry-run：
+
+```bash
+python3 scripts/research_report_inbox_ingest.py --base-url http://127.0.0.1:8000
+```
+
+确认候选和预算后执行首批登记/解析：
+
+```bash
+python3 scripts/research_report_inbox_ingest.py --base-url http://127.0.0.1:8000 --execute
+```
+
+输出为 `artifacts/research-report-inbox-ingest.json`。无可抽文本的 PDF/扫描件会进入人工复核队列；可抽文本的 TXT/MD 会生成受限 citation evidence。
+
 ## 启动服务
 
 ```bash
@@ -94,6 +133,12 @@ UI 静态验收会检查左侧信息架构、顶部状态条、关键面板 ID �
 python3 scripts/ui_static_check.py
 ```
 
+UI 点击联动验收会用 Headless Chrome 打开 `/ui` 并真实点击总览收益卡、研报观点证据、公司定位、产业链和投委会组合方案，确认能切换到对应工作台并带入上下文：
+
+```bash
+python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance
+```
+
 提交或部署前可运行密钥与 `.env` 误提交检查：
 
 ```bash
@@ -112,9 +157,47 @@ docker compose up --build
 bash scripts/local_staging_stack.sh
 ```
 
+以后只在本机长期使用时，建议直接运行本机个人生产入口。它会使用较少冲突的默认端口、显式把 app 容器固定到 PostgreSQL/S3/OpenSearch，并依次生成本机 staging readiness、本机生产审计和可选 LLM/PaddleOCR-VL 脱敏验收：
+
+```bash
+bash scripts/local_production_stack.sh
+```
+
 通过口径包括 PostgreSQLStore、S3/MinIO、OpenSearch、模拟成交、图谱回溯、HTTP 容量基线和外部依赖可达性。如果当前机器没有 Docker 或 Podman，脚本会直接提示安装容器运行时；没有容器运行时就无法在本机真实启动这些依赖。
-宿主机 PostgreSQL 默认暴露在 `15432`，可用 `AI_QUANT_POSTGRES_HOST_PORT=5433` 覆盖，避免和本机已有 PostgreSQL 冲突。
+宿主机端口可通过 `AI_QUANT_POSTGRES_HOST_PORT`、`AI_QUANT_S3_HOST_PORT`、`AI_QUANT_OPENSEARCH_HOST_PORT`、`AI_QUANT_NEO4J_HTTP_HOST_PORT`、`AI_QUANT_QDRANT_HOST_PORT`、`AI_QUANT_OTEL_HOST_PORT`、`AI_QUANT_OPENLINEAGE_HOST_PORT` 和 `AI_QUANT_MLFLOW_HOST_PORT` 等变量覆盖，避免和本机已有服务冲突。
 当前 staging 验收会同时演练 Neo4j、Qdrant、OpenTelemetry、OpenLineage 和 MLflow 的外部配置与 outbox 通道，但仍固定为模拟交易，不连接真实券商。
+本机脚本默认使用 `artifact://staging-local/...` 作为 evidence namespace；如果系统只在本机长期使用，可用 `python3 scripts/local_production_audit.py --base-url http://127.0.0.1:8000 --output artifacts/local-production-audit.json` 作为本机生产审计口径。LLM 与 PaddleOCR-VL 配好后，可运行 `.venv/bin/python scripts/local_ai_capability_acceptance.py --base-url http://127.0.0.1:8000 --output artifacts/local-ai-capability-acceptance.json`，生成不含 token、签名结果 URL 或完整模型响应的本机 AI 能力验收记录。该口径不等同于非本机组织级发布签批；对外/多机生产仍必须用真实 staging/production 归档 URI 回填 `artifacts/production-closure-manifest.json` 并通过严格 release gate。
+
+大样本质量增强有独立的本机质量包入口。它会扫描本地文本/PDF材料，登记中英 benchmark 样本，运行现有抽取 benchmark，并导出 sample manifest、baseline report、annotation manual、bbox/table/summary 待标注文件和 readiness report；样本不足或指标不达标时仍会落盘 artifacts，但命令返回非零，便于 CI 阻断质量回归：
+
+```bash
+python3 scripts/fetch_benchmark_samples.py \
+  --output-dir artifacts/benchmark-sample-fetch \
+  --sec-ciks 0000320193,0000789019 \
+  --ashare-codes 600519,600000,000001,300750 \
+  --include-ashare-attachment-text \
+  --sec-document-types 10-K,10-Q \
+  --limit-per-symbol 2 \
+  --user-agent 'ai-native-quant-org/0.1 contact@example.com'
+
+python3 scripts/local_benchmark_quality_package.py \
+  data/objects/ashare_exchange data/objects/sec_edgar docs artifacts/benchmark-sample-fetch \
+  --output-dir artifacts/benchmark-quality-package \
+  --benchmark-id bm_local_quality_20260518 \
+  --target-sample-size 300 \
+  --min-chinese-samples 150 \
+  --min-english-samples 150 \
+  --max-samples 500 \
+  --artifact-prefix minio://ai-quant-local/benchmark-quality/20260518
+
+python3 scripts/local_data_unblock_audit.py \
+  --output artifacts/local-data-unblock-audit.json
+```
+
+A 股样本补齐仍只走已冻结的公开披露/本地材料边界。`--include-ashare-attachment-text` 会在公告列表只有标题时尝试下载附件并抽取正文；若交易所 CDN 返回封禁页、403 或附件无法抽出指标术语，脚本会在 `fetch-manifest.json` 的 `skipped` 中记录原因，不把无正文标题伪装成有效 benchmark 样本。
+本机质量包建议把 `data/objects/ashare_exchange` 放在 `data/objects/sec_edgar` 前面，避免英文 SEC 样本先填满 `--max-samples` 后误报中文覆盖不足；`scripts/local_data_unblock_audit.py` 用来判断数据来源是否仍阻塞主体流程，它会把样本规模/中英覆盖/接口拉取失败与抽取质量缺口分开。当前自动质量包用于证明本机数据流和抽取回归可重复，最终大样本签批仍应以人工 gold label 与 readiness report 为准。
+当前本机质量包已生成可复验绿灯 artifact：`sample_count=500`、`language_counts={en:335, zh:165}`、`run_passed=true`、`large_sample_ready=true`、`readiness_missing_requirements=[]`；`artifacts/local-data-unblock-audit.json` 为 `status=passed`、`data_blocked=false`。
+当前 `scripts/production_task_closure_audit.py --local-benchmark-quality-package artifacts/benchmark-quality-package/quality-package.json --local-data-unblock-audit artifacts/local-data-unblock-audit.json` 会把 T-402 识别为本机证据已完成，剩余非本机组织级外部证据阻塞项为 16 个。
 
 生产部署、备份、恢复、回滚和月度运维步骤见 [docs/production-runbook.md](./docs/production-runbook.md)。环境变量模板见 [.env.example](./.env.example)。
 
@@ -129,8 +212,9 @@ bash scripts/local_staging_stack.sh
 - HTML 文档正文清洗并生成可读证据片段
 - PDF 对象文本流/Flate 流抽取兜底，可从本地 PDF 对象生成证据片段
 - `/api/document-parsing/paddleocr` PaddleOCR-VL 文档解析备用接口，证据抽取在本地解析无文本且配置 token 时会自动兜底
-- `/api/market-data/tdx/preview` 与 `/api/market-data/tdx/import` 读取本地通达信 DuckDB 日线库并导入公开/已提供 EOD 行情
-- `/api/research-reports/scan` 本地研报 manifest 索引，研报默认作为本地参考观点层维护
+- `/api/market-data/tdx/preview` 与 `/api/market-data/tdx/import` 读取项目内通达信 `vipdoc/*.day` 日线文件并导入公开/已提供 EOD 行情
+- `/api/research-reports/scan`、`/api/research-reports/extraction-queue` 与 `scripts/research_report_inbox_ingest.py` 维护本地研报 manifest、抽取/OCR 队列和新增研报 inbox；研报默认只作为本地参考观点层，最新分析与 UI 已展示研报观点证据，不进入事实源、训练源或真实交易信号
+- 免费 A 股补充接口候选会以 `a-stock-data` 生态为参考登记，但默认只作为人工参考或补充研究，不替代本地通达信和官方公开披露核心数据
 - 宏观主题、热点扩散和产业链公司定位将作为知识图谱一等能力：从热点词扩展到上下游节点、相关公司、数据槽位、证据缺口和后续研究任务
 - 术语、数值、期间和规则表格读取基线抽取，并可按中英 benchmark 样本集运行阈值、定位、表格和低置信度拦截评估
 - Issuer / Security / MarketDataPoint / Document / Evidence / Thesis / Signal / Decision / Review
@@ -234,7 +318,7 @@ curl -sS -X POST http://127.0.0.1:8000/api/orchestration/dags/dag_daily_research
   -d '{"inputs":{"as_of_date":"2026-05-15"}}'
 ```
 
-## A 股补充接口注册表
+## A 股补充接口集合
 
 `a-stock-data` 这类外部接口先进入候选注册表，逐项声明来源、字段映射、限速、是否需要 key、rights tag 和验证状态。默认只作为人工参考或补充研究，不替代本地通达信和官方公开披露核心数据。
 
@@ -255,6 +339,160 @@ curl -sS -X POST http://127.0.0.1:8000/api/connectors/astock/verify \
 ## 愿景上线闸门
 
 `/api/readiness/vision-gate` 会返回 `ready` / `not_ready` 和逐项指标，避免把 demo 状态误判为生产可上线。`/api/readiness/checklist` 可记录真实数据 smoke、UI 截图、跨浏览器、容量延迟、备份恢复、权限红队、合规复核和上线 checklist 的证据 URI、owner 与指标；未审计通过的项会留在闸门 `pending_checklist` 中。
+
+生产闭环不依赖新增外部收费数据源，而是依赖真实环境证据收口。把生产/预发生成的 evidence URI 汇总成 manifest 后，先用离线校验器检查结构，再用收口脚本统一回填 readiness checklist、运行 storage/security/observability/UI/deployment 报告、导出并离线校验证据包：
+
+```bash
+python3 scripts/production_task_closure_audit.py \
+  --output artifacts/production-task-closure-audit.json
+```
+
+```bash
+python3 scripts/project_completion_audit.py \
+  --output artifacts/project-completion-audit.json
+```
+
+如果部署目标明确是当前机器长期运行，完成审计应显式带入本机证据，而不是继续套用非本机发布门禁：
+
+```bash
+python3 scripts/project_completion_audit.py \
+  --local-production-audit artifacts/local-production-audit.json \
+  --local-ai-acceptance artifacts/local-ai-capability-acceptance.json \
+  --output artifacts/project-completion-audit.json
+```
+
+真实发布证据齐备后，目标完成审计应显式带上 filled plan、readiness package 和 artifact inventory：
+
+```bash
+python3 scripts/project_completion_audit.py \
+  --manifest artifacts/production-closure-manifest.json \
+  --evidence-plan artifacts/production-evidence-collection-plan.json \
+  --evidence-package artifacts/readiness-evidence-package.json \
+  --artifact-inventory artifacts/production-artifact-inventory.json \
+  --artifact-bundle-root artifacts/production-evidence-bundle \
+  --output artifacts/project-completion-audit.json
+```
+
+```bash
+python3 scripts/production_task_closure_audit.py \
+  --output artifacts/production-task-closure-audit.json \
+  --output-plan artifacts/production-evidence-collection-plan.json
+```
+
+拿到真实归档前缀后，先把模板 URI 一次性替换成具体对象前缀：
+
+```bash
+python3 scripts/production_evidence_plan_fill.py \
+  artifacts/production-evidence-collection-plan.json \
+  --artifact-prefix s3://ai-quant-prod/evidence/release-20260518 \
+  --output artifacts/production-evidence-collection-plan.json
+```
+
+```bash
+python3 scripts/production_evidence_plan_check.py artifacts/production-evidence-collection-plan.json
+```
+
+```bash
+python3 scripts/production_evidence_plan_check.py \
+  artifacts/production-evidence-collection-plan.json \
+  --require-filled-uris \
+  --output artifacts/production-evidence-plan-validation.json
+```
+
+```bash
+python3 scripts/production_evidence_plan_to_manifest.py \
+  --plan artifacts/production-evidence-collection-plan.json \
+  --base artifacts/production-closure-manifest.example.json \
+  --output artifacts/production-closure-manifest.json
+```
+
+```bash
+python3 scripts/production_release_gate.py \
+  --plan artifacts/production-evidence-collection-plan.json \
+  --evidence-package artifacts/readiness-evidence-package.json \
+  --artifact-inventory artifacts/production-artifact-inventory.json \
+  --artifact-bundle-root artifacts/production-evidence-bundle \
+  --manifest-output artifacts/production-closure-manifest.json
+```
+
+严格发布门禁通过后，才允许把 `tasks/todo.md` 中对应 `BLOCKED` 任务收口为 `DONE`：
+
+```bash
+python3 scripts/production_task_status_finalize.py \
+  --plan artifacts/production-evidence-collection-plan.json \
+  --evidence-package artifacts/readiness-evidence-package.json \
+  --artifact-inventory artifacts/production-artifact-inventory.json \
+  --artifact-bundle-root artifacts/production-evidence-bundle \
+  --manifest-output artifacts/production-closure-manifest.json
+```
+
+```bash
+python3 scripts/production_artifact_inventory_check.py \
+  --plan artifacts/production-evidence-collection-plan.json \
+  --evidence-package artifacts/readiness-evidence-package.json \
+  --manifest artifacts/production-closure-manifest.json \
+  --output-template artifacts/production-artifact-inventory.json
+```
+
+如已把归档对象导出到本地 bundle 目录，优先从 bundle 自动生成带 sha256/size 的 inventory：
+
+```bash
+python3 scripts/production_artifact_inventory_check.py \
+  --plan artifacts/production-evidence-collection-plan.json \
+  --evidence-package artifacts/readiness-evidence-package.json \
+  --manifest artifacts/production-closure-manifest.json \
+  --from-bundle-root artifacts/production-evidence-bundle \
+  --generated-at 2026-05-18T00:00:00Z \
+  --output artifacts/production-artifact-inventory.json
+```
+
+`--generated-at` 可省略，省略时脚本会写入当前 UTC 时间戳；不要保留 `<generated_at>` 等模板占位符。
+
+```bash
+python3 scripts/production_artifact_inventory_check.py \
+  artifacts/production-artifact-inventory.json \
+  --plan artifacts/production-evidence-collection-plan.json \
+  --evidence-package artifacts/readiness-evidence-package.json \
+  --manifest artifacts/production-closure-manifest.json
+```
+
+校验 inventory 时可同时复验文件存在、大小和 sha256：
+
+```bash
+python3 scripts/production_artifact_inventory_check.py \
+  artifacts/production-artifact-inventory.json \
+  --plan artifacts/production-evidence-collection-plan.json \
+  --evidence-package artifacts/readiness-evidence-package.json \
+  --manifest artifacts/production-closure-manifest.json \
+  --bundle-root artifacts/production-evidence-bundle
+```
+
+```bash
+python3 scripts/production_closure_manifest_check.py artifacts/production-closure-manifest.json
+```
+
+```bash
+python3 scripts/readiness_evidence_package_check.py \
+  artifacts/readiness-evidence-package.json \
+  --output artifacts/readiness-evidence-package-validation.json
+```
+
+```bash
+python3 scripts/production_closure_manifest_check.py \
+  artifacts/production-closure-manifest.json \
+  --output artifacts/production-closure-manifest-validation.json
+```
+
+```bash
+python3 scripts/production_closure.py https://staging.example.internal \
+  --manifest artifacts/production-closure-manifest.json \
+  --output artifacts/production-closure-result.json
+```
+
+`scripts/production_task_closure_audit.py` 用于审计 `tasks/todo.md` 中仍开放的任务是否还存在代码层缺口，或只是缺真实 staging/production artifact URI；`scripts/project_completion_audit.py` 会把“完成剩余内容、实现项目目标”映射到部署目标对应的 artifact checklist：默认仍按非本机组织级发布证据判断，显式传入 `--local-production-audit` 和 `--local-ai-acceptance` 时按本机个人生产证据判断；未达成时返回非零退出码。`--output-plan` 可导出 owner、readiness endpoint 和 artifact 字段模板，`scripts/production_evidence_plan_fill.py` 可用真实归档前缀批量替换模板 URI，并立即按 `--require-filled-uris` 口径校验；`scripts/production_evidence_plan_check.py` 可离线校验该采集计划，`--require-filled-uris` 会进一步拒绝仍带 `<production-evidence-bucket>` 这类占位符的计划。`scripts/production_artifact_inventory_check.py` 要求每个 release evidence URI 都有 inventory 行，包含 sha256、size、environment、producer、owner、content type、retention 和 immutable/object lock 信息，并会拒绝 inventory 或 required context 中仍带占位符的 URI。`scripts/production_evidence_plan_to_manifest.py` 把已回填 URI 的采集计划映射到 production closure manifest 的 task evidence、readiness checks、reports 和 A 股 connector 证据；生成结果的 `manifest_generation` 会输出 `skipped_mapping_count`、`mapped_readiness_check_count`、`missing_readiness_check_count` 和 `missing_external_validation_scope_count`，CI 可直接读取这些计数字段判断映射缺口；它默认拒绝占位符，且只有显式提供真实 readiness evidence package 并通过严格校验时才允许 `--release-ready`。`scripts/production_release_gate.py` 把 filled plan、真实 evidence package、artifact inventory、manifest 生成和严格校验串成一个门禁命令，默认没有真实 package 或 inventory 就失败；`--draft` 只用于模板预览。`scripts/production_task_status_finalize.py` 只在严格 release gate 通过后把对应 `BLOCKED` 任务改为 `DONE`，不会生成或伪造证据。`scripts/production_closure.py` 会拒绝本机路径、样例 artifact、收费/商业授权数据源和未冻结的 A 股 connector；通过标准仍是 evidence package `ready_for_launch=true` 且 `scripts/readiness_evidence_package_check.py` 校验通过。
+`scripts/production_task_closure_audit.py` 会在顶层输出 `needs_code_work_count`、`blocked_external_evidence_count`、`needs_code_work_task_ids` 和 `blocked_external_evidence_task_ids`，便于 CI 或发布负责人直接分派剩余阻塞项；`scripts/project_completion_audit.py` 会在顶层输出 `failed_requirement_ids`、`blocked_requirement_ids` 和 `open_requirement_ids`，其中 `blocked_requirement_ids=["R3","R6"]` 表示代码层已收口但真实生产证据链仍未通过，不能把项目目标标记为完成。
+`scripts/production_release_gate.py` 会在顶层输出 `stage_count`、`passed_stage_count`、`failed_stage_count` 和 `failed_stage_names`，发布脚本可直接用这些字段判断门禁卡在哪个阶段，而不必遍历 `stages` 明细。
+仓库内提供 [`artifacts/production-closure-manifest.example.json`](artifacts/production-closure-manifest.example.json) 作为同口径模板，真实发布时复制后再替换成生产/预发证据 URI；只检查模板结构时使用 `python3 scripts/production_closure_manifest_check.py artifacts/production-closure-manifest.example.json --allow-template`，默认校验会要求真实发布口径的 `ready_for_launch=true`。
 
 ## 公开来源治理
 
@@ -289,31 +527,9 @@ curl -sS -X POST http://127.0.0.1:8000/api/document-parsing/paddleocr \
 
 ## 通达信本地行情
 
-本地通达信 DuckDB 默认读取 `./data/local/tdx/market_data.duckdb`，需要安装可选依赖：
-
-```bash
-python3 -m pip install '.[tdx]'
-```
+本地通达信行情默认读取项目内 `./data/local/tdx/vipdoc` 标准 `.day` 文件。当前副本来自通达信官方个人行情数据页面 `https://www.tdx.com.cn/article/vipdata.html` 下载的沪深京日线完整包，运行不依赖下载目录，也不再使用旧本地中间库。
 
 预览日线：
-
-```bash
-curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/preview \
-  -H 'Content-Type: application/json' \
-  -H 'X-Role: data_engineer' \
-  -d '{"symbols":["600000"],"start_date":"2026-01-01","end_date":"2026-05-15","limit":5}'
-```
-
-导入到公开/已提供 EOD 行情层：
-
-```bash
-curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/import \
-  -H 'Content-Type: application/json' \
-  -H 'X-Role: data_engineer' \
-  -d '{"symbols":["600000"],"security_map":{"600000":"sec_600000"},"start_date":"2026-01-01","end_date":"2026-05-15","limit":200}'
-```
-
-也可以把 `source_format` 设为 `vipdoc` 读取本地通达信 `vipdoc/*/lday/*.day` 文件，默认目录为 `./data/local/tdx/vipdoc`，可用 `AI_QUANT_TDX_VIPDOC_PATH` 覆盖：
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/preview \
@@ -322,15 +538,59 @@ curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/preview \
   -d '{"source_format":"vipdoc","symbols":["sh600000"],"start_date":"2026-01-01","end_date":"2026-05-15","limit":5}'
 ```
 
+导入到公开/已提供 EOD 行情层：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/market-data/tdx/import \
+  -H 'Content-Type: application/json' \
+  -H 'X-Role: data_engineer' \
+  -d '{"source_format":"vipdoc","symbols":["sh600000"],"security_map":{"600000":"sec_600000"},"start_date":"2026-01-01","end_date":"2026-05-15","limit":200}'
+```
+
 增量导入脚本会读取 SQLite 状态库中每个 symbol 对应 security 的最后入库日期，并从下一交易日开始拉取；`--dry-run` 只返回预览数量，不写状态库：
 
 ```bash
 python3 scripts/import_tdx_market_data.py ./data/state.db \
-  --symbols 600000,000001 \
+  --symbols sh600000,sz000001 \
   --security-map '{"600000":"sec_600000","000001":"sec_000001"}' \
-  --source-format duckdb \
+  --source-format vipdoc \
   --end-date 2026-05-15
 ```
+
+本机生产栈运行时，推荐用 API 批处理脚本按 symbol 分片导入，避免单个 HTTP 请求长时间占用：
+
+```bash
+python3 scripts/tdx_batch_import.py \
+  --base-url http://127.0.0.1:8000 \
+  --discover-from-tdx ./data/local/tdx/vipdoc \
+  --symbol-prefix 60 \
+  --max-symbols 20 \
+  --start-date 2026-03-25 \
+  --end-date 2099-12-31 \
+  --limit-per-symbol 5 \
+  --register-missing \
+  --output artifacts/tdx-batch-import.json
+```
+
+全量 PostgreSQL 写入使用容器内专用批量脚本，避免逐 symbol HTTP 往返；最近一次全量导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`。日常生产恢复或复查时先跑覆盖审计，不直接重复全量导入：
+
+```bash
+python3 scripts/audit_tdx_vipdoc_postgres_coverage.py \
+  --dsn postgresql://ai_quant:ai_quant_dev_password@127.0.0.1:15432/ai_quant \
+  --vipdoc-path data/local/tdx/vipdoc \
+  --output artifacts/tdx-vipdoc-postgres-coverage.json
+```
+
+当 `artifacts/tdx-vipdoc-postgres-coverage.json` 中 `ready_to_skip_import=true` 时，说明本地 vipdoc 与 PostgreSQL 行情覆盖已经匹配，可以跳过导入。只有审计结果为 `status=needs_import`，或更换了 `vipdoc` 数据目录、日期窗口、`source_id`/`data_type` 时，才执行全量或限定范围导入：
+
+```bash
+python3 scripts/import_tdx_vipdoc_postgres.py \
+  --dsn postgresql://ai_quant:ai_quant_dev_password@127.0.0.1:15432/ai_quant \
+  --vipdoc-path data/local/tdx/vipdoc \
+  --output artifacts/tdx-vipdoc-postgres-import-full.json
+```
+
+全量导入是幂等的，但会重写大规模 JSONB 行情记录；以后本机生产闭环默认采用“覆盖审计 -> 缺口导入 -> 再审计”的顺序。
 
 `vipdoc` 压缩包下载必须显式传入公开可审计 URL 或本地文件，并建议提供 sha256：
 

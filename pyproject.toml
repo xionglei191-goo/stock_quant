@@ -8,7 +8,6 @@ dependencies = []
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
-tdx = ["duckdb>=1.1"]
 
 [tool.unittest]
 test-directory = "tests"

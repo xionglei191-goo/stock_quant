@@ -22,3 +22,4 @@
 - [us-compliance-open-questions.md](./us-compliance-open-questions.md): Reg FD、Non-Display、投顾、券商、衍生品和跨境合规开放问题
 - [api-contracts.md](./api-contracts.md): 接口契约
 - [development-ready-checklist.md](./development-ready-checklist.md): 开发就绪清单
+- [../artifacts/project-completion-audit.json](../artifacts/project-completion-audit.json): 目标完成审计输出，记录当前是否真正达到项目目标以及阻塞证据

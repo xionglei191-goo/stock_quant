@@ -113,7 +113,7 @@ def run_full_acceptance(*, capacity_records: int = 10) -> dict[str, Any]:
         {
             "result": capacity,
             "thresholds": {"ingest_ms": 1000, "extract_ms": 1000, "search_ms": 1000, "dashboard_ms": 1000},
-            "evidence_uri": "artifact://local-full-run/capacity-baseline.json",
+            "evidence_uri": "artifact://full-run/capacity-baseline.json",
         },
         role="platform",
         actor="platform_acceptance",
@@ -144,7 +144,7 @@ def run_full_acceptance(*, capacity_records: int = 10) -> dict[str, Any]:
         _record_readiness(
             router,
             check_id,
-            evidence_uri=f"artifact://local-full-run/{check_id}.json",
+            evidence_uri=f"artifact://full-run/{check_id}.json",
             owner=owner,
             notes="Local operational acceptance with simulated trading and public/demo data. Production sign-off still requires real environment artifacts.",
             metrics=readiness_metrics,

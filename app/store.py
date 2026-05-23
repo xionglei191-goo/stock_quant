@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import closing
 from dataclasses import dataclass, field
 import json
+import os
 from pathlib import Path
 import sqlite3
 from typing import Any, Callable
@@ -173,6 +174,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     BenchmarkRun: ("created_at",),
     ExtractionResult: ("created_at",),
     PromptChangeRequest: ("created_at",),
+    EntityMapping: ("valid_from", "valid_to", "recorded_at", "created_at"),
     EntityMappingLabel: ("created_at",),
     ResearchTemplate: ("created_at",),
     ResearchAnswer: ("created_at", "updated_at"),
@@ -188,7 +190,6 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     SystemAlert: ("created_at", "updated_at"),
     AlertNotification: ("created_at",),
     ExceptionItem: ("created_at",),
-    EntityMapping: ("created_at",),
     ScorecardProfile: ("created_at",),
     DrillSchedule: ("next_run_at", "last_run_at"),
     ReadinessCheckRecord: ("measured_at", "expires_at", "updated_at"),
@@ -212,6 +213,7 @@ OPTIONAL_DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     DrillSchedule: ("last_run_at",),
     SecretRotationRecord: ("next_rotation_due_at",),
     CacheRetentionRunRecord: ("executed_at",),
+    EntityMapping: ("valid_to",),
     LLMBudgetApproval: ("expires_at",),
 }
 
@@ -394,6 +396,10 @@ class PostgreSQLStore(InMemoryStore):
         self.dsn = dsn
         self._connect_func = connect or self._default_connect
         self.schema_path = Path(schema_path) if schema_path else Path(__file__).resolve().parents[1] / "docs" / "postgresql-schema.sql"
+        self._lazy_collections: set[str] = set()
+        self._lazy_market_data_count = 0
+        self._record_hashes: dict[tuple[str, str], str] = {}
+        self._audit_hashes: dict[str, str] = {}
         self._ensure_schema()
         self._load()
 
@@ -418,12 +424,20 @@ class PostgreSQLStore(InMemoryStore):
         specs = {collection: (key_field, model_type) for collection, key_field, model_type in COLLECTIONS}
         with closing(self._connect()) as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """
+                cursor.execute("SELECT COUNT(*) FROM ai_quant.records WHERE collection = %s", ("market_data",))
+                self._lazy_market_data_count = int(cursor.fetchone()[0] or 0)
+                eager_limit = int(os.getenv("AI_QUANT_POSTGRES_MARKET_DATA_EAGER_LIMIT", "500000"))
+                if self._lazy_market_data_count > eager_limit:
+                    self._lazy_collections.add("market_data")
+                records_sql = """
                     SELECT collection, item_id, payload, position
                     FROM ai_quant.records
-                    ORDER BY collection, position NULLS LAST, item_id
-                    """
+                """
+                if "market_data" in self._lazy_collections:
+                    records_sql += "\n                    WHERE collection <> 'market_data'"
+                records_sql += "\n                    ORDER BY collection, position NULLS LAST, item_id"
+                cursor.execute(
+                    records_sql
                 )
                 record_rows = cursor.fetchall()
                 cursor.execute(
@@ -438,19 +452,32 @@ class PostgreSQLStore(InMemoryStore):
             if collection not in specs:
                 continue
             _key_field, model_type = specs[collection]
-            getattr(self, collection)[item_id] = _hydrate_model(model_type, _json_payload(payload))
+            plain_payload = _json_payload(payload)
+            getattr(self, collection)[item_id] = _hydrate_model(model_type, plain_payload)
+            self._record_hashes[(collection, str(item_id))] = self._payload_hash(plain_payload)
         for (payload,) in audit_rows:
-            self.audit_log.append(_hydrate_audit_event(_json_payload(payload)))
+            plain_payload = _json_payload(payload)
+            event = _hydrate_audit_event(plain_payload)
+            self.audit_log.append(event)
+            self._audit_hashes[event.event_id] = self._payload_hash(plain_payload)
+
+    def _payload_hash(self, payload: Any) -> str:
+        return json.dumps(to_plain(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
     def commit(self) -> None:
         with closing(self._connect()) as connection:
             with connection:
                 with connection.cursor() as cursor:
-                    cursor.execute("DELETE FROM ai_quant.records")
-                    cursor.execute("DELETE FROM ai_quant.audit_log")
+                    current_keys: set[tuple[str, str]] = set()
                     for collection, key_field, _model_type in COLLECTIONS:
                         records = getattr(self, collection)
                         for item_id, item in records.items():
+                            item_id = str(getattr(item, key_field))
+                            current_keys.add((collection, item_id))
+                            payload = to_plain(item)
+                            payload_hash = self._payload_hash(payload)
+                            if self._record_hashes.get((collection, item_id)) == payload_hash:
+                                continue
                             cursor.execute(
                                 """
                                 INSERT INTO ai_quant.records (collection, item_id, payload, position)
@@ -460,13 +487,25 @@ class PostgreSQLStore(InMemoryStore):
                                 """,
                                 (
                                     collection,
-                                    str(getattr(item, key_field)),
-                                    json.dumps(to_plain(item), ensure_ascii=False, sort_keys=True),
+                                    item_id,
+                                    json.dumps(payload, ensure_ascii=False, sort_keys=True),
                                     None,
                                 ),
                             )
+                            self._record_hashes[(collection, item_id)] = payload_hash
+                    deletable_previous_keys = {
+                        key for key in self._record_hashes if key[0] not in self._lazy_collections and key not in current_keys
+                    }
+                    for collection, item_id in sorted(deletable_previous_keys):
+                        cursor.execute("DELETE FROM ai_quant.records WHERE collection = %s AND item_id = %s", (collection, item_id))
+                        self._record_hashes.pop((collection, item_id), None)
+                    current_audit_ids: set[str] = set()
                     for position, event in enumerate(self.audit_log):
                         event_payload = to_plain(event)
+                        current_audit_ids.add(event.event_id)
+                        payload_hash = self._payload_hash(event_payload)
+                        if self._audit_hashes.get(event.event_id) == payload_hash:
+                            continue
                         cursor.execute(
                             """
                             INSERT INTO ai_quant.audit_log (
@@ -516,3 +555,87 @@ class PostgreSQLStore(InMemoryStore):
                                 event.timestamp,
                             ),
                         )
+                        self._audit_hashes[event.event_id] = payload_hash
+                    for event_id in sorted(set(self._audit_hashes) - current_audit_ids):
+                        cursor.execute("DELETE FROM ai_quant.audit_log WHERE event_id = %s", (event_id,))
+                        self._audit_hashes.pop(event_id, None)
+
+    def query_market_data_points(
+        self,
+        *,
+        security_id: str = "",
+        market: str = "",
+        source_id: str = "",
+        data_type: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        as_of_date_lte: str = "",
+        limit: int = 50,
+        descending: bool = True,
+    ) -> list[MarketDataPoint]:
+        clauses = ["collection = %s"]
+        params: list[Any] = ["market_data"]
+        if security_id:
+            clauses.append("payload->>'security_id' = %s")
+            params.append(security_id)
+        if market:
+            clauses.append("payload->>'market' = %s")
+            params.append(market)
+        if source_id:
+            clauses.append("payload->>'source_id' = %s")
+            params.append(source_id)
+        if data_type:
+            clauses.append("payload->>'data_type' = %s")
+            params.append(data_type)
+        if start_date:
+            clauses.append("payload->>'as_of_date' >= %s")
+            params.append(start_date)
+        if end_date:
+            clauses.append("payload->>'as_of_date' <= %s")
+            params.append(end_date)
+        if as_of_date_lte:
+            clauses.append("payload->>'as_of_date' <= %s")
+            params.append(as_of_date_lte)
+        order = "DESC" if descending else "ASC"
+        bounded_limit = max(1, min(int(limit or 50), 10000))
+        params.append(bounded_limit)
+        sql = f"""
+            SELECT payload
+            FROM ai_quant.records
+            WHERE {' AND '.join(clauses)}
+            ORDER BY payload->>'as_of_date' {order}, item_id {order}
+            LIMIT %s
+        """
+        with closing(self._connect()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, tuple(params))
+                rows = cursor.fetchall()
+        return [_hydrate_model(MarketDataPoint, _json_payload(payload)) for (payload,) in rows]
+
+    def count_market_data_points(
+        self,
+        *,
+        security_id: str = "",
+        market: str = "",
+        source_id: str = "",
+        data_type: str = "",
+    ) -> int:
+        clauses = ["collection = %s"]
+        params: list[Any] = ["market_data"]
+        if security_id:
+            clauses.append("payload->>'security_id' = %s")
+            params.append(security_id)
+        if market:
+            clauses.append("payload->>'market' = %s")
+            params.append(market)
+        if source_id:
+            clauses.append("payload->>'source_id' = %s")
+            params.append(source_id)
+        if data_type:
+            clauses.append("payload->>'data_type' = %s")
+            params.append(data_type)
+        sql = f"SELECT COUNT(*) FROM ai_quant.records WHERE {' AND '.join(clauses)}"
+        with closing(self._connect()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, tuple(params))
+                return int(cursor.fetchone()[0] or 0)

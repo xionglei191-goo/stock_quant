@@ -1,0 +1,31 @@
+{
+  "browser_matrix": [
+    {"browser": "chromium", "viewport": "desktop", "status": "passed"},
+    {"browser": "chromium", "viewport": "mobile", "status": "passed"},
+    {"browser": "firefox", "viewport": "desktop", "status": "passed"},
+    {"browser": "firefox", "viewport": "mobile", "status": "passed"}
+  ],
+  "browsers_checked": ["chromium", "firefox"],
+  "viewports_checked": ["desktop", "mobile"],
+  "required_text": [
+    "AI Native Quant Org",
+    "总览",
+    "CEO 看板",
+    "知识图谱",
+    "系统治理",
+    "Entity Mapping 双时态",
+    "SEC 单标的研究闭环",
+    "Filing 原文问答",
+    "热点扩散",
+    "original text required",
+    "research only",
+    "异常审批面板",
+    "human approval",
+    "组合模拟审批",
+    "paper only",
+    "simulated only",
+    "no broker execution"
+  ],
+  "missing_text": [],
+  "failure_count": 0
+}

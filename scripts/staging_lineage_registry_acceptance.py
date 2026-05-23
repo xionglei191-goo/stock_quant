@@ -41,7 +41,7 @@ def _delivery_failed(result: dict[str, Any]) -> bool:
     return int(result.get("failed_count", 0)) >= 1 and int(result.get("delivered_count", 0)) == 0
 
 
-def _seed_lineage_and_model(client: StagingClient, suffix: str) -> dict[str, str]:
+def _seed_lineage_and_model(client: StagingClient, suffix: str, artifact_prefix: str) -> dict[str, str]:
     dag_id = f"dag_lineage_sender_{suffix}"
     run_id = f"wfrun_lineage_sender_{suffix}"
     model_version_id = f"modelv_lineage_sender_{suffix}"
@@ -90,7 +90,7 @@ def _seed_lineage_and_model(client: StagingClient, suffix: str) -> dict[str, str
             "model_name": model_name,
             "version": suffix,
             "model_type": "governance_adapter",
-            "artifact_uri": f"artifact://local-staging/models/{model_name}/{suffix}",
+            "artifact_uri": f"{artifact_prefix.rstrip('/')}/models/{model_name}/{suffix}",
             "training_dataset_ids": ["sender_acceptance"],
             "prompt_versions": ["lineage_sender_acceptance_v1"],
             "metrics": {"acceptance_sender": 1.0, "mlflow_run_id": f"mlrun_sender_{suffix}"},
@@ -201,14 +201,14 @@ def run_staging_lineage_registry_acceptance(
     mlflow_target: str = "http://mlflow:5000/mlflow",
     openlineage_health_url: str = "",
     mlflow_health_url: str = "",
-    artifact_prefix: str = "artifact://local-staging",
+    artifact_prefix: str = "artifact://staging-local",
     timeout: float = 10.0,
 ) -> dict[str, Any]:
     client = StagingClient(base_url, timeout=timeout)
     suffix = str(int(time.time() * 1000))
     _wait_for_sink_health(openlineage_health_url or openlineage_target, timeout=timeout)
     _wait_for_sink_health(mlflow_health_url or mlflow_target, timeout=timeout)
-    ids = _seed_lineage_and_model(client, suffix)
+    ids = _seed_lineage_and_model(client, suffix, artifact_prefix)
     bad_target = "http://127.0.0.1:1/lineage-registry-acceptance-unreachable"
     checks: list[dict[str, Any]] = [_check("lineage_model_seed", True, ids)]
 
@@ -244,7 +244,7 @@ def main() -> None:
     parser.add_argument("--mlflow-target", default="http://mlflow:5000/mlflow")
     parser.add_argument("--openlineage-health-url", default="")
     parser.add_argument("--mlflow-health-url", default="")
-    parser.add_argument("--artifact-prefix", default="artifact://local-staging")
+    parser.add_argument("--artifact-prefix", default="artifact://staging-local")
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args()
     result = run_staging_lineage_registry_acceptance(

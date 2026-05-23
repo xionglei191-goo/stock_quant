@@ -337,7 +337,7 @@ flowchart LR
 |---|---|---|---|---|
 | 工作流编排 | Airflow / Dagster / Prefect | Airflow 成熟；Dagster 资产视角强；Prefect 动态与交互友好 | 三套并存会增加复杂度 | 生产主编排先选 **Airflow 或 Dagster 二选一**，MVP 不要同时上三套 |
 | 事件总线 | Kafka | 高吞吐、解耦、适合事件驱动 | 运维复杂度较高 | 多数据源+多 agent 时再上；MVP 可先批处理 |
-| 数仓与分析 | ClickHouse + DuckDB | ClickHouse 适合大规模时序/OLAP；DuckDB 适合研究沙盒 | 双栈需要边界清楚 | 组织级用 ClickHouse，本地研究用 DuckDB |
+| 数仓与分析 | ClickHouse + 本地标准文件 | ClickHouse 适合大规模时序/OLAP；本地通达信 vipdoc 适合个人机历史行情底座 | 双栈需要边界清楚 | 组织级用 ClickHouse，本机路线用项目内 vipdoc |
 | 转换与文档 | dbt | SQL 建模、测试、文档、lineage 明确 | 需要团队有数仓规范 | 必上 |
 | 特征库 | Feast | 管理/验证/服务生产特征，缓解 training-serving skew | 早期会增加抽象层 | 第二阶段上线 |
 | 向量检索 | Qdrant | HNSW + payload filter，适合混合检索 | 需要 embedding 质量管理 | 推荐 |

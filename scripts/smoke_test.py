@@ -41,7 +41,7 @@ def main() -> None:
     with urlopen(ui_req, timeout=10) as response:
         html = response.read().decode("utf-8")
     assert response.status == 200
-    assert "AI Native Quant Org" in html
+    assert "AI 原生量化投研系统" in html
 
     demo = request("POST", "/api/demo/full-flow", {}, role="platform", actor="platform_smoke")
     assert demo["data"]["decision_id"] == "dec_demo"

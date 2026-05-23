@@ -20,6 +20,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.ui_browser_acceptance import run_ui_browser_acceptance
+from scripts.ui_cross_browser_matrix_check import load_and_validate_cross_browser_matrix, validate_cross_browser_matrix
+from scripts.readiness_evidence_package_check import validate_readiness_evidence_package
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -235,6 +237,12 @@ def _latency_result(latencies: dict[str, list[float]]) -> dict[str, Any]:
     }
 
 
+def _load_cross_browser_matrix(path: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    return load_and_validate_cross_browser_matrix(path)
+
+
 def run_staging_acceptance(
     *,
     base_url: str = DEFAULT_BASE_URL,
@@ -243,6 +251,8 @@ def run_staging_acceptance(
     notify_missing: bool = False,
     timeout: float = 10.0,
     capacity_default_threshold_ms: float = 1000.0,
+    capacity_simulate_threshold_ms: float = 2000.0,
+    cross_browser_matrix: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     env = dict(os.environ if env is None else env)
@@ -255,7 +265,7 @@ def run_staging_acceptance(
         "ui_loads",
         lambda: {
             "status": client.raw_get("/ui")[0],
-            "contains_app_name": "AI Native Quant Org" in client.raw_get("/ui")[1],
+            "contains_app_name": "AI 原生量化投研系统" in client.raw_get("/ui")[1],
         },
     )
     demo = _run_step(checks, "demo_full_flow", lambda: client.request("POST", "/api/demo/full-flow", {}, role="platform", actor="platform_staging"))
@@ -343,7 +353,7 @@ def run_staging_acceptance(
         _run_step(
             checks,
             "lineage_model_registry_outbox",
-            lambda: _exercise_lineage_and_model_registry(client, env, suffix),
+            lambda: _exercise_lineage_and_model_registry(client, env, suffix, artifact_prefix),
         )
 
     latency = _latency_result(client.latencies)
@@ -379,33 +389,45 @@ def run_staging_acceptance(
                 actor="platform_staging",
             )
             readiness_records.append(ui_screenshot_record)
-            browser_record = client.request(
+        if cross_browser_matrix:
+            matrix = dict(cross_browser_matrix)
+            if ui_browser:
+                matrix.setdefault("ui_url", ui_browser.get("ui_url", ""))
+                matrix.setdefault("screenshots", ui_browser.get("screenshots", []))
+                matrix.setdefault("required_text", ui_browser.get("required_text", []))
+                matrix.setdefault("missing_text", ui_browser.get("missing_text", []))
+            validation = dict(matrix.get("validation") or validate_cross_browser_matrix(matrix))
+            matrix_status = str(validation.get("status") or matrix.get("status", "passed")).strip().lower()
+            browser_matrix_record = client.request(
                 "POST",
                 "/api/readiness/checklist/cross_browser_acceptance",
                 {
-                    "status": "passed",
+                    "status": "passed" if matrix_status in {"", "pass", "passed", "ok", "success"} else "failed",
                     "owner": "platform_staging",
-                    "evidence_uri": f"{artifact_prefix.rstrip('/')}/ui-browser-matrix.json",
-                    "notes": "Headless Chrome browser acceptance records UI load, required text, and desktop/mobile nonblank screenshots.",
+                    "evidence_uri": str(matrix.get("evidence_uri") or f"{artifact_prefix.rstrip('/')}/ui-browser-matrix.json"),
+                    "notes": "Reviewed cross-browser matrix for supported browser families and desktop/mobile viewports.",
                     "metrics": {
-                        "browser": ui_browser.get("browser"),
-                        "status": ui_browser.get("status"),
-                        "screenshots": ui_browser.get("screenshots", []),
-                        "required_text": ui_browser.get("required_text", []),
-                        "missing_text": ui_browser.get("missing_text", []),
+                        **matrix,
+                        "validation": validation,
+                        "ui_url": matrix.get("ui_url", (ui_browser or {}).get("ui_url", "")),
+                        "screenshots": matrix.get("screenshots", (ui_browser or {}).get("screenshots", [])),
+                        "required_text": matrix.get("required_text", (ui_browser or {}).get("required_text", [])),
+                        "missing_text": matrix.get("missing_text", (ui_browser or {}).get("missing_text", [])),
+                        "failure_count": matrix.get("failure_count", validation.get("failure_count", 0)),
                     },
                 },
                 role="platform",
                 actor="platform_staging",
             )
-            readiness_records.append(browser_record)
+            readiness_records.append(browser_matrix_record)
+            checks.append(_check("cross_browser_matrix_record", browser_matrix_record.get("status") == "passed", browser_matrix_record))
         capacity_record = client.request(
             "POST",
             "/api/readiness/capacity-baseline",
             {
                 "result": latency,
                 "thresholds": {
-                    "POST /api/execution-intents/intent_demo/simulate": 2000,
+                    "POST /api/execution-intents/intent_demo/simulate": capacity_simulate_threshold_ms,
                 },
                 "default_threshold_ms": capacity_default_threshold_ms,
                 "evidence_uri": f"{artifact_prefix.rstrip('/')}/capacity-latency.json",
@@ -421,6 +443,11 @@ def run_staging_acceptance(
         checks,
         "readiness_evidence_package",
         lambda: client.request("POST", "/api/readiness/evidence-package", {"record_export": True}, role="CEO", actor="ceo_staging"),
+    )
+    evidence_package_validation = (
+        validate_readiness_evidence_package(evidence_package, production_artifacts=False)
+        if isinstance(evidence_package, dict)
+        else None
     )
     notifications = None
     if notify_missing:
@@ -444,12 +471,13 @@ def run_staging_acceptance(
         "external_probes": external_probes,
         "readiness_records": readiness_records,
         "evidence_package": evidence_package,
+        "evidence_package_validation": evidence_package_validation,
         "notifications": notifications,
         "health": health,
     }
 
 
-def _exercise_lineage_and_model_registry(client: StagingClient, env: dict[str, str], suffix: str) -> dict[str, Any]:
+def _exercise_lineage_and_model_registry(client: StagingClient, env: dict[str, str], suffix: str, artifact_prefix: str) -> dict[str, Any]:
     dag_id = f"dag_staging_readiness_{suffix}"
     run_id = f"wfrun_staging_readiness_{suffix}"
     model_version_id = f"modelv_staging_readiness_{suffix}"
@@ -496,7 +524,7 @@ def _exercise_lineage_and_model_registry(client: StagingClient, env: dict[str, s
             "model_name": model_name,
             "version": suffix,
             "model_type": "governance_adapter",
-            "artifact_uri": f"artifact://local-staging/models/{model_name}/{suffix}",
+            "artifact_uri": f"{artifact_prefix.rstrip('/')}/models/{model_name}/{suffix}",
             "training_dataset_ids": ["readiness_checks"],
             "prompt_versions": ["staging_acceptance_v1"],
             "metrics": {"acceptance_smoke": 1.0, "mlflow_run_id": f"mlrun_staging_{suffix}"},
@@ -559,10 +587,21 @@ def main() -> None:
     parser.add_argument("--notify-missing", action="store_true")
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument(
+        "--cross-browser-matrix",
+        default=os.environ.get("AI_QUANT_CROSS_BROWSER_MATRIX", ""),
+        help="Optional JSON matrix from real cross-browser acceptance; only when provided is cross_browser_acceptance recorded.",
+    )
+    parser.add_argument(
         "--capacity-default-threshold-ms",
         type=float,
         default=float(os.environ.get("AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS", "1000")),
         help="Default max latency threshold for HTTP staging capacity readiness checks.",
+    )
+    parser.add_argument(
+        "--capacity-simulate-threshold-ms",
+        type=float,
+        default=float(os.environ.get("AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS", "2000")),
+        help="Max latency threshold for the simulated execution HTTP readiness check.",
     )
     args = parser.parse_args()
     result = run_staging_acceptance(
@@ -572,6 +611,8 @@ def main() -> None:
         notify_missing=args.notify_missing,
         timeout=args.timeout,
         capacity_default_threshold_ms=args.capacity_default_threshold_ms,
+        capacity_simulate_threshold_ms=args.capacity_simulate_threshold_ms,
+        cross_browser_matrix=_load_cross_browser_matrix(args.cross_browser_matrix),
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     if result["status"] != "passed":

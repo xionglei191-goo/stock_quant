@@ -227,6 +227,13 @@ class Issuer:
     cik: str = ""
     country: str = ""
     status: str = "active"
+    sector: str = ""
+    industry: str = ""
+    region: str = ""
+    company_details: dict[str, Any] = field(default_factory=dict)
+    fundamentals: dict[str, Any] = field(default_factory=dict)
+    valuation_metrics: dict[str, Any] = field(default_factory=dict)
+    data_sources: list[str] = field(default_factory=list)
     created_at: Any = field(default_factory=utcnow)
     updated_at: Any = field(default_factory=utcnow)
 
@@ -241,6 +248,13 @@ class Issuer:
             cik=str(data.get("cik", "")),
             country=str(data.get("country", "")),
             status=str(data.get("status", "active")),
+            sector=str(data.get("sector", "")),
+            industry=str(data.get("industry", "")),
+            region=str(data.get("region", "")),
+            company_details=dict(data.get("company_details", {})),
+            fundamentals=dict(data.get("fundamentals", {})),
+            valuation_metrics=dict(data.get("valuation_metrics", {})),
+            data_sources=[str(item) for item in data.get("data_sources", [])],
             created_at=parse_datetime(data.get("created_at")),
             updated_at=parse_datetime(data.get("updated_at")),
         )
@@ -257,6 +271,14 @@ class Security:
     currency: str = ""
     market: str = "A"
     status: str = "active"
+    security_type: str = ""
+    sector: str = ""
+    industry: str = ""
+    board: str = ""
+    listing_date: str = ""
+    company_universe_scope: str = ""
+    company_universe_reason: str = ""
+    company_universe_classified_at: str = ""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Security":
@@ -270,6 +292,14 @@ class Security:
             currency=str(data.get("currency", "")),
             market=str(data.get("market", "A")),
             status=str(data.get("status", "active")),
+            security_type=str(data.get("security_type", "")),
+            sector=str(data.get("sector", "")),
+            industry=str(data.get("industry", "")),
+            board=str(data.get("board", "")),
+            listing_date=str(data.get("listing_date", data.get("ipo_date", ""))),
+            company_universe_scope=str(data.get("company_universe_scope", "")),
+            company_universe_reason=str(data.get("company_universe_reason", "")),
+            company_universe_classified_at=str(data.get("company_universe_classified_at", "")),
         )
 
 
@@ -507,6 +537,7 @@ class OperatingReport:
     period: str
     metrics: dict[str, Any] = field(default_factory=dict)
     red_flags: list[dict[str, Any]] = field(default_factory=list)
+    annotations: dict[str, Any] = field(default_factory=dict)
     owner: str = ""
     status: str = "draft"
     approvals: list[dict[str, Any]] = field(default_factory=list)
@@ -982,6 +1013,9 @@ class IncidentPlaybook:
     auto_action: str
     manual_action: str
     owner_role: str
+    sla: str = ""
+    rollback_action: str = ""
+    severity: str = "high"
     created_at: Any = field(default_factory=utcnow)
 
 
@@ -1185,6 +1219,11 @@ class EntityMapping:
     confidence: float = 0.0
     source: str = "entity_mapping_registry"
     version: str = "v1"
+    valid_from: Any = field(default_factory=utcnow)
+    valid_to: Any = None
+    recorded_at: Any = field(default_factory=utcnow)
+    supersedes_mapping_id: str = ""
+    status: str = "active"
     created_at: Any = field(default_factory=utcnow)
 
 
