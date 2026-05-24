@@ -743,6 +743,12 @@
               <div class="system-box"><strong>字段覆盖</strong><span id="positionSlotCoverage">0%</span></div>
               <div class="system-box"><strong>证据覆盖</strong><span id="positionEvidenceCoverage">0%</span></div>
               <div class="system-box"><strong>待补问题</strong><span id="positionIssueCount">0</span></div>
+              <div class="system-box"><strong>流程环节</strong><span id="chainProcessCount">0</span></div>
+              <div class="system-box"><strong>已算占比</strong><span id="chainShareCount">0/0</span></div>
+              <div class="system-box"><strong>全景质量</strong><span id="chainReadinessScore">0%</span></div>
+              <div class="system-box"><strong>官方证据</strong><span id="chainOfficialEvidenceCoverage">0%</span></div>
+              <div class="system-box"><strong>经济池</strong><span id="chainEconomicsCoverage">0%</span></div>
+              <div class="system-box"><strong>补研任务</strong><span id="chainBacklogCount">0</span></div>
             </div>
           </div>
           <div class="panel span-6">
@@ -752,6 +758,10 @@
           <div class="panel span-12">
             <h2>公司产业定位</h2>
             <table><thead><tr><th>主体</th><th>产业链</th><th>节点</th><th>定位</th></tr></thead><tbody id="companyPositionRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>产业链环节占比</h2>
+            <table><thead><tr><th>环节</th><th>实际流程</th><th>代表公司</th><th>产值/利润占比</th></tr></thead><tbody id="chainSegmentRows"></tbody></table>
           </div>
         </div>
         <div class="dashboard-grid" id="metrics"></div>
@@ -1952,6 +1962,10 @@
       return `${Math.round((value || 0) * 100)}%`;
     }
 
+    function optionalPct(value) {
+      return value === undefined || value === null || Number.isNaN(Number(value)) ? "-" : pct(value);
+    }
+
     function signedPct(value) {
       if (value === undefined || value === null || Number.isNaN(Number(value))) return "-";
       const rounded = Math.round(Number(value) * 100) / 100;
@@ -2061,13 +2075,22 @@
         packaging: "封装",
         materials: "材料",
         memory: "存储",
+        upstream: "上游",
+        midstream: "中游",
+        downstream: "下游",
         revenue_exposure: "收入敞口",
         profit_exposure: "利润敞口",
         capacity: "产能",
         customers: "客户",
         suppliers: "供应商",
         valuation_metrics: "估值指标",
+        chain_process_backfill: "流程补全",
+        chain_flow_edge_backfill: "流向补全",
+        chain_template_process_evidence_backfill: "官方证据补全",
+        chain_segment_economics_backfill: "环节经济池补全",
+        chain_node_company_mapping: "环节公司映射",
         company_position_backfill: "公司定位补全",
+        company_position_attribution_backfill: "公司归因补全",
         hotspot_research_backfill: "热点研究补全",
         hotspot_expansion: "热点扩散",
         "GPU workload beneficiary": "GPU 需求受益方",
@@ -2374,21 +2397,39 @@
     }
 
     async function loadIndustryChainSummary() {
-      const [chains, positions, coverage] = await Promise.all([
+      const [chains, positions, coverage, panorama, readiness] = await Promise.all([
         api("/api/industry-chains?limit=20", { role: "analyst" }),
         api("/api/company-positions?limit=50", { role: "analyst" }),
-        api("/api/company-positions/coverage-report", { role: "analyst" })
+        api("/api/company-positions/coverage-report", { role: "analyst" }),
+        api("/api/industry-chains/panorama?chain_limit=20", { role: "analyst" }),
+        api("/api/industry-chains/panorama/readiness-report?chain_limit=20", { role: "analyst" })
       ]);
       const chainRows = chains.data.chains || [];
       const positionRows = positions.data.positions || [];
       const coverageData = coverage.data.coverage || {};
+      const panoramaData = panorama.data || {};
+      const panoramaCoverage = panoramaData.coverage || {};
+      const readinessCoverage = readiness.data?.coverage || {};
       $("chainCount").textContent = `${chainRows.length}`;
       $("positionCount").textContent = `${positionRows.length}`;
       $("positionSlotCoverage").textContent = pct(coverageData.slot_coverage || 0);
       $("positionEvidenceCoverage").textContent = pct(coverageData.evidence_coverage || 0);
       $("positionIssueCount").textContent = `${coverageData.positions_with_issues || 0}`;
+      $("chainProcessCount").textContent = `${panoramaCoverage.process_step_count || 0}`;
+      $("chainShareCount").textContent = `${panoramaCoverage.positions_with_revenue_share || 0}/${panoramaCoverage.company_position_count || 0}`;
+      $("chainReadinessScore").textContent = pct(readinessCoverage.readiness_score || 0);
+      $("chainOfficialEvidenceCoverage").textContent = pct(readinessCoverage.official_evidence_coverage || 0);
+      $("chainEconomicsCoverage").textContent = pct(readinessCoverage.economic_pool_coverage || 0);
+      $("chainBacklogCount").textContent = `${readinessCoverage.research_task_count || panoramaCoverage.research_task_count || 0}`;
       $("chainRows").innerHTML = rows(chainRows, "暂无产业链", (item) => `<tr data-action="open-hotspot" data-query="${item.name || item.chain_id || ""}" data-chain-id="${item.chain_id || ""}" title="点击进入热点扩散"><td>${item.name || compactId(item.chain_id)}</td><td>${item.nodes?.length || 0}</td><td>${item.edges?.length || 0}</td><td>${compactId(item.taxonomy_version)}</td></tr>`);
       $("companyPositionRows").innerHTML = rows(positionRows, "暂无公司定位", (item) => `<tr data-action="open-company" data-issuer-id="${item.issuer_id || ""}" data-security-id="${item.security_id || ""}" title="点击载入主体图谱"><td>${compactId(item.issuer_id)}${metaLine("证券", compactId(item.security_id, ""))}</td><td>${compactId(item.chain_id)}</td><td>${(item.node_ids || []).map((node) => compactId(node)).join(", ")}</td><td>${statusLabel(item.role)}</td></tr>`);
+      $("chainSegmentRows").innerHTML = rows(panoramaData.segment_company_map || [], "暂无环节占比", (item) => {
+        const top = item.top_companies_by_revenue_share?.[0] || item.companies?.[0] || {};
+        const flow = `${statusLabel(item.process_stage)}${metaLine("产业链", compactId(item.chain_id, ""))}${metaLine("产值池", item.revenue_pool ?? "")}${metaLine("利润池", item.profit_pool ?? "")}`;
+        const company = top.issuer_name || compactId(top.issuer_id, "待补公司");
+        const share = `${optionalPct(top.revenue_share_of_segment)}${metaLine("利润", optionalPct(top.profit_share_of_segment))}`;
+        return `<tr><td>${item.node_name || compactId(item.node_id)}${metaLine("公司", item.company_count ?? 0)}</td><td>${flow}</td><td>${company}${metaLine("角色", statusLabel(top.role || ""))}</td><td>${share}</td></tr>`;
+      });
     }
 
     async function loadDashboard() {

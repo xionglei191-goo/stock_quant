@@ -614,7 +614,54 @@ class IndustryChain:
     edges: list[dict[str, Any]] = field(default_factory=list)
     taxonomy_version: str = "industry-chain-v1"
     source_refs: list[str] = field(default_factory=list)
+    template_status: str = "published_legacy"
+    template_candidate_id: str = ""
+    review_ids: list[str] = field(default_factory=list)
+    governance: dict[str, Any] = field(default_factory=dict)
+    published_at: Any = None
     created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class IndustryChainTemplateCandidate:
+    candidate_id: str
+    name: str
+    target_chain_id: str = ""
+    root_theme_id: str = ""
+    nodes: list[dict[str, Any]] = field(default_factory=list)
+    edges: list[dict[str, Any]] = field(default_factory=list)
+    taxonomy_version: str = "industry-chain-template-v1"
+    source_refs: list[str] = field(default_factory=list)
+    evidence_policy: dict[str, Any] = field(default_factory=dict)
+    coverage: dict[str, Any] = field(default_factory=dict)
+    research_tasks: list[dict[str, Any]] = field(default_factory=list)
+    status: str = "draft"
+    created_by: str = ""
+    review_ids: list[str] = field(default_factory=list)
+    published_chain_id: str = ""
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+    submitted_at: Any = None
+    published_at: Any = None
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"draft", "needs_review", "approved", "rejected", "published"}, "status")
+
+
+@dataclass(slots=True)
+class IndustryChainTemplateReview:
+    review_id: str
+    candidate_id: str
+    reviewer: str
+    decision: str
+    notes: str = ""
+    findings: list[str] = field(default_factory=list)
+    missing_requirements: list[dict[str, Any]] = field(default_factory=list)
+    coverage: dict[str, Any] = field(default_factory=dict)
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.decision, {"approved", "rejected"}, "decision")
 
 
 @dataclass(slots=True)

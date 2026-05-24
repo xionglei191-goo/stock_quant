@@ -23,6 +23,7 @@ from app.models import (
     Security,
     SourceDefinition,
 )
+from app.services import SystemService
 from app.store import PostgreSQLStore
 from app.utils import to_plain, utcnow
 
@@ -304,9 +305,9 @@ CHAINS = [
 
 
 POSITIONS = [
-    ("pos_nvda_ai_compute", "NVDA", "chain_ai_compute_cloud", ["ai_semiconductor_design", "gpu_accelerator_system"], "AI 加速计算核心供应商", ["TSMC/先进封装", "HBM/高速互连"], ["云厂商", "AI 服务器厂商", "企业 AI 客户"], ["GPU", "CUDA", "AI accelerator"]),
-    ("pos_msft_ai_cloud", "MSFT", "chain_ai_compute_cloud", ["cloud_infrastructure", "enterprise_ai_software"], "云基础设施和企业 AI 应用平台", ["数据中心", "GPU 集群", "软件生态"], ["企业客户", "开发者", "公共部门"], ["Azure", "Copilot", "enterprise software"]),
-    ("pos_aapl_edge_ai", "AAPL", "chain_ai_compute_cloud", ["edge_device_ecosystem"], "端侧设备与生态入口", ["半导体设计", "组装制造", "应用生态"], ["消费者", "开发者", "服务订阅用户"], ["iPhone", "SoC", "edge AI"]),
+    ("pos_nvda_ai_compute", "NVDA", "chain_ai_compute_cloud", ["ai_chip_design", "gpu_die_design", "advanced_packaging", "gpu_accelerator_system", "accelerator_card_assembly"], "AI 加速计算核心供应商", ["TSMC/先进封装", "HBM/高速互连"], ["云厂商", "AI 服务器厂商", "企业 AI 客户"], ["GPU", "CUDA", "AI accelerator"]),
+    ("pos_msft_ai_cloud", "MSFT", "chain_ai_compute_cloud", ["cloud_infrastructure", "ai_training_inference_cloud", "enterprise_ai_software", "enterprise_model_ops"], "云基础设施和企业 AI 应用平台", ["数据中心", "GPU 集群", "软件生态"], ["企业客户", "开发者", "公共部门"], ["Azure", "Copilot", "enterprise software"]),
+    ("pos_aapl_edge_ai", "AAPL", "chain_ai_compute_cloud", ["ai_chip_design", "edge_device_ecosystem", "edge_ai_device_integration"], "端侧设备与生态入口", ["半导体设计", "组装制造", "应用生态"], ["消费者", "开发者", "服务订阅用户"], ["iPhone", "SoC", "edge AI"]),
     ("pos_catl_ev_battery", "300750", "chain_ev_battery_energy", ["battery_cell_pack", "charging_energy_storage"], "动力电池和储能电池核心供应商", ["锂资源", "电池材料", "设备供应商"], ["新能源车企", "储能系统集成商"], ["LFP", "ternary battery", "energy storage"]),
     ("pos_tsla_ev_energy", "TSLA", "chain_ev_battery_energy", ["ev_oem", "charging_energy_storage", "autonomous_compute"], "电动车、储能和智能驾驶终端需求方", ["电芯", "功率半导体", "AI 芯片和传感器"], ["消费者", "车队客户", "能源客户"], ["EV", "FSD", "energy storage"]),
     ("pos_spdb_financial_services", "600000", "chain_financial_services", ["deposits_funding", "credit_allocation", "industry_financing"], "公司金融和产业融资银行", ["存款客户", "同业资金", "资本市场"], ["企业客户", "零售客户", "地方产业客户"], ["corporate banking", "credit", "wealth management"]),
@@ -318,6 +319,33 @@ POSITIONS = [
 
 def _nodes(raw_nodes: list[tuple[str, str]]) -> list[dict[str, Any]]:
     return [{"node_id": node_id, "name": name, "node_type": "industry_chain_node"} for node_id, name in raw_nodes]
+
+
+def _ai_compute_seed_template() -> dict[str, Any]:
+    template = SystemService()._ai_compute_chain_template_candidate_payload({"source_refs": [SOURCE_ID]})
+    nodes = []
+    for node in template["nodes"]:
+        nodes.append(
+            {
+                **node,
+                "source_refs": [SOURCE_ID],
+                "evidence_ids": [],
+                "fact_layer": "local_profile_seed_needs_official_review",
+            }
+        )
+    edges = []
+    for edge in template["edges"]:
+        edges.append(
+            {
+                **edge,
+                "source_refs": [SOURCE_ID],
+                "evidence_ids": [],
+                "source": SOURCE_ID,
+                "version": "ai-compute-chain-v1",
+                "confidence": 0.78,
+            }
+        )
+    return {"nodes": nodes, "edges": edges, "taxonomy_version": "ai-compute-chain-v1"}
 
 
 def _edges(chain_id: str, raw_edges: list[tuple[str, str]]) -> list[dict[str, Any]]:
@@ -349,6 +377,30 @@ def _document_body(company: dict[str, Any], chain_name: str, node_ids: list[str]
             "使用边界: 本资料为公开常识和本地研究归纳形成的研究定位，不构成交易指令。",
         ]
     )
+
+
+def _position_metric_exposure(chain_id: str, node_ids: list[str], metric: str, evidence_id: str) -> dict[str, Any]:
+    if chain_id != "chain_ai_compute_cloud":
+        if metric == "revenue":
+            return {"type": "qualitative", "primary_segments": node_ids, "exposure": "core_or_material"}
+        return {"type": "qualitative", "sensitivity": "linked_to_chain_cycle_and_company_execution"}
+    return {
+        "type": "node_segments",
+        "metric": metric,
+        "segments": [
+            {
+                "node_id": node_id,
+                "amount": None,
+                "ratio": None,
+                "period": "needs_review",
+                "scope": "local curated profile maps company to the node; official quantitative split is pending",
+                "evidence_ids": [evidence_id],
+                "calculation_basis": "curated seed profile only, no unsupported revenue/profit estimate",
+                "needs_review": True,
+            }
+            for node_id in node_ids
+        ],
+    }
 
 
 def _put_profile_evidence(store: PostgreSQLStore, *, position_id: str, company: dict[str, Any], chain: IndustryChain, node_ids: list[str], role: str, suppliers: list[str], customers: list[str]) -> str:
@@ -454,14 +506,31 @@ def seed(dsn: str) -> dict[str, Any]:
         )
 
     for chain in CHAINS:
+        if chain["chain_id"] == "chain_ai_compute_cloud":
+            ai_template = _ai_compute_seed_template()
+            nodes = ai_template["nodes"]
+            edges = ai_template["edges"]
+            taxonomy_version = ai_template["taxonomy_version"]
+            governance = {
+                "template_candidate_id": "ai-compute-chain-v1",
+                "seed_boundary": "local_profile_seed_for_panorama_demo_requires_official_fact_review",
+                "official_fact_evidence_ready": False,
+            }
+        else:
+            nodes = _nodes(chain["nodes"])
+            edges = _edges(chain["chain_id"], chain["edges"])
+            taxonomy_version = TAXONOMY_VERSION
+            governance = {}
         store.industry_chains[chain["chain_id"]] = IndustryChain(
             chain_id=chain["chain_id"],
             name=chain["name"],
             root_theme_id=chain["root_theme_id"],
-            nodes=_nodes(chain["nodes"]),
-            edges=_edges(chain["chain_id"], chain["edges"]),
-            taxonomy_version=TAXONOMY_VERSION,
+            nodes=nodes,
+            edges=edges,
+            taxonomy_version=taxonomy_version,
             source_refs=[SOURCE_ID],
+            template_status="published_legacy",
+            governance=governance,
             created_at=now,
         )
 
@@ -486,8 +555,8 @@ def seed(dsn: str) -> dict[str, Any]:
             node_ids=node_ids,
             role=role,
             positioning_summary=f"{company['legal_name']}在“{chain.name}”中承担“{role}”角色。",
-            revenue_exposure={"type": "qualitative", "primary_segments": node_ids, "exposure": "core_or_material"},
-            profit_exposure={"type": "qualitative", "sensitivity": "linked_to_chain_cycle_and_company_execution"},
+            revenue_exposure=_position_metric_exposure(chain_id, node_ids, "revenue", evidence_id),
+            profit_exposure=_position_metric_exposure(chain_id, node_ids, "profit", evidence_id),
             capacity={"type": "profile", "status": "public_profile_seeded", "needs_quantitative_update": True},
             customers=customers,
             suppliers=suppliers,
@@ -496,7 +565,7 @@ def seed(dsn: str) -> dict[str, Any]:
             valuation_metrics={"currency": company["currency"], "market": company["market"], "latest_market_data_source": "public_eod_market_data" if company["market"] == "A" else "yahoo_chart_us_eod"},
             event_refs=[f"artifact://ahu-basic-info-industry-chain/{position_id}"],
             evidence_ids=[evidence_id],
-            data_quality="complete",
+            data_quality="needs_review" if chain_id == "chain_ai_compute_cloud" else "complete",
             created_at=now,
         )
 

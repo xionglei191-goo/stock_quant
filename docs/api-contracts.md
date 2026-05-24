@@ -1849,11 +1849,19 @@
 - `node_id`
 - `name`
 - `level`
+- `flow_order`
+- `process_stage`
+- `process_step`
+- `process_description`
+- `inputs`
+- `outputs`
 - `category`
 - `parent_id`
 - `keywords`
 - `supply_demand_factors`
 - `data_slots`
+- `segment_economics`：建议包含 `revenue_pool`、`profit_pool`、`currency`、`period`，用于计算公司在该环节产值/利润池中的占比
+  - 三级全景模板也支持证据化经济池条目：`metric`、`value`、`range_low`、`range_high`、`currency`、`period`、`scope`、`source_refs/evidence_ids`、`confidence`
 
 边字段建议：
 
@@ -1867,6 +1875,136 @@
 #### `GET /api/industry-chains`
 
 按 `root_theme_id`、关键词 `q` 查询产业链模板列表，返回 `count` 和 `chains`。
+
+#### `POST /api/industry-chains/template-candidates`
+
+创建产业链模板候选，用于“候选生成 → 证据复核 → 发布入库”。第一条内置样板为 `ai-compute-chain-v1`，会生成 AI 算力链三级全景模板，并兼容发布为正式 `chain_ai_compute_cloud`。
+
+请求字段：
+
+- `template_id`：可传 `ai-compute-chain-v1`
+- `candidate_id`
+- `target_chain_id`
+- `root_theme_id`
+- `nodes`
+- `edges`
+- `official_evidence_ids` / `evidence_ids`
+- `source_refs`
+
+候选节点必须包含 `process_step`、`process_description`、`inputs`、`outputs`、`technology_routes`、`bottlenecks`、`source_refs/evidence_ids`；边使用 `source_node_id`、`target_node_id`、`relation_type`、`strength`、`evidence_ids` 表达输入输出流向。事实层只接受公开官方证据：公司公告/年报/招股书/监管披露/官方产品或业务说明。研报、新闻、本地观点只可作为线索或观点层，不能支撑事实发布。
+
+返回字段：
+
+- `candidate`
+- `coverage`：包含 L1/L2/L3 覆盖、流程覆盖、官方证据覆盖、经济池缺口和 `publishable`
+- `research_tasks`：经济池缺失时返回 `chain_segment_economics_backfill`；缺流程或官方证据时返回阻塞型补研任务
+- `automation_allowed=false`
+
+#### `GET /api/industry-chains/template-candidates`
+
+按 `candidate_id`、`target_chain_id/chain_id`、`status`、关键词 `q` 查询候选模板。
+
+#### `POST /api/industry-chains/template-candidates/{candidate_id}/submit-review`
+
+提交候选模板进入复核态，状态变为 `needs_review`。
+
+#### `POST /api/industry-chains/template-candidates/{candidate_id}/review`
+
+提交复核结论。`decision=approved` 时会执行发布门禁：L1/L2/L3 节点必须有流程、输入输出、上下游边和官方证据；经济池可以缺失，但必须形成 `chain_segment_economics_backfill`。
+
+#### `POST /api/industry-chains/template-candidates/{candidate_id}/publish`
+
+把已批准候选发布为正式 `IndustryChain`。发布后的正式链带：
+
+- `template_status=published`
+- `template_candidate_id`
+- `review_ids`
+- `published_at`
+- `governance.coverage`
+
+历史未带状态的 `IndustryChain` 继续按 `published_legacy` 兼容。`panorama` 默认只聚合 `published` 与 `published_legacy`。`ai-compute-chain-v1` 发布时会迁移/替换 `chain_ai_compute_cloud`，并对 NVDA、MSFT、AAPL 的现有定位卡升级为按节点拆分的 `revenue_exposure.segments[]` / `profit_exposure.segments[]`；无法被官方证据证明的收入/利润拆分保留 `needs_review`，不估算占比。
+
+#### `GET|POST /api/industry-chains/panorama`
+
+输出全景产业链地图，用于从主题、产品、行业或公司出发，把多条已登记产业链合并成上游/中游/下游全局视图。它不是只看一条链，而是返回：
+
+- `panorama_stages`：按 `upstream/midstream/downstream/supporting/adjacent` 汇总的流程层
+- `process_map`：跨产业链的实际工序、输入、输出、上下游节点
+- `segment_company_map`：每个环节的公司清单、产值池/利润池、公司环节占比
+- `company_directory`：公司在多个链路/多个环节中的全景定位
+- `coverage`：链路、节点、工序、公司、已计算占比和缺口任务覆盖
+- `research_tasks`：缺流程、缺环节经济池、缺公司映射时生成的补研任务
+
+请求过滤字段：
+
+- `q`：按主题、产品、行业、公司名、代码、节点关键词检索相关产业链
+- `root_theme_id`
+- `chain_ids` / `chain_id`
+- `issuer_id`
+- `security_id`
+- `node_id`
+- `chain_limit`
+
+返回固定包含 `automation_allowed=false` 和 `usage_boundary=panoramic_industry_chain_research_only_not_trade_signal`。接口只汇总已登记、可追溯的产业链与公司定位，不把缺失字段自动推断为事实。
+
+#### `GET|POST /api/industry-chains/panorama/readiness-report`
+
+输出全景产业链质量诊断，用于持续推进模板和公司归因的补研闭环。它会逐节点检查：
+
+- 实际生产流程：`process_description`、`inputs`、`outputs`、`technology_routes`、`bottlenecks`
+- 输入输出关系：节点是否接入上下游边
+- 事实层证据：节点是否有公开官方 evidence
+- 环节经济池：是否有收入池和利润池
+- 公司目录：节点是否有公司定位
+- 公司收入/利润归因：公司节点拆分是否有金额/比例和官方证据
+
+请求字段沿用 panorama 过滤条件，并新增：
+
+- `queue_tasks`：为 `true` 时，把缺流程、缺边、缺官方证据、缺经济池、缺公司映射、缺公司归因转成 `ResearchTask`
+
+返回字段：
+
+- `coverage`：含 `process_coverage`、`flow_coverage`、`official_evidence_coverage`、`economic_pool_coverage`、`company_mapping_coverage`、`company_attribution_coverage` 和加权 `readiness_score`
+- `by_stage`：按 `upstream/midstream/downstream/supporting` 分阶段质量诊断
+- `chains[].nodes[]`：节点级缺口、经济池和公司归因状态
+- `research_tasks` / `queued_tasks`
+- `automation_allowed=false`
+
+#### `GET|POST /api/industry-chains/{chain_id}/analysis`
+
+输出单条产业链的流程与环节公司占比分析。服务会按节点 `flow_order/level` 组织实际流程，汇总每个环节的公司定位卡，并在同时具备公司环节收入/利润金额和节点 `segment_economics.revenue_pool/profit_pool` 时计算：
+
+- `revenue_share_of_segment`
+- `profit_share_of_segment`
+- `mapped_revenue_pool_coverage`
+- `mapped_profit_pool_coverage`
+
+如果公司定位卡只提供收入/利润暴露比例，且发行人 `fundamentals` 中存在对应收入/利润基数，接口会用“暴露比例 × 发行人财务基数”推导环节金额，并在 `*_calculation_basis` 中说明。缺少实际流程、环节经济池或公司映射时，返回 `research_tasks`，不会自动补结论。
+
+公司定位也支持按节点拆分：
+
+- `revenue_exposure.segments[]`
+- `profit_exposure.segments[]`
+
+每项建议包含 `node_id`、`amount` 或 `ratio`、`period`、`scope`、`evidence_ids`、`calculation_basis`、`needs_review`。占比仍按“公司环节收入/利润 ÷ 环节收入/利润池”计算；无可靠经济池时不估算，并返回补研任务。
+
+请求过滤字段：
+
+- `issuer_id`
+- `security_id`
+- `node_id`
+
+返回字段：
+
+- `chain`
+- `process_flow`
+- `segments`
+- `stage_summary`
+- `company_exposures`
+- `coverage`
+- `research_tasks`
+- `automation_allowed=false`
+- `usage_boundary`
 
 #### `POST /api/industry-chains/{chain_id}/companies`
 

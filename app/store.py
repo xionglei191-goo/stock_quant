@@ -39,6 +39,8 @@ from .models import (
     IncidentReport,
     InstitutionalHolding,
     IndustryChain,
+    IndustryChainTemplateCandidate,
+    IndustryChainTemplateReview,
     Issuer,
     HotspotLexicon,
     LineageEvent,
@@ -104,6 +106,8 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("portfolio_transactions", "transaction_id", PortfolioTransaction),
     ("macro_themes", "theme_id", MacroTheme),
     ("industry_chains", "chain_id", IndustryChain),
+    ("industry_chain_template_candidates", "candidate_id", IndustryChainTemplateCandidate),
+    ("industry_chain_template_reviews", "review_id", IndustryChainTemplateReview),
     ("company_positions", "position_id", CompanyPosition),
     ("hotspot_lexicons", "lexicon_id", HotspotLexicon),
     ("research_tasks", "task_id", ResearchTask),
@@ -164,7 +168,9 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     PortfolioProposal: ("created_at",),
     PortfolioTransaction: ("created_at",),
     MacroTheme: ("created_at",),
-    IndustryChain: ("created_at",),
+    IndustryChain: ("created_at", "published_at"),
+    IndustryChainTemplateCandidate: ("created_at", "updated_at", "submitted_at", "published_at"),
+    IndustryChainTemplateReview: ("created_at",),
     CompanyPosition: ("created_at",),
     HotspotLexicon: ("created_at",),
     ResearchTask: ("created_at", "updated_at"),
@@ -207,6 +213,8 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
 
 OPTIONAL_DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     OperatingReport: ("published_at",),
+    IndustryChain: ("published_at",),
+    IndustryChainTemplateCandidate: ("submitted_at", "published_at"),
     SourceReviewRecord: ("next_review_due_at",),
     AStockConnectorDefinition: ("last_checked_at",),
     ReadinessCheckRecord: ("expires_at",),
@@ -279,6 +287,8 @@ class InMemoryStore:
     portfolio_transactions: dict[str, PortfolioTransaction] = field(default_factory=dict)
     macro_themes: dict[str, MacroTheme] = field(default_factory=dict)
     industry_chains: dict[str, IndustryChain] = field(default_factory=dict)
+    industry_chain_template_candidates: dict[str, IndustryChainTemplateCandidate] = field(default_factory=dict)
+    industry_chain_template_reviews: dict[str, IndustryChainTemplateReview] = field(default_factory=dict)
     company_positions: dict[str, CompanyPosition] = field(default_factory=dict)
     hotspot_lexicons: dict[str, HotspotLexicon] = field(default_factory=dict)
     research_tasks: dict[str, ResearchTask] = field(default_factory=dict)

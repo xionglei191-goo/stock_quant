@@ -1242,6 +1242,342 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(task_search.success, task_search.error)
         self.assertTrue(any(item["resource_type"] == "research_task" for item in task_search.data["results"]))
 
+    def test_industry_chain_analysis_summarizes_process_companies_and_segment_share(self) -> None:
+        self.service.register_issuer(
+            {
+                "issuer_id": "issuer_chain_supplier",
+                "legal_name": "Chain Supplier A",
+                "market": ["A"],
+                "country": "CN",
+            },
+            actor="platform",
+        )
+        self.service.register_issuer(
+            {
+                "issuer_id": "issuer_chain_assembler",
+                "legal_name": "Chain Assembler B",
+                "market": ["A"],
+                "country": "CN",
+                "fundamentals": {
+                    "financial_summary": {
+                        "total_operating_income": 800.0,
+                        "parent_net_profit": 160.0,
+                        "currency": "CNY",
+                        "period": "2025",
+                    }
+                },
+            },
+            actor="platform",
+        )
+        chain = self.router.dispatch(
+            "POST",
+            "/api/industry-chains",
+            {
+                "chain_id": "chain_process_share",
+                "name": "Battery materials to pack chain",
+                "nodes": [
+                    {
+                        "node_id": "node_materials",
+                        "name": "正极材料",
+                        "level": 1,
+                        "flow_order": 1,
+                        "process_stage": "upstream",
+                        "process_step": "precursor calcination and cathode material processing",
+                        "process_description": "Convert precursor, lithium salt, and additives into cathode material.",
+                        "inputs": ["precursor", "lithium salt"],
+                        "outputs": ["cathode material"],
+                        "segment_economics": {"revenue_pool": 1000.0, "profit_pool": 200.0, "currency": "CNY", "period": "2025"},
+                    },
+                    {
+                        "node_id": "node_pack",
+                        "name": "电池包组装",
+                        "level": 2,
+                        "flow_order": 2,
+                        "process_stage": "midstream",
+                        "process_step": "cell grouping and battery pack integration",
+                        "process_description": "Integrate cells, BMS, cooling, and structure into finished battery packs.",
+                        "inputs": ["cells", "BMS", "thermal parts"],
+                        "outputs": ["battery pack"],
+                        "segment_economics": {"revenue_pool": 2000.0, "profit_pool": 400.0, "currency": "CNY", "period": "2025"},
+                    },
+                ],
+                "edges": [
+                    {"source_node_id": "node_materials", "target_node_id": "node_pack", "relation_type": "SUPPLIED_TO", "strength": "high"}
+                ],
+            },
+            role="analyst",
+        )
+        self.assertTrue(chain.success, chain.error)
+        downstream_chain = self.router.dispatch(
+            "POST",
+            "/api/industry-chains",
+            {
+                "chain_id": "chain_process_share_downstream",
+                "name": "Battery charging and service chain",
+                "nodes": [
+                    {
+                        "node_id": "node_charging",
+                        "name": "充换电服务",
+                        "level": 3,
+                        "flow_order": 3,
+                        "process_stage": "downstream",
+                        "process_step": "charging network operation and after-sales service",
+                        "process_description": "Operate charging stations, swap assets, and after-sales battery service touchpoints.",
+                        "inputs": ["battery pack", "charging equipment"],
+                        "outputs": ["charging service"],
+                        "segment_economics": {"revenue_pool": 500.0, "profit_pool": 80.0, "currency": "CNY", "period": "2025"},
+                    }
+                ],
+                "edges": [],
+            },
+            role="analyst",
+        )
+        self.assertTrue(downstream_chain.success, downstream_chain.error)
+        supplier = self.router.dispatch(
+            "POST",
+            "/api/industry-chains/chain_process_share/companies",
+            {
+                "position_id": "pos_chain_supplier",
+                "issuer_id": "issuer_chain_supplier",
+                "node_ids": ["node_materials"],
+                "role": "cathode material supplier",
+                "positioning_summary": "Supplier A participates in the cathode material processing step.",
+                "revenue_exposure": {"revenue_amount": 120.0},
+                "profit_exposure": {"profit_amount": 30.0},
+                "customers": ["cell makers"],
+                "suppliers": ["lithium salt vendors"],
+                "valuation_metrics": {"pe_ttm": 18.0},
+                "data_quality": "verified",
+            },
+            role="analyst",
+        )
+        self.assertTrue(supplier.success, supplier.error)
+        assembler = self.router.dispatch(
+            "POST",
+            "/api/industry-chains/chain_process_share/companies",
+            {
+                "position_id": "pos_chain_assembler",
+                "issuer_id": "issuer_chain_assembler",
+                "node_ids": ["node_pack"],
+                "role": "battery pack integrator",
+                "positioning_summary": "Assembler B maps to pack integration; exposure ratios derive segment amounts from issuer fundamentals.",
+                "revenue_exposure": {"pack_related": 0.25},
+                "profit_exposure": {"pack_related": 0.5},
+                "customers": ["OEMs"],
+                "suppliers": ["cell makers"],
+                "valuation_metrics": {"pe_ttm": 22.0},
+                "data_quality": "partial",
+            },
+            role="analyst",
+        )
+        self.assertTrue(assembler.success, assembler.error)
+
+        analysis = self.router.dispatch("GET", "/api/industry-chains/chain_process_share/analysis", {}, role="analyst")
+        self.assertTrue(analysis.success, analysis.error)
+        self.assertFalse(analysis.data["automation_allowed"])
+        self.assertEqual([step["node_id"] for step in analysis.data["process_flow"]], ["node_materials", "node_pack"])
+        self.assertEqual(analysis.data["process_flow"][1]["upstream_node_ids"], ["node_materials"])
+        material_segment = next(item for item in analysis.data["segments"] if item["node_id"] == "node_materials")
+        pack_segment = next(item for item in analysis.data["segments"] if item["node_id"] == "node_pack")
+        self.assertEqual(material_segment["companies"][0]["issuer_name"], "Chain Supplier A")
+        self.assertAlmostEqual(material_segment["companies"][0]["revenue_share_of_segment"], 0.12)
+        self.assertAlmostEqual(material_segment["companies"][0]["profit_share_of_segment"], 0.15)
+        self.assertAlmostEqual(pack_segment["companies"][0]["revenue_amount"], 200.0)
+        self.assertAlmostEqual(pack_segment["companies"][0]["profit_amount"], 80.0)
+        self.assertAlmostEqual(pack_segment["companies"][0]["revenue_share_of_segment"], 0.1)
+        self.assertIn("issuer financial revenue", pack_segment["companies"][0]["revenue_calculation_basis"])
+        self.assertEqual(analysis.data["coverage"]["positions_with_revenue_share"], 2)
+        self.assertEqual(analysis.data["coverage"]["positions_with_profit_share"], 2)
+        self.assertFalse(analysis.data["research_tasks"])
+
+        panorama = self.router.dispatch("GET", "/api/industry-chains/panorama", {"q": "battery"}, role="analyst")
+        self.assertTrue(panorama.success, panorama.error)
+        self.assertFalse(panorama.data["automation_allowed"])
+        self.assertEqual(panorama.data["coverage"]["chain_count"], 2)
+        self.assertEqual(panorama.data["coverage"]["process_step_count"], 3)
+        self.assertEqual(panorama.data["coverage"]["positions_with_revenue_share"], 2)
+        self.assertEqual({stage["process_stage"] for stage in panorama.data["panorama_stages"]}, {"upstream", "midstream", "downstream"})
+        self.assertTrue(any(item["issuer_id"] == "issuer_chain_assembler" for item in panorama.data["company_directory"]))
+        self.assertTrue(any(task["type"] == "chain_node_company_mapping" and task["node_id"] == "node_charging" for task in panorama.data["research_tasks"]))
+
+    def test_ai_compute_template_candidate_review_publish_and_panorama(self) -> None:
+        self.router.dispatch(
+            "POST",
+            "/api/macro-themes",
+            {
+                "theme_id": "theme_ai_compute_cloud",
+                "name": "AI 算力与云软件",
+                "description": "Full AI compute chain from semiconductor inputs to cloud, software, and edge devices.",
+                "trigger_type": "hotspot",
+                "macro_drivers": ["AI training and inference demand", "cloud capex", "edge AI upgrade"],
+                "source_refs": ["manual://theme/ai-compute"],
+            },
+            role="analyst",
+        )
+        for issuer_id, security_id, ticker, legal_name in [
+            ("issuer_nvda", "security_nvda_us", "NVDA", "NVIDIA Corporation"),
+            ("issuer_msft", "security_msft_us", "MSFT", "Microsoft Corporation"),
+            ("issuer_aapl", "security_aapl_us", "AAPL", "Apple Inc."),
+        ]:
+            self.service.register_issuer(
+                {
+                    "issuer_id": issuer_id,
+                    "legal_name": legal_name,
+                    "aliases": [ticker],
+                    "market": ["U"],
+                    "country": "US",
+                    "fundamentals": {"total_revenue": 1000.0, "net_profit": 200.0},
+                },
+                actor="platform",
+            )
+            self.service.register_security(
+                {
+                    "security_id": security_id,
+                    "issuer_id": issuer_id,
+                    "ticker": ticker,
+                    "exchange": "NASDAQ",
+                    "currency": "USD",
+                    "market": "U",
+                },
+                actor="platform",
+            )
+
+        document = self.service.ingest_document(
+            {
+                "document_id": "doc_ai_compute_template_official",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "source_id": "src_sec",
+                "source_type": "regulatory",
+                "document_type": "10-K",
+                "source_uri": "https://example.invalid/ai-compute-official-10k",
+                "title": "AI compute official disclosure",
+                "body": "Official filing describes AI accelerator design, advanced packaging, HBM, AI servers, cloud infrastructure, enterprise AI software, and edge AI devices.",
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+                "language": "en",
+            },
+            actor="data",
+        )
+        evidence_id = self.service.extract_evidence(document.document_id, actor="analyst")[0].evidence_id
+
+        candidate = self.router.dispatch(
+            "POST",
+            "/api/industry-chains/template-candidates",
+            {
+                "template_id": "ai-compute-chain-v1",
+                "official_evidence_ids": [evidence_id],
+                "root_theme_id": "theme_ai_compute_cloud",
+            },
+            role="analyst",
+        )
+        self.assertTrue(candidate.success, candidate.error)
+        self.assertEqual(candidate.data["candidate"]["candidate_id"], "ai-compute-chain-v1")
+        self.assertTrue(candidate.data["coverage"]["publishable"])
+        self.assertEqual(candidate.data["coverage"]["level_counts"]["L1"], 4)
+        self.assertGreaterEqual(candidate.data["coverage"]["level_counts"]["L2"], 10)
+        self.assertGreaterEqual(candidate.data["coverage"]["level_counts"]["L3"], 8)
+        self.assertTrue(any(task["type"] == "chain_segment_economics_backfill" for task in candidate.data["research_tasks"]))
+        listed_candidates = self.router.dispatch("GET", "/api/industry-chains/template-candidates", {"q": "AI", "status": "draft"}, role="analyst")
+        self.assertTrue(listed_candidates.success, listed_candidates.error)
+        self.assertEqual(listed_candidates.data["count"], 1)
+        fetched_candidate = self.router.dispatch("GET", "/api/industry-chains/template-candidates/ai-compute-chain-v1", {}, role="analyst")
+        self.assertTrue(fetched_candidate.success, fetched_candidate.error)
+        self.assertEqual(fetched_candidate.data["candidate"]["target_chain_id"], "chain_ai_compute_cloud")
+
+        submitted = self.router.dispatch("POST", "/api/industry-chains/template-candidates/ai-compute-chain-v1/submit-review", {}, role="analyst")
+        self.assertTrue(submitted.success, submitted.error)
+        self.assertEqual(submitted.data["candidate"]["status"], "needs_review")
+        reviewed = self.router.dispatch(
+            "POST",
+            "/api/industry-chains/template-candidates/ai-compute-chain-v1/review",
+            {"decision": "approved", "notes": "official evidence covers the process template; economics gaps remain tasks"},
+            role="risk_compliance",
+        )
+        self.assertTrue(reviewed.success, reviewed.error)
+        self.assertEqual(reviewed.data["candidate"]["status"], "approved")
+        published = self.router.dispatch(
+            "POST",
+            "/api/industry-chains/template-candidates/ai-compute-chain-v1/publish",
+            {},
+            role="risk_compliance",
+        )
+        self.assertTrue(published.success, published.error)
+        self.assertEqual(published.data["chain"]["chain_id"], "chain_ai_compute_cloud")
+        self.assertEqual(published.data["chain"]["template_status"], "published")
+        self.assertEqual(published.data["chain"]["taxonomy_version"], "ai-compute-chain-v1")
+        self.assertTrue(any(task["task_type"] == "chain_segment_economics_backfill" for task in published.data["created_research_tasks"]))
+        self.assertEqual({item["issuer_id"] for item in published.data["created_company_positions"]}, {"issuer_nvda", "issuer_msft", "issuer_aapl"})
+
+        panorama = self.router.dispatch("GET", "/api/industry-chains/panorama", {"q": "AI"}, role="analyst")
+        self.assertTrue(panorama.success, panorama.error)
+        self.assertFalse(panorama.data["automation_allowed"])
+        self.assertEqual(panorama.data["coverage"]["chain_count"], 1)
+        self.assertGreaterEqual(panorama.data["coverage"]["process_step_count"], 20)
+        self.assertTrue({"upstream", "midstream", "downstream", "supporting"}.issubset({stage["process_stage"] for stage in panorama.data["panorama_stages"]}))
+        self.assertTrue({"issuer_nvda", "issuer_msft", "issuer_aapl"}.issubset({item["issuer_id"] for item in panorama.data["company_directory"]}))
+        self.assertTrue(any(task["type"] == "chain_segment_economics_backfill" for task in panorama.data["research_tasks"]))
+        self.assertTrue(any(task["type"] == "company_position_attribution_backfill" for task in panorama.data["research_tasks"]))
+        readiness = self.router.dispatch(
+            "POST",
+            "/api/industry-chains/panorama/readiness-report",
+            {"q": "AI", "queue_tasks": True},
+            role="analyst",
+        )
+        self.assertTrue(readiness.success, readiness.error)
+        self.assertFalse(readiness.data["automation_allowed"])
+        self.assertEqual(readiness.data["coverage"]["chain_count"], 1)
+        self.assertEqual(readiness.data["coverage"]["official_evidence_coverage"], 1.0)
+        self.assertEqual(readiness.data["coverage"]["economic_pool_coverage"], 0.0)
+        self.assertLess(readiness.data["coverage"]["readiness_score"], 1.0)
+        self.assertGreater(readiness.data["coverage"]["queued_task_count"], 0)
+        self.assertTrue(any(task["type"] == "chain_segment_economics_backfill" for task in readiness.data["research_tasks"]))
+        self.assertTrue(any(task["type"] == "company_position_attribution_backfill" for task in readiness.data["research_tasks"]))
+        self.assertTrue({"upstream", "midstream", "downstream", "supporting"}.issubset({row["process_stage"] for row in readiness.data["by_stage"]}))
+        self.assertTrue(any(task_id.startswith("readiness_economics_chain_ai_compute_cloud_") for task_id in self.service.store.research_tasks))
+
+    def test_ai_compute_template_publish_gate_requires_official_evidence(self) -> None:
+        candidate = self.router.dispatch(
+            "POST",
+            "/api/industry-chains/template-candidates",
+            {"template_id": "ai-compute-chain-v1", "root_theme_id": ""},
+            role="analyst",
+        )
+        self.assertTrue(candidate.success, candidate.error)
+        self.assertFalse(candidate.data["coverage"]["publishable"])
+        self.assertGreater(candidate.data["coverage"]["blocking_issue_count"], 0)
+        submitted = self.router.dispatch("POST", "/api/industry-chains/template-candidates/ai-compute-chain-v1/submit", {}, role="analyst")
+        self.assertTrue(submitted.success, submitted.error)
+        blocked_review = self.router.dispatch(
+            "POST",
+            "/api/industry-chains/template-candidates/ai-compute-chain-v1/review",
+            {"decision": "approved"},
+            role="risk_compliance",
+        )
+        self.assertFalse(blocked_review.success)
+        self.assertIn("cannot be approved", blocked_review.error["message"])
+
+    def test_ai_compute_seed_template_uses_panorama_nodes_and_segment_exposures(self) -> None:
+        from scripts.seed_ahu_basic_info_industry_chain import _ai_compute_seed_template, _position_metric_exposure
+
+        template = _ai_compute_seed_template()
+        node_ids = {node["node_id"] for node in template["nodes"]}
+        self.assertEqual(template["taxonomy_version"], "ai-compute-chain-v1")
+        self.assertGreaterEqual(len(node_ids), 20)
+        self.assertIn("gpu_die_design", node_ids)
+        self.assertIn("ai_training_inference_cloud", node_ids)
+        self.assertTrue(all(node["fact_layer"] == "local_profile_seed_needs_official_review" for node in template["nodes"]))
+        exposure = _position_metric_exposure("chain_ai_compute_cloud", ["gpu_die_design", "accelerator_card_assembly"], "revenue", "evi_profile_pos_nvda_ai_compute")
+        self.assertEqual(exposure["type"], "node_segments")
+        self.assertEqual({segment["node_id"] for segment in exposure["segments"]}, {"gpu_die_design", "accelerator_card_assembly"})
+        self.assertTrue(all(segment["needs_review"] for segment in exposure["segments"]))
+
     def test_hotspot_readiness_report_requires_layer_boundaries_tasks_and_rerank_evidence(self) -> None:
         theme = self.router.dispatch(
             "POST",

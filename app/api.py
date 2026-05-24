@@ -590,6 +590,19 @@ class ApiRouter:
             ("POST", r"^/api/macro-themes$", self._register_macro_theme),
             ("GET", r"^/api/industry-chains$", self._list_industry_chains),
             ("POST", r"^/api/industry-chains$", self._register_industry_chain),
+            ("GET", r"^/api/industry-chains/template-candidates$", self._list_industry_chain_template_candidates),
+            ("POST", r"^/api/industry-chains/template-candidates$", self._create_industry_chain_template_candidate),
+            ("GET", r"^/api/industry-chains/template-candidates/(?P<candidate_id>[^/]+)$", self._get_industry_chain_template_candidate),
+            ("POST", r"^/api/industry-chains/template-candidates/(?P<candidate_id>[^/]+)/submit$", self._submit_industry_chain_template_candidate),
+            ("POST", r"^/api/industry-chains/template-candidates/(?P<candidate_id>[^/]+)/submit-review$", self._submit_industry_chain_template_candidate),
+            ("POST", r"^/api/industry-chains/template-candidates/(?P<candidate_id>[^/]+)/review$", self._review_industry_chain_template_candidate),
+            ("POST", r"^/api/industry-chains/template-candidates/(?P<candidate_id>[^/]+)/publish$", self._publish_industry_chain_template_candidate),
+            ("GET", r"^/api/industry-chains/panorama$", self._industry_chain_panorama),
+            ("POST", r"^/api/industry-chains/panorama$", self._industry_chain_panorama),
+            ("GET", r"^/api/industry-chains/panorama/readiness-report$", self._industry_chain_panorama_readiness_report),
+            ("POST", r"^/api/industry-chains/panorama/readiness-report$", self._industry_chain_panorama_readiness_report),
+            ("GET", r"^/api/industry-chains/(?P<chain_id>[^/]+)/analysis$", self._industry_chain_analysis),
+            ("POST", r"^/api/industry-chains/(?P<chain_id>[^/]+)/analysis$", self._industry_chain_analysis),
             ("GET", r"^/api/company-positions$", self._list_company_positions),
             ("GET", r"^/api/company-positions/schema$", self._company_positions_schema),
             ("GET", r"^/api/company-positions/coverage-report$", self._company_positions_coverage_report),
@@ -1672,6 +1685,40 @@ class ApiRouter:
 
     def _list_industry_chains(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.industry_chains_payload(body)
+
+    def _create_industry_chain_template_candidate(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.create_industry_chain_template_candidate(body, actor=actor)
+
+    def _list_industry_chain_template_candidates(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        _ = actor
+        return self.service.industry_chain_template_candidates_payload(body)
+
+    def _get_industry_chain_template_candidate(self, path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        _ = actor
+        match = re.fullmatch(r"^/api/industry-chains/template-candidates/(?P<candidate_id>[^/]+)$", path)
+        return self.service.industry_chain_template_candidate_payload(match["candidate_id"])
+
+    def _submit_industry_chain_template_candidate(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/industry-chains/template-candidates/(?P<candidate_id>[^/]+)/(?:submit|submit-review)$", path)
+        return self.service.submit_industry_chain_template_candidate(match["candidate_id"], body, actor=actor)
+
+    def _review_industry_chain_template_candidate(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/industry-chains/template-candidates/(?P<candidate_id>[^/]+)/review$", path)
+        return self.service.review_industry_chain_template_candidate(match["candidate_id"], body, actor=actor)
+
+    def _publish_industry_chain_template_candidate(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/industry-chains/template-candidates/(?P<candidate_id>[^/]+)/publish$", path)
+        return self.service.publish_industry_chain_template_candidate(match["candidate_id"], body, actor=actor)
+
+    def _industry_chain_analysis(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/industry-chains/(?P<chain_id>[^/]+)/analysis$", path)
+        return self.service.industry_chain_analysis_payload(match["chain_id"], body, actor=actor)
+
+    def _industry_chain_panorama(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.industry_chain_panorama_payload(body, actor=actor)
+
+    def _industry_chain_panorama_readiness_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.industry_chain_panorama_readiness_report(body, actor=actor)
 
     def _list_company_positions(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_positions_payload(body)

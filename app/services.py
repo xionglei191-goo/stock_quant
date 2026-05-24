@@ -54,6 +54,8 @@ from .models import (
     IncidentReport,
     InstitutionalHolding,
     IndustryChain,
+    IndustryChainTemplateCandidate,
+    IndustryChainTemplateReview,
     Issuer,
     HotspotLexicon,
     LineageEvent,
@@ -11905,10 +11907,13 @@ class SystemService:
         filters = filters or {}
         root_theme_id = str(filters.get("root_theme_id", "")).strip()
         query = str(filters.get("q", "")).strip().lower()
+        template_status = str(filters.get("template_status", "")).strip()
         limit = self._bounded_limit(filters.get("limit", 100), 1000)
         rows = list(self.store.industry_chains.values())
         if root_theme_id:
             rows = [item for item in rows if item.root_theme_id == root_theme_id]
+        if template_status:
+            rows = [item for item in rows if getattr(item, "template_status", "published_legacy") == template_status]
         if query:
             rows = [
                 item
@@ -11918,6 +11923,710 @@ class SystemService:
             ]
         rows.sort(key=lambda item: item.created_at, reverse=True)
         return {"count": len(rows), "chains": [to_plain(item) for item in rows[:limit]]}
+
+    def industry_chain_template_candidates_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        candidate_id = str(filters.get("candidate_id", "")).strip()
+        target_chain_id = str(filters.get("target_chain_id", filters.get("chain_id", ""))).strip()
+        status = str(filters.get("status", "")).strip()
+        query = str(filters.get("q", "")).strip().lower()
+        limit = self._bounded_limit(filters.get("limit", 100), 1000)
+        rows = list(self.store.industry_chain_template_candidates.values())
+        if candidate_id:
+            rows = [item for item in rows if item.candidate_id == candidate_id]
+        if target_chain_id:
+            rows = [item for item in rows if item.target_chain_id == target_chain_id]
+        if status:
+            rows = [item for item in rows if item.status == status]
+        if query:
+            rows = [
+                item
+                for item in rows
+                if query in item.name.lower()
+                or query in item.candidate_id.lower()
+                or query in item.target_chain_id.lower()
+                or any(query in str(node.get("name", "")).lower() or query in " ".join(str(value).lower() for value in node.get("keywords", [])) for node in item.nodes)
+            ]
+        rows.sort(key=lambda item: (item.updated_at, item.created_at), reverse=True)
+        return {
+            "count": len(rows),
+            "candidates": [to_plain(item) for item in rows[:limit]],
+            "automation_allowed": False,
+            "usage_boundary": "industry_chain_template_governance_research_only",
+        }
+
+    def industry_chain_template_candidate_payload(self, candidate_id: str) -> dict[str, Any]:
+        candidate = self.store.industry_chain_template_candidates.get(str(candidate_id).strip())
+        if candidate is None:
+            raise NotFoundError(f"industry chain template candidate {candidate_id} not found")
+        return self._industry_chain_template_candidate_response(candidate)
+
+    def create_industry_chain_template_candidate(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        candidate_payload = self._industry_chain_template_candidate_seed_payload(payload)
+        candidate_id = str(candidate_payload.get("candidate_id") or new_id("chain_tpl")).strip()
+        if candidate_id in self.store.industry_chain_template_candidates:
+            raise ConflictError(f"industry chain template candidate {candidate_id} already exists")
+        name = str(candidate_payload.get("name", "")).strip()
+        if not name:
+            raise ValidationError("industry chain template candidate requires name")
+        nodes = [dict(item) for item in candidate_payload.get("nodes", [])]
+        edges = [dict(item) for item in candidate_payload.get("edges", [])]
+        self._validate_industry_chain_template_graph(nodes, edges)
+        candidate = IndustryChainTemplateCandidate(
+            candidate_id=candidate_id,
+            name=name,
+            target_chain_id=str(candidate_payload.get("target_chain_id") or candidate_payload.get("chain_id") or new_id("chain")).strip(),
+            root_theme_id=str(candidate_payload.get("root_theme_id", "")),
+            nodes=nodes,
+            edges=edges,
+            taxonomy_version=str(candidate_payload.get("taxonomy_version", "industry-chain-template-v1")),
+            source_refs=self._string_list(candidate_payload.get("source_refs", [])),
+            evidence_policy=dict(candidate_payload.get("evidence_policy", self._default_industry_chain_template_evidence_policy())),
+            status=str(candidate_payload.get("status", "draft")),
+            created_by=actor,
+        )
+        self._refresh_industry_chain_template_candidate(candidate)
+        self.store.industry_chain_template_candidates[candidate.candidate_id] = candidate
+        self._audit(actor, "create_industry_chain_template_candidate", "industry_chain_template_candidate", candidate.candidate_id)
+        return self._industry_chain_template_candidate_response(candidate)
+
+    def submit_industry_chain_template_candidate(self, candidate_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        candidate = self.store.industry_chain_template_candidates.get(str(candidate_id).strip())
+        if candidate is None:
+            raise NotFoundError(f"industry chain template candidate {candidate_id} not found")
+        if candidate.status == "published":
+            raise ValidationError("published industry chain template candidate cannot be resubmitted")
+        if payload.get("notes"):
+            candidate.coverage = {**candidate.coverage, "submit_notes": str(payload.get("notes", ""))}
+        candidate.status = "needs_review"
+        candidate.submitted_at = utcnow()
+        self._refresh_industry_chain_template_candidate(candidate)
+        self._audit(actor, "submit_industry_chain_template_candidate", "industry_chain_template_candidate", candidate.candidate_id)
+        return self._industry_chain_template_candidate_response(candidate)
+
+    def review_industry_chain_template_candidate(self, candidate_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        candidate = self.store.industry_chain_template_candidates.get(str(candidate_id).strip())
+        if candidate is None:
+            raise NotFoundError(f"industry chain template candidate {candidate_id} not found")
+        decision = str(payload.get("decision", "")).strip()
+        if not decision:
+            raise ValidationError("industry chain template review requires decision")
+        quality = self._refresh_industry_chain_template_candidate(candidate)
+        if decision == "approved" and not bool(quality["coverage"].get("publishable", False)):
+            raise ValidationError("industry chain template candidate cannot be approved before blocking requirements are resolved")
+        review_id = str(payload.get("review_id") or f"tplreview_{safe_source_part(candidate.candidate_id)}_{len(candidate.review_ids) + 1}").strip()
+        if review_id in self.store.industry_chain_template_reviews:
+            raise ConflictError(f"industry chain template review {review_id} already exists")
+        review = IndustryChainTemplateReview(
+            review_id=review_id,
+            candidate_id=candidate.candidate_id,
+            reviewer=str(payload.get("reviewer") or actor),
+            decision=decision,
+            notes=str(payload.get("notes", "")),
+            findings=[str(item) for item in payload.get("findings", [])],
+            missing_requirements=[dict(item) for item in quality["missing_requirements"]],
+            coverage=dict(quality["coverage"]),
+        )
+        self.store.industry_chain_template_reviews[review.review_id] = review
+        candidate.review_ids = self._unique_strings([*candidate.review_ids, review.review_id])
+        candidate.status = "approved" if decision == "approved" else "rejected"
+        candidate.updated_at = utcnow()
+        self._audit(actor, "review_industry_chain_template_candidate", "industry_chain_template_candidate", candidate.candidate_id, approval_state=decision)
+        return {
+            **self._industry_chain_template_candidate_response(candidate),
+            "review": to_plain(review),
+        }
+
+    def publish_industry_chain_template_candidate(self, candidate_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        candidate = self.store.industry_chain_template_candidates.get(str(candidate_id).strip())
+        if candidate is None:
+            raise NotFoundError(f"industry chain template candidate {candidate_id} not found")
+        quality = self._refresh_industry_chain_template_candidate(candidate)
+        if not bool(quality["coverage"].get("publishable", False)):
+            raise ValidationError("industry chain template candidate has unresolved blocking requirements")
+        if candidate.status != "approved" and not self._truthy(payload.get("force", False)):
+            raise ValidationError("industry chain template candidate must be approved before publish")
+        chain_id = str(payload.get("chain_id") or candidate.target_chain_id or new_id("chain")).strip()
+        if chain_id in self.store.industry_chains and not self._truthy(payload.get("replace_existing", True)):
+            raise ConflictError(f"industry chain {chain_id} already exists")
+        if candidate.root_theme_id and candidate.root_theme_id not in self.store.macro_themes:
+            raise NotFoundError(f"macro theme {candidate.root_theme_id} not found")
+        now = utcnow()
+        chain = IndustryChain(
+            chain_id=chain_id,
+            name=str(payload.get("name") or candidate.name),
+            root_theme_id=candidate.root_theme_id,
+            nodes=[dict(item) for item in candidate.nodes],
+            edges=[dict(item) for item in candidate.edges],
+            taxonomy_version=candidate.taxonomy_version,
+            source_refs=list(candidate.source_refs),
+            template_status="published",
+            template_candidate_id=candidate.candidate_id,
+            review_ids=list(candidate.review_ids),
+            governance={
+                "evidence_policy": dict(candidate.evidence_policy),
+                "coverage": dict(candidate.coverage),
+                "published_by": actor,
+                "legacy_chain_id_compatibility": chain_id,
+            },
+            published_at=now,
+            created_at=now,
+        )
+        self.store.industry_chains[chain.chain_id] = chain
+        candidate.status = "published"
+        candidate.published_chain_id = chain.chain_id
+        candidate.published_at = now
+        candidate.updated_at = now
+        created_tasks = self._upsert_industry_chain_template_research_tasks(candidate, actor=actor)
+        created_positions = self._upsert_ai_compute_company_positions_from_template(candidate, chain, payload, actor=actor)
+        self._audit(actor, "publish_industry_chain_template_candidate", "industry_chain", chain.chain_id, approval_state="published")
+        return {
+            "candidate": to_plain(candidate),
+            "chain": to_plain(chain),
+            "created_research_tasks": created_tasks,
+            "created_company_positions": created_positions,
+            "automation_allowed": False,
+            "usage_boundary": "published_industry_chain_template_research_only_not_trade_signal",
+        }
+
+    def _industry_chain_template_candidate_response(self, candidate: IndustryChainTemplateCandidate) -> dict[str, Any]:
+        reviews = [self.store.industry_chain_template_reviews[review_id] for review_id in candidate.review_ids if review_id in self.store.industry_chain_template_reviews]
+        return {
+            "candidate": to_plain(candidate),
+            "reviews": [to_plain(item) for item in reviews],
+            "coverage": dict(candidate.coverage),
+            "research_tasks": [dict(item) for item in candidate.research_tasks],
+            "automation_allowed": False,
+            "usage_boundary": "industry_chain_template_candidate_governance_research_only",
+        }
+
+    def _industry_chain_template_candidate_seed_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        template_key = str(
+            payload.get("template_id")
+            or payload.get("template_key")
+            or payload.get("seed_template")
+            or payload.get("taxonomy_version")
+            or payload.get("candidate_id")
+            or ""
+        ).strip()
+        query_text = " ".join(str(payload.get(key, "")) for key in ["name", "q", "query", "description"]).lower()
+        if template_key in {"ai-compute-chain-v1", "ai_compute_v1", "ai-compute-chain"} or "ai compute" in query_text or "ai 算力" in query_text or "算力" in query_text:
+            seeded = self._ai_compute_chain_template_candidate_payload(payload)
+            return {**seeded, **{key: value for key, value in payload.items() if key in {"status", "created_by"}}}
+        return dict(payload)
+
+    def _default_industry_chain_template_evidence_policy(self) -> dict[str, Any]:
+        return {
+            "fact_layer_allowed_source_types": [
+                "regulatory",
+                "company_ir",
+                "company_official",
+                "official_public",
+                "exchange_disclosure",
+                "issuer_disclosure",
+            ],
+            "opinion_layer_source_types": ["local_reference", "research", "broker_research", "news"],
+            "fact_layer_rule": "facts must cite public official company, regulatory, prospectus, annual report, or official product/business disclosure evidence",
+            "economics_missing_policy": "publishable_with_chain_segment_economics_backfill_task",
+        }
+
+    def _ai_compute_chain_template_candidate_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        official_evidence_ids = self._unique_strings(
+            self._string_list(
+                payload.get("official_evidence_ids")
+                or payload.get("source_evidence_ids")
+                or payload.get("evidence_ids")
+                or []
+            )
+        )
+        source_refs = self._string_list(payload.get("source_refs") or [f"evidence://{evidence_id}" for evidence_id in official_evidence_ids])
+
+        def economics(scope: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "metric": "segment_revenue_pool",
+                    "value": None,
+                    "range_low": None,
+                    "range_high": None,
+                    "currency": "USD",
+                    "period": "needs_backfill",
+                    "scope": scope,
+                    "source_refs": [],
+                    "evidence_ids": [],
+                    "confidence": "unknown",
+                },
+                {
+                    "metric": "segment_profit_pool",
+                    "value": None,
+                    "range_low": None,
+                    "range_high": None,
+                    "currency": "USD",
+                    "period": "needs_backfill",
+                    "scope": scope,
+                    "source_refs": [],
+                    "evidence_ids": [],
+                    "confidence": "unknown",
+                },
+            ]
+
+        def node(
+            node_id: str,
+            name: str,
+            level: int,
+            parent_id: str,
+            process_stage: str,
+            flow_order: float,
+            category: str,
+            process_step: str,
+            process_description: str,
+            inputs: list[str],
+            outputs: list[str],
+            routes: list[str],
+            bottlenecks: list[str],
+            keywords: list[str],
+        ) -> dict[str, Any]:
+            return {
+                "node_id": node_id,
+                "name": name,
+                "level": level,
+                "parent_id": parent_id,
+                "flow_order": flow_order,
+                "process_stage": process_stage,
+                "category": category,
+                "process_step": process_step,
+                "process_description": process_description,
+                "inputs": inputs,
+                "outputs": outputs,
+                "technology_routes": routes,
+                "bottlenecks": bottlenecks,
+                "keywords": ["AI compute", "AI 算力", *keywords],
+                "source_refs": source_refs,
+                "evidence_ids": official_evidence_ids,
+                "fact_layer": "official_public",
+                "segment_economics": economics(name),
+                "data_slots": ["process_step", "inputs", "outputs", "segment_economics", "company_position_segments", "evidence_ids"],
+            }
+
+        nodes = [
+            node("ai_compute_upstream", "上游：芯片、制造、内存与封装", 1, "", "upstream", 1.0, "l1_upstream", "define upstream compute supply", "Organize semiconductor design, wafer fabrication, advanced packaging, and memory inputs before accelerator systems are built.", ["EDA/IP", "wafer capacity", "HBM", "substrates"], ["AI accelerator components"], ["fabless design", "foundry manufacturing", "advanced packaging"], ["advanced-node capacity", "HBM supply", "export controls"], ["semiconductor", "HBM"]),
+            node("ai_compute_midstream", "中游：加速卡、服务器与集群", 1, "", "midstream", 2.0, "l1_midstream", "assemble accelerator systems", "Convert packaged accelerators, memory, networking, and server components into boards, servers, and rack-scale clusters.", ["GPU/ASIC packages", "HBM", "NIC", "server components"], ["AI servers and clusters"], ["accelerator cards", "rack-scale integration"], ["power density", "thermal design", "supply allocation"], ["GPU", "server"]),
+            node("ai_compute_downstream", "下游：云、企业软件与端侧设备", 1, "", "downstream", 3.0, "l1_downstream", "deliver compute services and applications", "Operate AI infrastructure and deliver model services, enterprise software, and device-level AI functions.", ["AI clusters", "models", "software platforms"], ["AI cloud services", "enterprise AI applications", "edge AI devices"], ["cloud training/inference", "MLOps", "on-device AI"], ["capex utilization", "model monetization", "privacy and latency"], ["cloud", "software", "edge"]),
+            node("ai_compute_supporting", "支撑：EDA/IP、工具链与生态", 1, "", "supporting", 0.5, "l1_supporting", "support design and software ecosystem", "Provide design automation, reusable IP, compilers, developer tools, and ecosystem assets that enable the compute stack.", ["design rules", "IP libraries", "developer requirements"], ["verified designs", "software ecosystem"], ["EDA", "IP reuse", "compiler/runtime"], ["IP licensing", "tool qualification", "ecosystem lock-in"], ["EDA", "IP", "CUDA"]),
+            node("ai_eda_ip", "EDA/IP", 2, "ai_compute_supporting", "supporting", 0.6, "design_enablement", "design automation and reusable IP", "Provide EDA tools, verification flows, and reusable interface IP that make chip design executable.", ["process design kits", "architecture specs"], ["verified design files", "IP blocks"], ["EDA verification", "high-speed interface IP"], ["tool qualification", "IP availability"], ["EDA", "IP"]),
+            node("ai_chip_design", "芯片设计", 2, "ai_compute_upstream", "upstream", 1.1, "chip_design", "AI accelerator architecture and tape-out", "Define GPU, AI ASIC, interconnect, and memory controller architecture, then prepare designs for fabrication.", ["EDA/IP", "architecture requirements", "software workload targets"], ["tape-out design", "accelerator architecture"], ["GPU", "AI ASIC", "chiplet"], ["design cycle", "software compatibility"], ["chip design", "GPU"]),
+            node("wafer_fabrication", "晶圆制造", 2, "ai_compute_upstream", "upstream", 1.5, "foundry", "advanced-node wafer fabrication", "Manufacture accelerator dies on foundry process nodes using masks, wafers, lithography, etch, deposition, and test.", ["tape-out design", "silicon wafers", "equipment", "chemicals"], ["known-good dies", "processed wafers"], ["advanced-node foundry", "specialty processes"], ["capacity", "yield", "equipment availability"], ["foundry", "wafer"]),
+            node("advanced_packaging", "先进封装", 2, "ai_compute_upstream", "upstream", 1.8, "advanced_packaging", "advanced package integration", "Integrate compute dies, HBM stacks, interposers, substrates, and thermal structures into high-bandwidth accelerator packages.", ["known-good dies", "HBM stacks", "substrates", "interposers"], ["packaged accelerator modules"], ["2.5D packaging", "chiplet integration"], ["CoWoS-like capacity", "substrate supply", "thermal limits"], ["advanced packaging", "CoWoS"]),
+            node("hbm_memory", "HBM/内存", 2, "ai_compute_upstream", "upstream", 1.6, "memory", "high-bandwidth memory supply", "Produce and qualify HBM stacks and memory components used by accelerators and AI servers.", ["DRAM wafers", "TSV processes", "test capacity"], ["HBM stacks", "server memory"], ["HBM3/HBM4", "TSV stacking"], ["yield", "qualification cycles", "capacity allocation"], ["HBM", "memory"]),
+            node("gpu_accelerator_system", "加速卡与模组", 2, "ai_compute_midstream", "midstream", 2.1, "accelerator_board", "accelerator card/module assembly", "Mount packaged accelerators, memory interfaces, networking, power, and cooling interfaces into accelerator cards or modules.", ["packaged accelerator modules", "PCB", "power components"], ["accelerator cards", "SXM/OAM modules"], ["PCIe cards", "SXM/OAM modules"], ["power delivery", "supply allocation"], ["GPU", "accelerator"]),
+            node("ai_server_cluster", "AI 服务器与集群", 2, "ai_compute_midstream", "midstream", 2.5, "server_cluster", "server and cluster integration", "Integrate accelerators, CPUs, memory, networking, storage, power, and cooling into AI servers and clusters.", ["accelerator cards", "CPU", "NIC", "storage", "power"], ["AI servers", "rack-scale clusters"], ["air cooling", "liquid cooling", "InfiniBand/Ethernet"], ["network bottlenecks", "power density", "delivery lead time"], ["AI server", "cluster"]),
+            node("cloud_infrastructure", "云基础设施", 2, "ai_compute_downstream", "downstream", 3.1, "cloud_infra", "AI cloud infrastructure operation", "Operate data centers, AI clusters, scheduling, storage, and networking to deliver training and inference capacity.", ["AI clusters", "data centers", "models", "power"], ["training capacity", "inference capacity", "AI cloud services"], ["GPU cloud", "AI supercomputer", "inference serving"], ["capex utilization", "power availability", "GPU allocation"], ["cloud", "Azure", "AI infrastructure"]),
+            node("enterprise_ai_software", "企业 AI 软件", 2, "ai_compute_downstream", "downstream", 3.5, "enterprise_software", "enterprise AI software delivery", "Package models, copilots, developer platforms, and workflow integrations into enterprise software products.", ["AI cloud services", "models", "enterprise data"], ["AI applications", "productivity copilots", "developer tools"], ["SaaS copilots", "MLOps", "agent platforms"], ["data governance", "model quality", "seat monetization"], ["Copilot", "enterprise AI"]),
+            node("edge_device_ecosystem", "端侧设备与生态", 2, "ai_compute_downstream", "downstream", 3.9, "edge_device", "edge AI device integration", "Embed neural processors, operating systems, model runtimes, and app ecosystems into consumer and enterprise devices.", ["edge SoC", "model runtimes", "apps"], ["AI phones", "AI PCs", "edge AI services"], ["on-device AI", "hybrid cloud-edge"], ["battery life", "privacy", "model compression"], ["edge AI", "device"]),
+            node("eda_verification_flow", "L3：EDA 验证流程", 3, "ai_eda_ip", "supporting", 0.7, "eda_verification", "RTL verification and sign-off", "Run simulation, synthesis, timing, power, and physical verification before tape-out.", ["RTL", "IP blocks", "PDK"], ["verified netlist", "sign-off package"], ["digital verification", "physical sign-off"], ["tool runtime", "sign-off confidence"], ["verification"]),
+            node("gpu_die_design", "L3：GPU/ASIC Die 设计", 3, "ai_chip_design", "upstream", 1.2, "die_design", "GPU/ASIC die design", "Design compute cores, memory controllers, interconnect, and software-visible instruction/runtime features.", ["architecture spec", "EDA/IP", "workload benchmarks"], ["accelerator die design"], ["GPU", "AI ASIC", "chiplet die"], ["software compatibility", "area and power budget"], ["GPU die"]),
+            node("cowos_like_advanced_package", "L3：2.5D 先进封装", 3, "advanced_packaging", "upstream", 1.9, "2_5d_packaging", "2.5D package assembly", "Attach compute dies and HBM stacks through interposers/substrates and qualify high-bandwidth packages.", ["known-good dies", "HBM stacks", "interposers"], ["2.5D AI accelerator package"], ["2.5D packaging", "chiplet package"], ["package capacity", "substrate supply"], ["CoWoS", "2.5D"]),
+            node("hbm_stack_memory", "L3：HBM 堆叠内存", 3, "hbm_memory", "upstream", 1.7, "hbm_stack", "HBM stack production", "Stack DRAM dies with TSV and base logic, then test and qualify HBM for accelerator packages.", ["DRAM dies", "TSV process", "test equipment"], ["qualified HBM stack"], ["HBM3", "HBM4"], ["yield", "thermal limits"], ["HBM stack"]),
+            node("accelerator_card_assembly", "L3：加速卡装配", 3, "gpu_accelerator_system", "midstream", 2.2, "card_assembly", "accelerator card assembly", "Assemble accelerator packages onto boards/modules with power, firmware, connectors, and thermal interfaces.", ["AI accelerator package", "PCB", "power modules"], ["accelerator card/module"], ["PCIe", "SXM", "OAM"], ["power delivery", "firmware validation"], ["accelerator card"]),
+            node("rack_scale_server_integration", "L3：整机柜集成", 3, "ai_server_cluster", "midstream", 2.7, "rack_integration", "rack-scale integration", "Integrate servers, switches, cables, storage, power distribution, and cooling into deployable AI racks.", ["AI servers", "switches", "cables", "cooling"], ["rack-scale AI cluster"], ["liquid cooling", "high-speed networking"], ["power and cooling", "network topology"], ["rack", "cluster"]),
+            node("ai_training_inference_cloud", "L3：训练/推理云服务", 3, "cloud_infrastructure", "downstream", 3.2, "ai_cloud_service", "training and inference cloud service", "Schedule accelerator clusters and serve model training, fine-tuning, and inference workloads to customers.", ["AI clusters", "model runtime", "storage"], ["GPU instances", "training jobs", "inference endpoints"], ["GPU cloud", "serverless inference"], ["utilization", "availability", "pricing"], ["AI cloud"]),
+            node("enterprise_model_ops", "L3：企业模型运营", 3, "enterprise_ai_software", "downstream", 3.6, "model_ops", "enterprise model operations", "Connect enterprise data, model governance, prompts, agents, and workflow applications into governed AI software.", ["AI cloud services", "enterprise data", "identity"], ["AI copilots", "agent workflows"], ["MLOps", "RAG", "agent orchestration"], ["data permissioning", "hallucination controls"], ["MLOps", "agent"]),
+            node("edge_ai_device_integration", "L3：端侧 AI 集成", 3, "edge_device_ecosystem", "downstream", 4.0, "edge_integration", "edge AI device integration", "Integrate NPU/SoC, OS, model runtime, apps, and privacy controls into devices.", ["edge SoC", "compressed models", "OS runtime"], ["AI-enabled devices", "edge AI features"], ["NPU", "hybrid inference"], ["memory footprint", "battery", "privacy"], ["NPU", "device AI"]),
+        ]
+
+        def edge(source: str, target: str, relation_type: str = "input_output_flow", strength: str = "high") -> dict[str, Any]:
+            return {
+                "edge_id": f"ai_compute_{source}_{target}",
+                "source_node_id": source,
+                "target_node_id": target,
+                "relation_type": relation_type,
+                "strength": strength,
+                "evidence_ids": official_evidence_ids,
+                "source_refs": source_refs,
+            }
+
+        edges = [
+            edge("ai_compute_supporting", "ai_compute_upstream", "enables"),
+            edge("ai_compute_supporting", "ai_compute_midstream", "enables", "medium"),
+            edge("ai_compute_upstream", "ai_compute_midstream"),
+            edge("ai_compute_midstream", "ai_compute_downstream"),
+            edge("ai_eda_ip", "ai_chip_design", "enables"),
+            edge("ai_chip_design", "wafer_fabrication"),
+            edge("wafer_fabrication", "advanced_packaging"),
+            edge("hbm_memory", "advanced_packaging"),
+            edge("advanced_packaging", "gpu_accelerator_system"),
+            edge("gpu_accelerator_system", "ai_server_cluster"),
+            edge("ai_server_cluster", "cloud_infrastructure"),
+            edge("cloud_infrastructure", "enterprise_ai_software"),
+            edge("enterprise_ai_software", "edge_device_ecosystem", "software_ecosystem_flow", "medium"),
+            edge("eda_verification_flow", "gpu_die_design", "enables"),
+            edge("gpu_die_design", "wafer_fabrication"),
+            edge("hbm_stack_memory", "cowos_like_advanced_package"),
+            edge("wafer_fabrication", "cowos_like_advanced_package"),
+            edge("cowos_like_advanced_package", "accelerator_card_assembly"),
+            edge("accelerator_card_assembly", "rack_scale_server_integration"),
+            edge("rack_scale_server_integration", "ai_training_inference_cloud"),
+            edge("ai_training_inference_cloud", "enterprise_model_ops"),
+            edge("enterprise_model_ops", "edge_ai_device_integration", "application_runtime_flow", "medium"),
+        ]
+        return {
+            "candidate_id": str(payload.get("candidate_id") or "ai-compute-chain-v1"),
+            "target_chain_id": str(payload.get("target_chain_id") or payload.get("chain_id") or "chain_ai_compute_cloud"),
+            "name": str(payload.get("name") or "AI 算力链三级全景模板"),
+            "root_theme_id": str(payload.get("root_theme_id") or "theme_ai_compute_cloud"),
+            "nodes": nodes,
+            "edges": edges,
+            "taxonomy_version": "ai-compute-chain-v1",
+            "source_refs": source_refs,
+            "evidence_policy": self._default_industry_chain_template_evidence_policy(),
+        }
+
+    def _validate_industry_chain_template_graph(self, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> None:
+        if not nodes:
+            raise ValidationError("industry chain template candidate requires nodes")
+        node_ids = [str(item.get("node_id", "")).strip() for item in nodes]
+        if any(not item for item in node_ids):
+            raise ValidationError("industry chain template nodes require node_id")
+        duplicate_node_ids = sorted({item for item in node_ids if node_ids.count(item) > 1})
+        if duplicate_node_ids:
+            raise ValidationError(f"industry chain template duplicate nodes: {duplicate_node_ids}")
+        node_id_set = set(node_ids)
+        for edge in edges:
+            source_node_id = str(edge.get("source_node_id", "")).strip()
+            target_node_id = str(edge.get("target_node_id", "")).strip()
+            if source_node_id not in node_id_set or target_node_id not in node_id_set:
+                raise ValidationError("industry chain template edge references unknown node")
+
+    def _refresh_industry_chain_template_candidate(self, candidate: IndustryChainTemplateCandidate) -> dict[str, Any]:
+        quality = self._industry_chain_template_quality(candidate)
+        candidate.coverage = dict(quality["coverage"])
+        candidate.research_tasks = [dict(item) for item in quality["research_tasks"]]
+        candidate.updated_at = utcnow()
+        return quality
+
+    def _industry_chain_template_quality(self, candidate: IndustryChainTemplateCandidate) -> dict[str, Any]:
+        node_ids = {str(node.get("node_id", "")).strip() for node in candidate.nodes}
+        edge_count_by_node = {node_id: 0 for node_id in node_ids}
+        missing_requirements: list[dict[str, Any]] = []
+        research_tasks: list[dict[str, Any]] = []
+        official_node_count = 0
+        process_ready_count = 0
+        economics_ready_count = 0
+        levels = {1: 0, 2: 0, 3: 0}
+
+        for edge in candidate.edges:
+            source_node_id = str(edge.get("source_node_id", "")).strip()
+            target_node_id = str(edge.get("target_node_id", "")).strip()
+            if source_node_id in edge_count_by_node:
+                edge_count_by_node[source_node_id] += 1
+            if target_node_id in edge_count_by_node:
+                edge_count_by_node[target_node_id] += 1
+            official_edge_evidence = [item for item in self._industry_chain_template_edge_evidence_ids(edge) if self._evidence_is_official_public(item)]
+            if not official_edge_evidence:
+                missing_requirements.append(
+                    {
+                        "resource_type": "edge",
+                        "source_node_id": source_node_id,
+                        "target_node_id": target_node_id,
+                        "missing": ["official_fact_evidence"],
+                        "blocking": True,
+                    }
+                )
+                research_tasks.append(
+                    {
+                        "task_id": f"tpl_edge_evidence_{safe_source_part(candidate.candidate_id)}_{safe_source_part(source_node_id)}_{safe_source_part(target_node_id)}",
+                        "type": "chain_template_edge_evidence_backfill",
+                        "chain_id": candidate.target_chain_id,
+                        "node_ids": [source_node_id, target_node_id],
+                        "required_slots": ["official_fact_evidence"],
+                        "reason": "candidate edge cannot publish as fact until input/output relation has official evidence",
+                        "blocking": True,
+                    }
+                )
+
+        for node in candidate.nodes:
+            node_id = str(node.get("node_id", "")).strip()
+            level = int(self._coerce_float(node.get("level")) or 0)
+            if level in levels:
+                levels[level] += 1
+            required_missing: list[str] = []
+            if not str(node.get("process_step", "")).strip():
+                required_missing.append("process_step")
+            if not str(node.get("process_description", "")).strip():
+                required_missing.append("process_description")
+            if not self._string_list(node.get("inputs", [])):
+                required_missing.append("inputs")
+            if not self._string_list(node.get("outputs", [])):
+                required_missing.append("outputs")
+            if not self._string_list(node.get("technology_routes", [])):
+                required_missing.append("technology_routes")
+            if not self._string_list(node.get("bottlenecks", [])):
+                required_missing.append("bottlenecks")
+            if not self._string_list(node.get("source_refs", [])):
+                required_missing.append("source_refs")
+            if edge_count_by_node.get(node_id, 0) <= 0:
+                required_missing.append("upstream_or_downstream_edge")
+            official_evidence = [item for item in self._industry_chain_template_node_evidence_ids(node) if self._evidence_is_official_public(item)]
+            if not official_evidence:
+                required_missing.append("official_fact_evidence")
+            else:
+                official_node_count += 1
+            if required_missing:
+                missing_requirements.append({"resource_type": "node", "node_id": node_id, "missing": required_missing, "blocking": True})
+                research_tasks.append(
+                    {
+                        "task_id": f"tpl_process_evidence_{safe_source_part(candidate.candidate_id)}_{safe_source_part(node_id)}",
+                        "type": "chain_template_process_evidence_backfill",
+                        "chain_id": candidate.target_chain_id,
+                        "node_id": node_id,
+                        "node_ids": [node_id],
+                        "required_slots": required_missing,
+                        "reason": "candidate node cannot publish as fact until process, input/output, edge, and official evidence are complete",
+                        "blocking": True,
+                    }
+                )
+            else:
+                process_ready_count += 1
+
+            economics = self._industry_chain_node_economics(node)
+            if economics["revenue_pool"] is not None and economics["profit_pool"] is not None:
+                economics_ready_count += 1
+            else:
+                missing_metric = []
+                if economics["revenue_pool"] is None:
+                    missing_metric.append("segment_revenue_pool")
+                if economics["profit_pool"] is None:
+                    missing_metric.append("segment_profit_pool")
+                research_tasks.append(
+                    {
+                        "task_id": f"tpl_economics_{safe_source_part(candidate.candidate_id)}_{safe_source_part(node_id)}",
+                        "type": "chain_segment_economics_backfill",
+                        "chain_id": candidate.target_chain_id,
+                        "node_id": node_id,
+                        "node_ids": [node_id],
+                        "required_slots": missing_metric,
+                        "reason": "segment economics pool is missing; publish is allowed but company share calculation must stay unavailable until backfilled",
+                        "blocking": False,
+                    }
+                )
+
+        blocking_issues = [item for item in missing_requirements if item.get("blocking")]
+        coverage = {
+            "candidate_id": candidate.candidate_id,
+            "target_chain_id": candidate.target_chain_id,
+            "node_count": len(candidate.nodes),
+            "edge_count": len(candidate.edges),
+            "level_counts": {"L1": levels[1], "L2": levels[2], "L3": levels[3]},
+            "has_three_level_template": all(levels[level] > 0 for level in [1, 2, 3]),
+            "process_ready_nodes": process_ready_count,
+            "official_evidence_ready_nodes": official_node_count,
+            "economics_ready_nodes": economics_ready_count,
+            "blocking_issue_count": len(blocking_issues),
+            "economics_gap_count": sum(1 for item in research_tasks if item.get("type") == "chain_segment_economics_backfill"),
+            "publishable": len(blocking_issues) == 0 and all(levels[level] > 0 for level in [1, 2, 3]),
+            "fact_layer_allowed": "official_public_sources_only",
+        }
+        return {
+            "coverage": coverage,
+            "missing_requirements": missing_requirements,
+            "research_tasks": research_tasks,
+        }
+
+    def _industry_chain_template_node_evidence_ids(self, node: Mapping[str, Any]) -> list[str]:
+        return self._unique_strings(self._string_list(node.get("evidence_ids") or node.get("source_evidence_ids") or []))
+
+    def _industry_chain_node_evidence_ids(self, node: Mapping[str, Any]) -> list[str]:
+        return self._industry_chain_template_node_evidence_ids(node)
+
+    def _industry_chain_template_edge_evidence_ids(self, edge: Mapping[str, Any]) -> list[str]:
+        return self._unique_strings(self._string_list(edge.get("evidence_ids") or edge.get("source_evidence_ids") or []))
+
+    def _evidence_is_official_public(self, evidence_id: str) -> bool:
+        evidence = self.store.evidence.get(str(evidence_id).strip())
+        if evidence is None:
+            return False
+        document = self.store.documents.get(evidence.document_id)
+        if document is None:
+            return False
+        source = self.store.sources.get(document.source_id)
+        source_type = str(document.source_type or (source.source_type if source else "")).strip().lower()
+        document_type = str(document.document_type).strip().lower()
+        disallowed_source_types = {"local_reference", "research", "broker_research", "news", "manual_reference", "curated_public_profile"}
+        allowed_source_types = {
+            "regulatory",
+            "company_ir",
+            "company_official",
+            "official_public",
+            "exchange_disclosure",
+            "issuer_disclosure",
+            "public_company_disclosure",
+        }
+        allowed_document_types = {
+            "annual_report",
+            "10-k",
+            "10-q",
+            "8-k",
+            "20-f",
+            "6-k",
+            "prospectus",
+            "registration_statement",
+            "company_announcement",
+            "official_product_page",
+            "official_business_overview",
+        }
+        if source_type in disallowed_source_types:
+            return False
+        if source_type in allowed_source_types:
+            return True
+        return document_type in allowed_document_types and (source is None or source.risk_level != "red")
+
+    def _upsert_industry_chain_template_research_tasks(self, candidate: IndustryChainTemplateCandidate, *, actor: str) -> list[dict[str, Any]]:
+        created_or_existing: list[dict[str, Any]] = []
+        for task in candidate.research_tasks:
+            if task.get("blocking"):
+                continue
+            task_id = str(task.get("task_id") or new_id("rtask")).strip()
+            if task_id in self.store.research_tasks:
+                created_or_existing.append(to_plain(self.store.research_tasks[task_id]))
+                continue
+            task_payload = {
+                "task_id": task_id,
+                "task_type": str(task.get("type", "chain_template_backfill")),
+                "source": "industry_chain_template_governance",
+                "chain_id": candidate.target_chain_id,
+                "node_ids": task.get("node_ids", [task.get("node_id")]),
+                "required_slots": task.get("required_slots", []),
+                "reason": str(task.get("reason", "")),
+                "priority": 75 if task.get("type") == "chain_segment_economics_backfill" else 60,
+                "metadata": {
+                    "candidate_id": candidate.candidate_id,
+                    "taxonomy_version": candidate.taxonomy_version,
+                    "publishable_without_slot": True,
+                },
+            }
+            research_task = self._build_research_task(task_id, str(task_payload["task_type"]), task_payload)
+            self.store.research_tasks[research_task.task_id] = research_task
+            created_or_existing.append(to_plain(research_task))
+            self._audit(actor, "create_industry_chain_template_research_task", "research_task", research_task.task_id)
+        return created_or_existing
+
+    def _upsert_ai_compute_company_positions_from_template(
+        self,
+        candidate: IndustryChainTemplateCandidate,
+        chain: IndustryChain,
+        payload: Mapping[str, Any],
+        *,
+        actor: str,
+    ) -> list[dict[str, Any]]:
+        if candidate.taxonomy_version != "ai-compute-chain-v1" and candidate.candidate_id != "ai-compute-chain-v1":
+            return []
+        if not self._truthy(payload.get("seed_company_positions", True)):
+            return []
+        chain_node_ids = {str(item.get("node_id", "")) for item in chain.nodes}
+        evidence_ids = self._unique_strings(
+            evidence_id
+            for node in candidate.nodes
+            for evidence_id in self._industry_chain_template_node_evidence_ids(node)
+            if self._evidence_is_official_public(evidence_id)
+        )
+
+        def security_for_issuer(issuer_id: str, preferred_security_id: str) -> str:
+            if preferred_security_id in self.store.securities:
+                return preferred_security_id
+            for security in self.store.securities.values():
+                if security.issuer_id == issuer_id:
+                    return security.security_id
+            return ""
+
+        def segment_payload(node_ids: list[str], metric: str) -> dict[str, Any]:
+            return {
+                "type": "node_segments",
+                "metric": metric,
+                "segments": [
+                    {
+                        "node_id": node_id,
+                        "amount": None,
+                        "ratio": None,
+                        "period": "needs_review",
+                        "scope": "official disclosure supports chain participation; quantitative node split is not estimated in v1",
+                        "evidence_ids": evidence_ids,
+                        "calculation_basis": "requires issuer segment disclosure or analyst-reviewed attribution; no unsupported estimate",
+                        "needs_review": True,
+                    }
+                    for node_id in node_ids
+                ],
+            }
+
+        position_specs = [
+            {
+                "position_id": "pos_nvda_ai_compute",
+                "issuer_id": "issuer_nvda",
+                "security_id": "security_nvda_us",
+                "node_ids": ["ai_chip_design", "gpu_die_design", "advanced_packaging", "gpu_accelerator_system", "accelerator_card_assembly"],
+                "role": "AI accelerator architecture, GPU platform, and accelerated computing supplier",
+                "summary": "NVIDIA is mapped to chip design, accelerator modules, and GPU platform nodes; node-level revenue/profit split remains a review task unless official segment evidence is attached.",
+                "customers": ["cloud service providers", "AI server OEM/ODM", "enterprise AI customers"],
+                "suppliers": ["foundry partners", "advanced packaging", "HBM suppliers"],
+                "tags": ["GPU", "CUDA", "AI accelerator", "accelerated computing"],
+            },
+            {
+                "position_id": "pos_msft_ai_cloud",
+                "issuer_id": "issuer_msft",
+                "security_id": "security_msft_us",
+                "node_ids": ["cloud_infrastructure", "ai_training_inference_cloud", "enterprise_ai_software", "enterprise_model_ops"],
+                "role": "AI cloud infrastructure and enterprise AI software platform",
+                "summary": "Microsoft is mapped to AI cloud infrastructure and enterprise AI software nodes; node-level revenue/profit split remains a review task unless official segment evidence is attached.",
+                "customers": ["enterprise customers", "developers", "public sector"],
+                "suppliers": ["data center infrastructure", "accelerator suppliers", "networking"],
+                "tags": ["Azure", "Copilot", "AI cloud", "enterprise software"],
+            },
+            {
+                "position_id": "pos_aapl_edge_ai",
+                "issuer_id": "issuer_aapl",
+                "security_id": "security_aapl_us",
+                "node_ids": ["ai_chip_design", "edge_device_ecosystem", "edge_ai_device_integration"],
+                "role": "edge AI device and ecosystem owner with in-house silicon exposure",
+                "summary": "Apple is mapped to edge AI device integration and in-house chip design nodes; node-level revenue/profit split remains a review task unless official segment evidence is attached.",
+                "customers": ["consumers", "developers", "service subscribers"],
+                "suppliers": ["semiconductor manufacturing", "device assembly", "memory and components"],
+                "tags": ["iPhone", "SoC", "NPU", "edge AI"],
+            },
+        ]
+        rows: list[dict[str, Any]] = []
+        for spec in position_specs:
+            issuer_id = str(spec["issuer_id"])
+            if issuer_id not in self.store.issuers:
+                continue
+            node_ids = [node_id for node_id in spec["node_ids"] if node_id in chain_node_ids]
+            if not node_ids:
+                continue
+            existing = self.store.company_positions.get(str(spec["position_id"]))
+            position = CompanyPosition(
+                position_id=str(spec["position_id"]),
+                issuer_id=issuer_id,
+                security_id=security_for_issuer(issuer_id, str(spec["security_id"])),
+                chain_id=chain.chain_id,
+                node_ids=node_ids,
+                role=str(spec["role"]),
+                positioning_summary=str(spec["summary"]),
+                revenue_exposure=segment_payload(node_ids, "revenue"),
+                profit_exposure=segment_payload(node_ids, "profit"),
+                capacity={"type": "needs_review", "required_slots": ["capacity", "shipment", "utilization"], "evidence_ids": evidence_ids},
+                customers=[str(item) for item in spec["customers"]],
+                suppliers=[str(item) for item in spec["suppliers"]],
+                competitors=[],
+                technology_tags=[str(item) for item in spec["tags"]],
+                valuation_metrics={"scope": "research_positioning_only", "automation_allowed": False},
+                event_refs=list(candidate.source_refs),
+                evidence_ids=evidence_ids,
+                data_quality="needs_review",
+                created_at=existing.created_at if existing is not None else utcnow(),
+            )
+            self.store.company_positions[position.position_id] = position
+            rows.append(to_plain(position))
+            self._audit(actor, "upsert_ai_compute_company_position", "company_position", position.position_id)
+        return rows
 
     def company_positions_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -11949,8 +12658,8 @@ class SystemService:
             {"field": "node_ids", "type": "list[string]", "required": True, "meaning": "one or more chain nodes where the company participates"},
             {"field": "role", "type": "string", "required": True, "meaning": "company role in the chain node, such as supplier, foundry, equipment vendor, or demand beneficiary"},
             {"field": "positioning_summary", "type": "string", "required": True, "meaning": "short explainable positioning statement"},
-            {"field": "revenue_exposure", "type": "object", "required": True, "meaning": "revenue percentage, segment, trend, or qualitative exposure to the node"},
-            {"field": "profit_exposure", "type": "object", "required": True, "meaning": "profit or margin sensitivity to the node"},
+            {"field": "revenue_exposure", "type": "object", "required": True, "meaning": "revenue percentage, segment, trend, or qualitative exposure to the node; supports segments[] with node_id, amount/ratio, period, evidence_ids, and calculation_basis"},
+            {"field": "profit_exposure", "type": "object", "required": True, "meaning": "profit or margin sensitivity to the node; supports segments[] with node_id, amount/ratio, period, evidence_ids, and calculation_basis"},
             {"field": "capacity", "type": "object", "required": True, "meaning": "capacity, shipment, utilization, or expansion signal"},
             {"field": "customers", "type": "list[string]", "required": True, "meaning": "downstream customers, customer groups, or end markets"},
             {"field": "suppliers", "type": "list[string]", "required": True, "meaning": "upstream suppliers, materials, equipment, or critical inputs"},
@@ -12048,6 +12757,1220 @@ class SystemService:
             "by_chain": sorted(by_chain.values(), key=lambda item: (item["slot_coverage"], item["evidence_coverage"])),
             "by_node": sorted(by_node.values(), key=lambda item: (item["slot_coverage"], item["evidence_coverage"])),
         }
+
+    def industry_chain_analysis_payload(self, chain_id: str, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        filters = filters or {}
+        chain_id = str(chain_id).strip()
+        chain = self.store.industry_chains.get(chain_id)
+        if chain is None:
+            raise NotFoundError(f"industry chain {chain_id} not found")
+        issuer_id = str(filters.get("issuer_id", "")).strip()
+        security_id = str(filters.get("security_id", "")).strip()
+        node_filter = str(filters.get("node_id", "")).strip()
+        positions = [
+            position
+            for position in self.store.company_positions.values()
+            if position.chain_id == chain_id
+            and (not issuer_id or position.issuer_id == issuer_id)
+            and (not security_id or position.security_id == security_id)
+            and (not node_filter or node_filter in position.node_ids)
+        ]
+        ordered_nodes = [
+            node
+            for node in sorted(chain.nodes, key=self._industry_chain_node_sort_key)
+            if not node_filter or str(node.get("node_id", "")).strip() == node_filter
+        ]
+        relations = self._industry_chain_node_relations(chain)
+        process_flow: list[dict[str, Any]] = []
+        segments: list[dict[str, Any]] = []
+        company_exposures: list[dict[str, Any]] = []
+        research_tasks: list[dict[str, Any]] = []
+        stage_summary: dict[str, dict[str, Any]] = {}
+
+        for node in ordered_nodes:
+            node_id = str(node.get("node_id", "")).strip()
+            if not node_id:
+                continue
+            process_step = self._industry_chain_process_step(chain, node, relations.get(node_id, {}))
+            economics = self._industry_chain_node_economics(node)
+            node_positions = [position for position in positions if node_id in position.node_ids]
+            process_flow.append(process_step)
+
+            if not process_step["process_description"] or not process_step["outputs"]:
+                research_tasks.append(
+                    {
+                        "task_id": f"chain_process_{safe_source_part(chain_id)}_{safe_source_part(node_id)}",
+                        "type": "chain_process_backfill",
+                        "chain_id": chain_id,
+                        "node_id": node_id,
+                        "required_slots": ["process_description", "inputs", "outputs", "process_stage"],
+                        "reason": "missing actual process description or input/output mapping for chain node",
+                    }
+                )
+            if economics["revenue_pool"] is None or economics["profit_pool"] is None:
+                research_tasks.append(
+                    {
+                        "task_id": f"chain_economics_{safe_source_part(chain_id)}_{safe_source_part(node_id)}",
+                        "type": "chain_segment_economics_backfill",
+                        "chain_id": chain_id,
+                        "node_id": node_id,
+                        "required_slots": ["segment_revenue_pool", "segment_profit_pool"],
+                        "reason": "missing segment revenue/profit pool, cannot calculate complete company share",
+                    }
+                )
+            if not node_positions:
+                research_tasks.append(
+                    {
+                        "task_id": f"chain_company_mapping_{safe_source_part(chain_id)}_{safe_source_part(node_id)}",
+                        "type": "chain_node_company_mapping",
+                        "chain_id": chain_id,
+                        "node_id": node_id,
+                        "required_slots": ["issuer_id", "role", "revenue_exposure", "profit_exposure"],
+                        "reason": "no company position mapped to this chain node",
+                    }
+                )
+
+            companies: list[dict[str, Any]] = []
+            mapped_revenue = 0.0
+            mapped_profit = 0.0
+            revenue_amount_count = 0
+            profit_amount_count = 0
+            revenue_share_count = 0
+            profit_share_count = 0
+            for position in node_positions:
+                exposure = self._industry_chain_position_segment_exposure(position, node_id, economics)
+                if exposure["revenue_amount"] is not None:
+                    mapped_revenue += float(exposure["revenue_amount"])
+                    revenue_amount_count += 1
+                if exposure["profit_amount"] is not None:
+                    mapped_profit += float(exposure["profit_amount"])
+                    profit_amount_count += 1
+                if exposure["revenue_share_of_segment"] is not None:
+                    revenue_share_count += 1
+                if exposure["profit_share_of_segment"] is not None:
+                    profit_share_count += 1
+                companies.append(exposure)
+                company_exposures.append(exposure)
+                if getattr(chain, "template_status", "published_legacy") == "published" and (
+                    exposure["revenue_share_of_segment"] is None
+                    or exposure["profit_share_of_segment"] is None
+                    or (not position.evidence_ids and position.data_quality != "needs_review")
+                ):
+                    research_tasks.append(
+                        {
+                            "task_id": f"chain_company_attribution_{safe_source_part(chain_id)}_{safe_source_part(node_id)}_{safe_source_part(position.position_id)}",
+                            "type": "company_position_attribution_backfill",
+                            "chain_id": chain_id,
+                            "node_id": node_id,
+                            "position_id": position.position_id,
+                            "issuer_id": position.issuer_id,
+                            "required_slots": ["node_revenue_or_ratio", "node_profit_or_ratio", "official_evidence"],
+                            "reason": "published template requires evidence-backed node attribution; missing economics or company split keeps share unavailable",
+                        }
+                    )
+
+            companies.sort(
+                key=lambda item: (
+                    item["revenue_share_of_segment"] is None,
+                    -(float(item["revenue_share_of_segment"] or 0.0)),
+                    item["issuer_name"],
+                )
+            )
+            segment = {
+                "chain_id": chain_id,
+                "node_id": node_id,
+                "node_name": str(node.get("name", node_id)),
+                "process_stage": process_step["process_stage"],
+                "flow_order": process_step["flow_order"],
+                "category": str(node.get("category", "")),
+                "companies": companies,
+                "company_count": len(companies),
+                "revenue_pool": economics["revenue_pool"],
+                "profit_pool": economics["profit_pool"],
+                "revenue_pool_range": economics.get("revenue_pool_range"),
+                "profit_pool_range": economics.get("profit_pool_range"),
+                "currency": economics["currency"],
+                "period": economics["period"],
+                "economics_scope": economics.get("scope", ""),
+                "economics_source_refs": economics.get("source_refs", []),
+                "economics_evidence_ids": economics.get("evidence_ids", []),
+                "economics_confidence": economics.get("confidence", ""),
+                "mapped_revenue": round(mapped_revenue, 6) if revenue_amount_count else None,
+                "mapped_profit": round(mapped_profit, 6) if profit_amount_count else None,
+                "mapped_revenue_pool_coverage": round(mapped_revenue / economics["revenue_pool"], 6) if economics["revenue_pool"] and revenue_amount_count else None,
+                "mapped_profit_pool_coverage": round(mapped_profit / economics["profit_pool"], 6) if economics["profit_pool"] and profit_amount_count else None,
+                "company_revenue_share_coverage": round(revenue_share_count / max(1, len(companies)), 4) if companies else 0.0,
+                "company_profit_share_coverage": round(profit_share_count / max(1, len(companies)), 4) if companies else 0.0,
+                "top_companies_by_revenue_share": companies[:5],
+                "missing_share_inputs": [
+                    item["position_id"]
+                    for item in companies
+                    if item["revenue_share_of_segment"] is None or item["profit_share_of_segment"] is None
+                ],
+            }
+            segments.append(segment)
+            bucket = stage_summary.setdefault(
+                process_step["process_stage"],
+                {
+                    "process_stage": process_step["process_stage"],
+                    "node_count": 0,
+                    "company_count": 0,
+                    "revenue_pool": 0.0,
+                    "profit_pool": 0.0,
+                    "mapped_revenue": 0.0,
+                    "mapped_profit": 0.0,
+                },
+            )
+            bucket["node_count"] += 1
+            bucket["company_count"] += len(companies)
+            bucket["revenue_pool"] += float(economics["revenue_pool"] or 0.0)
+            bucket["profit_pool"] += float(economics["profit_pool"] or 0.0)
+            bucket["mapped_revenue"] += mapped_revenue
+            bucket["mapped_profit"] += mapped_profit
+
+        for bucket in stage_summary.values():
+            bucket["revenue_pool"] = round(bucket["revenue_pool"], 6) if bucket["revenue_pool"] else None
+            bucket["profit_pool"] = round(bucket["profit_pool"], 6) if bucket["profit_pool"] else None
+            bucket["mapped_revenue"] = round(bucket["mapped_revenue"], 6) if bucket["mapped_revenue"] else None
+            bucket["mapped_profit"] = round(bucket["mapped_profit"], 6) if bucket["mapped_profit"] else None
+            bucket["mapped_revenue_pool_coverage"] = (
+                round(float(bucket["mapped_revenue"] or 0.0) / float(bucket["revenue_pool"]), 6)
+                if bucket["revenue_pool"] and bucket["mapped_revenue"]
+                else None
+            )
+            bucket["mapped_profit_pool_coverage"] = (
+                round(float(bucket["mapped_profit"] or 0.0) / float(bucket["profit_pool"]), 6)
+                if bucket["profit_pool"] and bucket["mapped_profit"]
+                else None
+            )
+
+        company_exposures.sort(
+            key=lambda item: (
+                item["revenue_share_of_segment"] is None,
+                -(float(item["revenue_share_of_segment"] or 0.0)),
+                item["issuer_name"],
+            )
+        )
+        self._audit(actor, "industry_chain_analysis", "industry_chain", chain_id)
+        return {
+            "chain": to_plain(chain),
+            "process_flow": process_flow,
+            "segments": segments,
+            "stage_summary": sorted(stage_summary.values(), key=lambda item: str(item["process_stage"])),
+            "company_exposures": company_exposures,
+            "coverage": {
+                "node_count": len(process_flow),
+                "segment_count": len(segments),
+                "company_position_count": len({item.position_id for item in positions}),
+                "segments_with_company": sum(1 for item in segments if item["company_count"] > 0),
+                "segments_with_revenue_pool": sum(1 for item in segments if item["revenue_pool"] is not None),
+                "segments_with_profit_pool": sum(1 for item in segments if item["profit_pool"] is not None),
+                "nodes_with_official_evidence": sum(1 for item in process_flow if item.get("official_evidence_ids")),
+                "positions_with_official_evidence": len({item["position_id"] for item in company_exposures if item.get("official_evidence_ids")}),
+                "positions_with_revenue_share": sum(1 for item in company_exposures if item["revenue_share_of_segment"] is not None),
+                "positions_with_profit_share": sum(1 for item in company_exposures if item["profit_share_of_segment"] is not None),
+                "company_attribution_task_count": sum(1 for item in research_tasks if item.get("type") == "company_position_attribution_backfill"),
+            },
+            "research_tasks": research_tasks,
+            "automation_allowed": False,
+            "usage_boundary": "industry_chain_process_and_segment_share_research_only_not_trade_signal",
+        }
+
+    def industry_chain_panorama_payload(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        filters = filters or {}
+        chain_ids = self._industry_chain_panorama_chain_ids(filters)
+        analysis_filters = {
+            key: filters[key]
+            for key in ["issuer_id", "security_id", "node_id"]
+            if str(filters.get(key, "")).strip()
+        }
+        analyses = [
+            self.industry_chain_analysis_payload(chain_id, analysis_filters, actor=actor)
+            for chain_id in chain_ids
+        ]
+        stage_buckets: dict[str, dict[str, Any]] = {}
+        chain_summaries: list[dict[str, Any]] = []
+        process_map: list[dict[str, Any]] = []
+        segment_company_map: list[dict[str, Any]] = []
+        company_directory: dict[str, dict[str, Any]] = {}
+        research_tasks: dict[str, dict[str, Any]] = {}
+
+        for analysis in analyses:
+            chain = dict(analysis["chain"])
+            chain_id = str(chain.get("chain_id", ""))
+            chain_name = str(chain.get("name", chain_id))
+            coverage = dict(analysis.get("coverage", {}))
+            chain_summaries.append(
+                {
+                    "chain_id": chain_id,
+                    "name": chain_name,
+                    "root_theme_id": chain.get("root_theme_id", ""),
+                    "node_count": len(chain.get("nodes", [])),
+                    "edge_count": len(chain.get("edges", [])),
+                    "company_position_count": coverage.get("company_position_count", 0),
+                    "positions_with_revenue_share": coverage.get("positions_with_revenue_share", 0),
+                    "positions_with_profit_share": coverage.get("positions_with_profit_share", 0),
+                    "taxonomy_version": chain.get("taxonomy_version", ""),
+                }
+            )
+            for step in analysis.get("process_flow", []):
+                row = {**step, "chain_name": chain_name}
+                process_map.append(row)
+                stage_bucket = self._industry_chain_stage_bucket(stage_buckets, str(step.get("process_stage", "unknown")))
+                stage_bucket["process_steps"].append(row)
+            for segment in analysis.get("segments", []):
+                row = {**segment, "chain_name": chain_name}
+                segment_company_map.append(row)
+                stage_bucket = self._industry_chain_stage_bucket(stage_buckets, str(segment.get("process_stage", "unknown")))
+                stage_bucket["segments"].append(row)
+                stage_bucket["node_count"] += 1
+                stage_bucket["company_count"] += int(segment.get("company_count", 0) or 0)
+                stage_bucket["revenue_pool"] += float(segment.get("revenue_pool") or 0.0)
+                stage_bucket["profit_pool"] += float(segment.get("profit_pool") or 0.0)
+                stage_bucket["mapped_revenue"] += float(segment.get("mapped_revenue") or 0.0)
+                stage_bucket["mapped_profit"] += float(segment.get("mapped_profit") or 0.0)
+                for company in segment.get("companies", []):
+                    key = str(company.get("issuer_id") or company.get("position_id") or "")
+                    if not key:
+                        continue
+                    bucket = company_directory.setdefault(
+                        key,
+                        {
+                            "issuer_id": company.get("issuer_id", ""),
+                            "issuer_name": company.get("issuer_name", ""),
+                            "security_ids": set(),
+                            "position_ids": set(),
+                            "chain_ids": set(),
+                            "node_ids": set(),
+                            "roles": set(),
+                            "exposures": [],
+                            "max_revenue_share_of_segment": None,
+                            "max_profit_share_of_segment": None,
+                        },
+                    )
+                    if company.get("security_id"):
+                        bucket["security_ids"].add(company["security_id"])
+                    bucket["position_ids"].add(company.get("position_id", ""))
+                    bucket["chain_ids"].add(chain_id)
+                    bucket["node_ids"].add(segment.get("node_id", ""))
+                    if company.get("role"):
+                        bucket["roles"].add(company["role"])
+                    bucket["exposures"].append({**company, "chain_name": chain_name, "node_name": segment.get("node_name", "")})
+                    for share_key in ["revenue_share_of_segment", "profit_share_of_segment"]:
+                        current = bucket[f"max_{share_key}"]
+                        candidate = company.get(share_key)
+                        if candidate is not None and (current is None or float(candidate) > float(current)):
+                            bucket[f"max_{share_key}"] = candidate
+            for task in analysis.get("research_tasks", []):
+                task_id = str(task.get("task_id", ""))
+                if task_id:
+                    research_tasks.setdefault(task_id, dict(task))
+
+        panorama_stages: list[dict[str, Any]] = []
+        for bucket in stage_buckets.values():
+            bucket["process_steps"].sort(key=lambda item: (item.get("chain_name", ""), item.get("flow_order") or 9999, item.get("node_name", "")))
+            bucket["segments"].sort(key=lambda item: (item.get("chain_name", ""), item.get("flow_order") or 9999, item.get("node_name", "")))
+            for field in ["revenue_pool", "profit_pool", "mapped_revenue", "mapped_profit"]:
+                bucket[field] = round(bucket[field], 6) if bucket[field] else None
+            bucket["mapped_revenue_pool_coverage"] = (
+                round(float(bucket["mapped_revenue"] or 0.0) / float(bucket["revenue_pool"]), 6)
+                if bucket["mapped_revenue"] and bucket["revenue_pool"]
+                else None
+            )
+            bucket["mapped_profit_pool_coverage"] = (
+                round(float(bucket["mapped_profit"] or 0.0) / float(bucket["profit_pool"]), 6)
+                if bucket["mapped_profit"] and bucket["profit_pool"]
+                else None
+            )
+            panorama_stages.append(bucket)
+
+        directory_rows = []
+        for row in company_directory.values():
+            directory_rows.append(
+                {
+                    **row,
+                    "security_ids": sorted(item for item in row["security_ids"] if item),
+                    "position_ids": sorted(item for item in row["position_ids"] if item),
+                    "chain_ids": sorted(item for item in row["chain_ids"] if item),
+                    "node_ids": sorted(item for item in row["node_ids"] if item),
+                    "roles": sorted(item for item in row["roles"] if item),
+                }
+            )
+        directory_rows.sort(key=lambda item: (item["max_revenue_share_of_segment"] is None, -(item["max_revenue_share_of_segment"] or 0.0), item["issuer_name"]))
+        process_map.sort(key=lambda item: (self._industry_chain_stage_order(str(item.get("process_stage", ""))), item.get("chain_name", ""), item.get("flow_order") or 9999, item.get("node_name", "")))
+        segment_company_map.sort(key=lambda item: (self._industry_chain_stage_order(str(item.get("process_stage", ""))), item.get("chain_name", ""), item.get("flow_order") or 9999, item.get("node_name", "")))
+        panorama_stages.sort(key=lambda item: self._industry_chain_stage_order(str(item["process_stage"])))
+        coverage = {
+            "chain_count": len(chain_summaries),
+            "node_count": sum(int(item.get("node_count", 0) or 0) for item in chain_summaries),
+            "process_step_count": len(process_map),
+            "segment_count": len(segment_company_map),
+            "company_count": len(directory_rows),
+            "company_position_count": sum(int(item.get("company_position_count", 0) or 0) for item in chain_summaries),
+            "positions_with_revenue_share": sum(int(item.get("positions_with_revenue_share", 0) or 0) for item in chain_summaries),
+            "positions_with_profit_share": sum(int(item.get("positions_with_profit_share", 0) or 0) for item in chain_summaries),
+            "research_task_count": len(research_tasks),
+        }
+        self._audit(actor, "industry_chain_panorama", "industry_chain", ",".join(chain_ids) or "empty")
+        return {
+            "scope": {
+                "q": str(filters.get("q", "")),
+                "root_theme_id": str(filters.get("root_theme_id", "")),
+                "chain_ids": chain_ids,
+                "source": "registered_industry_chains",
+            },
+            "chains": chain_summaries,
+            "panorama_stages": panorama_stages,
+            "process_map": process_map,
+            "segment_company_map": segment_company_map,
+            "company_directory": directory_rows,
+            "coverage": coverage,
+            "research_tasks": sorted(research_tasks.values(), key=lambda item: (item.get("chain_id", ""), item.get("node_id", ""), item.get("type", ""))),
+            "automation_allowed": False,
+            "usage_boundary": "panoramic_industry_chain_research_only_not_trade_signal",
+        }
+
+    def industry_chain_panorama_readiness_report(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        filters = filters or {}
+        chain_ids = self._industry_chain_panorama_chain_ids(filters)
+        queue_tasks = self._truthy(filters.get("queue_tasks", False))
+        chain_reports: list[dict[str, Any]] = []
+        research_tasks: dict[str, dict[str, Any]] = {}
+        totals = {
+            "node_count": 0,
+            "company_node_position_count": 0,
+            "process_ready_nodes": 0,
+            "flow_ready_nodes": 0,
+            "official_evidence_ready_nodes": 0,
+            "economic_pool_ready_nodes": 0,
+            "company_mapped_nodes": 0,
+            "company_attribution_ready_positions": 0,
+        }
+        by_stage: dict[str, dict[str, Any]] = {}
+        for chain_id in chain_ids:
+            chain = self.store.industry_chains[chain_id]
+            report = self._industry_chain_single_readiness_report(chain)
+            chain_reports.append(report)
+            coverage = report["coverage"]
+            for key in totals:
+                totals[key] += int(coverage.get(key, 0) or 0)
+            for stage, stage_row in report["by_stage"].items():
+                bucket = by_stage.setdefault(
+                    stage,
+                    {
+                        "process_stage": stage,
+                        "node_count": 0,
+                        "company_node_position_count": 0,
+                        "process_ready_nodes": 0,
+                        "flow_ready_nodes": 0,
+                        "official_evidence_ready_nodes": 0,
+                        "economic_pool_ready_nodes": 0,
+                        "company_mapped_nodes": 0,
+                        "company_attribution_ready_positions": 0,
+                    },
+                )
+                for key in bucket:
+                    if key != "process_stage":
+                        bucket[key] += int(stage_row.get(key, 0) or 0)
+            for task in report["research_tasks"]:
+                research_tasks.setdefault(str(task["task_id"]), dict(task))
+
+        queued_tasks: list[dict[str, Any]] = []
+        if queue_tasks:
+            for task in research_tasks.values():
+                queued_tasks.append(self._queue_industry_chain_readiness_task(task, actor=actor))
+
+        coverage = self._industry_chain_readiness_coverage(totals)
+        stage_rows = []
+        for row in by_stage.values():
+            stage_coverage = self._industry_chain_readiness_coverage(row)
+            stage_rows.append({**row, **stage_coverage})
+        stage_rows.sort(key=lambda item: self._industry_chain_stage_order(str(item["process_stage"])))
+        self._audit(actor, "industry_chain_panorama_readiness_report", "industry_chain", ",".join(chain_ids) or "empty", approval_state=f"queue_tasks={queue_tasks}")
+        return {
+            "scope": {
+                "q": str(filters.get("q", "")),
+                "root_theme_id": str(filters.get("root_theme_id", "")),
+                "chain_ids": chain_ids,
+                "queue_tasks": queue_tasks,
+            },
+            "coverage": {
+                **totals,
+                **coverage,
+                "chain_count": len(chain_reports),
+                "research_task_count": len(research_tasks),
+                "queued_task_count": len(queued_tasks),
+            },
+            "by_stage": stage_rows,
+            "chains": chain_reports,
+            "research_tasks": sorted(research_tasks.values(), key=lambda item: (item.get("chain_id", ""), item.get("node_id", ""), item.get("type", ""))),
+            "queued_tasks": queued_tasks,
+            "automation_allowed": False,
+            "usage_boundary": "panorama_readiness_gap_analysis_and_research_task_queue_only",
+        }
+
+    def _industry_chain_single_readiness_report(self, chain: IndustryChain) -> dict[str, Any]:
+        relations = self._industry_chain_node_relations(chain)
+        positions = [position for position in self.store.company_positions.values() if position.chain_id == chain.chain_id]
+        node_reports: list[dict[str, Any]] = []
+        research_tasks: list[dict[str, Any]] = []
+        by_stage: dict[str, dict[str, Any]] = {}
+        totals = {
+            "node_count": 0,
+            "company_node_position_count": 0,
+            "process_ready_nodes": 0,
+            "flow_ready_nodes": 0,
+            "official_evidence_ready_nodes": 0,
+            "economic_pool_ready_nodes": 0,
+            "company_mapped_nodes": 0,
+            "company_attribution_ready_positions": 0,
+        }
+        for node in sorted(chain.nodes, key=self._industry_chain_node_sort_key):
+            node_id = str(node.get("node_id", "")).strip()
+            if not node_id:
+                continue
+            node_relations = relations.get(node_id, {})
+            process_step = self._industry_chain_process_step(chain, node, node_relations)
+            economics = self._industry_chain_node_economics(node)
+            node_positions = [position for position in positions if node_id in position.node_ids]
+            official_evidence_ids = [evidence_id for evidence_id in self._industry_chain_node_evidence_ids(node) if self._evidence_is_official_public(evidence_id)]
+            process_ready = bool(process_step["process_description"] and process_step["inputs"] and process_step["outputs"] and process_step["technology_routes"] and process_step["bottlenecks"])
+            flow_ready = bool(process_step["upstream_node_ids"] or process_step["downstream_node_ids"])
+            evidence_ready = bool(official_evidence_ids)
+            economics_ready = bool(economics["revenue_pool"] is not None and economics["profit_pool"] is not None)
+            company_mapped = bool(node_positions)
+            position_rows: list[dict[str, Any]] = []
+            attribution_ready_count = 0
+            for position in node_positions:
+                exposure = self._industry_chain_position_segment_exposure(position, node_id, economics)
+                revenue_attribution_ready = exposure["revenue_amount"] is not None and bool(exposure.get("official_evidence_ids"))
+                profit_attribution_ready = exposure["profit_amount"] is not None and bool(exposure.get("official_evidence_ids"))
+                attribution_ready = revenue_attribution_ready and profit_attribution_ready
+                attribution_ready_count += 1 if attribution_ready else 0
+                position_rows.append(
+                    {
+                        "position_id": position.position_id,
+                        "issuer_id": position.issuer_id,
+                        "security_id": position.security_id,
+                        "data_quality": position.data_quality,
+                        "official_evidence_ids": exposure.get("official_evidence_ids", []),
+                        "revenue_amount_ready": exposure["revenue_amount"] is not None,
+                        "profit_amount_ready": exposure["profit_amount"] is not None,
+                        "revenue_share_ready": exposure["revenue_share_of_segment"] is not None,
+                        "profit_share_ready": exposure["profit_share_of_segment"] is not None,
+                        "attribution_ready": attribution_ready,
+                    }
+                )
+                if not attribution_ready:
+                    research_tasks.append(
+                        {
+                            "task_id": f"readiness_company_attr_{safe_source_part(chain.chain_id)}_{safe_source_part(node_id)}_{safe_source_part(position.position_id)}",
+                            "type": "company_position_attribution_backfill",
+                            "task_type": "company_position_attribution_backfill",
+                            "chain_id": chain.chain_id,
+                            "node_id": node_id,
+                            "node_ids": [node_id],
+                            "position_id": position.position_id,
+                            "issuer_id": position.issuer_id,
+                            "required_slots": ["official_evidence", "node_revenue_or_ratio", "node_profit_or_ratio"],
+                            "reason": "company node attribution lacks official evidence or revenue/profit split; share remains unavailable until reviewed",
+                        }
+                    )
+
+            missing_slots: list[str] = []
+            if not process_ready:
+                for slot in ["process_description", "inputs", "outputs", "technology_routes", "bottlenecks"]:
+                    if not process_step.get(slot):
+                        missing_slots.append(slot)
+                research_tasks.append(
+                    {
+                        "task_id": f"readiness_process_{safe_source_part(chain.chain_id)}_{safe_source_part(node_id)}",
+                        "type": "chain_process_backfill",
+                        "task_type": "chain_process_backfill",
+                        "chain_id": chain.chain_id,
+                        "node_id": node_id,
+                        "node_ids": [node_id],
+                        "required_slots": missing_slots,
+                        "reason": "node lacks actual production process or input/output detail",
+                    }
+                )
+            if not flow_ready:
+                missing_slots.append("upstream_or_downstream_edge")
+                research_tasks.append(
+                    {
+                        "task_id": f"readiness_flow_{safe_source_part(chain.chain_id)}_{safe_source_part(node_id)}",
+                        "type": "chain_flow_edge_backfill",
+                        "task_type": "chain_flow_edge_backfill",
+                        "chain_id": chain.chain_id,
+                        "node_id": node_id,
+                        "node_ids": [node_id],
+                        "required_slots": ["upstream_or_downstream_edge"],
+                        "reason": "node is isolated from the input/output flow graph",
+                    }
+                )
+            if not evidence_ready:
+                missing_slots.append("official_fact_evidence")
+                research_tasks.append(
+                    {
+                        "task_id": f"readiness_evidence_{safe_source_part(chain.chain_id)}_{safe_source_part(node_id)}",
+                        "type": "chain_template_process_evidence_backfill",
+                        "task_type": "chain_template_process_evidence_backfill",
+                        "chain_id": chain.chain_id,
+                        "node_id": node_id,
+                        "node_ids": [node_id],
+                        "required_slots": ["official_fact_evidence"],
+                        "reason": "node fact layer requires official public evidence before being treated as reviewed fact",
+                    }
+                )
+            if not economics_ready:
+                required_economics = []
+                if economics["revenue_pool"] is None:
+                    required_economics.append("segment_revenue_pool")
+                if economics["profit_pool"] is None:
+                    required_economics.append("segment_profit_pool")
+                missing_slots.extend(required_economics)
+                research_tasks.append(
+                    {
+                        "task_id": f"readiness_economics_{safe_source_part(chain.chain_id)}_{safe_source_part(node_id)}",
+                        "type": "chain_segment_economics_backfill",
+                        "task_type": "chain_segment_economics_backfill",
+                        "chain_id": chain.chain_id,
+                        "node_id": node_id,
+                        "node_ids": [node_id],
+                        "required_slots": required_economics,
+                        "reason": "segment economics pool missing, cannot calculate company share of node revenue/profit pool",
+                    }
+                )
+            if not company_mapped:
+                missing_slots.append("company_mapping")
+                research_tasks.append(
+                    {
+                        "task_id": f"readiness_company_mapping_{safe_source_part(chain.chain_id)}_{safe_source_part(node_id)}",
+                        "type": "chain_node_company_mapping",
+                        "task_type": "chain_node_company_mapping",
+                        "chain_id": chain.chain_id,
+                        "node_id": node_id,
+                        "node_ids": [node_id],
+                        "required_slots": ["issuer_id", "role", "company_position"],
+                        "reason": "node has no mapped company positions",
+                    }
+                )
+
+            stage = str(process_step.get("process_stage", "unknown") or "unknown")
+            stage_bucket = by_stage.setdefault(
+                stage,
+                {
+                    "process_stage": stage,
+                    "node_count": 0,
+                    "company_node_position_count": 0,
+                    "process_ready_nodes": 0,
+                    "flow_ready_nodes": 0,
+                    "official_evidence_ready_nodes": 0,
+                    "economic_pool_ready_nodes": 0,
+                    "company_mapped_nodes": 0,
+                    "company_attribution_ready_positions": 0,
+                },
+            )
+            counters = {
+                "node_count": 1,
+                "company_node_position_count": len(node_positions),
+                "process_ready_nodes": 1 if process_ready else 0,
+                "flow_ready_nodes": 1 if flow_ready else 0,
+                "official_evidence_ready_nodes": 1 if evidence_ready else 0,
+                "economic_pool_ready_nodes": 1 if economics_ready else 0,
+                "company_mapped_nodes": 1 if company_mapped else 0,
+                "company_attribution_ready_positions": attribution_ready_count,
+            }
+            for key, value in counters.items():
+                totals[key] += value
+                stage_bucket[key] += value
+            node_reports.append(
+                {
+                    "chain_id": chain.chain_id,
+                    "node_id": node_id,
+                    "node_name": process_step["node_name"],
+                    "process_stage": stage,
+                    "level": node.get("level"),
+                    "parent_id": node.get("parent_id", ""),
+                    "readiness": {
+                        "process_ready": process_ready,
+                        "flow_ready": flow_ready,
+                        "official_evidence_ready": evidence_ready,
+                        "economic_pool_ready": economics_ready,
+                        "company_mapped": company_mapped,
+                        "company_attribution_ready_count": attribution_ready_count,
+                        "company_node_position_count": len(node_positions),
+                    },
+                    "missing_slots": self._unique_strings(missing_slots),
+                    "official_evidence_ids": official_evidence_ids,
+                    "economic_pool": {
+                        "revenue_pool": economics["revenue_pool"],
+                        "profit_pool": economics["profit_pool"],
+                        "currency": economics["currency"],
+                        "period": economics["period"],
+                        "confidence": economics.get("confidence", ""),
+                    },
+                    "positions": position_rows,
+                }
+            )
+        coverage = self._industry_chain_readiness_coverage(totals)
+        for stage_row in by_stage.values():
+            stage_row.update(self._industry_chain_readiness_coverage(stage_row))
+        return {
+            "chain_id": chain.chain_id,
+            "name": chain.name,
+            "template_status": getattr(chain, "template_status", "published_legacy"),
+            "taxonomy_version": chain.taxonomy_version,
+            "coverage": {**totals, **coverage},
+            "nodes": node_reports,
+            "by_stage": by_stage,
+            "research_tasks": self._dedupe_research_task_rows(research_tasks),
+        }
+
+    def _industry_chain_readiness_coverage(self, counters: Mapping[str, Any]) -> dict[str, Any]:
+        node_count = max(1, int(counters.get("node_count", 0) or 0))
+        position_count = max(1, int(counters.get("company_node_position_count", 0) or 0))
+        process_coverage = int(counters.get("process_ready_nodes", 0) or 0) / node_count
+        flow_coverage = int(counters.get("flow_ready_nodes", 0) or 0) / node_count
+        evidence_coverage = int(counters.get("official_evidence_ready_nodes", 0) or 0) / node_count
+        economics_coverage = int(counters.get("economic_pool_ready_nodes", 0) or 0) / node_count
+        company_mapping_coverage = int(counters.get("company_mapped_nodes", 0) or 0) / node_count
+        attribution_coverage = int(counters.get("company_attribution_ready_positions", 0) or 0) / position_count
+        readiness_score = (
+            0.25 * process_coverage
+            + 0.15 * flow_coverage
+            + 0.2 * evidence_coverage
+            + 0.15 * economics_coverage
+            + 0.1 * company_mapping_coverage
+            + 0.15 * attribution_coverage
+        )
+        return {
+            "process_coverage": round(process_coverage, 4),
+            "flow_coverage": round(flow_coverage, 4),
+            "official_evidence_coverage": round(evidence_coverage, 4),
+            "economic_pool_coverage": round(economics_coverage, 4),
+            "company_mapping_coverage": round(company_mapping_coverage, 4),
+            "company_attribution_coverage": round(attribution_coverage, 4),
+            "readiness_score": round(readiness_score, 4),
+        }
+
+    def _dedupe_research_task_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        task_map: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            task_id = str(row.get("task_id", "")).strip()
+            if task_id:
+                task_map.setdefault(task_id, row)
+        return sorted(task_map.values(), key=lambda item: (item.get("chain_id", ""), item.get("node_id", ""), item.get("type", "")))
+
+    def _queue_industry_chain_readiness_task(self, task: Mapping[str, Any], *, actor: str) -> dict[str, Any]:
+        task_id = str(task.get("task_id") or new_id("rtask")).strip()
+        if task_id in self.store.research_tasks:
+            return {**to_plain(self.store.research_tasks[task_id]), "queued": False}
+        task_type = str(task.get("task_type") or task.get("type") or "industry_chain_readiness_backfill")
+        priority = {
+            "chain_template_process_evidence_backfill": 85,
+            "chain_segment_economics_backfill": 75,
+            "company_position_attribution_backfill": 72,
+            "chain_process_backfill": 70,
+            "chain_flow_edge_backfill": 68,
+            "chain_node_company_mapping": 62,
+        }.get(task_type, 60)
+        task_payload = {
+            "task_id": task_id,
+            "task_type": task_type,
+            "source": "industry_chain_panorama_readiness_report",
+            "chain_id": str(task.get("chain_id", "")),
+            "node_ids": task.get("node_ids", [task.get("node_id")]),
+            "position_id": str(task.get("position_id", "")),
+            "issuer_id": str(task.get("issuer_id", "")),
+            "required_slots": task.get("required_slots", []),
+            "reason": str(task.get("reason", "")),
+            "priority": priority,
+            "metadata": {
+                "node_id": str(task.get("node_id", "")),
+                "readiness_task_type": task_type,
+                "queued_from": "panorama_readiness_report",
+            },
+        }
+        research_task = self._build_research_task(task_id, task_type, task_payload)
+        self.store.research_tasks[research_task.task_id] = research_task
+        self._audit(actor, "queue_industry_chain_readiness_task", "research_task", research_task.task_id)
+        return {**to_plain(research_task), "queued": True}
+
+    def _industry_chain_panorama_chain_ids(self, filters: Mapping[str, Any]) -> list[str]:
+        raw_chain_ids = filters.get("chain_ids", filters.get("chain_id", ""))
+        if isinstance(raw_chain_ids, str):
+            chain_ids = self._unique_strings(part for part in re.split(r"[,;/\s]+", raw_chain_ids) if part.strip())
+        elif isinstance(raw_chain_ids, list):
+            chain_ids = self._unique_strings(raw_chain_ids)
+        else:
+            chain_ids = []
+        if chain_ids:
+            missing = [chain_id for chain_id in chain_ids if chain_id not in self.store.industry_chains]
+            if missing:
+                raise NotFoundError(f"industry chains not found: {missing}")
+            return chain_ids
+        root_theme_id = str(filters.get("root_theme_id", "")).strip()
+        query = str(filters.get("q", "")).strip().lower()
+        limit = self._bounded_limit(filters.get("chain_limit", filters.get("limit", 20)), 200)
+        rows = list(self.store.industry_chains.values())
+        rows = [
+            item
+            for item in rows
+            if getattr(item, "template_status", "published_legacy") in {"published", "published_legacy"}
+        ]
+        if root_theme_id:
+            rows = [item for item in rows if item.root_theme_id == root_theme_id]
+        if query:
+            rows = [item for item in rows if self._industry_chain_matches_panorama_query(item, query)]
+        rows.sort(key=lambda item: item.created_at, reverse=True)
+        return [item.chain_id for item in rows[:limit]]
+
+    def _industry_chain_matches_panorama_query(self, chain: IndustryChain, query: str) -> bool:
+        theme = self.store.macro_themes.get(chain.root_theme_id) if chain.root_theme_id else None
+        text_parts = [chain.name, chain.chain_id, *chain.source_refs]
+        if theme is not None:
+            text_parts.extend([theme.name, theme.description, *theme.macro_drivers])
+        for node in chain.nodes:
+            text_parts.extend(
+                [
+                    str(node.get("name", "")),
+                    str(node.get("category", "")),
+                    str(node.get("process_stage", "")),
+                    str(node.get("process_step", "")),
+                    " ".join(str(item) for item in node.get("keywords", [])),
+                ]
+            )
+        if any(query in part.lower() for part in text_parts if part):
+            return True
+        for position in self.store.company_positions.values():
+            if position.chain_id != chain.chain_id:
+                continue
+            issuer = self.store.issuers.get(position.issuer_id)
+            security = self.store.securities.get(position.security_id) if position.security_id else None
+            candidate_text = " ".join(
+                [
+                    position.role,
+                    position.positioning_summary,
+                    issuer.legal_name if issuer is not None else "",
+                    " ".join(issuer.aliases) if issuer is not None else "",
+                    security.ticker if security is not None else "",
+                ]
+            ).lower()
+            if query in candidate_text:
+                return True
+        return False
+
+    def _industry_chain_stage_bucket(self, buckets: dict[str, dict[str, Any]], stage: str) -> dict[str, Any]:
+        normalized = stage or "unknown"
+        return buckets.setdefault(
+            normalized,
+            {
+                "process_stage": normalized,
+                "node_count": 0,
+                "company_count": 0,
+                "revenue_pool": 0.0,
+                "profit_pool": 0.0,
+                "mapped_revenue": 0.0,
+                "mapped_profit": 0.0,
+                "process_steps": [],
+                "segments": [],
+            },
+        )
+
+    def _industry_chain_stage_order(self, stage: str) -> int:
+        return {
+            "upstream": 10,
+            "midstream": 20,
+            "downstream": 30,
+            "supporting": 40,
+            "adjacent": 50,
+            "unknown": 99,
+        }.get(stage, 80)
+
+    def _industry_chain_node_sort_key(self, node: Mapping[str, Any]) -> tuple[float, float, str]:
+        flow_order = self._coerce_float(node.get("flow_order", node.get("sequence", node.get("order"))))
+        level = self._coerce_float(node.get("level"))
+        return (
+            flow_order if flow_order is not None else 9999.0,
+            level if level is not None else 9999.0,
+            str(node.get("name", node.get("node_id", ""))),
+        )
+
+    def _industry_chain_node_relations(self, chain: IndustryChain) -> dict[str, dict[str, list[dict[str, Any]]]]:
+        relations: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        for edge in chain.edges:
+            source_node_id = str(edge.get("source_node_id", "")).strip()
+            target_node_id = str(edge.get("target_node_id", "")).strip()
+            if source_node_id:
+                relations.setdefault(source_node_id, {"upstream": [], "downstream": []})["downstream"].append(dict(edge))
+            if target_node_id:
+                relations.setdefault(target_node_id, {"upstream": [], "downstream": []})["upstream"].append(dict(edge))
+        return relations
+
+    def _industry_chain_process_step(
+        self,
+        chain: IndustryChain,
+        node: Mapping[str, Any],
+        relations: Mapping[str, list[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        node_id = str(node.get("node_id", "")).strip()
+        evidence_ids = self._industry_chain_node_evidence_ids(node)
+        official_evidence_ids = [evidence_id for evidence_id in evidence_ids if self._evidence_is_official_public(evidence_id)]
+        return {
+            "chain_id": chain.chain_id,
+            "node_id": node_id,
+            "node_name": str(node.get("name", node_id)),
+            "flow_order": self._coerce_float(node.get("flow_order", node.get("sequence", node.get("order", node.get("level"))))),
+            "process_stage": str(node.get("process_stage") or node.get("stage") or self._infer_industry_chain_stage(node)),
+            "process_step": str(node.get("process_step") or node.get("activity") or node.get("name", node_id)),
+            "process_description": str(node.get("process_description") or node.get("actual_process") or node.get("description", "")),
+            "inputs": self._string_list(node.get("inputs") or node.get("input_products") or node.get("upstream_inputs") or []),
+            "outputs": self._string_list(node.get("outputs") or node.get("output_products") or node.get("downstream_outputs") or []),
+            "key_assets": self._string_list(node.get("key_assets") or node.get("critical_assets") or []),
+            "bottlenecks": self._string_list(node.get("bottlenecks") or node.get("supply_demand_factors") or []),
+            "technology_routes": self._string_list(node.get("technology_routes") or node.get("technology_tags") or []),
+            "upstream_node_ids": [str(item.get("source_node_id", "")) for item in relations.get("upstream", []) if item.get("source_node_id")],
+            "downstream_node_ids": [str(item.get("target_node_id", "")) for item in relations.get("downstream", []) if item.get("target_node_id")],
+            "source_refs": self._string_list(node.get("source_refs") or chain.source_refs),
+            "evidence_ids": evidence_ids,
+            "official_evidence_ids": official_evidence_ids,
+            "evidence_layer": "fact" if official_evidence_ids else ("opinion_or_inference" if evidence_ids or node.get("source_refs") else "missing"),
+        }
+
+    def _industry_chain_node_economics(self, node: Mapping[str, Any]) -> dict[str, Any]:
+        economics = node.get("segment_economics") or node.get("economics") or node.get("market_economics") or {}
+        economics_entries: list[Mapping[str, Any]] = []
+        if isinstance(economics, list):
+            economics_entries = [item for item in economics if isinstance(item, Mapping)]
+        elif isinstance(economics, Mapping):
+            nested_metrics = economics.get("metrics", [])
+            if isinstance(nested_metrics, list):
+                economics_entries.extend(item for item in nested_metrics if isinstance(item, Mapping))
+            economics_entries.append(economics)
+        else:
+            economics = {}
+        if not isinstance(economics, Mapping):
+            economics = {}
+        revenue_pool, revenue_pool_range = self._industry_chain_economic_entry_value(
+            economics_entries,
+            {"revenue_pool", "segment_revenue_pool", "segment_revenue", "industry_revenue", "market_size", "value_pool", "output_value", "sales", "产值", "环节产值", "市场规模"},
+        )
+        profit_pool, profit_pool_range = self._industry_chain_economic_entry_value(
+            economics_entries,
+            {"profit_pool", "segment_profit_pool", "segment_profit", "industry_profit", "gross_profit_pool", "gross_profit", "net_profit", "利润池", "环节利润", "利润规模"},
+        )
+        revenue_pool = self._extract_number_by_alias(
+            [economics, node],
+            {
+                "revenue_pool",
+                "segment_revenue_pool",
+                "segment_revenue",
+                "industry_revenue",
+                "market_size",
+                "value_pool",
+                "output_value",
+                "total_revenue",
+                "sales",
+                "产值",
+                "环节产值",
+                "市场规模",
+            },
+            skip_keys={"financial_summary", "fundamentals"},
+        ) if revenue_pool is None else revenue_pool
+        profit_pool = self._extract_number_by_alias(
+            [economics, node],
+            {
+                "profit_pool",
+                "segment_profit_pool",
+                "segment_profit",
+                "industry_profit",
+                "gross_profit_pool",
+                "gross_profit",
+                "net_profit",
+                "利润池",
+                "环节利润",
+                "利润规模",
+            },
+            skip_keys={"financial_summary", "fundamentals"},
+        ) if profit_pool is None else profit_pool
+        economics_source_refs = self._unique_strings(
+            source_ref
+            for entry in economics_entries
+            for source_ref in self._string_list(entry.get("source_refs") or entry.get("source") or [])
+        )
+        economics_evidence_ids = self._unique_strings(
+            evidence_id
+            for entry in economics_entries
+            for evidence_id in self._string_list(entry.get("evidence_ids") or entry.get("source_evidence_ids") or [])
+        )
+        economics_confidence = ""
+        economics_scope = ""
+        economics_currency = ""
+        economics_period = ""
+        for entry in economics_entries:
+            economics_confidence = economics_confidence or str(entry.get("confidence", ""))
+            economics_scope = economics_scope or str(entry.get("scope", ""))
+            economics_currency = economics_currency or str(entry.get("currency", ""))
+            economics_period = economics_period or str(entry.get("period") or entry.get("as_of_date") or "")
+        return {
+            "revenue_pool": revenue_pool,
+            "profit_pool": profit_pool,
+            "revenue_pool_range": revenue_pool_range,
+            "profit_pool_range": profit_pool_range,
+            "currency": str(economics_currency or economics.get("currency") or node.get("currency") or ""),
+            "period": str(economics_period or economics.get("period") or economics.get("as_of_date") or node.get("period") or node.get("as_of_date") or ""),
+            "scope": economics_scope or str(economics.get("scope", "")),
+            "source_refs": economics_source_refs,
+            "evidence_ids": economics_evidence_ids,
+            "confidence": economics_confidence or str(economics.get("confidence", "")),
+        }
+
+    def _industry_chain_economic_entry_value(self, entries: list[Mapping[str, Any]], metric_aliases: set[str]) -> tuple[float | None, dict[str, float | None] | None]:
+        normalized_aliases = {self._normalized_metric_key(alias) for alias in metric_aliases}
+        for entry in entries:
+            metric_key = self._normalized_metric_key(str(entry.get("metric") or entry.get("name") or entry.get("field") or ""))
+            if metric_key and metric_key not in normalized_aliases:
+                continue
+            value = self._coerce_float(entry.get("value", entry.get("amount")))
+            range_low = self._coerce_float(entry.get("range_low", entry.get("low")))
+            range_high = self._coerce_float(entry.get("range_high", entry.get("high")))
+            value_range = None
+            if range_low is not None or range_high is not None:
+                value_range = {"low": range_low, "high": range_high}
+            if value is not None or value_range is not None:
+                return value, value_range
+        return None, None
+
+    def _industry_chain_position_segment_exposure(
+        self,
+        position: CompanyPosition,
+        node_id: str,
+        economics: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        issuer = self.store.issuers.get(position.issuer_id)
+        revenue_amount, revenue_basis = self._industry_chain_position_amount(position, "revenue", node_id=node_id)
+        profit_amount, profit_basis = self._industry_chain_position_amount(position, "profit", node_id=node_id)
+        official_position_evidence_ids = [evidence_id for evidence_id in position.evidence_ids if self._evidence_is_official_public(evidence_id)]
+        revenue_pool = self._coerce_float(economics.get("revenue_pool"))
+        profit_pool = self._coerce_float(economics.get("profit_pool"))
+        revenue_share = round(revenue_amount / revenue_pool, 6) if revenue_amount is not None and revenue_pool and revenue_pool > 0 else None
+        profit_share = round(profit_amount / profit_pool, 6) if profit_amount is not None and profit_pool and profit_pool > 0 else None
+        if revenue_share is None and revenue_amount is None:
+            revenue_basis = revenue_basis or "missing position revenue amount or exposure ratio"
+        elif revenue_share is None:
+            revenue_basis = f"{revenue_basis}; missing segment revenue pool"
+        if profit_share is None and profit_amount is None:
+            profit_basis = profit_basis or "missing position profit amount or exposure ratio"
+        elif profit_share is None:
+            profit_basis = f"{profit_basis}; missing segment profit pool"
+        return {
+            "position_id": position.position_id,
+            "issuer_id": position.issuer_id,
+            "issuer_name": issuer.legal_name if issuer is not None else position.issuer_id,
+            "security_id": position.security_id,
+            "chain_id": position.chain_id,
+            "node_id": node_id,
+            "role": position.role,
+            "positioning_summary": position.positioning_summary,
+            "revenue_amount": round(revenue_amount, 6) if revenue_amount is not None else None,
+            "profit_amount": round(profit_amount, 6) if profit_amount is not None else None,
+            "revenue_share_of_segment": revenue_share,
+            "profit_share_of_segment": profit_share,
+            "revenue_calculation_basis": revenue_basis,
+            "profit_calculation_basis": profit_basis,
+            "currency": str(economics.get("currency", "")),
+            "period": str(economics.get("period", "")),
+            "revenue_exposure_segment": self._industry_chain_position_exposure_segment(position.revenue_exposure, node_id),
+            "profit_exposure_segment": self._industry_chain_position_exposure_segment(position.profit_exposure, node_id),
+            "customers": list(position.customers),
+            "suppliers": list(position.suppliers),
+            "competitors": list(position.competitors),
+            "technology_tags": list(position.technology_tags),
+            "evidence_ids": list(position.evidence_ids),
+            "official_evidence_ids": official_position_evidence_ids,
+            "evidence_layer": "fact" if official_position_evidence_ids else ("opinion_or_inference" if position.evidence_ids else "missing"),
+            "data_quality": position.data_quality,
+        }
+
+    def _industry_chain_position_amount(self, position: CompanyPosition, metric: str, *, node_id: str = "") -> tuple[float | None, str]:
+        if metric == "revenue":
+            payload = position.revenue_exposure
+            aliases = {
+                "amount",
+                "revenue_amount",
+                "segment_revenue",
+                "node_revenue",
+                "chain_revenue",
+                "related_revenue",
+                "sales",
+                "revenue",
+                "total_operating_income",
+                "operating_income",
+                "营业收入",
+                "营收",
+                "产值",
+            }
+            issuer_aliases = {"total_revenue", "total_operating_income", "operating_income", "revenue", "sales", "营业收入", "营收"}
+            ratio_aliases = {"ratio", "share", "exposure_ratio", "revenue_ratio", "revenue_share", "chain_revenue_ratio", "segment_revenue_share", "segment_ratio", "percentage", "pct", "占比"}
+        else:
+            payload = position.profit_exposure
+            aliases = {
+                "amount",
+                "profit_amount",
+                "segment_profit",
+                "node_profit",
+                "chain_profit",
+                "related_profit",
+                "gross_profit",
+                "net_profit",
+                "parent_net_profit",
+                "利润",
+                "净利润",
+                "毛利",
+            }
+            issuer_aliases = {"gross_profit", "net_profit", "parent_net_profit", "profit", "利润", "净利润", "毛利"}
+            ratio_aliases = {"ratio", "share", "exposure_ratio", "profit_ratio", "profit_share", "chain_profit_ratio", "segment_profit_share", "segment_ratio", "percentage", "pct", "占比"}
+        segment_payload = self._industry_chain_position_exposure_segment(payload, node_id)
+        if segment_payload:
+            amount = self._extract_number_by_alias(segment_payload, aliases, skip_keys={"financial_summary", "fundamentals"})
+            if amount is not None:
+                basis = str(segment_payload.get("calculation_basis") or f"position.{metric}_exposure.segments[{node_id}] explicit amount")
+                return amount, basis
+            ratio, ratio_basis = self._industry_chain_exposure_ratio(segment_payload, ratio_aliases)
+            issuer_amount = self._industry_chain_issuer_financial_amount(position.issuer_id, issuer_aliases)
+            if ratio is not None and issuer_amount is not None:
+                basis = str(segment_payload.get("calculation_basis") or f"{ratio_basis} * issuer financial {metric}")
+                return ratio * issuer_amount, basis
+            if self._truthy(segment_payload.get("needs_review", False)):
+                return None, str(segment_payload.get("calculation_basis") or f"position.{metric}_exposure.segments[{node_id}] needs review")
+        amount = self._extract_number_by_alias(payload, aliases, skip_keys={"financial_summary", "fundamentals"})
+        if amount is not None:
+            return amount, f"position.{metric}_exposure explicit amount"
+        ratio, ratio_basis = self._industry_chain_exposure_ratio(payload, ratio_aliases)
+        issuer_amount = self._industry_chain_issuer_financial_amount(position.issuer_id, issuer_aliases)
+        if ratio is not None and issuer_amount is not None:
+            return ratio * issuer_amount, f"{ratio_basis} * issuer financial {metric}"
+        return None, ""
+
+    def _industry_chain_position_exposure_segment(self, payload: Mapping[str, Any], node_id: str) -> dict[str, Any]:
+        if not node_id or not isinstance(payload, Mapping):
+            return {}
+        raw_segments = payload.get("segments", [])
+        if isinstance(raw_segments, Mapping):
+            raw_segments = [raw_segments]
+        if not isinstance(raw_segments, list):
+            return {}
+        for item in raw_segments:
+            if not isinstance(item, Mapping):
+                continue
+            item_node_id = str(item.get("node_id", "")).strip()
+            item_node_ids = self._string_list(item.get("node_ids", []))
+            if item_node_id == node_id or node_id in item_node_ids:
+                return dict(item)
+        return {}
+
+    def _industry_chain_exposure_ratio(self, payload: Mapping[str, Any], aliases: set[str]) -> tuple[float | None, str]:
+        ratio = self._extract_number_by_alias(payload, aliases, percent_as_ratio=True, skip_keys={"financial_summary", "fundamentals"})
+        if ratio is not None:
+            return ratio, "position exposure ratio"
+        if isinstance(payload, Mapping):
+            numeric_items = [
+                (str(key), self._coerce_float(value, percent_as_ratio=True))
+                for key, value in payload.items()
+                if key not in {"financial_summary", "fundamentals"}
+            ]
+            numeric_items = [(key, value) for key, value in numeric_items if value is not None and 0.0 <= value <= 1.0]
+            if len(numeric_items) == 1:
+                return float(numeric_items[0][1]), f"position exposure ratio {numeric_items[0][0]}"
+        return None, ""
+
+    def _industry_chain_issuer_financial_amount(self, issuer_id: str, aliases: set[str]) -> float | None:
+        issuer = self.store.issuers.get(issuer_id)
+        if issuer is None:
+            return None
+        return self._extract_number_by_alias(issuer.fundamentals, aliases)
+
+    def _infer_industry_chain_stage(self, node: Mapping[str, Any]) -> str:
+        text = " ".join(str(node.get(key, "")) for key in ["category", "name", "process_step"]).lower()
+        if any(term in text for term in ["raw", "material", "resource", "wafer", "equipment", "矿", "材料", "设备"]):
+            return "upstream"
+        if any(term in text for term in ["manufact", "foundry", "package", "assembly", "module", "component", "制造", "封装", "模组", "零部件"]):
+            return "midstream"
+        if any(term in text for term in ["brand", "channel", "retail", "application", "customer", "service", "应用", "品牌", "渠道", "客户", "服务"]):
+            return "downstream"
+        level = self._coerce_float(node.get("level"))
+        if level is not None and level >= 3:
+            return "downstream"
+        if level is not None and level <= 1:
+            return "upstream"
+        return "midstream"
+
+    def _extract_number_by_alias(
+        self,
+        payload: Any,
+        aliases: set[str],
+        *,
+        percent_as_ratio: bool = False,
+        skip_keys: set[str] | None = None,
+    ) -> float | None:
+        skip_keys = skip_keys or set()
+        if isinstance(payload, list):
+            for item in payload:
+                value = self._extract_number_by_alias(item, aliases, percent_as_ratio=percent_as_ratio, skip_keys=skip_keys)
+                if value is not None:
+                    return value
+            return None
+        if not isinstance(payload, Mapping):
+            return self._coerce_float(payload, percent_as_ratio=percent_as_ratio)
+        normalized_aliases = {self._normalized_metric_key(alias) for alias in aliases}
+        for key, value in payload.items():
+            if self._normalized_metric_key(str(key)) in normalized_aliases:
+                number = self._coerce_float(value, percent_as_ratio=percent_as_ratio)
+                if number is not None:
+                    return number
+        for key, value in payload.items():
+            if str(key) in skip_keys:
+                continue
+            if isinstance(value, Mapping) or isinstance(value, list):
+                number = self._extract_number_by_alias(value, aliases, percent_as_ratio=percent_as_ratio, skip_keys=skip_keys)
+                if number is not None:
+                    return number
+        return None
+
+    def _coerce_float(self, value: Any, *, percent_as_ratio: bool = False) -> float | None:
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, int | float):
+            return float(value)
+        text = str(value).strip()
+        if not text or text in {"-", "--", "None", "null"}:
+            return None
+        multiplier = 1.0
+        if text.startswith("(") and text.endswith(")"):
+            multiplier = -1.0
+            text = text[1:-1]
+        is_percent = text.endswith("%")
+        text = text.replace(",", "").replace("$", "").replace("¥", "").replace("￥", "").replace("%", "")
+        try:
+            number = float(text) * multiplier
+        except ValueError:
+            return None
+        if is_percent and percent_as_ratio:
+            return number / 100.0
+        return number
+
+    def _normalized_metric_key(self, value: str) -> str:
+        return re.sub(r"[\s_\-:/]+", "", value.strip().lower())
+
+    def _string_list(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [item.strip() for item in re.split(r"[,;/，；]+", value) if item.strip()]
+        if isinstance(value, list | tuple | set):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return [str(value).strip()] if str(value).strip() else []
 
     def register_benchmark(self, payload: Mapping[str, Any], *, actor: str = "system") -> BenchmarkConfig:
         benchmark = BenchmarkConfig(
