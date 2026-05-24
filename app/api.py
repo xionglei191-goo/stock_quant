@@ -359,6 +359,9 @@ class ApiRouter:
             ("POST", r"^/api/market-data/batch$", self._register_market_data_batch),
             ("POST", r"^/api/market-data/tdx/preview$", self._tdx_market_data_preview),
             ("POST", r"^/api/market-data/tdx/import$", self._import_tdx_market_data),
+            ("POST", r"^/api/market-data/backfill$", self._market_data_backfill),
+            ("GET", r"^/api/market-data/backfill/coverage-report$", self._market_data_backfill_coverage_report),
+            ("POST", r"^/api/market-data/backfill/coverage-report$", self._market_data_backfill_coverage_report),
             ("GET", r"^/api/market-data/schema-coverage-report$", self._market_data_schema_coverage_report),
             ("POST", r"^/api/market-data/schema-coverage-report$", self._market_data_schema_coverage_report),
             ("GET", r"^/api/market-data/quality-report$", self._market_data_quality_report),
@@ -1075,6 +1078,12 @@ class ApiRouter:
 
     def _import_tdx_market_data(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.import_tdx_market_data(body, actor=actor)
+
+    def _market_data_backfill(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.market_data_backfill(body, actor=actor)
+
+    def _market_data_backfill_coverage_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.market_data_backfill_coverage_report(body)
 
     def _market_data_quality_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.market_data_quality_report(body)

@@ -32,6 +32,7 @@ from scripts.download_tdx_vipdoc import download_tdx_vipdoc_archive
 from scripts.full_run_acceptance import run_full_acceptance
 from scripts.fetch_benchmark_samples import fetch_benchmark_samples
 from scripts.local_data_unblock_audit import audit_local_data_unblock
+import scripts.backfill_market_data as backfill_market_data_script
 from scripts.import_tdx_market_data import run_tdx_incremental_import
 from scripts.tdx_batch_import import infer_exchange, normalize_symbol
 from scripts.local_ai_capability_acceptance import build_local_ai_capability_acceptance
@@ -5782,8 +5783,9 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("public_eod_market_data", source_rows)
         self.assertEqual(source_rows["public_eod_market_data"]["gaps"], [])
         self.assertIn("close", source_rows["public_eod_market_data"]["field_whitelist"])
-        self.assertEqual(source_rows["public_eod_market_data"]["provenance_ref"], "local://data/local/tdx/vipdoc")
-        self.assertEqual(source_rows["public_eod_market_data"]["collection_method"], "local_file_or_public_api")
+        self.assertIn("local://data/local/tdx/vipdoc", source_rows["public_eod_market_data"]["provenance_ref"])
+        self.assertIn("baostock://query_history_k_data_plus", source_rows["public_eod_market_data"]["provenance_ref"])
+        self.assertEqual(source_rows["public_eod_market_data"]["collection_method"], "local_tdx_vipdoc_plus_baostock_incremental")
         self.assertEqual(source_rows["public_eod_market_data"]["robots_policy"], "reviewed_public_or_local_source")
         self.assertEqual(source_rows["public_eod_market_data"]["review_owner_role"], "数据工程")
         self.assertTrue(source_rows["public_eod_market_data"]["automation_ready"])
@@ -6946,6 +6948,310 @@ class SystemServiceTests(unittest.TestCase):
             self.assertTrue(duplicate.success)
             self.assertEqual(duplicate.data["created_count"], 0)
             self.assertEqual(duplicate.data["skipped_count"], 2)
+
+    def test_market_data_backfill_covers_ashare_tdx_and_baostock_gap(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            vipdoc_root = Path(temp_dir) / "vipdoc"
+            day_dir = vipdoc_root / "sh" / "lday"
+            day_dir.mkdir(parents=True)
+            (day_dir / "sh600000.day").write_bytes(
+                b"".join(
+                    [
+                        struct.pack("<IIIIIfII", 20260514, 1000, 1080, 990, 1050, 10500.0, 1000, 0),
+                        struct.pack("<IIIIIfII", 20260515, 1050, 1120, 1030, 1100, 13200.0, 1200, 0),
+                    ]
+                )
+            )
+            self.service.tdx_market_data = TDXVipdocAdapter(path=vipdoc_root)
+            self.service.tdx_vipdoc = self.service.tdx_market_data
+            self.service.register_security(
+                {
+                    "security_id": "sec_600000",
+                    "issuer_id": "issuer_001",
+                    "ticker": "600000",
+                    "exchange": "SSE",
+                    "currency": "CNY",
+                    "market": "A",
+                },
+                actor="platform",
+            )
+
+            self.service._open_baostock_session = lambda: object()  # type: ignore[method-assign]
+            self.service._close_baostock_session = lambda _client: None  # type: ignore[method-assign]
+            self.service._discover_ashare_baostock_symbols = lambda _client, **_kwargs: [{"symbol": "600000", "name": "浦发银行", "market": "A"}]  # type: ignore[method-assign]
+            self.service._fetch_ashare_baostock_rows = lambda _client, symbol, **_kwargs: [  # type: ignore[method-assign]
+                {"as_of_date": "2026-05-16", "open": 11.0, "high": 11.3, "low": 10.9, "close": 11.2, "adjusted_close": 11.2, "volume": 1300.0}
+            ]
+
+            dry_run = self.router.dispatch(
+                "POST",
+                "/api/market-data/backfill",
+                {"market": "A", "symbols": ["600000"], "start_date": "2026-05-14", "end_date": "2026-05-16", "dry_run": True},
+                role="data_engineer",
+            )
+            self.assertTrue(dry_run.success, dry_run.error)
+            self.assertEqual(dry_run.data["planned_count"], 3)
+            self.assertEqual(len(self.service.store.market_data), 0)
+
+            imported = self.router.dispatch(
+                "POST",
+                "/api/market-data/backfill",
+                {"market": "A", "symbols": ["600000"], "start_date": "2026-05-14", "end_date": "2026-05-16"},
+                role="data_engineer",
+            )
+            self.assertTrue(imported.success, imported.error)
+            self.assertEqual(imported.data["created_count"], 3)
+            self.assertEqual(imported.data["failed_symbol_count"], 0)
+            listed = self.router.dispatch("GET", "/api/market-data", {"security_id": "sec_600000", "limit": 5}, role="CEO")
+            self.assertEqual([row["as_of_date"] for row in reversed(listed.data["market_data"])], ["2026-05-14", "2026-05-15", "2026-05-16"])
+
+            duplicate = self.router.dispatch(
+                "POST",
+                "/api/market-data/backfill",
+                {"market": "A", "symbols": ["600000"], "start_date": "2026-05-14", "end_date": "2026-05-16"},
+                role="data_engineer",
+            )
+            self.assertTrue(duplicate.success, duplicate.error)
+            self.assertEqual(duplicate.data["created_count"], 0)
+            self.assertEqual(duplicate.data["skipped_count"], 3)
+
+    def test_market_data_backfill_uses_baostock_when_tdx_file_missing(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            self.service.tdx_market_data = TDXVipdocAdapter(path=Path(temp_dir) / "vipdoc")
+            self.service.tdx_vipdoc = self.service.tdx_market_data
+            self.service.register_security(
+                {
+                    "security_id": "sec_000001",
+                    "issuer_id": "issuer_001",
+                    "ticker": "000001",
+                    "exchange": "SZSE",
+                    "currency": "CNY",
+                    "market": "A",
+                },
+                actor="platform",
+            )
+            self.service._open_baostock_session = lambda: object()  # type: ignore[method-assign]
+            self.service._close_baostock_session = lambda _client: None  # type: ignore[method-assign]
+            self.service._fetch_ashare_baostock_rows = lambda _client, symbol, **_kwargs: [  # type: ignore[method-assign]
+                {"as_of_date": "2026-05-16", "open": 10.0, "high": 10.4, "low": 9.9, "close": 10.2, "adjusted_close": 10.2, "volume": 1000.0}
+            ]
+            backfill = self.router.dispatch(
+                "POST",
+                "/api/market-data/backfill",
+                {"market": "A", "symbols": ["000001"], "start_date": "2026-05-16", "end_date": "2026-05-16"},
+                role="data_engineer",
+            )
+            self.assertTrue(backfill.success, backfill.error)
+            self.assertEqual(backfill.data["created_count"], 1)
+            row = backfill.data["markets"]["A"]["symbol_results"][0]
+            self.assertEqual(row["provider_errors"][0]["provider"], "tdx_vipdoc")
+
+    def test_market_data_backfill_covers_us_yahoo_discovery_and_failures(self) -> None:
+        self.service.seed_default_sources(actor="data")
+        self.service.register_issuer(
+            {"issuer_id": "issuer_aapl", "legal_name": "Apple Inc.", "market": ["U"], "country": "US"},
+            actor="platform",
+        )
+        self.service.register_security(
+            {
+                "security_id": "security_aapl_us",
+                "issuer_id": "issuer_aapl",
+                "ticker": "AAPL",
+                "exchange": "NASDAQ",
+                "currency": "USD",
+                "market": "U",
+            },
+            actor="platform",
+        )
+        self.service._fetch_us_symbol_directory = lambda **_kwargs: [  # type: ignore[method-assign]
+            {"symbol": "AAPL", "name": "Apple Inc.", "market": "U", "exchange": "NASDAQ"},
+            {"symbol": "MSFT", "name": "Microsoft Corporation", "market": "U", "exchange": "NASDAQ"},
+            {"symbol": "BAD", "name": "Broken Corp", "market": "U", "exchange": "NYSE"},
+        ]
+
+        def fake_yahoo(symbol: str, **_kwargs):
+            if symbol == "BAD":
+                raise RuntimeError("chart outage")
+            return [{"as_of_date": "2026-05-22", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0, "adjusted_close": 101.0, "volume": 1000.0}]
+
+        self.service._fetch_us_yahoo_rows = fake_yahoo  # type: ignore[method-assign]
+        backfill = self.router.dispatch(
+            "POST",
+            "/api/market-data/backfill",
+            {"market": "U", "discover_universe": True, "start_date": "2026-05-22", "end_date": "2026-05-22"},
+            role="data_engineer",
+        )
+        self.assertTrue(backfill.success, backfill.error)
+        self.assertEqual(backfill.data["status"], "partial")
+        self.assertEqual(backfill.data["created_count"], 2)
+        self.assertEqual(backfill.data["failed_symbol_count"], 1)
+        self.assertIn("security_aapl_us", self.service.store.securities)
+        self.assertNotIn("security_us_aapl", self.service.store.securities)
+        self.assertIn("security_msft_us", self.service.store.securities)
+        coverage = self.router.dispatch("GET", "/api/market-data/backfill/coverage-report", {"market": "U", "as_of_date": "2026-05-24"}, role="CEO")
+        self.assertTrue(coverage.success, coverage.error)
+        self.assertEqual(coverage.data["markets"]["U"]["covered_count"], 2)
+
+    def test_us_yahoo_fetch_uses_utc_dates_and_symbol_variants(self) -> None:
+        calls: list[str] = []
+
+        class FakeResponse:
+            def __init__(self, payload: dict):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(self.payload).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            calls.append(request.full_url)
+            if "BF.B" in request.full_url:
+                return FakeResponse({"chart": {"result": [{"timestamp": []}], "error": None}})
+            return FakeResponse(
+                {
+                    "chart": {
+                        "result": [
+                            {
+                                "timestamp": [1779408000],
+                                "indicators": {
+                                    "quote": [
+                                        {
+                                            "open": [10.0],
+                                            "high": [11.0],
+                                            "low": [9.0],
+                                            "close": [10.5],
+                                            "volume": [100.0],
+                                        }
+                                    ],
+                                    "adjclose": [{"adjclose": [10.25]}],
+                                },
+                            }
+                        ],
+                        "error": None,
+                    }
+                }
+            )
+
+        original_urlopen = services_module.urlopen
+        services_module.urlopen = fake_urlopen  # type: ignore[assignment]
+        try:
+            rows = self.service._fetch_us_yahoo_rows("BF.B", start_date="2026-05-22", end_date="2026-05-22", user_agent="test", timeout=1.0)
+        finally:
+            services_module.urlopen = original_urlopen  # type: ignore[assignment]
+
+        self.assertEqual(rows[0]["as_of_date"], "2026-05-22")
+        self.assertIn("period1=1779408000", calls[0])
+        self.assertIn("period2=1779494400", calls[0])
+        self.assertIn("/BF.B?", calls[0])
+        self.assertIn("/BF-B?", calls[1])
+
+    def test_workflow_executor_and_cli_can_run_market_data_backfill(self) -> None:
+        self.service.seed_default_sources(actor="data")
+        self.service.register_issuer(
+            {"issuer_id": "issuer_aapl", "legal_name": "Apple Inc.", "market": ["U"], "country": "US"},
+            actor="platform",
+        )
+        self.service.register_security(
+            {
+                "security_id": "security_aapl_us",
+                "issuer_id": "issuer_aapl",
+                "ticker": "AAPL",
+                "exchange": "NASDAQ",
+                "currency": "USD",
+                "market": "U",
+            },
+            actor="platform",
+        )
+        self.service._fetch_us_yahoo_rows = lambda symbol, **_kwargs: [  # type: ignore[method-assign]
+            {"as_of_date": "2026-05-22", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0, "adjusted_close": 101.0, "volume": 1000.0}
+        ]
+        workflow = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags",
+            {
+                "dag_id": "dag_market_data_backfill",
+                "name": "Market data backfill",
+                "cadence": "business_daily",
+                "idempotency_key_fields": ["as_of_date"],
+                "tasks": [
+                    {
+                        "task_id": "backfill_us",
+                        "task_type": "market_data_backfill",
+                        "dataset": "market_data",
+                        "payload": {"market": "U", "symbols": ["AAPL"], "start_date": "2026-05-22", "end_date": "2026-05-22"},
+                    }
+                ],
+            },
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(workflow.success, workflow.error)
+        execute = self.router.dispatch(
+            "POST",
+            "/api/orchestration/dags/dag_market_data_backfill/execute",
+            {"run_id": "wfrun_market_data_backfill", "inputs": {"as_of_date": "2026-05-22"}},
+            actor="platform",
+            role="platform",
+        )
+        self.assertTrue(execute.success, execute.error)
+        self.assertEqual(execute.data["run"]["task_statuses"]["backfill_us"], "succeeded")
+        self.assertIn("market_data_backfill:", execute.data["run"]["output_refs"][0])
+        self.assertEqual(execute.data["lineage_events"][0]["dataset"], "market_data")
+
+        original_service = backfill_market_data_script.SystemService
+        original_store = backfill_market_data_script.SQLiteStore
+        try:
+            class FakeStore:
+                def __init__(self, path):
+                    self.path = path
+
+                def commit(self):
+                    return None
+
+            class FakeService:
+                def __init__(self, store):
+                    self.store = store
+
+                def market_data_backfill(self, payload, *, actor):
+                    return {"batch_id": "cli_backfill", "payload": payload, "actor": actor, "status": "passed"}
+
+            backfill_market_data_script.SQLiteStore = FakeStore  # type: ignore[assignment]
+            backfill_market_data_script.SystemService = FakeService  # type: ignore[assignment]
+            args = type(
+                "Args",
+                (),
+                {
+                    "postgres_dsn": "",
+                    "state_db": "state.sqlite",
+                    "market": "both",
+                    "discover_universe": True,
+                    "symbols": "",
+                    "start_date": "",
+                    "end_date": "",
+                    "fallback_window_days": 10,
+                    "offset": 0,
+                    "max_symbols": 25,
+                    "dry_run": True,
+                    "no_skip_existing": False,
+                    "refresh_existing": False,
+                    "include_etf": False,
+                    "include_b_shares": False,
+                    "symbol_prefix": "",
+                    "batch_id": "cli_backfill",
+                    "actor": "cli_test",
+                },
+            )()
+            cli_result = backfill_market_data_script.run_backfill(args)
+        finally:
+            backfill_market_data_script.SystemService = original_service  # type: ignore[assignment]
+            backfill_market_data_script.SQLiteStore = original_store  # type: ignore[assignment]
+        self.assertEqual(cli_result["batch_id"], "cli_backfill")
+        self.assertTrue(cli_result["payload"]["dry_run"])
 
     def test_tdx_batch_import_helpers_normalize_symbol_and_exchange(self) -> None:
         self.assertEqual(normalize_symbol("sh600000"), "600000")

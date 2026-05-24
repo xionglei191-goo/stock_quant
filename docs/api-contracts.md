@@ -223,7 +223,7 @@
 
 #### `POST /api/orchestration/dags/{dag_id}/execute`
 
-使用内置轻量 DAG 执行器按拓扑顺序运行白名单本地任务，并将每步结果写入 `WorkflowRun.task_statuses`、`inputs.task_results`、`output_refs` 和 `LineageEvent`。当前支持 `ingest_document`、`extract_evidence`、`structured_extraction` / `extract_structured_facts`、`search_rebuild`、`benchmark_sample_register`、`benchmark_run`、`document_parse` / `paddleocr` 和 `noop`。任务 payload 支持 `${inputs.foo}`、`${task_id.output_ids.0}`、`${task_id.output_refs.0}` 占位符，用于把上游产物传给下游任务。可传 `task_ids` / `tasks` / `task_id` 或 `queues` / `queue` 做任务级选择和队列隔离。接口仍是单进程内置执行器；分布式队列、外部 sensor 和大规模 backfill 达到阈值后应切换 Airflow/Dagster。
+使用内置轻量 DAG 执行器按拓扑顺序运行白名单本地任务，并将每步结果写入 `WorkflowRun.task_statuses`、`inputs.task_results`、`output_refs` 和 `LineageEvent`。当前支持 `ingest_document`、`extract_evidence`、`structured_extraction` / `extract_structured_facts`、`search_rebuild`、`benchmark_sample_register`、`benchmark_run`、`market_data_backfill`、`document_parse` / `paddleocr` 和 `noop`。任务 payload 支持 `${inputs.foo}`、`${task_id.output_ids.0}`、`${task_id.output_refs.0}` 占位符，用于把上游产物传给下游任务。可传 `task_ids` / `tasks` / `task_id` 或 `queues` / `queue` 做任务级选择和队列隔离。接口仍是单进程内置执行器；分布式队列、外部 sensor 和大规模 backfill 达到阈值后应切换 Airflow/Dagster。
 
 请求字段：
 
@@ -872,6 +872,36 @@
 - `source_id`
 - `data_type`
 - `skip_existing`
+
+#### `POST /api/market-data/backfill`
+
+统一补齐 A 股和美股 EOD/延时 K 线。A 股默认使用本地 TDX vipdoc 作为历史主源，并用 Baostock 补最近缺口；美股默认使用 `yahoo_chart_us_eod`。接口支持全市场发现、逐证券 `latest_as_of_date + 1` 增量、分片、dry-run 和幂等跳过；只写公开/候选 EOD 数据，不接入实时行情或交易链路，固定 `automation_allowed=false`、`live_execution_allowed=false`。
+
+请求字段：
+
+- `market`：`A`、`U` 或 `both`
+- `symbols`
+- `discover_universe`
+- `start_date`
+- `end_date`
+- `fallback_window_days`
+- `offset`
+- `max_symbols`
+- `dry_run`
+- `skip_existing`
+- `refresh_existing`
+
+#### `GET|POST /api/market-data/backfill/coverage-report`
+
+检查 A/U 已入库 K 线覆盖情况，返回各市场证券数、已覆盖数、最新行情日期、缺失样本、滞后样本和 source governance 缺口。该接口不导入行情。
+
+请求字段：
+
+- `market`
+- `as_of_date`
+- `data_type`
+- `stale_after_days`
+- `limit`
 
 #### `GET|POST /api/market-data/schema-coverage-report`
 

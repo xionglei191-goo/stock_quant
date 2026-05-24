@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -2641,6 +2642,7 @@ class SystemService:
             "extract_evidence",
             "extract_structured_facts",
             "ingest_document",
+            "market_data_backfill",
             "noop",
             "paddleocr",
             "search_rebuild",
@@ -2658,6 +2660,8 @@ class SystemService:
             return "document_ai"
         if task_type == "search_rebuild":
             return "search"
+        if task_type == "market_data_backfill":
+            return "market_data"
         if task_type in {"benchmark_sample_register", "register_benchmark_sample", "benchmark_run"}:
             return "evaluation"
         return "default"
@@ -2892,6 +2896,13 @@ class SystemService:
             result = self.parse_document_with_paddleocr(payload, actor=actor)
             output_ids = [str(result.get("job_id") or result.get("cache_key") or payload.get("document_id") or payload.get("file_url") or "parse")]
             output_refs = [f"document_parse:{item}" for item in output_ids]
+        elif task_type == "market_data_backfill":
+            result = self.market_data_backfill(payload, actor=actor)
+            output_ids = [str(result.get("batch_id", "market_data_backfill"))]
+            output_refs = [f"market_data_backfill:{item}" for item in output_ids]
+            if result.get("status") == "partial":
+                status = "needs_review"
+                error = "market data backfill completed with failed symbols"
         else:
             return {
                 "task_id": task_id,
@@ -5633,9 +5644,12 @@ class SystemService:
                     "adjusted_close": "adjusted_close",
                     "volume": "volume",
                 },
-                "provenance_ref": "local://data/local/tdx/vipdoc",
+                "provenance_ref": "local://data/local/tdx/vipdoc; baostock://query_history_k_data_plus",
                 "source_tos_uri": "https://www.tdx.com.cn/article/vipdata.html",
-                "usage_scope": "public_or_local_eod_internal_research_backtest_risk",
+                "usage_scope": "public_or_local_eod_internal_research_backtest_risk_tdx_primary_baostock_incremental",
+                "collection_method": "local_tdx_vipdoc_plus_baostock_incremental",
+                "robots_policy": "reviewed_public_or_local_source",
+                "review_owner_role": "数据工程",
                 "rights_tag": {
                     "license_class": "public_eod_reference",
                     "training_allowed": False,
@@ -7246,6 +7260,801 @@ class SystemService:
             "skipped_count": len(skipped),
             "failed_count": len(errors),
         }
+
+    def market_data_backfill(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        self.seed_default_sources(actor=actor)
+        dry_run = self._truthy(payload.get("dry_run", False))
+        skip_existing = self._truthy(payload.get("skip_existing", True))
+        refresh_existing = self._truthy(payload.get("refresh_existing", False))
+        data_type = str(payload.get("data_type", "eod")).strip() or "eod"
+        if data_type not in {"eod", "delayed"}:
+            raise ValidationError("market data backfill only supports eod or delayed data")
+        end_date = str(payload.get("end_date") or date.today().isoformat())
+        self._validate_backfill_date(end_date, "end_date")
+        fallback_window_days = max(1, min(3660, int(payload.get("fallback_window_days", 10) or 10)))
+        requested_start_date = str(payload.get("start_date", "")).strip()
+        if requested_start_date:
+            self._validate_backfill_date(requested_start_date, "start_date")
+        markets = self._market_data_backfill_markets(payload.get("market", "both"))
+        batch_id = str(payload.get("batch_id") or f"market_data_backfill_{'_'.join(markets).lower()}_{end_date}").strip()
+        result: dict[str, Any] = {
+            "batch_id": batch_id,
+            "started_at": utcnow().isoformat(),
+            "completed_at": "",
+            "market": payload.get("market", "both"),
+            "markets": {},
+            "data_type": data_type,
+            "dry_run": dry_run,
+            "skip_existing": skip_existing,
+            "refresh_existing": refresh_existing,
+            "requested_start_date": requested_start_date,
+            "requested_end_date": end_date,
+            "fallback_window_days": fallback_window_days,
+            "created_count": 0,
+            "skipped_count": 0,
+            "planned_count": 0,
+            "failed_symbol_count": 0,
+            "empty_symbol_count": 0,
+            "queried_symbol_count": 0,
+            "symbol_count": 0,
+            "failed_symbols": [],
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "public_or_candidate_eod_backfill_for_local_research_and_simulated_portfolio_only_no_live_trading",
+        }
+        for market in markets:
+            market_summary = self._market_data_backfill_market(
+                market,
+                payload,
+                actor=actor,
+                dry_run=dry_run,
+                skip_existing=skip_existing,
+                refresh_existing=refresh_existing,
+                data_type=data_type,
+                requested_start_date=requested_start_date,
+                end_date=end_date,
+                fallback_window_days=fallback_window_days,
+            )
+            result["markets"][market] = market_summary
+            for key in ("created_count", "skipped_count", "planned_count", "failed_symbol_count", "empty_symbol_count", "queried_symbol_count", "symbol_count"):
+                result[key] += int(market_summary.get(key, 0) or 0)
+            result["failed_symbols"].extend(market_summary.get("failed_symbols", []))
+        result["status"] = "passed" if result["failed_symbol_count"] == 0 else "partial"
+        result["completed_at"] = utcnow().isoformat()
+        self._audit(
+            actor,
+            "market_data_backfill",
+            "market_data",
+            batch_id,
+            source="market_data_backfill",
+            approval_state=f"{result['status']};created={result['created_count']};failed={result['failed_symbol_count']}",
+        )
+        return result
+
+    def market_data_backfill_coverage_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        self.seed_default_sources(actor="system")
+        as_of_date = str(filters.get("as_of_date") or filters.get("end_date") or date.today().isoformat())
+        self._validate_backfill_date(as_of_date, "as_of_date")
+        markets = self._market_data_backfill_markets(filters.get("market", "both"))
+        stale_after_days = max(0, int(filters.get("stale_after_days", 3) or 3))
+        limit = max(1, min(10000, int(filters.get("limit", 100) or 100)))
+        by_market: dict[str, Any] = {}
+        for market in markets:
+            source_id = self._market_data_source_for_market(market, filters)
+            securities = [security for security in self.store.securities.values() if security.market == market and security.status == "active"]
+            securities.sort(key=lambda item: (item.ticker.upper(), item.security_id))
+            missing: list[dict[str, Any]] = []
+            stale: list[dict[str, Any]] = []
+            covered = 0
+            latest_market_date = ""
+            for security in securities:
+                latest = self._latest_market_data_point(security.security_id, source_id=source_id, data_type=str(filters.get("data_type", "eod")), as_of_date=as_of_date)
+                if latest is None:
+                    if len(missing) < limit:
+                        missing.append({"security_id": security.security_id, "ticker": security.ticker, "issue": "missing_market_data"})
+                    continue
+                covered += 1
+                latest_market_date = max(latest_market_date, latest.as_of_date)
+                lag_days = (date.fromisoformat(as_of_date) - date.fromisoformat(latest.as_of_date)).days
+                if lag_days > stale_after_days and len(stale) < limit:
+                    stale.append(
+                        {
+                            "security_id": security.security_id,
+                            "ticker": security.ticker,
+                            "latest_as_of_date": latest.as_of_date,
+                            "lag_days": lag_days,
+                        }
+                    )
+            source = self.store.sources.get(source_id)
+            by_market[market] = {
+                "market": market,
+                "source_id": source_id,
+                "security_count": len(securities),
+                "covered_count": covered,
+                "missing_count": len(securities) - covered,
+                "stale_count": len(stale),
+                "latest_market_date": latest_market_date,
+                "coverage": round(covered / max(1, len(securities)), 4) if securities else 1.0,
+                "missing_samples": missing,
+                "stale_samples": stale,
+                "source_governance_gaps": self._source_governance_gaps(source) if source else ["missing_source_definition"],
+            }
+        return {
+            "as_of_date": as_of_date,
+            "markets": by_market,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "market_data_backfill_coverage_report_only_no_market_data_imported",
+        }
+
+    def _market_data_backfill_market(
+        self,
+        market: str,
+        payload: Mapping[str, Any],
+        *,
+        actor: str,
+        dry_run: bool,
+        skip_existing: bool,
+        refresh_existing: bool,
+        data_type: str,
+        requested_start_date: str,
+        end_date: str,
+        fallback_window_days: int,
+    ) -> dict[str, Any]:
+        source_id = self._market_data_source_for_market(market, payload)
+        symbols = self._market_data_backfill_symbols_for_market(market, payload)
+        offset = max(0, int(payload.get("offset", 0) or 0))
+        max_symbols = max(0, int(payload.get("max_symbols", payload.get("limit", 0)) or 0))
+        total_discovered = len(symbols)
+        if offset:
+            symbols = symbols[offset:]
+        if max_symbols:
+            symbols = symbols[:max_symbols]
+        summary: dict[str, Any] = {
+            "market": market,
+            "source_id": source_id,
+            "total_discovered": total_discovered,
+            "offset": offset,
+            "max_symbols": max_symbols,
+            "symbol_count": len(symbols),
+            "queried_symbol_count": 0,
+            "created_count": 0,
+            "skipped_count": 0,
+            "planned_count": 0,
+            "empty_symbol_count": 0,
+            "failed_symbol_count": 0,
+            "failed_symbols": [],
+            "symbol_results": [],
+        }
+        baostock_client: Any = None
+        try:
+            for item in symbols:
+                symbol = str(item.get("symbol", "")).strip()
+                if not symbol:
+                    continue
+                security = self._market_data_backfill_resolve_security(market, item, actor=actor, create=not dry_run)
+                latest = self._latest_market_data_point(security.security_id, source_id=source_id, data_type=data_type, as_of_date=end_date)
+                latest_before = latest.as_of_date if latest else ""
+                start_date = requested_start_date or ((date.fromisoformat(latest_before) + timedelta(days=1)).isoformat() if latest_before else (date.fromisoformat(end_date) - timedelta(days=fallback_window_days)).isoformat())
+                if start_date > end_date:
+                    row = {"symbol": symbol, "security_id": security.security_id, "status": "skipped_current", "latest_before": latest_before, "start_date": start_date, "end_date": end_date}
+                    summary["symbol_results"].append(row)
+                    continue
+                summary["queried_symbol_count"] += 1
+                try:
+                    if market == "A":
+                        if baostock_client is None and self._truthy(payload.get("use_baostock", True)):
+                            try:
+                                baostock_client = self._open_baostock_session()
+                            except Exception:
+                                baostock_client = None
+                        symbol_result = self._market_data_backfill_ashare_symbol(
+                            symbol,
+                            security,
+                            source_id=source_id,
+                            data_type=data_type,
+                            start_date=start_date,
+                            end_date=end_date,
+                            dry_run=dry_run,
+                            skip_existing=skip_existing,
+                            refresh_existing=refresh_existing,
+                            baostock_client=baostock_client,
+                            adjustflag=str(payload.get("adjustflag", "3")),
+                            actor=actor,
+                        )
+                    else:
+                        symbol_result = self._market_data_backfill_us_symbol(
+                            symbol,
+                            security,
+                            source_id=source_id,
+                            data_type=data_type,
+                            start_date=start_date,
+                            end_date=end_date,
+                            dry_run=dry_run,
+                            skip_existing=skip_existing,
+                            refresh_existing=refresh_existing,
+                            user_agent=str(payload.get("user_agent") or DEFAULT_SEC_USER_AGENT),
+                            timeout=float(payload.get("timeout", 30.0) or 30.0),
+                            actor=actor,
+                        )
+                except Exception as exc:
+                    symbol_result = {
+                        "symbol": symbol,
+                        "security_id": security.security_id,
+                        "status": "failed",
+                        "latest_before": latest_before,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                symbol_result.setdefault("latest_before", latest_before)
+                if symbol_result.get("status") == "failed":
+                    summary["failed_symbol_count"] += 1
+                    summary["failed_symbols"].append({key: symbol_result.get(key, "") for key in ("symbol", "security_id", "error_type", "error")})
+                if symbol_result.get("status") == "empty":
+                    summary["empty_symbol_count"] += 1
+                for key in ("created_count", "skipped_count", "planned_count"):
+                    summary[key] += int(symbol_result.get(key, 0) or 0)
+                summary["symbol_results"].append(symbol_result)
+        finally:
+            if baostock_client is not None:
+                self._close_baostock_session(baostock_client)
+        return summary
+
+    def _market_data_backfill_ashare_symbol(
+        self,
+        symbol: str,
+        security: Security,
+        *,
+        source_id: str,
+        data_type: str,
+        start_date: str,
+        end_date: str,
+        dry_run: bool,
+        skip_existing: bool,
+        refresh_existing: bool,
+        baostock_client: Any,
+        adjustflag: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        provider_errors: list[dict[str, str]] = []
+        rows: list[dict[str, Any]] = []
+        try:
+            rows.extend(self.tdx_vipdoc.query_daily(symbols=[symbol], start_date=start_date, end_date=end_date, limit=10000))
+        except Exception as exc:
+            provider_errors.append({"provider": "tdx_vipdoc", "error_type": type(exc).__name__, "error": str(exc)})
+        latest_row_date = max([str(row.get("trade_date") or row.get("as_of_date") or "") for row in rows] or [""])
+        baostock_start = (date.fromisoformat(latest_row_date) + timedelta(days=1)).isoformat() if latest_row_date else start_date
+        if baostock_client is not None and baostock_start <= end_date:
+            try:
+                rows.extend(self._fetch_ashare_baostock_rows(baostock_client, symbol, start_date=baostock_start, end_date=end_date, adjustflag=adjustflag))
+            except Exception as exc:
+                provider_errors.append({"provider": "baostock", "error_type": type(exc).__name__, "error": str(exc)})
+        write = self._market_data_backfill_write_rows(
+            security,
+            rows,
+            source_id=source_id,
+            data_type=data_type,
+            market="A",
+            currency="CNY",
+            dry_run=dry_run,
+            skip_existing=skip_existing,
+            refresh_existing=refresh_existing,
+            actor=actor,
+        )
+        status = "planned" if dry_run and write["planned_count"] else "updated" if write["created_count"] else "empty"
+        if not rows and provider_errors:
+            status = "failed"
+        return {
+            "symbol": symbol,
+            "security_id": security.security_id,
+            "status": status,
+            "start_date": start_date,
+            "end_date": end_date,
+            "source_rows": len(rows),
+            "provider_errors": provider_errors,
+            **write,
+        }
+
+    def _market_data_backfill_us_symbol(
+        self,
+        symbol: str,
+        security: Security,
+        *,
+        source_id: str,
+        data_type: str,
+        start_date: str,
+        end_date: str,
+        dry_run: bool,
+        skip_existing: bool,
+        refresh_existing: bool,
+        user_agent: str,
+        timeout: float,
+        actor: str,
+    ) -> dict[str, Any]:
+        rows = self._fetch_us_yahoo_rows(symbol, start_date=start_date, end_date=end_date, user_agent=user_agent, timeout=timeout)
+        write = self._market_data_backfill_write_rows(
+            security,
+            rows,
+            source_id=source_id,
+            data_type=data_type,
+            market="U",
+            currency="USD",
+            dry_run=dry_run,
+            skip_existing=skip_existing,
+            refresh_existing=refresh_existing,
+            actor=actor,
+        )
+        status = "planned" if dry_run and write["planned_count"] else "updated" if write["created_count"] else "empty"
+        return {
+            "symbol": symbol,
+            "security_id": security.security_id,
+            "status": status,
+            "start_date": start_date,
+            "end_date": end_date,
+            "source_rows": len(rows),
+            **write,
+        }
+
+    def _market_data_backfill_write_rows(
+        self,
+        security: Security,
+        rows: list[Mapping[str, Any]],
+        *,
+        source_id: str,
+        data_type: str,
+        market: str,
+        currency: str,
+        dry_run: bool,
+        skip_existing: bool,
+        refresh_existing: bool,
+        actor: str,
+    ) -> dict[str, Any]:
+        created = 0
+        skipped = 0
+        planned = 0
+        latest_after = ""
+        source = self.store.sources[source_id]
+        for raw_row in rows:
+            as_of_date = str(raw_row.get("as_of_date") or raw_row.get("trade_date") or "").strip()
+            if not as_of_date:
+                continue
+            close = float(raw_row.get("close", 0.0) or 0.0)
+            if close <= 0:
+                continue
+            latest_after = max(latest_after, as_of_date)
+            data_id = self._market_data_id(security.security_id, as_of_date, data_type, source_id)
+            exists = self._market_data_point_exists(security.security_id, source_id=source_id, data_type=data_type, as_of_date=as_of_date)
+            if exists and skip_existing and not refresh_existing:
+                skipped += 1
+                continue
+            payload = {
+                "data_id": data_id,
+                "security_id": security.security_id,
+                "source_id": source_id,
+                "market": market,
+                "as_of_date": as_of_date,
+                "data_type": data_type,
+                "currency": currency,
+                "open": float(raw_row.get("open", 0.0) or 0.0),
+                "high": float(raw_row.get("high", 0.0) or 0.0),
+                "low": float(raw_row.get("low", 0.0) or 0.0),
+                "close": close,
+                "adjusted_close": float(raw_row.get("adjusted_close", raw_row.get("close", 0.0)) or close),
+                "volume": float(raw_row.get("volume", 0.0) or 0.0),
+                "rights_tag": to_plain(source.rights_tag),
+            }
+            if dry_run:
+                planned += 1
+                continue
+            if exists and refresh_existing:
+                self._validate_market_data_field_boundary(payload, source)
+                point = MarketDataPoint.from_dict(payload)
+                self.store.market_data[point.data_id] = point
+                created += 1
+                continue
+            try:
+                self.register_market_data_point(payload, actor=actor)
+                created += 1
+            except ConflictError:
+                if refresh_existing:
+                    point = MarketDataPoint.from_dict(payload)
+                    self.store.market_data[point.data_id] = point
+                    created += 1
+                else:
+                    skipped += 1
+        return {"created_count": created, "skipped_count": skipped, "planned_count": planned, "latest_after": latest_after}
+
+    def _market_data_backfill_symbols_for_market(self, market: str, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+        requested = self._market_data_backfill_symbol_values(payload.get("symbols", payload.get("symbol", "")))
+        if requested:
+            rows: list[dict[str, Any]] = []
+            for raw_symbol in requested:
+                if market == "A":
+                    symbol = self._normalize_tdx_symbol(raw_symbol)
+                    if len(symbol) == 6:
+                        rows.append({"symbol": symbol, "name": symbol, "market": "A", "source": "payload"})
+                else:
+                    symbol = self._normalize_us_backfill_symbol(raw_symbol)
+                    if symbol and not symbol.isdigit():
+                        rows.append({"symbol": symbol, "name": symbol, "market": "U", "source": "payload"})
+            return self._dedupe_backfill_symbols(rows)
+        discover = self._truthy(payload.get("discover_universe", True))
+        if discover:
+            return self._discover_ashare_backfill_universe(payload) if market == "A" else self._discover_us_backfill_universe(payload)
+        return self._registered_market_backfill_symbols(market)
+
+    def _discover_ashare_backfill_universe(self, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        discovery_limit = max(1, min(100000, int(payload.get("discovery_limit", 50000) or 50000)))
+        try:
+            for symbol in self.tdx_vipdoc.symbols(prefix=str(payload.get("symbol_prefix", "")), limit=discovery_limit):
+                if len(symbol) == 6:
+                    rows.append({"symbol": symbol, "name": symbol, "market": "A", "source": "tdx_vipdoc"})
+        except Exception:
+            pass
+        if self._truthy(payload.get("discover_baostock", True)):
+            client = None
+            try:
+                client = self._open_baostock_session()
+                rows.extend(
+                    self._discover_ashare_baostock_symbols(
+                        client,
+                        symbol_prefix=str(payload.get("symbol_prefix", "")),
+                        include_b_shares=self._truthy(payload.get("include_b_shares", False)),
+                    )
+                )
+            except Exception:
+                if not rows:
+                    rows.extend(self._registered_market_backfill_symbols("A"))
+            finally:
+                if client is not None:
+                    self._close_baostock_session(client)
+        if not rows:
+            rows.extend(self._registered_market_backfill_symbols("A"))
+        return self._dedupe_backfill_symbols(rows)
+
+    def _discover_us_backfill_universe(self, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+        try:
+            return self._dedupe_backfill_symbols(self._fetch_us_symbol_directory(include_etf=self._truthy(payload.get("include_etf", False))))
+        except Exception:
+            return self._registered_market_backfill_symbols("U")
+
+    def _registered_market_backfill_symbols(self, market: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for security in self.store.securities.values():
+            if security.market != market or security.status != "active":
+                continue
+            symbol = self._normalize_tdx_symbol(security.ticker) if market == "A" else self._normalize_us_backfill_symbol(security.ticker)
+            if not symbol:
+                continue
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "name": security.ticker,
+                    "market": market,
+                    "security_id": security.security_id,
+                    "issuer_id": security.issuer_id,
+                    "exchange": security.exchange,
+                    "source": "registered_security",
+                }
+            )
+        return self._dedupe_backfill_symbols(rows)
+
+    def _market_data_backfill_resolve_security(self, market: str, item: Mapping[str, Any], *, actor: str, create: bool) -> Security:
+        symbol = str(item.get("symbol", "")).strip()
+        normalized = self._normalize_tdx_symbol(symbol) if market == "A" else self._normalize_us_backfill_symbol(symbol)
+        explicit_security_id = str(item.get("security_id", "")).strip()
+        if explicit_security_id and explicit_security_id in self.store.securities and self.store.securities[explicit_security_id].market == market:
+            return self.store.securities[explicit_security_id]
+        for security in self.store.securities.values():
+            if security.market != market:
+                continue
+            ticker = self._normalize_tdx_symbol(security.ticker) if market == "A" else self._normalize_us_backfill_symbol(security.ticker)
+            if ticker == normalized:
+                return security
+        if market == "A":
+            issuer_id = str(item.get("issuer_id") or f"issuer_{normalized}")
+            security_id = explicit_security_id or f"sec_{normalized}"
+            exchange = str(item.get("exchange") or self._tdx_exchange_from_symbol(normalized))
+            currency = "CNY"
+            country = "CN"
+        else:
+            safe = self._safe_identifier(normalized.lower()).lower()
+            issuer_id = str(item.get("issuer_id") or f"issuer_{safe}")
+            security_id = explicit_security_id or f"security_{safe}_us"
+            exchange = str(item.get("exchange") or "US")
+            currency = "USD"
+            country = "US"
+        if not create:
+            return Security(security_id=security_id, issuer_id=issuer_id, ticker=normalized, exchange=exchange, currency=currency, market=market, status="active")
+        if issuer_id not in self.store.issuers:
+            self.register_issuer(
+                {
+                    "issuer_id": issuer_id,
+                    "legal_name": str(item.get("name") or normalized),
+                    "aliases": [normalized],
+                    "market": [market],
+                    "country": country,
+                    "status": "active",
+                },
+                actor=actor,
+            )
+        if security_id not in self.store.securities:
+            self.register_security(
+                {
+                    "security_id": security_id,
+                    "issuer_id": issuer_id,
+                    "ticker": normalized,
+                    "exchange": exchange,
+                    "currency": currency,
+                    "market": market,
+                    "status": "active",
+                    "security_type": str(item.get("security_type") or ("common_stock" if market == "A" else "listed_company")),
+                },
+                actor=actor,
+            )
+        return self.store.securities[security_id]
+
+    def _fetch_us_yahoo_rows(self, ticker: str, *, start_date: str, end_date: str, user_agent: str, timeout: float) -> list[dict[str, Any]]:
+        start_ts = int(datetime.combine(date.fromisoformat(start_date), datetime.min.time(), tzinfo=timezone.utc).timestamp())
+        end_ts = int(datetime.combine(date.fromisoformat(end_date), datetime.min.time(), tzinfo=timezone.utc).timestamp()) + 86400
+        params = {
+            "period1": start_ts,
+            "period2": end_ts,
+            "interval": "1d",
+            "events": "history",
+            "includeAdjustedClose": "true",
+        }
+        errors: list[str] = []
+        saw_empty_payload = False
+        for yahoo_symbol in self._yahoo_chart_symbol_candidates(ticker):
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}?{urlencode(params)}"
+            request = Request(url, headers={"User-Agent": user_agent, "Accept": "application/json"})
+            try:
+                with urlopen(request, timeout=timeout) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except (HTTPError, URLError, TimeoutError) as exc:
+                errors.append(f"{type(exc).__name__}: {exc}")
+                continue
+            error = payload.get("chart", {}).get("error")
+            if error:
+                errors.append(str(error))
+                continue
+            result = (payload.get("chart", {}).get("result") or [None])[0]
+            if not result:
+                saw_empty_payload = True
+                continue
+            timestamps = result.get("timestamp") or []
+            if not timestamps:
+                saw_empty_payload = True
+                continue
+            quote = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+            adjclose = ((result.get("indicators") or {}).get("adjclose") or [{}])[0].get("adjclose") or []
+            rows: list[dict[str, Any]] = []
+            for index, timestamp in enumerate(timestamps):
+                close = (quote.get("close") or [None] * len(timestamps))[index]
+                if close is None:
+                    continue
+                rows.append(
+                    {
+                        "as_of_date": datetime.fromtimestamp(int(timestamp), tz=timezone.utc).date().isoformat(),
+                        "open": float((quote.get("open") or [0.0] * len(timestamps))[index] or 0.0),
+                        "high": float((quote.get("high") or [0.0] * len(timestamps))[index] or 0.0),
+                        "low": float((quote.get("low") or [0.0] * len(timestamps))[index] or 0.0),
+                        "close": float(close),
+                        "adjusted_close": float((adjclose or [close] * len(timestamps))[index] or close),
+                        "volume": float((quote.get("volume") or [0.0] * len(timestamps))[index] or 0.0),
+                    }
+                )
+            if rows:
+                return rows
+            saw_empty_payload = True
+        if saw_empty_payload:
+            return []
+        raise RuntimeError("; ".join(errors) or "Yahoo chart returned no usable response")
+
+    def _yahoo_chart_symbol_candidates(self, ticker: str) -> list[str]:
+        raw = str(ticker or "").strip().upper().replace("/", "-")
+        candidates = [raw]
+        if "." in raw:
+            candidates.append(raw.replace(".", "-"))
+        if "$" in raw:
+            candidates.append(raw.replace("$", "-P"))
+            candidates.append(raw.replace("$", "-"))
+        if raw.endswith("$"):
+            candidates.append(raw.rstrip("$"))
+        return [item for item in dict.fromkeys(candidates) if item]
+
+    def _fetch_us_symbol_directory(self, *, include_etf: bool = False) -> list[dict[str, Any]]:
+        urls = [
+            ("https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", "NASDAQ"),
+            ("https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt", "OTHER"),
+        ]
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for url, fallback_exchange in urls:
+            text = self._fetch_text_url(url, user_agent=DEFAULT_SEC_USER_AGENT, timeout=30.0)
+            lines = [line for line in text.splitlines() if line and not line.startswith("File Creation Time")]
+            reader = csv.DictReader(lines, delimiter="|")
+            for item in reader:
+                raw_symbol = str(item.get("Symbol") or item.get("ACT Symbol") or item.get("NASDAQ Symbol") or "").strip()
+                symbol = self._normalize_us_backfill_symbol(raw_symbol)
+                if not symbol or symbol in seen:
+                    continue
+                if str(item.get("Test Issue") or "").upper() == "Y":
+                    continue
+                is_etf = str(item.get("ETF") or "").upper() == "Y"
+                name = str(item.get("Security Name") or item.get("Company Name") or symbol).strip()
+                if (is_etf and not include_etf) or self._is_us_non_company_security(symbol, name):
+                    continue
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "name": name or symbol,
+                        "market": "U",
+                        "exchange": str(item.get("Exchange") or fallback_exchange or "US").strip() or "US",
+                        "source": "nasdaq_trader_symbol_directory",
+                        "security_type": "etf" if is_etf else "listed_company",
+                    }
+                )
+                seen.add(symbol)
+        return rows
+
+    def _open_baostock_session(self) -> Any:
+        import baostock as bs  # type: ignore[import-not-found]
+
+        login = bs.login()
+        if login.error_code != "0":
+            raise RuntimeError(f"baostock login failed: {login.error_code} {login.error_msg}")
+        return bs
+
+    def _close_baostock_session(self, client: Any) -> None:
+        try:
+            client.logout()
+        except Exception:
+            return
+
+    def _discover_ashare_baostock_symbols(self, client: Any, *, symbol_prefix: str = "", include_b_shares: bool = False) -> list[dict[str, Any]]:
+        result = client.query_stock_basic()
+        if result.error_code != "0":
+            raise RuntimeError(f"baostock query_stock_basic failed: {result.error_code} {result.error_msg}")
+        fields = list(getattr(result, "fields", []) or ["code", "code_name", "ipoDate", "outDate", "type", "status"])
+        rows: list[dict[str, Any]] = []
+        while result.next():
+            item = dict(zip(fields, result.get_row_data()))
+            symbol = self._normalize_tdx_symbol(str(item.get("code") or ""))
+            name = str(item.get("code_name") or symbol)
+            stock_type = str(item.get("type") or "")
+            status = str(item.get("status") or "")
+            if symbol_prefix and not symbol.startswith(self._normalize_tdx_symbol(symbol_prefix)):
+                continue
+            if len(symbol) != 6 or stock_type != "1" or status != "1":
+                continue
+            if not include_b_shares and symbol.startswith(("200", "900")):
+                continue
+            rows.append({"symbol": symbol, "name": name, "market": "A", "exchange": self._tdx_exchange_from_symbol(symbol), "source": "baostock_stock_basic"})
+        return rows
+
+    def _fetch_ashare_baostock_rows(self, client: Any, symbol: str, *, start_date: str, end_date: str, adjustflag: str) -> list[dict[str, Any]]:
+        code = self._baostock_code(symbol)
+        fields = "date,code,open,high,low,close,volume,amount"
+        result = client.query_history_k_data_plus(code, fields, start_date=start_date, end_date=end_date, frequency="d", adjustflag=adjustflag)
+        if result.error_code != "0":
+            raise RuntimeError(f"baostock query_history_k_data_plus failed: {result.error_code} {result.error_msg}")
+        rows: list[dict[str, Any]] = []
+        columns = fields.split(",")
+        while result.next():
+            item = dict(zip(columns, result.get_row_data()))
+            close = float(item.get("close") or 0.0)
+            if close <= 0:
+                continue
+            rows.append(
+                {
+                    "as_of_date": str(item.get("date") or ""),
+                    "open": float(item.get("open") or 0.0),
+                    "high": float(item.get("high") or 0.0),
+                    "low": float(item.get("low") or 0.0),
+                    "close": close,
+                    "adjusted_close": close,
+                    "volume": float(item.get("volume") or 0.0),
+                }
+            )
+        return rows
+
+    def _market_data_source_for_market(self, market: str, payload: Mapping[str, Any]) -> str:
+        if market == "U":
+            return self._canonical_source_id(str(payload.get("us_source_id", payload.get("source_id", "yahoo_chart_us_eod"))))
+        return self._canonical_source_id(str(payload.get("ashare_source_id", payload.get("source_id", PUBLIC_EOD_MARKET_DATA_SOURCE_ID))))
+
+    def _market_data_backfill_markets(self, value: Any) -> list[str]:
+        if isinstance(value, str):
+            raw = [item.strip().upper() for item in re.split(r"[,\s]+", value) if item.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            raw = [str(item).strip().upper() for item in value if str(item).strip()]
+        else:
+            raw = ["BOTH"]
+        if not raw or "BOTH" in raw:
+            return ["A", "U"]
+        markets = [item for item in raw if item in {"A", "U"}]
+        if not markets:
+            raise ValidationError("market data backfill market must be A, U, or both")
+        return list(dict.fromkeys(markets))
+
+    def _market_data_backfill_symbol_values(self, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [item.strip() for item in re.split(r"[,\s]+", value) if item.strip()]
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    def _dedupe_backfill_symbols(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            symbol = str(row.get("symbol", "")).strip().upper()
+            market = str(row.get("market", "")).strip().upper()
+            key = f"{market}:{symbol}"
+            if not symbol or key in seen:
+                continue
+            seen.add(key)
+            deduped.append({**row, "symbol": symbol if market == "U" else self._normalize_tdx_symbol(symbol), "market": market})
+        return deduped
+
+    def _normalize_us_backfill_symbol(self, value: Any) -> str:
+        return re.sub(r"[^A-Za-z0-9.-]+", "", str(value or "").strip().upper())
+
+    def _validate_backfill_date(self, value: str, field_name: str) -> None:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value)):
+            raise ValidationError(f"{field_name} must use YYYY-MM-DD")
+        date.fromisoformat(str(value))
+
+    def _market_data_point_exists(self, security_id: str, *, source_id: str, data_type: str, as_of_date: str) -> bool:
+        if self._market_data_direct_query_enabled():
+            return bool(
+                self._query_market_data_points(
+                    security_id=security_id,
+                    source_id=source_id,
+                    data_type=data_type,
+                    start_date=as_of_date,
+                    end_date=as_of_date,
+                    limit=1,
+                    descending=True,
+                )
+            )
+        return any(
+            point.security_id == security_id and point.source_id == source_id and point.data_type == data_type and point.as_of_date == as_of_date
+            for point in self.store.market_data.values()
+        )
+
+    def _fetch_text_url(self, url: str, *, user_agent: str, timeout: float) -> str:
+        request = Request(url, headers={"User-Agent": user_agent, "Accept": "text/plain,*/*"})
+        with urlopen(request, timeout=timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+
+    def _is_us_non_company_security(self, symbol: str, name: str) -> bool:
+        lowered = f"{symbol} {name}".lower()
+        blocked = [" warrant", " right", " unit", " notes due", " preferred stock", "depositary shares", " fund", " etf", " etn"]
+        return any(term in lowered for term in blocked)
+
+    def _baostock_code(self, symbol: str) -> str:
+        clean = self._normalize_tdx_symbol(symbol)
+        if clean.startswith(("5", "6", "9")):
+            return f"sh.{clean}"
+        if clean.startswith(("4", "8")):
+            return f"bj.{clean}"
+        return f"sz.{clean}"
+
+    def _tdx_exchange_from_symbol(self, symbol: str) -> str:
+        clean = self._normalize_tdx_symbol(symbol)
+        if clean.startswith(("5", "6", "9")):
+            return "SSE"
+        if clean.startswith(("4", "8")):
+            return "BSE"
+        return "SZSE"
 
     def register_entity_mapping(self, payload: Mapping[str, Any], *, actor: str = "system") -> EntityMapping:
         issuer_id = str(payload["issuer_id"])
