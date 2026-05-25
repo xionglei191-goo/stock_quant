@@ -20,6 +20,7 @@ services:
       AI_QUANT_POSTGRES_DSN: ${AI_QUANT_POSTGRES_DSN:-postgresql://ai_quant:ai_quant_dev_password@postgres:5432/ai_quant}
       AI_QUANT_DB: ${AI_QUANT_DB:-}
       AI_QUANT_HOST: ${AI_QUANT_HOST:-0.0.0.0}
+      PYTHONDONTWRITEBYTECODE: "1"
       AI_QUANT_OBJECT_STORE_BACKEND: ${AI_QUANT_OBJECT_STORE_BACKEND:-s3}
       AI_QUANT_OBJECT_STORE: ${AI_QUANT_OBJECT_STORE:-/data/objects}
       AI_QUANT_S3_ENDPOINT: ${AI_QUANT_S3_ENDPOINT:-http://minio:9000}
@@ -59,8 +60,12 @@ services:
       AI_QUANT_TDX_VIPDOC_PATH: ${AI_QUANT_TDX_VIPDOC_PATH:-/data/local/tdx/vipdoc}
       AI_QUANT_RESEARCH_REPORT_ROOT: ${AI_QUANT_RESEARCH_REPORT_ROOT:-/data/local/research_reports}
     volumes:
+      - ./app:/app/app:ro
+      - ./docs:/app/docs:ro
+      - ./scripts:/app/scripts:ro
+      - ./tasks:/app/tasks:ro
       - ./data:/data
-      - ./artifacts:/app/artifacts:ro
+      - ./artifacts:/app/artifacts
       - ${AI_QUANT_HOST_RESEARCH_REPORT_ROOT:-/home/xionglei/文档/6大投行研报汇总}:/data/local/research_reports:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)); raise SystemExit(0 if data.get('success') and data.get('data', {}).get('status') == 'ok' else 1)"]

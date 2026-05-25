@@ -264,6 +264,54 @@ bash scripts/local_staging_stack.sh
 bash scripts/local_production_stack.sh
 ```
 
+本机长期使用不要靠手工反复执行全量导入；安装每日刷新任务，让它只跑增量和审计：
+
+```bash
+bash scripts/install_daily_update_systemd_user.sh --enable
+python3 scripts/audit_daily_update_schedule.py \
+  --require-latest-run \
+  --output artifacts/daily-update-local/daily-update-schedule-audit.json
+```
+
+该 timer 默认在用户级 systemd 下安装 `ai-quant-daily-update.timer`，工作日 07:00 和 18:30 后触发 `scripts/run_daily_data_update.sh`。早上用于补美股上一交易日，晚上用于补 A 股当日可取 EOD；`scripts/daily_data_update_pipeline.py` 在未显式传 `--end-date` 时，会按市场时区和 ready window 选择目标日期：A 股默认 Asia/Shanghai 18:00 后才请求当天，美股默认 America/New_York 18:00 后才请求当天，否则回退到上一工作日。包装脚本会拉起 Compose 本机生产栈，调用 `scripts/daily_data_update_pipeline.py`，先把 A 股证券目录按当前 baostock active common-stock universe 刷成 `in_scope/reference_only`，再按 `AI_QUANT_DAILY_ASHARE_BATCH_SIZE=300`、美股 Yahoo 按 `AI_QUANT_DAILY_RUN_US_SCOPE_REFRESH=true` 刷新 `market_data_refresh_scope`，只让一个 common-equity active refresh record per ticker 进入 `AI_QUANT_DAILY_US_TICKERS_FROM_DB=true` 与 `AI_QUANT_DAILY_US_BATCH_SIZE=300` 的 PostgreSQL securities universe 分批续跑；preferred/重复/特殊 ticker 和已判定 stale 的 Yahoo ticker 保留历史 K 线但不再计入 active refresh 覆盖率。进度都记录在 `artifacts/daily-update-local/state.json`，并记录每批实际写入行数，便于区分新增写入和 `skipped_current`；latest analysis 仍只使用 `AI_QUANT_DAILY_US_TICKERS`/`--us-tickers` 指定的重点标的，语义检索由 `AI_QUANT_DAILY_LATEST_ANALYSIS_SEMANTIC_TIMEOUT_SECONDS` 做短超时降级，避免全量行情批次或慢检索拖慢分析闭环。TDX 默认只做 `audit_tdx_vipdoc_postgres_coverage.py` 覆盖审计，只有显式设置 `AI_QUANT_DAILY_TDX_INCREMENTAL=true` 才会导入本地 `.day` 文件。研报资产绑定、daily insight、K 线 typed-only 审计、延迟审计和本机生产审计都会产出按 run id 隔离的 artifact，并更新 `artifacts/daily-update-local/latest-run.json`。K 线只写 PostgreSQL typed 表 `ai_quant.market_data_bars`，`ai_quant.records(collection='market_data')` 必须保持为 0；不会 JSON/数据库双写，不接真实券商，也不会自动下单。`artifacts/daily-update-local` 是宿主用户可写目录，避免旧容器 root-owned artifact 影响 timer。
+
+本地 compose 默认挂载当前工作区的 `app/`、`scripts/`、`docs/`、`tasks/`，所以日常修复脚本或页面后只需 `docker compose up -d ai-quant-org` 重启服务，不依赖重新构建镜像。需要从零构建依赖镜像时显式设置 `AI_QUANT_STACK_REBUILD=true bash scripts/local_production_stack.sh` 或 `AI_QUANT_DAILY_REBUILD=true bash scripts/run_daily_data_update.sh`。
+
+只复核接口延迟时可独立运行：
+
+```bash
+python3 scripts/latency_audit.py \
+  --base-url http://127.0.0.1:8000 \
+  --max-ms 7000 \
+  --output artifacts/daily-update-local/latency-audit-smoke.json
+```
+
+如果只想先生成 unit 文件而不启用 timer：
+
+```bash
+bash scripts/install_daily_update_systemd_user.sh
+systemctl --user daemon-reload
+systemctl --user enable --now ai-quant-daily-update.timer
+```
+
+手工立即跑一次完整每日链路可用：
+
+```bash
+bash scripts/run_daily_data_update.sh
+```
+
+常用覆盖变量：
+
+- `AI_QUANT_DAILY_REBUILD=true`：刷新前重建 Compose 镜像。
+- `AI_QUANT_DAILY_RUN_ASHARE_SCOPE_REFRESH=true`：先按 baostock 当前 active universe 刷新 A 股证券 scope。
+- `AI_QUANT_DAILY_RUN_ASHARE_INCREMENTAL=false`：临时跳过 baostock 分批增量，只跑审计和分析。
+- `AI_QUANT_DAILY_ASHARE_OFFSET=600`：从指定 A 股 universe offset 续跑。
+- `AI_QUANT_DAILY_RUN_US_SCOPE_REFRESH=true`：先刷新美股 Yahoo active refresh universe，过滤 preferred/重复/特殊 ticker。
+- `AI_QUANT_DAILY_TDX_INCREMENTAL=true`：在覆盖审计外追加本地 TDX `.day` 增量导入。
+- `AI_QUANT_DAILY_LATEST_ANALYSIS_SEMANTIC_TIMEOUT_SECONDS=8`：限制 latest analysis 内部每次语义检索时长，超时降级为 `needs_review`，不阻塞后续 daily insight 和审计。
+- `AI_QUANT_DAILY_SKIP_RESEARCH_BINDING=true`、`AI_QUANT_DAILY_SKIP_LATEST_ANALYSIS=true`、`AI_QUANT_DAILY_SKIP_LOCAL_PRODUCTION_AUDIT=true`：仅用于轻量 smoke，正式 timer 保持默认 false。
+- `AI_QUANT_DAILY_MIN_DIRECT_EVIDENCE_COMPANIES=7`：daily insight 至少要求多少家公司有直接研报证据。
+
 本机脚本默认把 readiness evidence 记录到 `artifact://staging-local/...`。若部署目标明确为个人本机长期使用，可运行 `python3 scripts/local_production_audit.py --base-url http://127.0.0.1:8000 --output artifacts/local-production-audit.json`，用本机生产审计口径确认 PostgreSQLStore、S3/MinIO、OpenSearch、TDX、LLM/PaddleOCR 配置、vision gate 和 9 个 readiness checklist 均已通过。LLM 与 PaddleOCR-VL 密钥注入后，再运行 `.venv/bin/python scripts/local_ai_capability_acceptance.py --base-url http://127.0.0.1:8000 --output artifacts/local-ai-capability-acceptance.json`，以最小 LLM chat 和单页 PDF OCR 冒烟生成脱敏能力证据；脚本只保存模型、页数、耗时、缓存命中和短文本预览，不保存 token、签名结果 URL 或完整上游响应。完成审计可用 `python3 scripts/project_completion_audit.py --local-production-audit artifacts/local-production-audit.json --local-ai-acceptance artifacts/local-ai-capability-acceptance.json --output artifacts/project-completion-audit.json`，该结果只对当前机器有效，不会放宽非本机组织级发布门禁；对外/多机生产签批 manifest 必须改成真实 staging/production 归档 URI，例如受控 S3/OSS/GCS bucket、生产 artifact store 或内部证据系统的具体对象路径，不要复用本机 namespace。
 
 若宿主机已有同类服务占用默认端口，可用以下变量覆盖：

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 from tempfile import TemporaryDirectory
@@ -33,11 +34,21 @@ from scripts.full_run_acceptance import run_full_acceptance
 from scripts.fetch_benchmark_samples import fetch_benchmark_samples
 from scripts.local_data_unblock_audit import audit_local_data_unblock
 import scripts.backfill_market_data as backfill_market_data_script
+import scripts.daily_data_update_pipeline as daily_data_update_pipeline_script
+import scripts.audit_daily_update_schedule as audit_daily_update_schedule_script
+import scripts.daily_market_insight as daily_market_insight_script
+import scripts.import_ashare_eod_baostock as import_ashare_eod_baostock_script
+import scripts.import_us_eod_yahoo_chart as import_us_eod_yahoo_chart_script
+import scripts.latest_analysis_run as latest_analysis_run_script
+import scripts.latency_audit as latency_audit_script
+import scripts.scope_us_current_yahoo_universe as scope_us_current_yahoo_universe_script
 from scripts.import_tdx_market_data import run_tdx_incremental_import
+from scripts.import_tdx_vipdoc_postgres import read_day_rows
 from scripts.tdx_batch_import import infer_exchange, normalize_symbol
 from scripts.local_ai_capability_acceptance import build_local_ai_capability_acceptance
 from scripts.local_benchmark_quality_package import build_local_benchmark_quality_package
 from scripts.local_production_audit import build_local_production_audit
+import scripts.market_data_storage_audit as market_data_storage_audit_script
 from scripts.migrate_sqlite_to_postgres import migrate_sqlite_to_postgres
 from scripts.postgres_schema_migrate import BASELINE_VERSION, apply_postgres_schema, mark_last_migration_rolled_back
 from scripts.production_closure import validate_production_closure_manifest
@@ -76,6 +87,41 @@ class _FakePostgresCursor:
         if normalized.startswith("select count(*) from ai_quant.records where collection"):
             collection = params[0] if params else "market_data"
             self._rows = [(sum(1 for record_collection, _item_id in self.database.records if record_collection == collection),)]
+        elif normalized.startswith("select to_regclass('ai_quant.market_data_bars')"):
+            self._rows = [(True,)]
+        elif normalized.startswith("select to_regclass('ai_quant.schema_migrations')"):
+            self._rows = [(self.database.baseline_schema_recorded,)]
+        elif normalized.startswith("select 1 from ai_quant.schema_migrations"):
+            self._rows = [(1,)] if self.database.baseline_schema_recorded else []
+        elif normalized.startswith("select count(*) from ai_quant.market_data_bars"):
+            bars = self._filtered_market_data_bars(normalized, params or [])
+            self._rows = [(len(bars),)]
+        elif normalized.startswith("select data_id, security_id, source_id, market, as_of_date::text") or normalized.startswith("select b.data_id, b.security_id, b.source_id, b.market, b.as_of_date::text"):
+            bars = self._filtered_market_data_bars(normalized, params or [])
+            descending = "order by as_of_date desc" in normalized or "order by b.as_of_date desc" in normalized
+            bars = sorted(bars, key=lambda item: (item["as_of_date"], item["data_id"]), reverse=descending)
+            limit = int((params or [50])[-1] or 50)
+            self._rows = [
+                (
+                    item["data_id"],
+                    item["security_id"],
+                    item["source_id"],
+                    item["market"],
+                    item["as_of_date"],
+                    item["data_type"],
+                    item["currency"],
+                    item["open"],
+                    item["high"],
+                    item["low"],
+                    item["close"],
+                    item["adjusted_close"],
+                    item["volume"],
+                    item["amount"],
+                    item["rights_tag"],
+                    item["created_at"],
+                )
+                for item in bars[:limit]
+            ]
         elif normalized.startswith("select collection"):
             rows = []
             for (collection, item_id), record in self.database.records.items():
@@ -109,6 +155,9 @@ class _FakePostgresCursor:
                 "position": position,
             }
             self._rows = []
+        elif normalized.startswith("insert into ai_quant.market_data_bars"):
+            self._upsert_market_data_bar(params)
+            self._rows = []
         elif normalized.startswith("insert into ai_quant.audit_log"):
             self.database.audit[params[0]] = {
                 "event_id": params[0],
@@ -116,10 +165,80 @@ class _FakePostgresCursor:
                 "timestamp": params[12],
             }
             self._rows = []
+        elif normalized.startswith("insert into ai_quant.schema_migrations"):
+            self.database.baseline_schema_recorded = True
+            self._rows = []
         else:
             if "create schema if not exists ai_quant" in normalized:
                 self.database.schema_runs += 1
             self._rows = []
+
+    def executemany(self, sql, params_list):
+        for params in params_list:
+            self.execute(sql, params)
+
+    def _filtered_market_data_bars(self, normalized_sql, params):
+        filter_params = list(params)
+        if " limit %s" in normalized_sql and filter_params:
+            filter_params = filter_params[:-1]
+        names = []
+        for name in ("security_id", "market", "source_id", "data_type"):
+            if f"{name} = %s" in normalized_sql or f"b.{name} = %s" in normalized_sql:
+                names.append(name)
+        if "as_of_date >= %s::date" in normalized_sql or "b.as_of_date >= %s::date" in normalized_sql:
+            names.append("start_date")
+        if "as_of_date <= %s::date" in normalized_sql or "b.as_of_date <= %s::date" in normalized_sql:
+            names.append("date_lte")
+        filters = dict(zip(names, filter_params))
+        rows = list(self.database.market_data_bars.values())
+        for name in ("security_id", "market", "source_id", "data_type"):
+            if name in filters:
+                rows = [item for item in rows if item[name] == filters[name]]
+        if "start_date" in filters:
+            rows = [item for item in rows if item["as_of_date"] >= filters["start_date"]]
+        if "date_lte" in filters:
+            rows = [item for item in rows if item["as_of_date"] <= filters["date_lte"]]
+        return rows
+
+    def _upsert_market_data_bar(self, params):
+        (
+            security_id,
+            source_id,
+            data_type,
+            as_of_date,
+            market,
+            currency,
+            row_open,
+            high,
+            low,
+            close,
+            adjusted_close,
+            volume,
+            amount,
+            data_id,
+            rights_tag,
+            payload,
+            created_at,
+        ) = params
+        self.database.market_data_bars[(security_id, source_id, data_type, as_of_date)] = {
+            "security_id": security_id,
+            "source_id": source_id,
+            "data_type": data_type,
+            "as_of_date": as_of_date,
+            "market": market,
+            "currency": currency,
+            "open": row_open,
+            "high": high,
+            "low": low,
+            "close": close,
+            "adjusted_close": adjusted_close,
+            "volume": volume,
+            "amount": amount,
+            "data_id": data_id,
+            "rights_tag": json.loads(rights_tag) if isinstance(rights_tag, str) else rights_tag,
+            "payload": json.loads(payload) if isinstance(payload, str) else payload,
+            "created_at": created_at,
+        }
 
     def fetchall(self):
         return list(self._rows)
@@ -149,10 +268,12 @@ class _FakePostgresConnection:
 class _FakePostgresDatabase:
     def __init__(self):
         self.records = {}
+        self.market_data_bars = {}
         self.audit = {}
         self.statements = []
         self.schema_runs = 0
         self.dsns = []
+        self.baseline_schema_recorded = False
 
     def connect(self, dsn):
         self.dsns.append(dsn)
@@ -386,6 +507,135 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(response.data["data_quality"]["decision_readiness"], "research_only")
         self.assertEqual(response.data["supplemental_market_observations"]["observations"][0]["label"], "600000")
         self.assertEqual({item["source_id"] for item in response.data["source_summary"]}, {"public_eod_market_data", "yahoo_chart_us_eod"})
+
+    def test_latest_analysis_api_prefers_daily_update_artifacts_and_exposes_daily_insight(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            cwd = Path.cwd()
+            os.chdir(tmpdir)
+            self.addCleanup(os.chdir, cwd)
+            stale_dir = Path("artifacts/latest-analysis")
+            stale_dir.mkdir(parents=True)
+            stale_dir.joinpath("latest-analysis.json").write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "generated_at": "2026-05-24T00:00:00+00:00",
+                        "analysis": {
+                            "latest_market_date": "2026-05-22",
+                            "decision_summary": {"headline": "stale headline"},
+                            "returns": {},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_dir = Path("artifacts/daily-update-local/runs/2026-05-25-183000")
+            latest_dir = run_dir / "latest-analysis-2026-05-25"
+            latest_dir.mkdir(parents=True)
+            (latest_dir / "latest-analysis.json").write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "generated_at": "2026-05-25T10:30:00+08:00",
+                        "analysis": {
+                            "latest_market_date": "2026-05-25",
+                            "assets": [{"label": "AAPL", "security_id": "security_aapl_us", "market": "U", "source_id": "yahoo_chart_us_eod"}],
+                            "returns": {"AAPL": {"total_return": 0.02, "return_count": 2}},
+                            "decision_summary": {"headline": "daily latest headline"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "daily-update-2026-05-25.json").write_text(
+                json.dumps({"status": "passed", "run_date": "2026-05-25", "effective_end_dates": {"A": "2026-05-25", "U": "2026-05-25"}}),
+                encoding="utf-8",
+            )
+            (run_dir / "daily-insight-json-2026-05-25.json").write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "as_of_date": "2026-05-25",
+                        "generated_at": "2026-05-25T10:35:00+08:00",
+                        "market_freshness": [{"market": "U", "latest_date": "2026-05-25"}],
+                        "actionable_research_summary": {
+                            "headline": "直接研报证据优先: U AAPL AI 算力: 收盘 310，涨跌幅 1.00%，3 份研报/4 条证据",
+                            "abnormal_headline": "U 市场首要异动: TEST 涨跌幅 10.00%",
+                            "direct_report_evidence_company_count": 1,
+                            "direct_report_watch_items": [
+                                {
+                                    "ticker": "AAPL",
+                                    "issuer_name": "Apple",
+                                    "market": "U",
+                                    "chain": "AI 算力",
+                                    "nodes": ["端侧设备"],
+                                    "evidence_status": "direct_report_evidence",
+                                    "report_count": 3,
+                                    "evidence_count": 4,
+                                    "research_readout": "AAPL 有直接研报证据",
+                                }
+                            ],
+                        },
+                        "quality_gates": {
+                            "typed_only_market_data": True,
+                            "direct_report_evidence_company_count": 1,
+                            "min_direct_evidence_companies": 1,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            Path("artifacts/daily-update-local").mkdir(parents=True, exist_ok=True)
+            Path("artifacts/daily-update-local/latest-run.json").write_text(
+                json.dumps(
+                    {
+                        "run_date": "2026-05-25",
+                        "run_id": "2026-05-25-183000",
+                        "output_dir": str(run_dir),
+                        "pipeline_output": str(run_dir / "daily-update-2026-05-25.json"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            response = self.router.dispatch("GET", "/api/analysis/latest", {}, role="CEO")
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.data["artifact_path"], "artifacts/daily-update-local/runs/2026-05-25-183000/latest-analysis-2026-05-25/latest-analysis.json")
+        self.assertEqual(response.data["latest_market_date"], "2026-05-25")
+        self.assertTrue(response.data["daily_insight"]["actionable_research_summary"]["headline"].startswith("直接研报证据优先:"))
+        self.assertEqual(response.data["daily_insight"]["quality_gates"]["direct_report_evidence_company_count"], 1)
+
+    def test_latest_analysis_cross_market_date_mismatch_is_warning_not_blocker(self) -> None:
+        analysis = {
+            "latest_market_date": "2026-05-25",
+            "latest_snapshot": [
+                {"label": "000001", "market": "A", "as_of_date": "2026-05-25"},
+                {"label": "AAPL", "market": "U", "as_of_date": "2026-05-22"},
+            ],
+            "returns": {
+                "000001": {"return_count": 22},
+                "AAPL": {"return_count": 22},
+            },
+            "research_evidence": {
+                "semantic_recall": {
+                    "samples": [
+                        {"snippet": "We expect revenue growth and margin improvement driven by stronger demand, price discipline, and supply chain recovery across the next reporting period.", "resource_type": "research_report", "resource_id": "rr1"},
+                        {"snippet": "Our capex investment thesis is supported by cloud demand growth, stronger orders, positive pricing, and improved supply visibility for core suppliers.", "resource_type": "research_report", "resource_id": "rr2"},
+                    ]
+                },
+                "hotspot_recall": {"samples": [{"snippet": "We see revenue, EPS, demand, and margin risk improving as customers increased orders and inventory pressure decreased materially.", "resource_type": "research_report", "resource_id": "rr3"}]},
+                "fact_source_allowed": False,
+            },
+        }
+
+        quality = latest_analysis_run_script._data_quality_assessment(analysis)  # type: ignore[attr-defined]
+
+        self.assertEqual(quality["decision_readiness"], "research_only")
+        self.assertEqual(quality["status"], "usable_with_warnings")
+        issue_codes = {item["code"] for item in quality["issues"]}
+        self.assertIn("cross_market_date_mismatch", issue_codes)
+        self.assertNotIn("stale_within_market", issue_codes)
 
     def test_ingest_extract_score_and_decision_flow(self) -> None:
         doc = self.service.ingest_document(
@@ -5975,6 +6225,7 @@ class SystemServiceTests(unittest.TestCase):
 
         metrics = self.router.dispatch("GET", "/api/metrics", {}, role="unknown")
         self.assertGreaterEqual(metrics.data["sensitive_findings"], 4)
+        self.assertLess(metrics.data["counts"]["documents"], 250)
         seeded = self.router.dispatch("POST", "/api/alerts/rules/seed", {}, role="risk_compliance")
         self.assertIn("alert_sensitive_findings", {item["rule_id"] for item in seeded.data["rules"]})
         evaluated = self.router.dispatch("POST", "/api/alerts/evaluate", {}, role="risk_compliance")
@@ -11566,13 +11817,108 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(reloaded.store.issuers["issuer_pg"].company_details["ipo_year"], "2020")
         self.assertEqual(reloaded.store.securities["security_pg"].security_type, "common_stock")
         self.assertEqual(reloaded.store.securities["security_pg"].industry, "Software")
-        self.assertIn(market_point.data_id, reloaded.store.market_data)
+        self.assertNotIn(market_point.data_id, reloaded.store.market_data)
         self.assertEqual(reloaded.market_data_payload({"security_id": "security_pg"})["market_data"][0]["close"], 45.75)
         self.assertIn(holding.holding_id, reloaded.store.institutional_holdings)
         self.assertEqual(reloaded.institutional_holdings_payload({"issuer_id": "issuer_pg"})["holdings"][0]["value_usd"], 45750.0)
         self.assertEqual(len(reloaded.store.audit_log), audit_count)
-        self.assertIn(("market_data", "md_pg"), database.records)
+        self.assertNotIn(("market_data", "md_pg"), database.records)
+        self.assertIn(("security_pg", "public_eod_market_data", "eod", "2026-05-14"), database.market_data_bars)
+        self.assertEqual(float(database.market_data_bars[("security_pg", "public_eod_market_data", "eod", "2026-05-14")]["close"]), 45.75)
         self.assertIn("register_market_data_point", {event["payload"]["action"] for event in database.audit.values()})
+
+    def test_postgresql_store_hydrates_research_binding_asset_fields(self) -> None:
+        database = _FakePostgresDatabase()
+        rights_tag = {
+            "license_class": "local_research_reference",
+            "training_allowed": False,
+            "redistribution_allowed": False,
+            "display_use": "restricted",
+            "non_display_use": "restricted",
+            "derived_data_use": "restricted",
+        }
+        database.records[("documents", "doc_binding")] = {
+            "payload": {
+                "document_id": "doc_binding",
+                "issuer_id": "issuer_nvda",
+                "security_id": "security_nvda_us",
+                "document_type": "research_report",
+                "source_id": "local_research_reports",
+                "source_type": "local_research_report",
+                "source_uri": "file:///reports/nvda.pdf",
+                "rights_tag": rights_tag,
+                "published_at": "2026-05-24T00:00:00+00:00",
+                "ingested_at": "2026-05-24T00:00:00+00:00",
+                "asset_matches": [{"security_id": "security_nvda_us", "issuer_id": "issuer_nvda"}],
+                "chain_id": "chain_ai_compute",
+                "node_ids": ["gpu"],
+                "future_extra_field": "kept_in_postgres_payload_but_not_model",
+            },
+            "position": None,
+        }
+        database.records[("evidence", "evi_binding")] = {
+            "payload": {
+                "evidence_id": "evi_binding",
+                "document_id": "doc_binding",
+                "section": "research_report_citation",
+                "page_no": 1,
+                "bbox": "page=1;chunk=1",
+                "span_text": "NVDA demand remains strong.",
+                "canonical_text": "NVDA demand remains strong.",
+                "confidence": 0.9,
+                "locator": {},
+                "assets": [{"security_id": "security_nvda_us", "issuer_id": "issuer_nvda"}],
+                "security_id": "security_nvda_us",
+                "issuer_id": "issuer_nvda",
+                "chain_id": "chain_ai_compute",
+                "node_ids": ["gpu"],
+                "evidence_topics": ["ai_compute"],
+                "risk_tags": ["valuation"],
+                "financial_metric_tags": ["revenue"],
+                "viewpoint": {"sentiment": "positive"},
+                "created_at": "2026-05-24T00:00:00+00:00",
+                "future_extra_field": "ignored_by_model",
+            },
+            "position": None,
+        }
+        database.records[("research_reports", "rr_binding")] = {
+            "payload": {
+                "report_id": "rr_binding",
+                "source_id": "local_research_reports",
+                "broker": "Broker",
+                "file_path": "/reports/nvda.pdf",
+                "file_name": "nvda.pdf",
+                "title": "NVDA AI compute report",
+                "rights_tag": rights_tag,
+                "document_id": "doc_binding",
+                "issuer_id": "issuer_nvda",
+                "security_id": "security_nvda_us",
+                "asset_matches": [{"security_id": "security_nvda_us", "issuer_id": "issuer_nvda"}],
+                "asset_binding": {"status": "matched"},
+                "chain_id": "chain_ai_compute",
+                "node_ids": ["gpu"],
+                "evidence_topics": ["ai_compute"],
+                "risk_tags": ["valuation"],
+                "financial_metric_tags": ["revenue"],
+                "viewpoint": {"sentiment": "positive"},
+                "indexed_at": "2026-05-24T00:00:00+00:00",
+                "future_extra_field": "ignored_by_model",
+            },
+            "position": None,
+        }
+
+        service = SystemService(PostgreSQLStore("postgresql://example.invalid/ai_quant", connect=database.connect))
+
+        document = service.store.documents["doc_binding"]
+        evidence = service.store.evidence["evi_binding"]
+        report = service.store.research_reports["rr_binding"]
+        self.assertEqual(document.chain_id, "chain_ai_compute")
+        self.assertEqual(document.asset_matches[0]["security_id"], "security_nvda_us")
+        self.assertEqual(evidence.chain_id, "chain_ai_compute")
+        self.assertEqual(evidence.evidence_topics, ["ai_compute"])
+        self.assertEqual(evidence.viewpoint["sentiment"], "positive")
+        self.assertEqual(report.asset_binding["status"], "matched")
+        self.assertEqual(report.financial_metric_tags, ["revenue"])
 
     def test_sqlite_to_postgres_migration_rewrites_target_with_counts(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -11647,6 +11993,1055 @@ class SystemServiceTests(unittest.TestCase):
         migration_doc = Path("docs/postgresql-migrations.md").read_text(encoding="utf-8")
         self.assertIn("--dry-run", migration_doc)
         self.assertIn("--rollback-last", migration_doc)
+
+    def test_postgres_store_skips_schema_ddl_when_baseline_migration_is_recorded(self) -> None:
+        database = _FakePostgresDatabase()
+        database.baseline_schema_recorded = True
+        store = PostgreSQLStore("postgresql://example.invalid/ai_quant", connect=database.connect)
+
+        self.assertIsInstance(store, PostgreSQLStore)
+        self.assertEqual(database.schema_runs, 0)
+        self.assertTrue(any("schema_migrations" in statement for statement in database.statements))
+        self.assertFalse(any("create schema if not exists ai_quant" in " ".join(statement.split()).lower() for statement in database.statements))
+
+    def test_market_data_storage_audit_requires_typed_only_runtime_storage(self) -> None:
+        class FakeAuditCursor:
+            def __init__(self, legacy_count):
+                self.legacy_count = legacy_count
+                self.rows = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def execute(self, sql, params=None):
+                normalized = " ".join(sql.split()).lower()
+                if "count(*) from ai_quant.records where collection = 'market_data'" in normalized:
+                    self.rows = [(self.legacy_count,)]
+                elif "pg_stat_user_tables" in normalized and "market_data_bars" in normalized:
+                    self.rows = [(3,)]
+                elif "select as_of_date::text from ai_quant.market_data_bars order by as_of_date asc" in normalized:
+                    self.rows = [("2026-05-20",)]
+                elif "select as_of_date::text from ai_quant.market_data_bars order by as_of_date desc" in normalized:
+                    self.rows = [("2026-05-22",)]
+                elif "from pg_views" in normalized:
+                    self.rows = [("market_data",)]
+                elif "from pg_indexes" in normalized:
+                    self.rows = [
+                        ("idx_ai_quant_market_data_bars_as_of_date",),
+                        ("idx_ai_quant_market_data_bars_data_id",),
+                        ("idx_ai_quant_market_data_bars_market_date",),
+                        ("idx_ai_quant_market_data_bars_security_date",),
+                        ("idx_ai_quant_market_data_bars_source_date",),
+                    ]
+                elif "pg_total_relation_size" in normalized:
+                    self.rows = [("market_data_bars", "42 GB"), ("records", "306 MB")]
+                elif normalized.startswith("explain"):
+                    self.rows = [([{"Plan": {"Node Type": "Limit", "Plans": [{"Node Type": "Index Scan", "Index Name": "idx_ai_quant_market_data_bars_as_of_date"}]}}],)]
+                else:
+                    self.rows = []
+
+            def fetchone(self):
+                return self.rows[0] if self.rows else None
+
+            def fetchall(self):
+                return list(self.rows)
+
+        class FakeAuditConnection:
+            def __init__(self, legacy_count):
+                self.legacy_count = legacy_count
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def cursor(self):
+                return FakeAuditCursor(self.legacy_count)
+
+            def close(self):
+                return None
+
+        original_connect = market_data_storage_audit_script._connect
+        try:
+            market_data_storage_audit_script._connect = lambda _dsn: FakeAuditConnection(0)  # type: ignore[assignment]
+            passed = market_data_storage_audit_script.build_market_data_storage_audit(
+                dsn="postgresql://example.invalid/ai_quant",
+                base_url="",
+                sample_security_id="sec_000001",
+                sample_source_id="public_eod_market_data",
+                sample_data_type="eod",
+                timeout=1.0,
+            )
+            self.assertTrue(passed["passed"])
+            self.assertEqual(passed["legacy_market_data_records"], 0)
+
+            market_data_storage_audit_script._connect = lambda _dsn: FakeAuditConnection(1)  # type: ignore[assignment]
+            failed = market_data_storage_audit_script.build_market_data_storage_audit(
+                dsn="postgresql://example.invalid/ai_quant",
+                base_url="",
+                sample_security_id="sec_000001",
+                sample_source_id="public_eod_market_data",
+                sample_data_type="eod",
+                timeout=1.0,
+            )
+            self.assertFalse(failed["passed"])
+            self.assertEqual(failed["failures"][0]["check"], "legacy_market_data_records")
+        finally:
+            market_data_storage_audit_script._connect = original_connect  # type: ignore[assignment]
+
+    def test_tdx_vipdoc_postgres_reader_supports_tail_incremental_window(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sh600000.day"
+            rows = [
+                (20260520, 1000, 1100, 900, 1050, 1000.0, 100, 0),
+                (20260521, 1050, 1150, 950, 1100, 2000.0, 200, 0),
+                (20260522, 1100, 1200, 1000, 1150, 3000.0, 300, 0),
+            ]
+            path.write_bytes(b"".join(struct.pack("<IIIIIfII", *row) for row in rows))
+
+            incremental = read_day_rows(path, start_date="2026-05-21", end_date="2026-05-24", limit=0)
+            self.assertEqual([row["trade_date"] for row in incremental], ["2026-05-21", "2026-05-22"])
+
+            limited = read_day_rows(path, start_date="2026-05-20", end_date="2026-05-24", limit=2)
+            self.assertEqual([row["trade_date"] for row in limited], ["2026-05-20", "2026-05-21"])
+
+    def test_ashare_baostock_db_symbols_filter_to_stock_like_codes_and_batch_latest_dates(self) -> None:
+        class FakeCursor:
+            def __init__(self):
+                self.rows = []
+
+            def execute(self, sql, params=None):
+                normalized = " ".join(sql.split()).lower()
+                if "from ai_quant.records" in normalized and "collection = 'securities'" in normalized:
+                    self.rows = [
+                        ("000001", "sec_000001", "issuer_000001", "SZSE"),
+                        ("159958", "sec_159958", "issuer_159958", "SZSE"),
+                        ("600519", "sec_600519", "issuer_600519", "SSE"),
+                        ("900901", "sec_900901", "issuer_900901", "SSE"),
+                    ]
+                elif "from ai_quant.market_data_bars" in normalized and "security_id = any" in normalized:
+                    self.rows = [("sec_000001", "2026-05-22"), ("sec_600519", "2026-05-22")]
+                else:
+                    self.rows = []
+
+            def fetchall(self):
+                return list(self.rows)
+
+        cursor = FakeCursor()
+        symbols = import_ashare_eod_baostock_script._symbols_from_db(cursor)
+        self.assertEqual([item["symbol"] for item in symbols], ["000001", "600519"])
+        latest = import_ashare_eod_baostock_script._latest_dates_for_symbols(
+            cursor,
+            security_ids=[item["security_id"] for item in symbols],
+            source_id="public_eod_market_data",
+            data_type="eod",
+        )
+        self.assertEqual(latest["sec_000001"], "2026-05-22")
+
+    def test_ashare_baostock_db_symbols_query_requires_active_in_scope(self) -> None:
+        class CaptureCursor:
+            def __init__(self):
+                self.sql = ""
+
+            def execute(self, sql, params=None):
+                self.sql = " ".join(sql.split()).lower()
+
+            def fetchall(self):
+                return []
+
+        cursor = CaptureCursor()
+        import_ashare_eod_baostock_script._symbols_from_db(cursor)
+        self.assertIn("company_universe_scope", cursor.sql)
+        self.assertIn("in_scope", cursor.sql)
+
+    def test_scope_ashare_current_baostock_universe_script_exists_and_is_documented(self) -> None:
+        script = Path("scripts/scope_ashare_current_baostock_universe.py").read_text(encoding="utf-8")
+        self.assertIn("baostock", script)
+        self.assertIn("company_universe_scope", script)
+        runbook = Path("docs/production-runbook.md").read_text(encoding="utf-8")
+        self.assertIn("AI_QUANT_DAILY_RUN_ASHARE_SCOPE_REFRESH=true", runbook)
+        self.assertIn("baostock active common-stock universe", runbook)
+
+    def test_us_yahoo_import_can_batch_registered_universe_without_duplicate_ids(self) -> None:
+        class FakeCursor:
+            def __init__(self):
+                self.rows = []
+                self.sql = ""
+
+            def execute(self, sql, params=None):
+                normalized = " ".join(sql.split()).lower()
+                self.sql = normalized
+                if "from ai_quant.records as s" in normalized and "s.collection = 'securities'" in normalized:
+                    self.rows = [
+                        (
+                            "security_aapl_us",
+                            {"ticker": "AAPL", "market": "U", "status": "active", "security_id": "security_aapl_us", "issuer_id": "issuer_aapl", "currency": "USD"},
+                            {"issuer_id": "issuer_aapl", "legal_name": "AAPL"},
+                        ),
+                        (
+                            "security_us_aapl",
+                            {"ticker": "AAPL", "market": "U", "status": "active", "security_id": "security_us_aapl", "issuer_id": "issuer_us_aapl", "currency": "USD"},
+                            {"issuer_id": "issuer_us_aapl", "legal_name": "Apple Inc."},
+                        ),
+                        (
+                            "security_us_msft",
+                            {"ticker": "MSFT", "market": "U", "status": "active", "security_id": "security_us_msft", "issuer_id": "issuer_us_msft", "currency": "USD"},
+                            {"issuer_id": "issuer_us_msft", "legal_name": "Microsoft Corporation"},
+                        ),
+                    ]
+                else:
+                    self.rows = []
+
+            def fetchall(self):
+                return list(self.rows)
+
+        cursor = FakeCursor()
+        all_records = import_us_eod_yahoo_chart_script._ticker_records_from_db(cursor)
+        self.assertEqual([record["ticker"] for record in all_records], ["AAPL", "MSFT"])
+        self.assertEqual(all_records[0]["security_id"], "security_aapl_us")
+        self.assertIn("market_data_refresh_scope", cursor.sql)
+        self.assertIn("in_scope", cursor.sql)
+        batch = import_us_eod_yahoo_chart_script._ticker_records_from_db(cursor, offset=1, max_tickers=1)
+        self.assertEqual([(record["ticker"], record["security_id"]) for record in batch], [("MSFT", "security_us_msft")])
+        self.assertEqual(import_us_eod_yahoo_chart_script._yahoo_chart_symbol_candidates("BF.B"), ["BF.B", "BF-B"])
+
+    def test_us_yahoo_scope_classifies_reference_and_duplicate_records(self) -> None:
+        preferred = scope_us_current_yahoo_universe_script._classify_security("TRTN$G", "Preference Shares", "NYSE")
+        self.assertEqual(preferred["scope"], "out_of_scope")
+        self.assertEqual(preferred["reason"], "preferred_or_preference_security")
+        common = scope_us_current_yahoo_universe_script._classify_security("AAPL", "Apple Inc. Common Stock", "Nasdaq")
+        self.assertEqual(common["scope"], "in_scope")
+        adr = scope_us_current_yahoo_universe_script._classify_security("API", "Agora Inc. American Depositary Shares", "Nasdaq")
+        self.assertEqual(adr["scope"], "in_scope")
+        depositary_preferred = scope_us_current_yahoo_universe_script._classify_security("FITBI", "Fifth Third Bancorp Depositary Shares", "Nasdaq")
+        self.assertEqual(depositary_preferred["reason"], "preferred_depositary_security")
+        script = Path("scripts/scope_us_current_yahoo_universe.py").read_text(encoding="utf-8")
+        self.assertIn("market_data_refresh_scope", script)
+        self.assertIn("duplicate_ticker_refresh_record", script)
+
+    def test_us_yahoo_import_status_fails_when_every_ticker_fails(self) -> None:
+        class FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def execute(self, _sql, _params=None):
+                return None
+
+            def fetchall(self):
+                return []
+
+        class FakeConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def cursor(self):
+                return FakeCursor()
+
+            def commit(self):
+                return None
+
+        original_psycopg = sys.modules.get("psycopg")
+        original_fetch_chart = import_us_eod_yahoo_chart_script._fetch_chart
+        try:
+            import types
+
+            sys.modules["psycopg"] = types.SimpleNamespace(connect=lambda _dsn: FakeConnection())  # type: ignore[assignment]
+            import_us_eod_yahoo_chart_script._fetch_chart = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("outage"))  # type: ignore[assignment]
+            result = import_us_eod_yahoo_chart_script.import_us_eod(
+                argparse.Namespace(
+                    dsn="postgresql://example.invalid/ai_quant",
+                    tickers=["BAD"],
+                    tickers_from_db=False,
+                    ticker_filter="",
+                    offset=0,
+                    max_tickers=0,
+                    start_date="2026-05-22",
+                    end_date="2026-05-22",
+                    user_agent="test",
+                    timeout=1.0,
+                )
+            )
+        finally:
+            import_us_eod_yahoo_chart_script._fetch_chart = original_fetch_chart  # type: ignore[assignment]
+            if original_psycopg is None:
+                sys.modules.pop("psycopg", None)
+            else:
+                sys.modules["psycopg"] = original_psycopg
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_count"], 1)
+
+    def test_us_yahoo_import_skips_current_typed_bars(self) -> None:
+        class FakeCursor:
+            def __init__(self):
+                self.rows = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def execute(self, sql, params=None):
+                normalized = " ".join(sql.split()).lower()
+                if "select security_id, max(as_of_date)::text" in normalized:
+                    self.rows = [("security_aapl_us", "2026-05-22")]
+                else:
+                    self.rows = []
+
+            def fetchall(self):
+                return list(self.rows)
+
+        class FakeConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def cursor(self):
+                return FakeCursor()
+
+            def commit(self):
+                return None
+
+        original_psycopg = sys.modules.get("psycopg")
+        original_fetch_chart = import_us_eod_yahoo_chart_script._fetch_chart
+        try:
+            import types
+
+            sys.modules["psycopg"] = types.SimpleNamespace(connect=lambda _dsn: FakeConnection())  # type: ignore[assignment]
+            import_us_eod_yahoo_chart_script._fetch_chart = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not fetch current ticker"))  # type: ignore[assignment]
+            result = import_us_eod_yahoo_chart_script.import_us_eod(
+                argparse.Namespace(
+                    dsn="postgresql://example.invalid/ai_quant",
+                    tickers=["AAPL"],
+                    tickers_from_db=False,
+                    ticker_filter="",
+                    offset=0,
+                    max_tickers=0,
+                    start_date="2026-05-18",
+                    end_date="2026-05-22",
+                    user_agent="test",
+                    timeout=1.0,
+                )
+            )
+        finally:
+            import_us_eod_yahoo_chart_script._fetch_chart = original_fetch_chart  # type: ignore[assignment]
+            if original_psycopg is None:
+                sys.modules.pop("psycopg", None)
+            else:
+                sys.modules["psycopg"] = original_psycopg
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["skipped_symbol_count"], 1)
+        self.assertEqual(result["tickers"][0]["status"], "skipped_current")
+
+    def test_daily_market_insight_binds_movers_to_chain_reports_and_evidence(self) -> None:
+        class FakeInsightCursor:
+            def __init__(self):
+                self.rows = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def execute(self, sql, params=None):
+                normalized = " ".join(sql.split()).lower()
+                params = params or ()
+                if "count(*) from ai_quant.records where collection = 'market_data'" in normalized:
+                    self.rows = [(0,)]
+                elif "order by as_of_date desc limit 1" in normalized and "market_data_bars" in normalized:
+                    market = params[0]
+                    self.rows = [("2026-05-22",)] if market in {"A", "U"} else [("",)]
+                elif "from ( select * from ai_quant.market_data_bars" in normalized:
+                    market = params[0]
+                    source_id = params[1]
+                    security_id = "sec_000001" if market == "A" else "security_nvda_us"
+                    ticker = "000001" if market == "A" else "NVDA"
+                    issuer_id = "issuer_000001" if market == "A" else "issuer_nvda"
+                    issuer_name = "平安银行" if market == "A" else "NVIDIA"
+                    self.rows = [
+                        (
+                            security_id,
+                            market,
+                            source_id,
+                            "2026-05-22",
+                            10.0,
+                            11.0,
+                            9.8,
+                            11.0,
+                            4000.0,
+                            8000.0,
+                            ticker,
+                            issuer_id,
+                            issuer_name,
+                            "2026-05-21",
+                            10.0,
+                            1000.0,
+                            2000.0,
+                            1000.0,
+                            2000.0,
+                            20,
+                        )
+                    ]
+                elif "collection = 'company_positions'" in normalized:
+                    self.rows = [
+                        (
+                            "pos_000001",
+                            {
+                                "security_id": "sec_000001",
+                                "chain_id": "chain_bank",
+                                "node_ids": ["bank_node"],
+                                "role": "零售银行",
+                                "positioning_summary": "银行产业链核心服务节点",
+                            },
+                        ),
+                        (
+                            "pos_nvda",
+                            {
+                                "security_id": "security_nvda_us",
+                                "chain_id": "chain_ai",
+                                "node_ids": ["gpu_node"],
+                                "role": "GPU 供应商",
+                                "positioning_summary": "AI 算力核心节点",
+                            },
+                        ),
+                    ]
+                elif "collection = 'industry_chains'" in normalized:
+                    self.rows = [
+                        ("chain_bank", {"name": "银行产业链", "nodes": [{"node_id": "bank_node", "name": "银行服务"}]}),
+                        ("chain_ai", {"name": "AI 算力产业链", "nodes": [{"node_id": "gpu_node", "name": "GPU"}]}),
+                    ]
+                elif "collection = 'research_reports'" in normalized and "payload->>'security_id'" in normalized:
+                    security_id = params[0]
+                    self.rows = [
+                        (
+                            f"rr_{security_id}",
+                            {
+                                "report_id": f"rr_{security_id}",
+                                "title": f"{security_id} growth margin report",
+                                "broker": "local",
+                                "document_id": f"doc_{security_id}",
+                                "indexed_at": "2026-05-22T00:00:00+00:00",
+                            },
+                        )
+                    ]
+                elif "collection = 'evidence'" in normalized:
+                    self.rows = [
+                        (
+                            "evi_noise",
+                            {
+                                "evidence_id": "evi_noise",
+                                "document_id": "doc_sec_000001",
+                                "confidence": 0.95,
+                                "canonical_text": "LLC Analyst +1(212)357 0000 a***@g***.com Goldman Sachs & Co.",
+                            },
+                        ),
+                        (
+                            "evi_1",
+                            {
+                                "evidence_id": "evi_1",
+                                "document_id": "doc_sec_000001",
+                                "confidence": 0.9,
+                                "canonical_text": "收入增长和资产质量改善是当前研究观点的核心证据，管理层指引显示净息差压力缓和，风险加权资产扩张仍然可控。",
+                            },
+                        )
+                    ]
+                elif "collection = %s" in normalized:
+                    self.rows = []
+                else:
+                    self.rows = []
+
+            def fetchone(self):
+                return self.rows[0] if self.rows else None
+
+            def fetchall(self):
+                return list(self.rows)
+
+        class FakeInsightConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def cursor(self):
+                return FakeInsightCursor()
+
+        original_connect = daily_market_insight_script._connect
+        try:
+            daily_market_insight_script._connect = lambda _dsn: FakeInsightConnection()  # type: ignore[assignment]
+            result = daily_market_insight_script.build_daily_market_insight(
+                dsn="postgresql://example.invalid/ai_quant",
+                as_of_date="2026-05-24",
+                source_a="public_eod_market_data",
+                source_u="yahoo_chart_us_eod",
+                data_type="eod",
+                top_limit=4,
+                current_row_limit=100,
+                history_rows=20,
+                recent_days=7,
+                min_direct_evidence_companies=1,
+            )
+        finally:
+            daily_market_insight_script._connect = original_connect  # type: ignore[assignment]
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["legacy_market_data_records"], 0)
+        self.assertGreaterEqual(result["actionable_research_summary"]["abnormal_company_count"], 1)
+        self.assertGreaterEqual(result["actionable_research_summary"]["evidence_bound_company_count"], 1)
+        direct_evidence = [
+            evidence
+            for binding in result["evidence_bindings"]
+            for evidence in binding.get("evidence", [])
+        ]
+        self.assertTrue(direct_evidence)
+        self.assertTrue(all(evidence["quality"]["is_useful"] for evidence in direct_evidence))
+        self.assertTrue(result["quality_gates"]["typed_only_market_data"])
+        self.assertTrue(result["quality_gates"]["has_min_direct_report_evidence"])
+        self.assertTrue(result["quality_gates"]["has_company_recent_activity"])
+        self.assertGreaterEqual(result["actionable_research_summary"]["company_recent_activity_count"], 1)
+        self.assertGreaterEqual(result["quality_gates"]["useful_evidence_sample_count"], 1)
+        self.assertTrue(result["actionable_research_summary"]["headline"].startswith("直接研报证据优先:"))
+        self.assertIn("A 市场首要异动", result["actionable_research_summary"]["abnormal_headline"])
+        self.assertIn("直接研报证据优先", result["actionable_research_summary"]["direct_evidence_headline"])
+        self.assertTrue(result["research_and_events"]["company_recent_activity"])
+        self.assertIn("movers_by_market", result)
+
+    def test_daily_market_insight_fails_when_direct_research_evidence_gate_is_not_met(self) -> None:
+        class FakeInsightCursor:
+            def __init__(self):
+                self.rows = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def execute(self, sql, params=None):
+                normalized = " ".join(sql.split()).lower()
+                params = params or ()
+                if "count(*) from ai_quant.records where collection = 'market_data'" in normalized:
+                    self.rows = [(0,)]
+                elif "order by as_of_date desc limit 1" in normalized and "market_data_bars" in normalized:
+                    self.rows = [("2026-05-22",)]
+                elif "from ( select * from ai_quant.market_data_bars" in normalized:
+                    market = params[0]
+                    self.rows = [
+                        (
+                            "sec_000001",
+                            market,
+                            params[1],
+                            "2026-05-22",
+                            10.0,
+                            11.0,
+                            9.8,
+                            11.0,
+                            4000.0,
+                            8000.0,
+                            "000001",
+                            "issuer_000001",
+                            "平安银行",
+                            "2026-05-21",
+                            10.0,
+                            1000.0,
+                            2000.0,
+                            1000.0,
+                            2000.0,
+                            20,
+                        )
+                    ]
+                elif "collection = 'company_positions'" in normalized:
+                    self.rows = [
+                        (
+                            "pos_000001",
+                            {
+                                "security_id": "sec_000001",
+                                "chain_id": "chain_bank",
+                                "node_ids": ["bank_node"],
+                                "role": "零售银行",
+                            },
+                        )
+                    ]
+                elif "collection = 'industry_chains'" in normalized:
+                    self.rows = [("chain_bank", {"name": "银行产业链", "nodes": [{"node_id": "bank_node", "name": "银行服务"}]})]
+                else:
+                    self.rows = []
+
+            def fetchone(self):
+                return self.rows[0] if self.rows else None
+
+            def fetchall(self):
+                return list(self.rows)
+
+        class FakeInsightConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def cursor(self):
+                return FakeInsightCursor()
+
+        original_connect = daily_market_insight_script._connect
+        try:
+            daily_market_insight_script._connect = lambda _dsn: FakeInsightConnection()  # type: ignore[assignment]
+            result = daily_market_insight_script.build_daily_market_insight(
+                dsn="postgresql://example.invalid/ai_quant",
+                as_of_date="2026-05-24",
+                source_a="public_eod_market_data",
+                source_u="yahoo_chart_us_eod",
+                data_type="eod",
+                top_limit=4,
+                current_row_limit=100,
+                history_rows=20,
+                recent_days=7,
+                min_direct_evidence_companies=1,
+            )
+        finally:
+            daily_market_insight_script._connect = original_connect  # type: ignore[assignment]
+
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["quality_gates"]["has_min_direct_report_evidence"])
+        self.assertEqual(result["quality_gates"]["failures"][0]["check"], "direct_report_evidence")
+
+    def test_daily_pipeline_runs_research_binding_before_insight_gate(self) -> None:
+        commands = []
+
+        def fake_run_command(name, command, *, timeout, allow_failure=False):
+            commands.append((name, command, allow_failure))
+            return {"name": name, "status": "passed", "returncode": 0}
+
+        def fake_storage_audit(**_kwargs):
+            return {"status": "passed", "passed": True, "failure_count": 0}
+
+        def fake_insight(**kwargs):
+            self.assertEqual(kwargs["min_direct_evidence_companies"], 2)
+            return {
+                "status": "passed",
+                "passed": True,
+                "quality_gates": {
+                    "has_min_direct_report_evidence": True,
+                    "direct_report_evidence_company_count": 2,
+                    "failure_count": 0,
+                    "failures": [],
+                },
+            }
+
+        def fake_latency(*_args, **_kwargs):
+            return {"status": "passed", "passed": True, "failure_count": 0}
+
+        original_run = daily_data_update_pipeline_script._run_command
+        original_dates = daily_data_update_pipeline_script._latest_db_dates
+        original_storage = daily_data_update_pipeline_script.build_market_data_storage_audit
+        original_tdx_coverage = daily_data_update_pipeline_script.build_tdx_coverage_report
+        original_insight = daily_data_update_pipeline_script.build_daily_market_insight
+        original_markdown = daily_data_update_pipeline_script.build_insight_markdown
+        original_latency = daily_data_update_pipeline_script._latency_audit
+        try:
+            daily_data_update_pipeline_script._run_command = fake_run_command  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latest_db_dates = lambda _dsn: {"status": "passed", "sources": []}  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_market_data_storage_audit = fake_storage_audit  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_tdx_coverage_report = lambda _args: {"status": "passed", "ready_to_skip_import": True, "recommended_action": "skip_import"}  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_daily_market_insight = fake_insight  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_insight_markdown = lambda _payload: "# ok\n"  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latency_audit = fake_latency  # type: ignore[assignment]
+            with TemporaryDirectory() as temp_dir:
+                args = argparse.Namespace(
+                    dsn="postgresql://example.invalid/ai_quant",
+                    base_url="http://127.0.0.1:8000",
+                    run_date="2026-05-24",
+                    end_date="2026-05-22",
+                    output_dir=temp_dir,
+                    output=str(Path(temp_dir) / "daily.json"),
+                    run_ashare_incremental=False,
+                    run_ashare_scope_refresh=False,
+                    skip_ashare=True,
+                    skip_us=True,
+                    tdx_incremental=False,
+                    vipdoc_path="",
+                    tdx_start_date="",
+                    tdx_lookback_days=7,
+                    tdx_batch_size=5000,
+                    skip_tdx_coverage_audit=True,
+                    fail_on_tdx_coverage_needs_import=False,
+                    tdx_coverage_start_date="",
+                    tdx_coverage_lookback_days=30,
+                    tdx_coverage_max_symbols=0,
+                    tdx_symbol_prefix="",
+                    tdx_coverage_sample_limit=20,
+                    tdx_coverage_statement_timeout_ms=120000,
+                    tdx_coverage_strict_file_scan=False,
+                    ashare_start_date="",
+                    ashare_offset=0,
+                    ashare_batch_size=100,
+                    max_ashare_symbols=0,
+                    us_tickers="AAPL,MSFT",
+                    us_tickers_from_db=False,
+                    us_ticker_filter="",
+                    us_offset=0,
+                    us_batch_size=100,
+                    max_us_tickers=0,
+                    us_start_date="",
+                    us_lookback_days=7,
+                    latest_symbols="600000",
+                    sample_security_id="sec_000001",
+                    sample_source_id="public_eod_market_data",
+                    commit_every=200,
+                    artifact_symbol_limit=500,
+                    allow_import_failure=False,
+                    skip_research_binding=False,
+                    allow_research_binding_failure=False,
+                    research_binding_dry_run=False,
+                    research_binding_market="U",
+                    research_binding_tickers="AAPL,MSFT",
+                    research_binding_limit=100,
+                    research_binding_max_matches_per_report=2,
+                    research_binding_artifact_limit=10,
+                    research_binding_timeout_seconds=99,
+                    skip_latest_analysis=True,
+                    allow_latest_analysis_failure=False,
+                    latest_analysis_semantic_timeout_seconds=3.0,
+                    skip_local_production_audit=True,
+                    skip_project_completion_audit=True,
+                    run_project_completion_audit=False,
+                    latency_threshold_ms=5000.0,
+                    api_timeout_seconds=1.0,
+                    import_timeout_seconds=1,
+                    analysis_timeout_seconds=1,
+                    audit_timeout_seconds=1,
+                    insight_top_limit=4,
+                    insight_current_row_limit=100,
+                    insight_history_rows=20,
+                    insight_recent_days=7,
+                    min_direct_evidence_companies=2,
+                )
+                result = daily_data_update_pipeline_script.run_daily_pipeline(args)
+        finally:
+            daily_data_update_pipeline_script._run_command = original_run  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latest_db_dates = original_dates  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_market_data_storage_audit = original_storage  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_tdx_coverage_report = original_tdx_coverage  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_daily_market_insight = original_insight  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_insight_markdown = original_markdown  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latency_audit = original_latency  # type: ignore[assignment]
+
+        self.assertTrue(result["passed"])
+        self.assertIn("research-report-asset-binding", result["artifacts"])
+        self.assertIn("research_report_asset_binding", [name for name, _command, _allow_failure in commands])
+        binding_command = next(command for name, command, _allow_failure in commands if name == "research_report_asset_binding")
+        self.assertIn("--tickers", binding_command)
+        self.assertIn("AAPL,MSFT", binding_command)
+
+    def test_daily_pipeline_passes_bounded_semantic_timeout_to_latest_analysis(self) -> None:
+        commands = []
+
+        def fake_run_command(name, command, *, timeout, allow_failure=False):
+            commands.append((name, command, allow_failure))
+            return {"name": name, "status": "passed", "returncode": 0}
+
+        original_run = daily_data_update_pipeline_script._run_command
+        original_dates = daily_data_update_pipeline_script._latest_db_dates
+        original_storage = daily_data_update_pipeline_script.build_market_data_storage_audit
+        original_tdx_coverage = daily_data_update_pipeline_script.build_tdx_coverage_report
+        original_insight = daily_data_update_pipeline_script.build_daily_market_insight
+        original_markdown = daily_data_update_pipeline_script.build_insight_markdown
+        original_latency = daily_data_update_pipeline_script._latency_audit
+        try:
+            daily_data_update_pipeline_script._run_command = fake_run_command  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latest_db_dates = lambda _dsn: {"status": "passed", "sources": []}  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_market_data_storage_audit = lambda **_kwargs: {"status": "passed", "passed": True, "failure_count": 0}  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_tdx_coverage_report = lambda _args: {"status": "passed", "ready_to_skip_import": True, "recommended_action": "skip_import"}  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_daily_market_insight = lambda **_kwargs: {"status": "passed", "passed": True, "quality_gates": {"failure_count": 0, "failures": []}}  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_insight_markdown = lambda _payload: "# ok\n"  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latency_audit = lambda *_args, **_kwargs: {"status": "passed", "passed": True, "failure_count": 0}  # type: ignore[assignment]
+            with TemporaryDirectory() as temp_dir:
+                args = argparse.Namespace(
+                    dsn="postgresql://example.invalid/ai_quant",
+                    base_url="http://127.0.0.1:8000",
+                    run_date="2026-05-24",
+                    end_date="2026-05-22",
+                    output_dir=temp_dir,
+                    output=str(Path(temp_dir) / "daily.json"),
+                    run_ashare_incremental=False,
+                    run_ashare_scope_refresh=False,
+                    skip_ashare=True,
+                    skip_us=True,
+                    tdx_incremental=False,
+                    vipdoc_path="",
+                    tdx_start_date="",
+                    tdx_lookback_days=7,
+                    tdx_batch_size=5000,
+                    skip_tdx_coverage_audit=True,
+                    fail_on_tdx_coverage_needs_import=False,
+                    tdx_coverage_start_date="",
+                    tdx_coverage_lookback_days=30,
+                    tdx_coverage_max_symbols=0,
+                    tdx_symbol_prefix="",
+                    tdx_coverage_sample_limit=20,
+                    tdx_coverage_statement_timeout_ms=120000,
+                    tdx_coverage_strict_file_scan=False,
+                    ashare_start_date="",
+                    ashare_offset=0,
+                    ashare_batch_size=100,
+                    max_ashare_symbols=0,
+                    us_tickers="AAPL,MSFT",
+                    us_tickers_from_db=False,
+                    us_ticker_filter="",
+                    us_offset=0,
+                    us_batch_size=100,
+                    max_us_tickers=0,
+                    us_start_date="",
+                    us_lookback_days=7,
+                    latest_symbols="600000",
+                    sample_security_id="sec_000001",
+                    sample_source_id="public_eod_market_data",
+                    commit_every=200,
+                    artifact_symbol_limit=500,
+                    allow_import_failure=False,
+                    skip_research_binding=True,
+                    allow_research_binding_failure=False,
+                    research_binding_dry_run=False,
+                    research_binding_market="U",
+                    research_binding_tickers="AAPL,MSFT",
+                    research_binding_limit=100,
+                    research_binding_max_matches_per_report=2,
+                    research_binding_artifact_limit=10,
+                    research_binding_timeout_seconds=99,
+                    skip_latest_analysis=False,
+                    allow_latest_analysis_failure=False,
+                    latest_analysis_semantic_timeout_seconds=2.5,
+                    skip_local_production_audit=True,
+                    skip_project_completion_audit=True,
+                    run_project_completion_audit=False,
+                    latency_threshold_ms=5000.0,
+                    api_timeout_seconds=1.0,
+                    import_timeout_seconds=1,
+                    analysis_timeout_seconds=1,
+                    audit_timeout_seconds=1,
+                    insight_top_limit=4,
+                    insight_current_row_limit=100,
+                    insight_history_rows=20,
+                    insight_recent_days=7,
+                    min_direct_evidence_companies=1,
+                )
+                result = daily_data_update_pipeline_script.run_daily_pipeline(args)
+        finally:
+            daily_data_update_pipeline_script._run_command = original_run  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latest_db_dates = original_dates  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_market_data_storage_audit = original_storage  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_tdx_coverage_report = original_tdx_coverage  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_daily_market_insight = original_insight  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_insight_markdown = original_markdown  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latency_audit = original_latency  # type: ignore[assignment]
+
+        self.assertTrue(result["passed"])
+        latest_command = next(command for name, command, _allow_failure in commands if name == "latest_analysis")
+        self.assertIn("--semantic-timeout-seconds", latest_command)
+        self.assertEqual(latest_command[latest_command.index("--semantic-timeout-seconds") + 1], "2.5")
+
+    def test_daily_pipeline_market_end_dates_wait_for_market_ready_windows(self) -> None:
+        base_args = argparse.Namespace(
+            end_date="",
+            run_date="2026-05-25",
+            ashare_eod_ready_hour_cst=18,
+            ashare_eod_ready_minute_cst=0,
+            us_eod_ready_hour_ny=18,
+            us_eod_ready_minute_ny=0,
+        )
+        morning = daily_data_update_pipeline_script._effective_market_end_dates(
+            base_args,
+            now=daily_data_update_pipeline_script.datetime.fromisoformat("2026-05-25T03:35:00+00:00"),
+        )
+        self.assertEqual(morning["effective_end_dates"]["A"], "2026-05-22")
+        self.assertEqual(morning["effective_end_dates"]["TDX"], "2026-05-22")
+        self.assertEqual(morning["effective_end_dates"]["U"], "2026-05-22")
+        evening = daily_data_update_pipeline_script._effective_market_end_dates(
+            base_args,
+            now=daily_data_update_pipeline_script.datetime.fromisoformat("2026-05-25T10:45:00+00:00"),
+        )
+        self.assertEqual(evening["effective_end_dates"]["A"], "2026-05-25")
+        self.assertEqual(evening["effective_end_dates"]["TDX"], "2026-05-25")
+        self.assertEqual(evening["effective_end_dates"]["U"], "2026-05-22")
+        forced_args = argparse.Namespace(**{**vars(base_args), "end_date": "2026-05-25"})
+        forced = daily_data_update_pipeline_script._effective_market_end_dates(
+            forced_args,
+            now=daily_data_update_pipeline_script.datetime.fromisoformat("2026-05-25T03:35:00+00:00"),
+        )
+        self.assertEqual(forced["effective_end_dates"], {"A": "2026-05-25", "TDX": "2026-05-25", "U": "2026-05-25"})
+
+    def test_daily_update_systemd_audit_requires_scheduler_and_latest_pipeline(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scripts_dir = root / "scripts"
+            scripts_dir.mkdir()
+            runner = scripts_dir / "run_daily_data_update.sh"
+            runner.write_text("#!/usr/bin/env bash\npython scripts/daily_data_update_pipeline.py\n", encoding="utf-8")
+            runner.chmod(0o755)
+
+            unit_dir = root / "systemd-user"
+            unit_dir.mkdir()
+            (unit_dir / "ai-quant-daily-update.service").write_text(
+                "\n".join(
+                    [
+                        "[Service]",
+                        "WorkingDirectory=/tmp/ai-quant",
+                        "Environment=AI_QUANT_DAILY_RUNNER=compose",
+                        "Environment=AI_QUANT_DAILY_OUTPUT_BASE=artifacts/daily-update-local",
+                        "Environment=AI_QUANT_DAILY_RUN_ASHARE_SCOPE_REFRESH=true",
+                        "Environment=AI_QUANT_DAILY_RUN_ASHARE_INCREMENTAL=true",
+                        "Environment=AI_QUANT_DAILY_RUN_US_SCOPE_REFRESH=true",
+                        "Environment=AI_QUANT_DAILY_US_TICKERS_FROM_DB=true",
+                        "Environment=AI_QUANT_DAILY_TDX_INCREMENTAL=false",
+                        "ExecStart=/usr/bin/env bash /tmp/ai-quant/scripts/run_daily_data_update.sh",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (unit_dir / "ai-quant-daily-update.timer").write_text(
+                "\n".join(
+                    [
+                        "[Timer]",
+                        "OnCalendar=Mon..Fri *-*-* 07:00:00",
+                        "OnCalendar=Mon..Fri *-*-* 18:30:00",
+                        "Persistent=true",
+                        "Unit=ai-quant-daily-update.service",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            run_dir = root / "artifacts" / "daily-update-local" / "runs" / "2026-05-25-183000"
+            run_dir.mkdir(parents=True)
+            (run_dir / "daily-update-2026-05-25.json").write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "artifacts": {
+                            "latest_analysis": str(run_dir / "latest-analysis-2026-05-25" / "latest-analysis.json"),
+                            "daily-insight-json": str(run_dir / "daily-insight-json-2026-05-25.json"),
+                        },
+                        "steps": [
+                            {"name": "market_data_storage_audit", "status": "passed"},
+                            {"name": "daily_market_insight", "status": "passed"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            latest_dir = run_dir / "latest-analysis-2026-05-25"
+            latest_dir.mkdir()
+            (latest_dir / "latest-analysis.json").write_text(json.dumps({"status": "passed", "analysis": {"latest_market_date": "2026-05-25"}}), encoding="utf-8")
+            (run_dir / "daily-insight-json-2026-05-25.json").write_text(json.dumps({"status": "passed", "actionable_research_summary": {"headline": "ok"}}), encoding="utf-8")
+
+            audit = audit_daily_update_schedule_script.build_daily_update_schedule_audit(
+                repo_root=root,
+                unit_dir=unit_dir,
+                output_dir="artifacts/daily-update-local",
+                check_systemd=False,
+                require_enabled=False,
+                require_latest_run=True,
+            )
+
+        self.assertTrue(audit["passed"])
+        self.assertEqual(audit["failure_count"], 0)
+        gates = {item["check"]: item["passed"] for item in audit["gates"]}
+        self.assertTrue(gates["service_uses_compose_runner"])
+        self.assertTrue(gates["service_uses_user_writable_output_base"])
+        self.assertTrue(gates["service_runs_ashare_scope_refresh"])
+        self.assertTrue(gates["service_runs_ashare_batches"])
+        self.assertTrue(gates["service_runs_us_scope_refresh"])
+        self.assertTrue(gates["service_runs_us_batches_from_db"])
+        self.assertTrue(gates["service_keeps_tdx_import_optional"])
+        self.assertTrue(gates["timer_has_morning_and_evening_runs"])
+        self.assertTrue(gates["latest_pipeline_storage_audit"])
+        self.assertTrue(gates["latest_pipeline_daily_insight"])
+        self.assertTrue(gates["latest_analysis_artifact_shape"])
+        self.assertTrue(gates["daily_insight_artifact_shape"])
+
+    def test_daily_update_runner_records_skipped_current_batches(self) -> None:
+        runner = Path("scripts/run_daily_data_update.sh").read_text(encoding="utf-8")
+        for fragment in [
+            "ashare_typed_rows = int(ashare.get(\"typed_bar_rows\")",
+            "ashare_queried_count = int(ashare.get(\"queried_symbol_count\")",
+            "\"last_ashare_typed_bar_rows\": ashare_typed_rows",
+            "\"last_ashare_queried_symbol_count\": ashare_queried_count",
+            "us_typed_rows = int(us.get(\"typed_bar_rows\")",
+            "\"last_us_typed_bar_rows\": us_typed_rows",
+        ]:
+            self.assertIn(fragment, runner)
+
+    def test_latest_analysis_research_evidence_uses_bounded_semantic_timeout(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def request(self, method, path, body=None, **kwargs):
+                calls.append({"method": method, "path": path, "body": body or {}, "timeout": kwargs.get("timeout")})
+                if path == "/api/search/semantic":
+                    return {"_error": {"type": "TimeoutError"}, "results": []}
+                if path == "/api/hotspots/expand":
+                    return {"retrieval_recall": {"research_opinions": []}}
+                raise AssertionError(path)
+
+        result = latest_analysis_run_script._research_evidence_audit(  # type: ignore[attr-defined]
+            FakeClient(),
+            {"research_reports": 3, "evidence": 4},
+            assets=[{"label": "AAPL", "symbol": "AAPL", "security_id": "security_aapl_us"}],
+            semantic_timeout_seconds=2.5,
+        )
+
+        semantic_calls = [item for item in calls if item["path"] == "/api/search/semantic"]
+        self.assertGreaterEqual(len(semantic_calls), 1)
+        self.assertTrue(all(item["timeout"] == 2.5 for item in semantic_calls))
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["semantic_recall"]["status"], "needs_review")
+
+    def test_production_runbook_documents_daily_update_typed_only_scheduler(self) -> None:
+        runbook = Path("docs/production-runbook.md").read_text(encoding="utf-8")
+        for fragment in [
+            "scripts/install_daily_update_systemd_user.sh",
+            "scripts/run_daily_data_update.sh",
+            "scripts/audit_daily_update_schedule.py",
+            "ai-quant-daily-update.timer",
+            "工作日 07:00 和 18:30",
+            "America/New_York 18:00",
+            "artifacts/daily-update-local",
+            "ai_quant.market_data_bars",
+            "records(collection='market_data')",
+            "不会 JSON/数据库双写",
+            "AI_QUANT_DAILY_US_TICKERS_FROM_DB=true",
+            "AI_QUANT_DAILY_RUN_US_SCOPE_REFRESH=true",
+            "AI_QUANT_STACK_REBUILD=true",
+            "AI_QUANT_DAILY_TDX_INCREMENTAL=true",
+            "AI_QUANT_DAILY_LATEST_ANALYSIS_SEMANTIC_TIMEOUT_SECONDS",
+        ]:
+            self.assertIn(fragment, runbook)
+        compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("./scripts:/app/scripts:ro", compose)
+        staging = Path("scripts/local_staging_stack.sh").read_text(encoding="utf-8")
+        self.assertIn("AI_QUANT_STACK_REBUILD", staging)
+        self.assertIn("up -d", staging)
+        ui = Path("app/static/index.html").read_text(encoding="utf-8")
+        self.assertIn("daily_insight", ui)
+        self.assertIn("direct_report_watch_items", ui)
+        self.assertIn("companyRecentActivityRows", ui)
+        self.assertIn("typed-only K线", ui)
 
     def test_s3_compatible_object_store_builds_signed_put_and_get(self) -> None:
         requests = []
@@ -12674,6 +14069,33 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("vision_gate_status", failure_checks)
         self.assertIn("required_evidence_uri", failure_checks)
 
+    def test_local_production_audit_writes_failure_artifact_when_input_fetch_fails(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "local-production-audit.json"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/local_production_audit.py",
+                    "--base-url",
+                    "http://127.0.0.1:9",
+                    "--timeout",
+                    "0.01",
+                    "--output",
+                    str(output_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertTrue(output_path.exists())
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "failed")
+            self.assertFalse(payload["ready_for_launch"])
+            self.assertEqual(payload["failure_count"], 1)
+            self.assertEqual(payload["failures"][0]["check"], "local_production_audit_input")
+
     def test_local_ai_capability_acceptance_summarizes_real_smokes_without_secret_payloads(self) -> None:
         from http.server import BaseHTTPRequestHandler
 
@@ -13542,6 +14964,7 @@ class SystemServiceTests(unittest.TestCase):
         dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
         self.assertIn("COPY scripts ./scripts", dockerfile)
         self.assertIn("psycopg[binary]", dockerfile)
+        self.assertIn("baostock==0.9.1", dockerfile)
         compose = Path("docker-compose.yml").read_text(encoding="utf-8")
         for fragment in ["postgres:", "minio:", "opensearch:", "neo4j:", "qdrant:", "otel-collector:"]:
             self.assertIn(fragment, compose)
@@ -13554,6 +14977,41 @@ class SystemServiceTests(unittest.TestCase):
         self.assertGreaterEqual(result["evidence"], 3)
         self.assertIn("ingest_ms", result["avg_ms"])
         self.assertIn("search_ms", result["max_ms"])
+
+    def test_latency_audit_script_wraps_daily_pipeline_http_probes(self) -> None:
+        captured = {}
+
+        def fake_latency(base_url, *, output, threshold_ms, timeout):
+            captured.update(
+                {
+                    "base_url": base_url,
+                    "output": Path(output),
+                    "threshold_ms": threshold_ms,
+                    "timeout": timeout,
+                }
+            )
+            Path(output).write_text(json.dumps({"status": "passed", "passed": True}), encoding="utf-8")
+            return {"status": "passed", "passed": True, "failure_count": 0}
+
+        original_latency = latency_audit_script._latency_audit
+        try:
+            latency_audit_script._latency_audit = fake_latency  # type: ignore[assignment]
+            with TemporaryDirectory() as tmpdir:
+                output_path = Path(tmpdir) / "latency.json"
+                result = latency_audit_script.run_latency_audit(
+                    base_url="http://127.0.0.1:8000",
+                    output=output_path,
+                    max_ms=7000.0,
+                    timeout=3.0,
+                )
+        finally:
+            latency_audit_script._latency_audit = original_latency  # type: ignore[assignment]
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(captured["base_url"], "http://127.0.0.1:8000")
+        self.assertEqual(captured["threshold_ms"], 7000.0)
+        self.assertEqual(captured["timeout"], 3.0)
+        self.assertEqual(captured["output"].name, "latency.json")
 
     def test_full_run_acceptance_covers_simulated_trading_and_core_runtime(self) -> None:
         result = run_full_acceptance(capacity_records=2)

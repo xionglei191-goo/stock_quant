@@ -735,6 +735,19 @@
             </div>
             <table><thead><tr><th>类型</th><th>标题</th><th>边界</th><th>片段</th></tr></thead><tbody id="researchEvidenceRows"></tbody></table>
           </div>
+          <div class="panel span-12">
+            <h2>公司级新研报/公告/事件</h2>
+            <div class="system-strip" style="margin-bottom:10px">
+              <div class="system-box"><strong>公司活动</strong><span id="companyRecentActivityCount">0</span></div>
+              <div class="system-box"><strong>活动条目</strong><span id="companyRecentReportCount">0</span></div>
+              <div class="system-box"><strong>关联证据</strong><span id="companyRecentEvidenceCount">0</span></div>
+              <div class="system-box"><strong>活动门禁</strong><span id="companyRecentActivityGate">待载入</span></div>
+            </div>
+            <table>
+              <thead><tr><th>公司</th><th>产业链</th><th>最新行情</th><th>活动摘要</th></tr></thead>
+              <tbody id="companyRecentActivityRows"></tbody>
+            </table>
+          </div>
           <div class="panel span-6">
             <h2>产业链覆盖</h2>
             <div class="system-strip">
@@ -2299,11 +2312,27 @@
       const window = data.window || {};
       $("analysisStatus").textContent = data.status ? statusLabel(data.status) : "可用";
       $("analysisMeta").textContent = `${window.start_date || "-"} 至 ${window.end_date || data.latest_market_date || "-"} · ${data.generated_at || "本地产物"}`;
+      const dailyInsight = data.daily_insight || {};
+      const dailySummary = dailyInsight.actionable_research_summary || {};
+      const directWatchItems = dailySummary.direct_report_watch_items || [];
+      const companyRecentActivity = dailySummary.company_recent_activity_items || dailyInsight.research_and_events?.company_recent_activity || [];
       const decision = data.decision_summary || {};
       const quality = data.data_quality || {};
-      $("decisionHeadline").textContent = decision.headline || "当前没有可用结论";
-      $("decisionConclusion").textContent = decision.conclusion || `数据质量: ${statusLabel(quality.status || "missing")}`;
-      const recommendations = decision.top_recommendations || [];
+      $("decisionHeadline").textContent = dailySummary.headline || decision.headline || "当前没有可用结论";
+      $("decisionConclusion").textContent = dailySummary.headline
+        ? `每日证据门禁: ${dailySummary.direct_report_evidence_company_count || 0} 个标的有直接研报证据 · 行情日期 ${dailyInsight.market_freshness?.map((item) => `${item.market}:${item.latest_date || "-"}`).join(" / ") || data.latest_market_date || "-"}`
+        : (decision.conclusion || `数据质量: ${statusLabel(quality.status || "missing")}`);
+      const recommendations = directWatchItems.length ? directWatchItems.map((item) => ({
+        label: item.ticker,
+        name: item.issuer_name,
+        market: item.market,
+        stance: "直接研报证据",
+        reasons: [item.research_readout || `${item.report_count || 0} 份研报 / ${item.evidence_count || 0} 条证据`],
+        risks: [`产业链: ${item.chain || "-"}`, `节点: ${(item.nodes || []).slice(0, 2).join(", ") || "-"}`],
+        evidence_status: item.evidence_status,
+        total_return_pct: null,
+        security_id: item.security_id || ""
+      })) : (decision.top_recommendations || []);
       $("decisionRecommendationRows").innerHTML = recommendations.length ? recommendations.slice(0, 4).map((item) => `
         <div class="recommendation-row" data-action="open-security" data-security-id="${item.security_id || ""}" data-label="${item.label || ""}" title="点击查看行情数据">
           <div>
@@ -2317,8 +2346,27 @@
           <div class="metric ${toneForNumber(item.total_return_pct)}">${signedPct(item.total_return_pct)}</div>
         </div>
       `).join("") : `<span class="small-note">暂无研究候选</span>`;
-      const flags = decision.red_flags || (quality.issues || []).map((item) => item.message);
+      const insightGates = dailyInsight.quality_gates || {};
+      const flags = dailySummary.abnormal_headline
+        ? [
+          dailySummary.abnormal_headline,
+          `typed-only K线=${insightGates.typed_only_market_data ? "通过" : "失败"} · 直接证据=${insightGates.direct_report_evidence_company_count || 0}/${insightGates.min_direct_evidence_companies || 0}`
+        ]
+        : (decision.red_flags || (quality.issues || []).map((item) => item.message));
       $("decisionFlagRows").innerHTML = flags.length ? flags.slice(0, 5).map((item) => `<div class="flag-row">${item}</div>`).join("") : `<div class="flag-row">当前未发现阻塞性红旗，但仍只限本机研究和模拟组合。</div>`;
+      $("companyRecentActivityCount").textContent = `${dailySummary.company_recent_activity_count || dailyInsight.research_and_events?.company_recent_activity_count || companyRecentActivity.length || 0}`;
+      $("companyRecentReportCount").textContent = `${companyRecentActivity.reduce((sum, item) => sum + (item.activity_count || 0), 0)}`;
+      $("companyRecentEvidenceCount").textContent = `${companyRecentActivity.reduce((sum, item) => sum + (item.evidence_count || 0), 0)}`;
+      $("companyRecentActivityGate").textContent = insightGates.has_company_recent_activity ? "通过" : "待补";
+      $("companyRecentActivityGate").className = `badge ${insightGates.has_company_recent_activity ? "ok" : "warn"}`;
+      $("companyRecentActivityRows").innerHTML = rows(companyRecentActivity, "暂无公司级近期活动", (item) => `
+        <tr data-action="${item.issuer_id ? "open-company" : "open-security"}" data-issuer-id="${item.issuer_id || ""}" data-security-id="${item.security_id || ""}" data-label="${item.ticker || ""}" title="点击载入主体图谱">
+          <td>${item.ticker || "-"}${metaLine("公司", item.issuer_name || "")}</td>
+          <td>${item.chain || "-"}${metaLine("节点", (item.nodes || []).slice(0, 3).join(", ") || "-")}</td>
+          <td>${(item.latest_market?.as_of_date || "-")}${metaLine("收盘", item.latest_market?.close ?? "")}${metaLine("涨跌", signedPct(item.latest_market?.one_day_return))}</td>
+          <td>${item.activity_summary || "-"}</td>
+        </tr>
+      `);
       const topReturns = (data.returns || []).slice().sort((a, b) => Math.abs(b.total_return_pct || 0) - Math.abs(a.total_return_pct || 0)).slice(0, 9);
       $("analysisReturns").innerHTML = topReturns.length ? topReturns.map((item) => `
         <div class="return-tile" data-action="open-security" data-security-id="${item.security_id || ""}" data-label="${item.label || ""}" title="点击查看行情数据">

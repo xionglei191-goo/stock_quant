@@ -60,6 +60,27 @@ def _atomic_write_text(path: str | Path, text: str) -> None:
     tmp_path.replace(output_path)
 
 
+def _failure_result(*, check: str, error: BaseException) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "passed": False,
+        "deployment_target": "local_only_personal_production",
+        "production_boundary": "valid for this machine as the user's long-running local production profile; not valid as non-local organizational release evidence and does not enable live broker execution",
+        "strict_production_gate_unchanged": True,
+        "ready_for_launch": False,
+        "warning_count": 0,
+        "failure_count": 1,
+        "warnings": [],
+        "failures": [
+            {
+                "check": check,
+                "error": str(error),
+                "error_type": type(error).__name__,
+            }
+        ],
+    }
+
+
 def _local_artifact_uri_ok(value: Any) -> bool:
     uri = str(value or "").strip()
     if not is_external_artifact_uri(uri):
@@ -176,20 +197,23 @@ def main() -> None:
     parser.add_argument("--output", default="")
     args = parser.parse_args()
 
-    health = _load_json_object(args.health_json) if args.health_json else _fetch_json(args.base_url, "/api/health", timeout=args.timeout)
-    vision_gate = _load_json_object(args.vision_gate_json) if args.vision_gate_json else _fetch_json(args.base_url, "/api/readiness/vision-gate", timeout=args.timeout)
-    evidence_package = (
-        _load_json_object(args.evidence_package_json)
-        if args.evidence_package_json
-        else _fetch_json(args.base_url, "/api/readiness/evidence-package?include_passed=true", timeout=args.timeout)
-    )
-    metrics = _load_json_object(args.metrics_json) if args.metrics_json else _fetch_json(args.base_url, "/api/metrics", timeout=args.timeout)
-    result = build_local_production_audit(
-        health=health,
-        vision_gate=vision_gate,
-        evidence_package=evidence_package,
-        metrics=metrics,
-    )
+    try:
+        health = _load_json_object(args.health_json) if args.health_json else _fetch_json(args.base_url, "/api/health", timeout=args.timeout)
+        vision_gate = _load_json_object(args.vision_gate_json) if args.vision_gate_json else _fetch_json(args.base_url, "/api/readiness/vision-gate", timeout=args.timeout)
+        evidence_package = (
+            _load_json_object(args.evidence_package_json)
+            if args.evidence_package_json
+            else _fetch_json(args.base_url, "/api/readiness/evidence-package?include_passed=true", timeout=args.timeout)
+        )
+        metrics = _load_json_object(args.metrics_json) if args.metrics_json else _fetch_json(args.base_url, "/api/metrics", timeout=args.timeout)
+        result = build_local_production_audit(
+            health=health,
+            vision_gate=vision_gate,
+            evidence_package=evidence_package,
+            metrics=metrics,
+        )
+    except Exception as exc:
+        result = _failure_result(check="local_production_audit_input", error=exc)
     rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
     if args.output:
         _atomic_write_text(args.output, rendered + "\n")

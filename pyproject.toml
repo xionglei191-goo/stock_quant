@@ -8,6 +8,7 @@ dependencies = []
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
+market-data = ["psycopg[binary]>=3.1", "baostock==0.9.1"]
 
 [tool.unittest]
 test-directory = "tests"

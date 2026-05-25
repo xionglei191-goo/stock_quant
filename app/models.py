@@ -318,6 +318,7 @@ class MarketDataPoint:
     close: float = 0.0
     adjusted_close: float = 0.0
     volume: float = 0.0
+    amount: float = 0.0
     rights_tag: RightsTag = field(default_factory=lambda: RightsTag("unknown"))
     created_at: Any = field(default_factory=utcnow)
 
@@ -342,6 +343,7 @@ class MarketDataPoint:
             close=close_value,
             adjusted_close=float(data.get("adjusted_close", close_value)),
             volume=float(data.get("volume", 0.0)),
+            amount=float(data.get("amount", 0.0)),
             rights_tag=RightsTag.from_dict(data.get("rights_tag", {"license_class": "unknown"})),
             created_at=parse_datetime(data.get("created_at")),
         )
@@ -379,6 +381,9 @@ class Document:
     ingested_at: Any = field(default_factory=utcnow)
     language: str = "zh"
     version: str = "v1"
+    asset_matches: list[dict[str, Any]] = field(default_factory=list)
+    chain_id: str = ""
+    node_ids: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Document":
@@ -399,6 +404,9 @@ class Document:
             ingested_at=parse_datetime(data.get("ingested_at")),
             language=str(data.get("language", "zh")),
             version=str(data.get("version", "v1")),
+            asset_matches=[dict(item) for item in data.get("asset_matches", [])],
+            chain_id=str(data.get("chain_id", "")),
+            node_ids=[str(item) for item in data.get("node_ids", [])],
         )
 
 
@@ -414,6 +422,14 @@ class Evidence:
     confidence: float
     locator: dict[str, Any] = field(default_factory=dict)
     assets: list[dict[str, Any]] = field(default_factory=list)
+    security_id: str = ""
+    issuer_id: str = ""
+    chain_id: str = ""
+    node_ids: list[str] = field(default_factory=list)
+    evidence_topics: list[str] = field(default_factory=list)
+    risk_tags: list[str] = field(default_factory=list)
+    financial_metric_tags: list[str] = field(default_factory=list)
+    viewpoint: dict[str, Any] = field(default_factory=dict)
     created_at: Any = field(default_factory=utcnow)
 
 
@@ -949,6 +965,14 @@ class ResearchReportAsset:
     issuer_id: str = ""
     security_id: str = ""
     industry: str = ""
+    asset_matches: list[dict[str, Any]] = field(default_factory=list)
+    asset_binding: dict[str, Any] = field(default_factory=dict)
+    chain_id: str = ""
+    node_ids: list[str] = field(default_factory=list)
+    evidence_topics: list[str] = field(default_factory=list)
+    risk_tags: list[str] = field(default_factory=list)
+    financial_metric_tags: list[str] = field(default_factory=list)
+    viewpoint: dict[str, Any] = field(default_factory=dict)
     event_ids: list[str] = field(default_factory=list)
     status: str = "indexed"
     indexed_at: Any = field(default_factory=utcnow)
@@ -973,6 +997,14 @@ class ResearchReportAsset:
             issuer_id=str(data.get("issuer_id", "")),
             security_id=str(data.get("security_id", "")),
             industry=str(data.get("industry", "")),
+            asset_matches=[dict(item) for item in data.get("asset_matches", [])],
+            asset_binding=dict(data.get("asset_binding", {})),
+            chain_id=str(data.get("chain_id", "")),
+            node_ids=[str(item) for item in data.get("node_ids", [])],
+            evidence_topics=[str(item) for item in data.get("evidence_topics", [])],
+            risk_tags=[str(item) for item in data.get("risk_tags", [])],
+            financial_metric_tags=[str(item) for item in data.get("financial_metric_tags", [])],
+            viewpoint=dict(data.get("viewpoint", {})),
             event_ids=[str(item) for item in data.get("event_ids", [])],
             status=str(data.get("status", "indexed")),
             indexed_at=parse_datetime(data.get("indexed_at")),

@@ -72,11 +72,16 @@ def read_day_rows(file_path: Path, *, start_date: str, end_date: str, limit: int
         raise ValueError(f"invalid record length: {file_path}")
     symbol = normalize_symbol(file_path.stem)
     rows: list[dict[str, Any]] = []
-    for offset in range(0, len(data), RECORD_SIZE):
+    offsets = range(0, len(data), RECORD_SIZE) if limit else range(len(data) - RECORD_SIZE, -1, -RECORD_SIZE)
+    for offset in offsets:
         raw_date, raw_open, raw_high, raw_low, raw_close, amount, volume, _reserved = struct.unpack("<IIIIIfII", data[offset : offset + RECORD_SIZE])
         trade_date = date_from_int(raw_date)
-        if trade_date < start_date or trade_date > end_date:
+        if trade_date > end_date:
             continue
+        if trade_date < start_date:
+            if limit:
+                continue
+            break
         rows.append(
             {
                 "symbol": symbol,
@@ -91,6 +96,8 @@ def read_day_rows(file_path: Path, *, start_date: str, end_date: str, limit: int
         )
         if limit and len(rows) >= limit:
             break
+    if not limit:
+        rows.reverse()
     return rows
 
 
@@ -111,6 +118,51 @@ def upsert_records(cursor: Any, rows: list[tuple[str, str, str]]) -> None:
         raise
 
 
+def upsert_market_data_bars(cursor: Any, rows: list[tuple[Any, ...]]) -> None:
+    if not rows:
+        return
+    cursor.executemany(
+        """
+        INSERT INTO ai_quant.market_data_bars (
+            security_id,
+            source_id,
+            data_type,
+            as_of_date,
+            market,
+            currency,
+            open,
+            high,
+            low,
+            close,
+            adjusted_close,
+            volume,
+            amount,
+            data_id,
+            rights_tag,
+            payload,
+            created_at
+        )
+        VALUES (%s, %s, %s, %s::date, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+        ON CONFLICT (security_id, source_id, data_type, as_of_date)
+        DO UPDATE SET
+            market = EXCLUDED.market,
+            currency = EXCLUDED.currency,
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            adjusted_close = EXCLUDED.adjusted_close,
+            volume = EXCLUDED.volume,
+            amount = EXCLUDED.amount,
+            data_id = EXCLUDED.data_id,
+            rights_tag = EXCLUDED.rights_tag,
+            payload = EXCLUDED.payload,
+            updated_at = now()
+        """,
+        rows,
+    )
+
+
 def import_vipdoc(args: argparse.Namespace) -> dict[str, Any]:
     try:
         import psycopg  # type: ignore[import-not-found]
@@ -127,7 +179,7 @@ def import_vipdoc(args: argparse.Namespace) -> dict[str, Any]:
     failed_files: list[dict[str, str]] = []
     min_date = ""
     max_date = ""
-    batch: list[tuple[str, str, str]] = []
+    bar_batch: list[tuple[Any, ...]] = []
     issuer_security_batch: list[tuple[str, str, str]] = []
     rights_tag = {
         "license_class": "public_eod_reference",
@@ -199,22 +251,45 @@ def import_vipdoc(args: argparse.Namespace) -> dict[str, Any]:
                         "close": row["close"],
                         "adjusted_close": row["close"],
                         "volume": row["volume"],
+                        "amount": row["amount"],
                         "rights_tag": rights_tag,
                         "created_at": now,
                     }
-                    batch.append(("market_data", data_id, json.dumps(payload, ensure_ascii=False, sort_keys=True)))
-                    if len(batch) >= args.batch_size:
+                    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                    rights_json = json.dumps(rights_tag, ensure_ascii=False, sort_keys=True)
+                    bar_batch.append(
+                        (
+                            security_id,
+                            args.source_id,
+                            args.data_type,
+                            trade_date,
+                            "A",
+                            "CNY",
+                            row["open"],
+                            row["high"],
+                            row["low"],
+                            row["close"],
+                            row["close"],
+                            row["volume"],
+                            row["amount"],
+                            data_id,
+                            rights_json,
+                            payload_json,
+                            now,
+                        )
+                    )
+                    if len(bar_batch) >= args.batch_size:
                         upsert_records(cursor, issuer_security_batch)
-                        upsert_records(cursor, batch)
+                        upsert_market_data_bars(cursor, bar_batch)
                         connection.commit()
-                        created_or_updated_rows += len(batch)
+                        created_or_updated_rows += len(bar_batch)
                         print(f"imported symbols={symbol_count} rows={created_or_updated_rows} latest={symbol}", flush=True)
                         issuer_security_batch = []
-                        batch = []
+                        bar_batch = []
             upsert_records(cursor, issuer_security_batch)
-            upsert_records(cursor, batch)
+            upsert_market_data_bars(cursor, bar_batch)
             connection.commit()
-            created_or_updated_rows += len(batch)
+            created_or_updated_rows += len(bar_batch)
 
     return {
         "started_at": started_at,
@@ -224,6 +299,7 @@ def import_vipdoc(args: argparse.Namespace) -> dict[str, Any]:
         "data_type": args.data_type,
         "symbol_count": symbol_count,
         "created_or_updated_rows": created_or_updated_rows,
+        "typed_bar_rows": created_or_updated_rows,
         "failed_file_count": len(failed_files),
         "failed_files": failed_files[:100],
         "min_date": min_date,
@@ -232,7 +308,7 @@ def import_vipdoc(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fast import local TDX vipdoc .day files into PostgreSQL JSONB records.")
+    parser = argparse.ArgumentParser(description="Fast import local TDX vipdoc .day files into PostgreSQL typed K-line bars.")
     parser.add_argument("--dsn", default=os.environ.get("AI_QUANT_POSTGRES_DSN", "postgresql://ai_quant:ai_quant_dev_password@127.0.0.1:15432/ai_quant"))
     parser.add_argument("--vipdoc-path", default=os.environ.get("AI_QUANT_TDX_VIPDOC_PATH", "data/local/tdx/vipdoc"))
     parser.add_argument("--source-id", default=PUBLIC_EOD_MARKET_DATA_SOURCE_ID)

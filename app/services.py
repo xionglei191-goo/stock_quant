@@ -6719,10 +6719,11 @@ class SystemService:
             "adjusted_close": float(payload.get("adjusted_close", payload.get("close", 0.0))),
             "volume": float(payload.get("volume", 0.0)),
         }
-        if any(value < 0 for value in prices.values()):
+        amount = float(payload.get("amount", 0.0) or 0.0)
+        if any(value < 0 for value in prices.values()) or amount < 0:
             raise ValidationError("market data prices and volume must be non-negative")
         data_id = str(payload.get("data_id", self._market_data_id(security_id, as_of_date, data_type, source_id)))
-        if data_id in self.store.market_data:
+        if self._market_data_point_exists(security_id, source_id=source_id, data_type=data_type, as_of_date=as_of_date):
             raise ConflictError(f"market data {data_id} already exists")
         point = MarketDataPoint(
             data_id=data_id,
@@ -6733,6 +6734,7 @@ class SystemService:
             data_type=data_type,
             currency=str(payload.get("currency", security.currency)),
             rights_tag=rights_tag,
+            amount=amount,
             **prices,
         )
         self.store.market_data[point.data_id] = point
@@ -6845,7 +6847,7 @@ class SystemService:
         return {"market_data": [to_plain(item) for item in points[:limit]]}
 
     def _market_data_direct_query_enabled(self) -> bool:
-        return "market_data" in getattr(self.store, "_lazy_collections", set()) and hasattr(self.store, "query_market_data_points")
+        return hasattr(self.store, "query_market_data_points")
 
     def _query_market_data_points(
         self,
@@ -7216,7 +7218,7 @@ class SystemService:
                 errors.append({"index": index, "symbol": symbol, "trade_date": trade_date, "error": "security mapping not found"})
                 continue
             data_id = self._market_data_id(security.security_id, trade_date, data_type, source_id)
-            if data_id in self.store.market_data and bool(payload.get("skip_existing", True)):
+            if self._market_data_point_exists(security.security_id, source_id=source_id, data_type=data_type, as_of_date=trade_date) and bool(payload.get("skip_existing", True)):
                 skipped.append({"index": index, "symbol": symbol, "trade_date": trade_date, "data_id": data_id})
                 continue
             try:
@@ -7236,6 +7238,7 @@ class SystemService:
                             "close": row.get("close", 0.0) or 0.0,
                             "adjusted_close": row.get("close", 0.0) or 0.0,
                             "volume": row.get("volume", 0.0) or 0.0,
+                            "amount": row.get("amount", 0.0) or 0.0,
                         },
                         actor=actor,
                     )
@@ -7645,6 +7648,7 @@ class SystemService:
                 "close": close,
                 "adjusted_close": float(raw_row.get("adjusted_close", raw_row.get("close", 0.0)) or close),
                 "volume": float(raw_row.get("volume", 0.0) or 0.0),
+                "amount": float(raw_row.get("amount", 0.0) or 0.0),
                 "rights_tag": to_plain(source.rights_tag),
             }
             if dry_run:
@@ -7961,6 +7965,7 @@ class SystemService:
                     "close": close,
                     "adjusted_close": close,
                     "volume": float(item.get("volume") or 0.0),
+                    "amount": float(item.get("amount") or 0.0),
                 }
             )
         return rows
@@ -22443,7 +22448,7 @@ class SystemService:
         failed_workflow_runs = sum(1 for item in self.store.workflow_runs.values() if item.status in {"failed", "needs_review"})
         running_workflow_runs = sum(1 for item in self.store.workflow_runs.values() if item.status in {"queued", "running"})
         workflow_sla = self.workflow_sla_report({"limit": 1000})
-        sensitive_findings = self._quick_sensitive_finding_count()
+        sensitive_findings = dashboard["counts"].get("sensitive_findings", 0)
         answer_quality = self.research_answer_quality_report({"limit": 1000})
         permission_denied_events = sum(1 for item in self.store.audit_log if item.action == "permission_denied")
         secret_rotations = self.secret_rotations_payload({"limit": 1000})
@@ -22478,17 +22483,18 @@ class SystemService:
         }
 
     def _market_data_count_for_dashboard(self) -> int:
-        lazy_count = int(getattr(self.store, "_lazy_market_data_count", 0) or 0)
-        if lazy_count:
-            return max(len(self.store.market_data), lazy_count)
+        estimator = getattr(self.store, "estimate_market_data_points", None)
+        if callable(estimator):
+            return int(estimator())
         if self._market_data_direct_query_enabled():
             return self._count_market_data_points()
+        lazy_count = int(getattr(self.store, "_lazy_market_data_count", 0) or 0)
         return max(len(self.store.market_data), lazy_count)
 
-    def _quick_sensitive_finding_count(self) -> int:
+    def _quick_sensitive_finding_count(self, *, max_inline_documents: int = 200, scan_char_limit: int = 2000) -> int:
         total = 0
-        for document in self.store.documents.values():
-            text = document.body or self._document_object_text(document)
+        for document in sorted(self.store.documents.values(), key=lambda item: item.published_at, reverse=True)[: max(0, max_inline_documents)]:
+            text = document.body
             if not text:
                 continue
             resource = {
@@ -22502,7 +22508,7 @@ class SystemService:
                 "rights_tag": to_plain(document.rights_tag),
                 "field_name": "body",
             }
-            total += len(self._sensitive_findings_for_text(text[:2000], resource=resource))
+            total += len(self._sensitive_findings_for_text(text[:scan_char_limit], resource=resource))
         return total
 
     def dashboard(self) -> dict[str, Any]:
@@ -22515,6 +22521,10 @@ class SystemService:
         sensitive_findings = self._quick_sensitive_finding_count()
         answer_quality = self.research_answer_quality_report({"limit": 1000})
         permission_denied_events = sum(1 for item in self.store.audit_log if item.action == "permission_denied")
+        if self._market_data_direct_query_enabled():
+            dashboard_market_points = self._query_market_data_points(limit=10, descending=True)
+        else:
+            dashboard_market_points = sorted(self.store.market_data.values(), key=lambda item: (item.as_of_date, item.security_id), reverse=True)[:10]
         market_data_summary = [
             {
                 "data_id": point.data_id,
@@ -22528,7 +22538,7 @@ class SystemService:
                 "license_class": point.rights_tag.license_class,
                 "non_display_use": point.rights_tag.non_display_use,
             }
-            for point in sorted(self.store.market_data.values(), key=lambda item: (item.as_of_date, item.security_id), reverse=True)[:10]
+            for point in dashboard_market_points
         ]
         corporate_action_summary = [
             {
@@ -22843,15 +22853,9 @@ class SystemService:
     ) -> dict[str, Any]:
         if not security_id or security_id not in self.store.securities:
             return {"status": "missing_security", "as_of_date": "", "price": None}
-        points = [
-            point
-            for point in self.store.market_data.values()
-            if point.security_id == security_id and point.source_id == source_id and point.data_type == data_type and point.as_of_date <= as_of_date
-        ]
-        points.sort(key=lambda item: item.as_of_date, reverse=True)
-        if not points:
+        point = self._latest_market_data_point(security_id, source_id=source_id, data_type=data_type, as_of_date=as_of_date)
+        if not point:
             return {"status": "missing_price", "as_of_date": "", "price": None}
-        point = points[0]
         if price_field == "close":
             price = point.close
         elif price_field == "adjusted_close":
@@ -23203,7 +23207,7 @@ class SystemService:
     def _validate_market_data_field_boundary(self, payload: Mapping[str, Any], source: SourceDefinition) -> None:
         if not source.field_whitelist:
             return
-        operational_fields = {"data_id", "security_id", "source_id", "market", "as_of_date", "data_type", "currency", "rights_tag"}
+        operational_fields = {"data_id", "security_id", "source_id", "market", "as_of_date", "data_type", "currency", "rights_tag", "amount"}
         allowed_fields = set(source.field_whitelist) | operational_fields
         unknown_fields = sorted(str(key) for key in payload if str(key) not in allowed_fields)
         if unknown_fields:

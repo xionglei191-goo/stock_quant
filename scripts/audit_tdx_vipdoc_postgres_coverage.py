@@ -209,20 +209,20 @@ def summarize_postgres(args: argparse.Namespace) -> dict[str, Any]:
     with psycopg.connect(args.dsn) as connection:
         with connection.cursor() as cursor:
             if args.statement_timeout_ms:
-                cursor.execute("SET LOCAL statement_timeout = %s", (args.statement_timeout_ms,))
+                timeout_ms = max(0, int(args.statement_timeout_ms))
+                cursor.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             cursor.execute(
                 """
                 SELECT
-                    COALESCE(payload->>'security_id', '') AS security_id,
+                    security_id,
                     COUNT(*)::bigint AS row_count,
-                    MIN(payload->>'as_of_date') AS min_date,
-                    MAX(payload->>'as_of_date') AS max_date
-                FROM ai_quant.records
-                WHERE collection = 'market_data'
-                  AND payload->>'source_id' = %s
-                  AND payload->>'data_type' = %s
-                  AND payload->>'market' = 'A'
-                GROUP BY COALESCE(payload->>'security_id', '')
+                    MIN(as_of_date)::text AS min_date,
+                    MAX(as_of_date)::text AS max_date
+                FROM ai_quant.market_data_bars
+                WHERE source_id = %s
+                  AND data_type = %s
+                  AND market = 'A'
+                GROUP BY security_id
                 """,
                 (args.source_id, args.data_type),
             )
@@ -244,6 +244,7 @@ def summarize_postgres(args: argparse.Namespace) -> dict[str, Any]:
         "row_count": sum(row[1] for row in rows),
         "min_date": min(min_dates) if min_dates else "",
         "max_date": max(max_dates) if max_dates else "",
+        "storage_table": "ai_quant.market_data_bars",
         "by_security": by_security,
     }
 
@@ -380,7 +381,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "recommended_command": "" if recommendation == "skip_import" else build_import_command(args),
         "notes": [
             "Use this coverage audit before re-running the full TDX PostgreSQL import.",
-            "Full import remains idempotent, but it rewrites a large JSONB market_data surface and should be reserved for missing or deficient coverage.",
+            "Full import remains idempotent, but it scans and upserts a large typed ai_quant.market_data_bars surface and should be reserved for missing or deficient coverage.",
             "Surplus PostgreSQL rows are warnings by default because re-importing does not delete them.",
         ],
     }

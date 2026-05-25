@@ -67,7 +67,11 @@ export AI_QUANT_S3_BUCKET="${AI_QUANT_S3_BUCKET:-ai-quant-local}"
 export AI_QUANT_S3_ACCESS_KEY="${AI_QUANT_S3_ACCESS_KEY:-ai_quant_minio}"
 export AI_QUANT_S3_SECRET_KEY="${AI_QUANT_S3_SECRET_KEY:-ai_quant_minio_secret}"
 
-"${COMPOSE[@]}" up -d --build
+if [ "${AI_QUANT_STACK_REBUILD:-false}" = "true" ]; then
+  "${COMPOSE[@]}" up -d --build
+else
+  "${COMPOSE[@]}" up -d
+fi
 
 wait_http_ok() {
   local name="$1"

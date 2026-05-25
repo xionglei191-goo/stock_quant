@@ -887,11 +887,32 @@ class ApiRouter:
         return self.service.metrics()
 
     def _latest_analysis(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        daily_pointer = Path("artifacts/daily-update-local/latest-run.json")
+        daily_run = {}
+        if daily_pointer.exists():
+            try:
+                pointer = json.loads(daily_pointer.read_text(encoding="utf-8"))
+                pipeline_output = Path(str(pointer.get("pipeline_output") or ""))
+                output_dir = Path(str(pointer.get("output_dir") or pipeline_output.parent))
+                run_date = str(pointer.get("run_date") or "")
+                latest_analysis_path = output_dir / f"latest-analysis-{run_date}" / "latest-analysis.json" if run_date else Path()
+                daily_insight_path = output_dir / f"daily-insight-json-{run_date}.json" if run_date else Path()
+                if pipeline_output.exists():
+                    daily_run["pipeline"] = json.loads(pipeline_output.read_text(encoding="utf-8"))
+                if latest_analysis_path.exists():
+                    daily_run["latest_analysis_path"] = latest_analysis_path
+                if daily_insight_path.exists():
+                    daily_run["daily_insight_path"] = daily_insight_path
+                    daily_run["daily_insight"] = json.loads(daily_insight_path.read_text(encoding="utf-8"))
+                daily_run["pointer"] = pointer
+            except Exception:
+                daily_run = {}
         candidates = [
+            daily_run.get("latest_analysis_path") if isinstance(daily_run.get("latest_analysis_path"), Path) else None,
             Path("artifacts/latest-analysis/latest-analysis.json"),
             Path("artifacts/latest-analysis-ahu/latest-analysis.json"),
         ]
-        artifact_path = next((path for path in candidates if path.exists()), None)
+        artifact_path = next((path for path in candidates if isinstance(path, Path) and path.exists()), None)
         if artifact_path is None:
             return {
                 "status": "missing",
@@ -1013,9 +1034,13 @@ class ApiRouter:
                 "base_url": acceptance_payload.get("base_url") or "",
             }
 
+        daily_insight = daily_run.get("daily_insight") if isinstance(daily_run.get("daily_insight"), dict) else {}
+        pipeline = daily_run.get("pipeline") if isinstance(daily_run.get("pipeline"), dict) else {}
         return {
             "status": payload.get("status") or "available",
             "artifact_path": str(artifact_path),
+            "daily_pipeline_artifact_path": str((daily_run.get("pointer") or {}).get("pipeline_output") or ""),
+            "daily_insight_artifact_path": str(daily_run.get("daily_insight_path") or ""),
             "generated_at": payload.get("generated_at") or "",
             "base_url": payload.get("base_url") or "",
             "latest_market_date": analysis.get("latest_market_date") or analysis.get("window", {}).get("end_date") or "",
@@ -1045,6 +1070,19 @@ class ApiRouter:
             "data_quality": analysis.get("data_quality") or {},
             "supplemental_market_observations": analysis.get("supplemental_market_observations") or {},
             "research_evidence": analysis.get("research_evidence") or {},
+            "daily_insight": {
+                "status": daily_insight.get("status") or "",
+                "as_of_date": daily_insight.get("as_of_date") or pipeline.get("run_date") or "",
+                "generated_at": daily_insight.get("generated_at") or "",
+                "market_freshness": daily_insight.get("market_freshness") or [],
+                "actionable_research_summary": daily_insight.get("actionable_research_summary") or {},
+                "quality_gates": daily_insight.get("quality_gates") or {},
+                "evidence_backed_watchlist": daily_insight.get("evidence_backed_watchlist") or [],
+                "research_and_events": daily_insight.get("research_and_events") or {},
+                "production_boundary": daily_insight.get("production_boundary") or "",
+                "pipeline_status": pipeline.get("status") or "",
+                "pipeline_effective_end_dates": pipeline.get("effective_end_dates") or {},
+            },
             "business_acceptance": acceptance,
             "board_pack": analysis.get("board_pack") or {},
         }

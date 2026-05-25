@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 DEFAULT_SYMBOLS = ["600000", "000001", "300750", "600519"]
 DEFAULT_US_TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "SPY"]
+DEFAULT_SEMANTIC_TIMEOUT_SECONDS = 8.0
 
 
 class ApiClient:
@@ -86,6 +87,49 @@ def _human_asset_name(label: str) -> str:
         "SPY": "SPDR S&P 500 ETF",
     }
     return names.get(label, label)
+
+
+def _clean_research_snippet(value: Any) -> str:
+    text = str(value or "").replace("[TRUNCATED_FOR_CITATION_BOUNDARY]", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    for pattern in (
+        r"^[_\s]*(research_report_citation|report_citation|citation|_citation|local_reference_citation|company_profile_industry_position)\.\s*",
+        r"^page[_ -]?\d+[_ -]?(paragraph|para)?[_ -]?\d*[:.\s-]*",
+    ):
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+    return text
+
+
+def _research_queries_for_assets(assets: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    query_by_label = {
+        "600000": "600000 Shanghai Pudong Development Bank Pudong Dev Bank net interest margin asset quality risk",
+        "000001": "000001 Ping An Bank retail banking non-performing loan net interest margin",
+        "300750": "300750 CATL battery energy storage gross margin lithium",
+        "600519": "600519 Kweichow Moutai baijiu wholesale price channel inventory",
+        "AAPL": "Apple AAPL AI iPhone services revenue gross margin risk",
+        "MSFT": "Microsoft MSFT Azure AI cloud capex margin",
+        "NVDA": "NVIDIA NVDA GPU ASIC hyperscaler capex HBM",
+        "TSLA": "Tesla TSLA EV margin China delivery energy storage",
+        "SPY": "S&P 500 SPY US equity strategy AI capex risk",
+    }
+    queries: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(scope: str, query: str) -> None:
+        query = re.sub(r"\s+", " ", query).strip()
+        key = query.lower()
+        if query and key not in seen:
+            seen.add(key)
+            queries.append({"scope": scope, "query": query})
+
+    add("theme_ai_infrastructure", "NVIDIA GPU ASIC hyperscaler capex semiconductor AI server")
+    add("theme_china_ai_chain", "China semiconductor AI server supply chain GPU")
+    for asset in assets or []:
+        label = str(asset.get("label") or asset.get("symbol") or asset.get("security_id") or "")
+        if not label:
+            continue
+        add(label, query_by_label.get(label) or f"{label} {_human_asset_name(label)} revenue margin risk")
+    return queries[:12]
 
 
 def _normalize_ashare_symbol(value: Any) -> str:
@@ -201,22 +245,73 @@ def _pull_latest_data(client: ApiClient, symbols: list[str], *, research_root: s
     return result
 
 
-def _research_evidence_audit(client: ApiClient, counts: dict[str, Any] | None = None) -> dict[str, Any]:
+def _research_evidence_audit(
+    client: ApiClient,
+    counts: dict[str, Any] | None = None,
+    *,
+    assets: list[dict[str, str]] | None = None,
+    semantic_timeout_seconds: float = DEFAULT_SEMANTIC_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     if counts is None:
         metrics = client.request("GET", "/api/metrics", role="unknown", allow_error=True, timeout=5.0)
         counts = metrics.get("counts", {}) if isinstance(metrics, dict) else {}
-    semantic = client.request(
-        "POST",
-        "/api/search/semantic",
-        {
-            "q": "AI semiconductor China GPU market strategy",
-            "resource_types": ["research_report", "evidence", "research_answer", "company_position"],
-            "include_restricted": True,
-            "limit": 12,
-        },
-        role="analyst",
-        allow_error=True,
-    )
+    query_plan = _research_queries_for_assets(assets)
+    semantic_runs = []
+    semantic_candidates: list[dict[str, Any]] = []
+    seen_candidates: set[str] = set()
+    total_semantic_results = 0
+    backend = ""
+    for query_item in query_plan:
+        semantic = client.request(
+            "POST",
+            "/api/search/semantic",
+            {
+                "q": query_item["query"],
+                "resource_types": ["research_report", "evidence", "research_answer", "company_position"],
+                "include_restricted": True,
+                "limit": 8,
+            },
+            role="analyst",
+            allow_error=True,
+            timeout=semantic_timeout_seconds,
+        )
+        semantic_results = semantic.get("results", []) if isinstance(semantic, dict) else []
+        total_semantic_results += len(semantic_results)
+        if isinstance(semantic, dict) and semantic.get("backend"):
+            backend = str(semantic.get("backend") or backend)
+        semantic_runs.append(
+            {
+                "scope": query_item["scope"],
+                "query": query_item["query"],
+                "status": "failed" if isinstance(semantic, dict) and semantic.get("_error") else "passed",
+                "backend": semantic.get("backend", "") if isinstance(semantic, dict) else "",
+                "result_count": len(semantic_results),
+                "error": semantic.get("_error", {}) if isinstance(semantic, dict) else {},
+            }
+        )
+        for item in semantic_results:
+            if item.get("resource_type") not in {"research_report", "evidence", "research_answer", "company_position"}:
+                continue
+            snippet = _clean_research_snippet(item.get("snippet", ""))
+            title = _clean_research_snippet(item.get("title", ""))
+            key = f"{item.get('resource_type')}:{item.get('resource_id')}:{snippet[:160]}"
+            if key in seen_candidates:
+                continue
+            seen_candidates.add(key)
+            semantic_candidates.append(
+                {
+                    "query": query_item["query"],
+                    "scope": query_item["scope"],
+                    "resource_type": item.get("resource_type"),
+                    "resource_id": item.get("resource_id"),
+                    "title": title,
+                    "snippet": snippet,
+                    "source_boundary": item.get("source_boundary", ""),
+                    "risk_level": item.get("risk_level", ""),
+                    "rights_tag": item.get("rights_tag", {}),
+                    "score": item.get("score"),
+                }
+            )
     hotspot = client.request(
         "POST",
         "/api/hotspots/expand",
@@ -230,37 +325,21 @@ def _research_evidence_audit(client: ApiClient, counts: dict[str, Any] | None = 
         role="analyst",
         allow_error=True,
     )
-    semantic_results = semantic.get("results", []) if isinstance(semantic, dict) else []
     recall = hotspot.get("retrieval_recall", {}) if isinstance(hotspot, dict) else {}
     research_opinions = recall.get("research_opinions", []) if isinstance(recall, dict) else []
-    sample_citations = []
-    for item in semantic_results:
-        if item.get("resource_type") not in {"research_report", "evidence", "research_answer"}:
-            continue
-        sample_citations.append(
-            {
-                "resource_type": item.get("resource_type"),
-                "resource_id": item.get("resource_id"),
-                "title": item.get("title", ""),
-                "snippet": item.get("snippet", ""),
-                "source_boundary": item.get("source_boundary", ""),
-                "risk_level": item.get("risk_level", ""),
-                "rights_tag": item.get("rights_tag", {}),
-            }
-        )
-        if len(sample_citations) >= 5:
-            break
     research_opinion_samples = []
-    for item in research_opinions[:5]:
+    for item in research_opinions[:20]:
         research_opinion_samples.append(
             {
                 "resource_type": item.get("resource_type"),
                 "resource_id": item.get("resource_id"),
-                "title": item.get("title", ""),
-                "snippet": item.get("snippet", ""),
+                "title": _clean_research_snippet(item.get("title", "")),
+                "snippet": _clean_research_snippet(item.get("snippet", "")),
                 "source_boundary": item.get("source_boundary", ""),
             }
         )
+    semantic_useful = _useful_research_samples(semantic_candidates, limit=40)
+    hotspot_useful = _useful_research_samples(research_opinion_samples, limit=8)
     return {
         "status": "passed" if counts.get("research_reports", 0) > 0 and counts.get("evidence", 0) > 0 else "needs_data",
         "counts": {
@@ -270,17 +349,22 @@ def _research_evidence_audit(client: ApiClient, counts: dict[str, Any] | None = 
             "research_answers": counts.get("research_answers", 0),
         },
         "semantic_recall": {
-            "status": "passed" if sample_citations else "needs_review",
-            "backend": semantic.get("backend", "") if isinstance(semantic, dict) else "",
-            "result_count": len(semantic_results),
-            "research_reference_count": len(sample_citations),
-            "samples": sample_citations,
-            "error": semantic.get("_error", {}) if isinstance(semantic, dict) else {},
+            "status": "passed" if semantic_useful else "needs_review",
+            "backend": backend,
+            "result_count": total_semantic_results,
+            "research_reference_count": len(semantic_candidates),
+            "useful_sample_count": len(semantic_useful),
+            "query_count": len(query_plan),
+            "queries": semantic_runs,
+            "samples": semantic_useful,
+            "raw_samples": semantic_candidates[:12],
         },
         "hotspot_recall": {
-            "status": "passed" if research_opinions else "needs_review",
+            "status": "passed" if hotspot_useful else "needs_review",
             "research_opinion_count": len(research_opinions),
-            "samples": research_opinion_samples,
+            "useful_sample_count": len(hotspot_useful),
+            "samples": hotspot_useful,
+            "raw_samples": research_opinion_samples[:8],
             "error": hotspot.get("_error", {}) if isinstance(hotspot, dict) else {},
         },
         "usage_boundary": "local_research_reports_are_opinion_reference_evidence_only_not_fact_source_training_data_or_trade_signal",
@@ -301,7 +385,6 @@ def _data_quality_assessment(analysis: dict[str, Any]) -> dict[str, Any]:
     snapshots = analysis.get("latest_snapshot") or []
     latest_market_date = str(analysis.get("latest_market_date") or "")
     latest_by_market: dict[str, str] = {}
-    stale_assets: list[dict[str, Any]] = []
     for row in snapshots:
         if not isinstance(row, dict):
             continue
@@ -309,14 +392,22 @@ def _data_quality_assessment(analysis: dict[str, Any]) -> dict[str, Any]:
         as_of_date = str(row.get("as_of_date") or "")
         if market and as_of_date:
             latest_by_market[market] = max(latest_by_market.get(market, ""), as_of_date)
-        lag_days = _days_between(as_of_date, latest_market_date) if as_of_date and latest_market_date else 0
+
+    stale_assets: list[dict[str, Any]] = []
+    for row in snapshots:
+        if not isinstance(row, dict):
+            continue
+        market = str(row.get("market") or "")
+        as_of_date = str(row.get("as_of_date") or "")
+        market_latest_date = latest_by_market.get(market, "")
+        lag_days = _days_between(as_of_date, market_latest_date) if as_of_date and market_latest_date else 0
         if lag_days > 2:
             stale_assets.append(
                 {
                     "label": row.get("label") or row.get("symbol") or row.get("security_id"),
                     "market": market,
                     "as_of_date": as_of_date,
-                    "latest_market_date": latest_market_date,
+                    "market_latest_date": market_latest_date,
                     "lag_days": lag_days,
                 }
             )
@@ -340,10 +431,21 @@ def _data_quality_assessment(analysis: dict[str, Any]) -> dict[str, Any]:
         issues.append(
             {
                 "severity": "high",
-                "code": "mixed_market_dates",
-                "issue": "mixed_market_dates",
-                "message": "A股与美股最新行情日期不一致，跨市场组合权重只能作为模拟参考。",
+                "code": "stale_within_market",
+                "issue": "stale_within_market",
+                "message": "部分标的落后于同市场最新行情日期，不能进入组合层比较。",
                 "affected_assets": stale_assets[:20],
+            }
+        )
+    unique_market_dates = sorted({value for value in latest_by_market.values() if value})
+    if len(unique_market_dates) > 1:
+        issues.append(
+            {
+                "severity": "medium",
+                "code": "cross_market_date_mismatch",
+                "issue": "cross_market_date_mismatch",
+                "message": "A股与美股最新行情日期不同；这是跨市场时区/交易日差异，组合比较需按市场分别解释。",
+                "latest_by_market": latest_by_market,
             }
         )
     if insufficient_returns:
@@ -394,25 +496,69 @@ def _useful_research_samples(samples: list[dict[str, Any]], *, limit: int = 5) -
         "important disclosures",
         "research analyst affiliations",
         "does and seeks to do business",
-        "research_report_citation.",
-        "@",
-        "+852",
-        "+82",
-        "+81",
+        "investment banking relationships",
+        "see appendix",
+        "for analyst certification",
+        "important regulatory disclosures",
+        "the 720:",
+        "weekly kickstart",
+        "strategy data gallery",
+        "institutional 13f positioning",
+        "global exposure guide",
+        "positions of active long-only managers",
+    ]
+    evidence_markers = [
+        " we ",
+        " our ",
+        " expect",
+        " target",
+        " driven",
+        " growth",
+        " margin",
+        " risk",
+        " demand",
+        " price",
+        " revenue",
+        " capex",
+        " investment",
+        " supply",
+        " wholesale",
+        " interest",
+        " loan",
+        " roe",
+        " decreased",
+        " increased",
+        " supports",
+        " positive",
+        " weaker",
+        " strong",
+        "公司",
+        "产业链",
+        "收入",
+        "利润",
+        "价格",
+        "风险",
+        "需求",
+        "增长",
     ]
     useful: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in samples:
         if not isinstance(item, dict):
             continue
-        snippet = str(item.get("snippet") or "").strip()
-        title = str(item.get("title") or "")
+        snippet = _clean_research_snippet(item.get("snippet") or "")
+        title = _clean_research_snippet(item.get("title") or "")
         lower = f"{title} {snippet}".lower()
-        if len(snippet) < 40:
+        if len(snippet) < 60:
             continue
         if any(term in lower for term in blocked_terms):
             continue
-        if re.fullmatch(r"[\w\s|:.,'’&()/-]{0,160}", snippet) and len(snippet.split()) < 18:
+        if re.fullmatch(r"[\w\s|:.,'’&()/-]{0,180}", snippet) and len(snippet.split()) < 14:
+            continue
+        if len(re.findall(r"[A-Za-z\u4e00-\u9fff]", snippet)) < 40:
+            continue
+        padded_lower = f" {lower} "
+        if not any(marker in padded_lower for marker in evidence_markers):
             continue
         key = f"{item.get('resource_id')}:{snippet[:120]}"
         if key in seen:
@@ -420,17 +566,166 @@ def _useful_research_samples(samples: list[dict[str, Any]], *, limit: int = 5) -
         seen.add(key)
         useful.append(
             {
+                "query": item.get("query", ""),
+                "scope": item.get("scope", ""),
                 "resource_type": item.get("resource_type"),
                 "resource_id": item.get("resource_id"),
                 "title": title,
                 "snippet": snippet,
                 "source_boundary": item.get("source_boundary", ""),
                 "risk_level": item.get("risk_level", ""),
+                "score": item.get("score"),
             }
         )
         if len(useful) >= limit:
             break
     return useful
+
+
+def _all_useful_research_samples(analysis: dict[str, Any], *, limit: int = 200) -> list[dict[str, Any]]:
+    research_evidence = analysis.get("research_evidence") or {}
+    semantic = research_evidence.get("semantic_recall") or {}
+    hotspot = research_evidence.get("hotspot_recall") or {}
+    return _useful_research_samples((semantic.get("samples") or []) + (hotspot.get("samples") or []), limit=limit)
+
+
+def _research_evidence_themes(sample: dict[str, Any]) -> list[str]:
+    text = f"{sample.get('title', '')} {sample.get('snippet', '')}".lower()
+    theme_rules = [
+        ("AI/算力", [" ai ", "gpu", "server", "cloud", "hbm", "asic", "算力"]),
+        ("Capex", ["capex", "capital expenditure", "investment"]),
+        ("收入/利润率", ["revenue", "margin", "gross", "opm", "收入", "利润"]),
+        ("价格/渠道", ["price", "wholesale", "channel", "moutai", "价格", "批价", "渠道"]),
+        ("银行/NIM", ["interest", "loan", "roe", "asset quality", "nim", "不良", "息差"]),
+        ("风险", ["risk", "tariff", "weaker", "decreased", "decline", "风险", "下滑"]),
+        ("需求/供应链", ["demand", "supply", "supply chain", "shipment", "需求", "供应链"]),
+    ]
+    padded = f" {text} "
+    themes = []
+    for label, needles in theme_rules:
+        if any(needle in padded for needle in needles):
+            themes.append(label)
+    return themes[:4]
+
+
+def _research_samples_by_scope(analysis: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    by_scope: dict[str, list[dict[str, Any]]] = {}
+    for sample in _all_useful_research_samples(analysis, limit=200):
+        scope = str(sample.get("scope") or "")
+        if not scope:
+            continue
+        by_scope.setdefault(scope, []).append(sample)
+    return by_scope
+
+
+def _ranked_evidence_samples_for_decision(analysis: dict[str, Any], recommendations: list[dict[str, Any]], *, limit: int = 6) -> list[dict[str, Any]]:
+    samples = _all_useful_research_samples(analysis, limit=200)
+    if not samples:
+        return []
+    preferred_scopes = [str(item.get("label") or "") for item in recommendations[:6] if item.get("label")]
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_matching(scope: str) -> None:
+        for sample in samples:
+            if str(sample.get("scope") or "") != scope:
+                continue
+            key = f"{sample.get('resource_id')}:{sample.get('snippet', '')[:120]}"
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(sample)
+            return
+
+    for scope in preferred_scopes:
+        add_matching(scope)
+        if len(selected) >= limit:
+            return selected
+    for scope in ("theme_ai_infrastructure", "theme_china_ai_chain"):
+        add_matching(scope)
+        if len(selected) >= limit:
+            return selected
+    for sample in samples:
+        key = f"{sample.get('resource_id')}:{sample.get('snippet', '')[:120]}"
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(sample)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _evidence_covered_scopes(analysis: dict[str, Any]) -> set[str]:
+    return set(_research_samples_by_scope(analysis))
+
+
+def _evidence_coverage_summary(analysis: dict[str, Any], recommendations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    samples_by_scope = _research_samples_by_scope(analysis)
+    rows: list[dict[str, Any]] = []
+    for item in recommendations:
+        label = str(item.get("label") or "")
+        samples = samples_by_scope.get(label, [])
+        themes: list[str] = []
+        for sample in samples:
+            for theme in _research_evidence_themes(sample):
+                if theme not in themes:
+                    themes.append(theme)
+        top_sample = samples[0] if samples else {}
+        rows.append(
+            {
+                "label": label,
+                "name": item.get("name", ""),
+                "status": "direct_opinion_evidence" if samples else "missing_direct_evidence",
+                "direct_sample_count": len(samples),
+                "themes": themes[:4],
+                "top_resource_id": top_sample.get("resource_id", ""),
+                "top_snippet": _clean_research_snippet(top_sample.get("snippet", ""))[:220] if top_sample else "",
+                "source_boundary": top_sample.get("source_boundary", "") if top_sample else "",
+            }
+        )
+    return rows
+
+
+def _evidence_watchlist(
+    analysis: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+    displayed_labels: set[str],
+    *,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    samples_by_scope = _research_samples_by_scope(analysis)
+    recommendation_by_label = {str(item.get("label") or ""): item for item in recommendations}
+    rows: list[dict[str, Any]] = []
+    for label, samples in samples_by_scope.items():
+        if label.startswith("theme_") or label in displayed_labels or label not in recommendation_by_label:
+            continue
+        item = recommendation_by_label[label]
+        themes: list[str] = []
+        for sample in samples:
+            for theme in _research_evidence_themes(sample):
+                if theme not in themes:
+                    themes.append(theme)
+        top_sample = samples[0] if samples else {}
+        rows.append(
+            {
+                "label": label,
+                "name": item.get("name", ""),
+                "stance": item.get("stance", ""),
+                "action": item.get("action", ""),
+                "as_of_date": item.get("as_of_date", ""),
+                "total_return_pct": item.get("total_return_pct", 0),
+                "candidate_weight_pct": item.get("candidate_weight_pct", 0),
+                "direct_sample_count": len(samples),
+                "themes": themes[:4],
+                "top_resource_id": top_sample.get("resource_id", ""),
+                "top_snippet": _clean_research_snippet(top_sample.get("snippet", ""))[:220] if top_sample else "",
+                "source_boundary": top_sample.get("source_boundary", "") if top_sample else "",
+                "reason": "研报有直接观点，但行情/组合模拟未进入前台候选。",
+            }
+        )
+    rows.sort(key=lambda item: (int(item.get("direct_sample_count") or 0), abs(_safe_float(item.get("total_return_pct")))), reverse=True)
+    return rows[:limit]
 
 
 def _asset_rows_for_decision(analysis: dict[str, Any]) -> list[dict[str, Any]]:
@@ -558,18 +853,19 @@ def _recommendation_for_row(row: dict[str, Any], data_quality: dict[str, Any]) -
     volatility = _safe_float(row.get("volatility"))
     weight = _safe_float(row.get("candidate_weight"))
     return_count = int(row.get("return_count") or 0)
-    latest_u_date = str(data_quality.get("latest_by_market", {}).get("U") or "")
-    ashare_lag_days = (
-        _days_between(str(row.get("as_of_date")), latest_u_date)
-        if row.get("market") == "A" and row.get("as_of_date") and latest_u_date
+    latest_by_market = data_quality.get("latest_by_market", {}) if isinstance(data_quality.get("latest_by_market"), dict) else {}
+    market_latest_date = str(latest_by_market.get(str(row.get("market") or "")) or "")
+    market_lag_days = (
+        _days_between(str(row.get("as_of_date")), market_latest_date)
+        if row.get("as_of_date") and market_latest_date
         else 0
     )
 
     if data_quality.get("decision_readiness") == "not_actionable":
-        if ashare_lag_days > 2:
+        if market_lag_days > 2:
             action = "stale_data_watch"
             stance = "数据滞后"
-            risks.append("跨市场日期不一致，组合层不能使用")
+            risks.append("标的落后于同市场最新行情日期，组合层不能使用")
         elif total_return > 0.08 and drawdown < 0.1:
             action = "research_watch_positive"
             stance = "积极观察"
@@ -607,8 +903,8 @@ def _recommendation_for_row(row: dict[str, Any], data_quality: dict[str, Any]) -
         risks.append("收益样本少于 20 个交易日")
     if volatility > 0.025:
         risks.append("短期波动较高")
-    if ashare_lag_days > 2:
-        risks.append(f"A股行情较美股最新日期滞后 {ashare_lag_days} 天")
+    if market_lag_days > 2:
+        risks.append(f"行情较同市场最新日期滞后 {market_lag_days} 天")
 
     return action, stance, risks
 
@@ -668,9 +964,19 @@ def _decision_summary(analysis: dict[str, Any], data_quality: dict[str, Any]) ->
             }
         )
 
-    semantic = (analysis.get("research_evidence") or {}).get("semantic_recall") or {}
-    hotspot = (analysis.get("research_evidence") or {}).get("hotspot_recall") or {}
-    evidence_samples = _useful_research_samples((semantic.get("samples") or []) + (hotspot.get("samples") or []), limit=6)
+    evidence_samples = _ranked_evidence_samples_for_decision(analysis, recommendations, limit=6)
+    covered_scopes = _evidence_covered_scopes(analysis)
+    for item in recommendations[:6]:
+        label = str(item.get("label") or "")
+        if label and label not in covered_scopes:
+            item.setdefault("risks", []).append("未召回到该标的的直接研报样本")
+    evidence_coverage = _evidence_coverage_summary(analysis, recommendations[:6])
+    evidence_watchlist = _evidence_watchlist(
+        analysis,
+        recommendations,
+        {str(item.get("label") or "") for item in recommendations[:6]},
+        limit=6,
+    )
     top = recommendations[:3]
     red_flags = [issue["message"] for issue in data_quality.get("issues", [])]
     if not evidence_samples:
@@ -682,8 +988,10 @@ def _decision_summary(analysis: dict[str, Any], data_quality: dict[str, Any]) ->
         positive = [item for item in recommendations if item["action"] == "research_watch_positive"]
         stale = [item for item in recommendations if item["action"] == "stale_data_watch"]
         if positive:
-            if "mixed_market_dates" in issue_codes:
-                conclusion = f"单市场层面可先跟踪 {', '.join(item['label'] for item in positive[:4])}；跨市场组合因数据日期不一致被拦截。"
+            if "cross_market_date_mismatch" in issue_codes:
+                conclusion = f"单市场层面可先跟踪 {', '.join(item['label'] for item in positive[:4])}；跨市场日期不同，需按市场分别解释。"
+            elif "stale_within_market" in issue_codes:
+                conclusion = f"单市场层面可先跟踪 {', '.join(item['label'] for item in positive[:4])}；但部分标的落后于本市场最新日期，需补齐后再进入组合比较。"
             elif "weak_research_evidence" in issue_codes:
                 conclusion = f"单市场层面可先跟踪 {', '.join(item['label'] for item in positive[:4])}；但研报事实证据门禁未通过，不能形成可执行建议。"
             else:
@@ -711,11 +1019,20 @@ def _decision_summary(analysis: dict[str, Any], data_quality: dict[str, Any]) ->
         "top_recommendations": recommendations[:6],
         "red_flags": red_flags[:8],
         "evidence_samples": evidence_samples,
+        "evidence_coverage": evidence_coverage,
+        "evidence_watchlist": evidence_watchlist,
         "usage_boundary": "research_summary_only_not_investment_advice_not_trade_signal",
     }
 
 
-def _run_analysis(client: ApiClient, assets: list[dict[str, str]], latest_snapshot: list[dict[str, Any]], *, suffix: str) -> dict[str, Any]:
+def _run_analysis(
+    client: ApiClient,
+    assets: list[dict[str, str]],
+    latest_snapshot: list[dict[str, Any]],
+    *,
+    suffix: str,
+    semantic_timeout_seconds: float = DEFAULT_SEMANTIC_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     latest_date = max(row["as_of_date"] for row in latest_snapshot)
     start_date, end_date = _return_window(latest_date)
     returns: dict[str, Any] = {}
@@ -829,7 +1146,7 @@ def _run_analysis(client: ApiClient, assets: list[dict[str, str]], latest_snapsh
     # latest-analysis evidence summary and avoid turning transient metrics timeouts into
     # false "zero research data" conclusions.
     metrics_counts = dict(dashboard_counts)
-    research_evidence = _research_evidence_audit(client, metrics_counts)
+    research_evidence = _research_evidence_audit(client, metrics_counts, assets=assets, semantic_timeout_seconds=semantic_timeout_seconds)
     report_id = f"opr_latest_{suffix}"
     operating_report = client.request(
         "POST",
@@ -931,6 +1248,64 @@ def _markdown_report(result: dict[str, Any]) -> str:
     lines.extend(["", "## 关键红旗", ""])
     for flag in decision.get("red_flags", []) or ["暂无"]:
         lines.append(f"- {flag}")
+    evidence_coverage = decision.get("evidence_coverage") or []
+    if evidence_coverage:
+        lines.extend(
+            [
+                "",
+                "## 研报覆盖概览",
+                "",
+                "| 标的 | 状态 | 样本数 | 主题 | 代表片段 | 边界 |",
+                "| --- | --- | ---: | --- | --- | --- |",
+            ]
+        )
+        for item in evidence_coverage:
+            themes = ", ".join(item.get("themes") or ["-"])
+            snippet = _clean_research_snippet(item.get("top_snippet") or "")[:180].replace("|", "/")
+            status = "有直接观点证据" if item.get("status") == "direct_opinion_evidence" else "缺直接研报样本"
+            lines.append(
+                f"| {item.get('label')} | {status} | {int(item.get('direct_sample_count') or 0)} | "
+                f"{themes.replace('|', '/')} | {snippet or '-'} | {item.get('source_boundary', '') or '-'} |"
+            )
+    evidence_watchlist = decision.get("evidence_watchlist") or []
+    if evidence_watchlist:
+        lines.extend(
+            [
+                "",
+                "## 研报观察池",
+                "",
+                "| 标的 | 研报样本 | 主题 | 区间收益 | 模拟权重 | 代表片段 |",
+                "| --- | ---: | --- | ---: | ---: | --- |",
+            ]
+        )
+        for item in evidence_watchlist:
+            themes = ", ".join(item.get("themes") or ["-"]).replace("|", "/")
+            snippet = _clean_research_snippet(item.get("top_snippet") or "")[:180].replace("|", "/")
+            lines.append(
+                f"| {item.get('label')} | {int(item.get('direct_sample_count') or 0)} | {themes} | "
+                f"{_safe_float(item.get('total_return_pct')):.2f}% | {_safe_float(item.get('candidate_weight_pct')):.2f}% | "
+                f"{snippet or '-'} |"
+            )
+    evidence_samples = decision.get("evidence_samples") or []
+    if evidence_samples:
+        lines.extend(
+            [
+                "",
+                "## 研报证据样本",
+                "",
+                "| 范围 | 类型 | 标题 | 摘要 | 边界 |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+        )
+        for item in evidence_samples[:6]:
+            title = _clean_research_snippet(item.get("title") or item.get("resource_id") or "-")
+            snippet = _clean_research_snippet(item.get("snippet") or "")
+            title = title[:80].replace("|", "/")
+            snippet = snippet[:220].replace("|", "/")
+            lines.append(
+                f"| {item.get('scope') or '-'} | {item.get('resource_type') or '-'} | {title} | {snippet} | "
+                f"{item.get('source_boundary', '')} |"
+            )
     supplemental = analysis.get("supplemental_market_observations") or {}
     observations = supplemental.get("observations") or []
     if observations:
@@ -990,6 +1365,7 @@ def _markdown_report(result: dict[str, Any]) -> str:
         f"- 研报观点证据: reports={research_counts.get('research_reports', 0)}, "
         f"citation_evidence={research_counts.get('research_report_citation_evidence', 0)}, "
         f"semantic_status={research_evidence.get('semantic_recall', {}).get('status', '-')}, "
+        f"semantic_useful={research_evidence.get('semantic_recall', {}).get('useful_sample_count', 0)}, "
         f"hotspot_status={research_evidence.get('hotspot_recall', {}).get('status', '-')}"
     )
     for connector_id, row in pull.get("supplemental", {}).items():
@@ -1001,7 +1377,16 @@ def _markdown_report(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run_latest_analysis(base_url: str, *, symbols: list[str], us_tickers: list[str], research_root: str, output_dir: Path, timeout: float) -> dict[str, Any]:
+def run_latest_analysis(
+    base_url: str,
+    *,
+    symbols: list[str],
+    us_tickers: list[str],
+    research_root: str,
+    output_dir: Path,
+    timeout: float,
+    semantic_timeout_seconds: float = DEFAULT_SEMANTIC_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     client = ApiClient(base_url, timeout=timeout)
     suffix = str(int(time.time()))
     health = client.request("GET", "/api/health", role="unknown")
@@ -1011,7 +1396,10 @@ def run_latest_analysis(base_url: str, *, symbols: list[str], us_tickers: list[s
         raise RuntimeError("no latest market data found for requested symbols")
     latest_date = max(row["as_of_date"] for row in latest_snapshot)
     data_pull = _pull_latest_data(client, symbols, research_root=research_root, latest_date=latest_date)
-    analysis = _enrich_analysis(_run_analysis(client, assets, latest_snapshot, suffix=suffix), data_pull)
+    analysis = _enrich_analysis(
+        _run_analysis(client, assets, latest_snapshot, suffix=suffix, semantic_timeout_seconds=semantic_timeout_seconds),
+        data_pull,
+    )
     result = {
         "status": "passed",
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1040,10 +1428,19 @@ def main() -> None:
     parser.add_argument("--research-root", default="/data/local/research_reports")
     parser.add_argument("--output-dir", default="artifacts/latest-analysis")
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--semantic-timeout-seconds", type=float, default=DEFAULT_SEMANTIC_TIMEOUT_SECONDS)
     args = parser.parse_args()
     symbols = [item.strip() for item in args.symbols.split(",") if item.strip()]
     us_tickers = [item.strip().upper() for item in args.us_tickers.split(",") if item.strip()]
-    result = run_latest_analysis(args.base_url, symbols=symbols, us_tickers=us_tickers, research_root=args.research_root, output_dir=Path(args.output_dir), timeout=args.timeout)
+    result = run_latest_analysis(
+        args.base_url,
+        symbols=symbols,
+        us_tickers=us_tickers,
+        research_root=args.research_root,
+        output_dir=Path(args.output_dir),
+        timeout=args.timeout,
+        semantic_timeout_seconds=args.semantic_timeout_seconds,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
 
 

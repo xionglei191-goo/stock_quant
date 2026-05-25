@@ -30,6 +30,9 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_records_position
 CREATE INDEX IF NOT EXISTS idx_ai_quant_records_payload_gin
     ON ai_quant.records USING GIN (payload);
 
+DROP INDEX IF EXISTS ai_quant.idx_ai_quant_market_data_security_date;
+DROP INDEX IF EXISTS ai_quant.idx_ai_quant_market_data_source;
+
 CREATE INDEX IF NOT EXISTS idx_ai_quant_astock_connectors_status
     ON ai_quant.records ((payload->>'provider'), (payload->>'status'), (payload->>'last_check_status'))
     WHERE collection = 'astock_connectors';
@@ -42,13 +45,42 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_documents_source
     ON ai_quant.records ((payload->>'source_id'), (payload->>'document_type'))
     WHERE collection = 'documents';
 
-CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_security_date
-    ON ai_quant.records ((payload->>'security_id'), (payload->>'as_of_date'))
-    WHERE collection = 'market_data';
+CREATE TABLE IF NOT EXISTS ai_quant.market_data_bars (
+    security_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    data_type TEXT NOT NULL DEFAULT 'eod',
+    as_of_date DATE NOT NULL,
+    market TEXT NOT NULL,
+    currency TEXT NOT NULL DEFAULT '',
+    open NUMERIC NOT NULL DEFAULT 0,
+    high NUMERIC NOT NULL DEFAULT 0,
+    low NUMERIC NOT NULL DEFAULT 0,
+    close NUMERIC NOT NULL,
+    adjusted_close NUMERIC NOT NULL DEFAULT 0,
+    volume NUMERIC NOT NULL DEFAULT 0,
+    amount NUMERIC NOT NULL DEFAULT 0,
+    data_id TEXT NOT NULL,
+    rights_tag JSONB NOT NULL DEFAULT '{}'::jsonb,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (security_id, source_id, data_type, as_of_date)
+);
 
-CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_source
-    ON ai_quant.records ((payload->>'source_id'), (payload->>'data_type'))
-    WHERE collection = 'market_data';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_quant_market_data_bars_data_id
+    ON ai_quant.market_data_bars (data_id);
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_bars_market_date
+    ON ai_quant.market_data_bars (market, as_of_date DESC, security_id);
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_bars_source_date
+    ON ai_quant.market_data_bars (source_id, data_type, as_of_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_bars_security_date
+    ON ai_quant.market_data_bars (security_id, source_id, data_type, as_of_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_bars_as_of_date
+    ON ai_quant.market_data_bars (as_of_date DESC, data_id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_corporate_actions_security
     ON ai_quant.records ((payload->>'security_id'), (payload->>'action_type'), (payload->>'ex_date'))
@@ -199,6 +231,13 @@ BEFORE UPDATE ON ai_quant.records
 FOR EACH ROW
 EXECUTE FUNCTION ai_quant.touch_updated_at();
 
+DROP TRIGGER IF EXISTS trg_ai_quant_market_data_bars_touch_updated_at ON ai_quant.market_data_bars;
+
+CREATE TRIGGER trg_ai_quant_market_data_bars_touch_updated_at
+BEFORE UPDATE ON ai_quant.market_data_bars
+FOR EACH ROW
+EXECUTE FUNCTION ai_quant.touch_updated_at();
+
 CREATE OR REPLACE VIEW ai_quant.documents AS
 SELECT
     item_id AS document_id,
@@ -339,19 +378,28 @@ SELECT
 FROM ai_quant.records
 WHERE collection = 'model_versions';
 
+DROP VIEW IF EXISTS ai_quant.market_data_records;
+DROP VIEW IF EXISTS ai_quant.market_data;
+
 CREATE OR REPLACE VIEW ai_quant.market_data AS
 SELECT
-    item_id AS data_id,
-    payload->>'security_id' AS security_id,
-    payload->>'source_id' AS source_id,
-    payload->>'market' AS market,
-    (payload->>'as_of_date')::date AS as_of_date,
-    payload->>'data_type' AS data_type,
-    (payload->>'close')::numeric AS close,
-    (payload->>'volume')::numeric AS volume,
-    payload
-FROM ai_quant.records
-WHERE collection = 'market_data';
+    data_id,
+    security_id,
+    source_id,
+    market,
+    as_of_date,
+    data_type,
+    open,
+    high,
+    low,
+    close,
+    adjusted_close,
+    volume,
+    amount,
+    rights_tag,
+    payload,
+    updated_at
+FROM ai_quant.market_data_bars;
 
 CREATE OR REPLACE VIEW ai_quant.corporate_actions AS
 SELECT

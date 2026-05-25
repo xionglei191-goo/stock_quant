@@ -103,6 +103,67 @@ def _upsert(cursor: Any, collection: str, item_id: str, payload: dict[str, Any],
     )
 
 
+def _upsert_market_data_bar(cursor: Any, payload: dict[str, Any], *, amount: float = 0.0) -> None:
+    cursor.execute(
+        """
+        INSERT INTO ai_quant.market_data_bars (
+            security_id,
+            source_id,
+            data_type,
+            as_of_date,
+            market,
+            currency,
+            open,
+            high,
+            low,
+            close,
+            adjusted_close,
+            volume,
+            amount,
+            data_id,
+            rights_tag,
+            payload,
+            created_at
+        )
+        VALUES (%s, %s, %s, %s::date, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+        ON CONFLICT (security_id, source_id, data_type, as_of_date)
+        DO UPDATE SET
+            market = EXCLUDED.market,
+            currency = EXCLUDED.currency,
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            adjusted_close = EXCLUDED.adjusted_close,
+            volume = EXCLUDED.volume,
+            amount = EXCLUDED.amount,
+            data_id = EXCLUDED.data_id,
+            rights_tag = EXCLUDED.rights_tag,
+            payload = EXCLUDED.payload,
+            updated_at = now()
+        """,
+        (
+            payload["security_id"],
+            payload["source_id"],
+            payload["data_type"],
+            payload["as_of_date"],
+            payload["market"],
+            payload.get("currency", ""),
+            payload.get("open", 0.0),
+            payload.get("high", 0.0),
+            payload.get("low", 0.0),
+            payload["close"],
+            payload.get("adjusted_close", payload["close"]),
+            payload.get("volume", 0.0),
+            amount,
+            payload["data_id"],
+            json.dumps(payload.get("rights_tag", {}), ensure_ascii=False, sort_keys=True),
+            json.dumps({**payload, "amount": amount}, ensure_ascii=False, sort_keys=True),
+            payload.get("created_at"),
+        ),
+    )
+
+
 def _source_payload(source_id: str) -> dict[str, Any]:
     return {
         "source_id": source_id,
@@ -133,17 +194,33 @@ def _source_payload(source_id: str) -> dict[str, Any]:
 def _latest_date_for_symbol(cursor: Any, *, security_id: str, source_id: str, data_type: str) -> str:
     cursor.execute(
         """
-        SELECT MAX(payload->>'as_of_date')
-        FROM ai_quant.records
-        WHERE collection = 'market_data'
-          AND payload->>'security_id' = %s
-          AND payload->>'source_id' = %s
-          AND payload->>'data_type' = %s
+        SELECT MAX(as_of_date)::text
+        FROM ai_quant.market_data_bars
+        WHERE security_id = %s
+          AND source_id = %s
+          AND data_type = %s
         """,
         (security_id, source_id, data_type),
     )
     row = cursor.fetchone()
     return str(row[0] or "") if row else ""
+
+
+def _latest_dates_for_symbols(cursor: Any, *, security_ids: list[str], source_id: str, data_type: str) -> dict[str, str]:
+    if not security_ids:
+        return {}
+    cursor.execute(
+        """
+        SELECT security_id, MAX(as_of_date)::text
+        FROM ai_quant.market_data_bars
+        WHERE security_id = ANY(%s)
+          AND source_id = %s
+          AND data_type = %s
+        GROUP BY security_id
+        """,
+        (security_ids, source_id, data_type),
+    )
+    return {str(security_id): str(latest or "") for security_id, latest in cursor.fetchall()}
 
 
 def _symbols_from_db(cursor: Any, *, symbol_prefix: str = "", include_b_shares: bool = False) -> list[dict[str, str]]:
@@ -154,6 +231,7 @@ def _symbols_from_db(cursor: Any, *, symbol_prefix: str = "", include_b_shares: 
         WHERE collection = 'securities'
           AND payload->>'market' = 'A'
           AND COALESCE(payload->>'status', 'active') = 'active'
+          AND COALESCE(payload->>'company_universe_scope', 'in_scope') = 'in_scope'
         ORDER BY payload->>'ticker'
         """
     )
@@ -166,6 +244,8 @@ def _symbols_from_db(cursor: Any, *, symbol_prefix: str = "", include_b_shares: 
         if symbol_prefix and not symbol.startswith(symbol_prefix):
             continue
         if not include_b_shares and symbol.startswith(("200", "900")):
+            continue
+        if not _is_active_a_share(symbol, symbol, "1", "1", include_b_shares=include_b_shares):
             continue
         seen.add(symbol)
         rows.append(
@@ -297,6 +377,7 @@ def import_ashare_eod(args: argparse.Namespace) -> dict[str, Any]:
         "queried_symbol_count": 0,
         "updated_symbol_count": 0,
         "created_or_updated_rows": 0,
+        "typed_bar_rows": 0,
         "empty_symbol_count": 0,
         "failed_symbol_count": 0,
         "failed_symbols": [],
@@ -322,12 +403,18 @@ def import_ashare_eod(args: argparse.Namespace) -> dict[str, Any]:
                 if args.max_symbols:
                     symbols = symbols[: args.max_symbols]
                 summary["symbol_count"] = len(symbols)
+                latest_by_security = _latest_dates_for_symbols(
+                    cursor,
+                    security_ids=[item["security_id"] for item in symbols],
+                    source_id=args.source_id,
+                    data_type=args.data_type,
+                )
 
                 for index, item in enumerate(symbols, start=1):
                     symbol = item["symbol"]
                     security_id = item["security_id"]
                     issuer_id = item["issuer_id"]
-                    latest = _latest_date_for_symbol(cursor, security_id=security_id, source_id=args.source_id, data_type=args.data_type)
+                    latest = latest_by_security.get(security_id, "")
                     start_date = args.start_date or (_next_date(latest) if latest else args.fallback_start_date)
                     if start_date > requested_end_date:
                         summary["symbol_results"].append(
@@ -387,29 +474,27 @@ def import_ashare_eod(args: argparse.Namespace) -> dict[str, Any]:
                     for row in rows:
                         as_of_date = row["as_of_date"]
                         data_id = _market_data_id(security_id, as_of_date, args.data_type, args.source_id)
-                        _upsert(
-                            cursor,
-                            "market_data",
-                            data_id,
-                            {
-                                "data_id": data_id,
-                                "security_id": security_id,
-                                "source_id": args.source_id,
-                                "market": "A",
-                                "as_of_date": as_of_date,
-                                "data_type": args.data_type,
-                                "currency": "CNY",
-                                "open": row["open"],
-                                "high": row["high"],
-                                "low": row["low"],
-                                "close": row["close"],
-                                "adjusted_close": row["close"],
-                                "volume": row["volume"],
-                                "rights_tag": RIGHTS_TAG,
-                                "created_at": now,
-                            },
-                        )
+                        market_payload = {
+                            "data_id": data_id,
+                            "security_id": security_id,
+                            "source_id": args.source_id,
+                            "market": "A",
+                            "as_of_date": as_of_date,
+                            "data_type": args.data_type,
+                            "currency": "CNY",
+                            "open": row["open"],
+                            "high": row["high"],
+                            "low": row["low"],
+                            "close": row["close"],
+                            "adjusted_close": row["close"],
+                            "volume": row["volume"],
+                            "amount": row["amount"],
+                            "rights_tag": RIGHTS_TAG,
+                            "created_at": now,
+                        }
+                        _upsert_market_data_bar(cursor, market_payload, amount=float(row.get("amount", 0.0) or 0.0))
                         summary["created_or_updated_rows"] += 1
+                        summary["typed_bar_rows"] += 1
                         summary["min_date"] = as_of_date if not summary["min_date"] else min(summary["min_date"], as_of_date)
                         summary["max_date"] = as_of_date if not summary["max_date"] else max(summary["max_date"], as_of_date)
                     summary["updated_symbol_count"] += 1

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 import json
 import os
 from pathlib import Path
@@ -79,6 +79,7 @@ from .utils import parse_datetime, to_plain
 
 
 CollectionSpec = tuple[str, str, type]
+BASELINE_SCHEMA_VERSION = "0001_baseline_jsonb_records"
 
 
 COLLECTIONS: tuple[CollectionSpec, ...] = (
@@ -246,6 +247,9 @@ def _hydrate_model(model_type: type, data: dict[str, Any]) -> Any:
             data[field_name] = None
         else:
             data[field_name] = parse_datetime(data.get(field_name))
+    if is_dataclass(model_type):
+        allowed_fields = {item.name for item in fields(model_type)}
+        data = {key: value for key, value in data.items() if key in allowed_fields}
     return model_type(**data)
 
 
@@ -336,7 +340,7 @@ class SQLiteStore(InMemoryStore):
     def __init__(self, path: str | Path):
         super().__init__()
         self.path = Path(path)
-        self._ensure_schema()
+        self._ensure_schema_if_needed()
         self._load()
 
     def _connect(self) -> sqlite3.Connection:
@@ -410,7 +414,7 @@ class PostgreSQLStore(InMemoryStore):
         self._lazy_market_data_count = 0
         self._record_hashes: dict[tuple[str, str], str] = {}
         self._audit_hashes: dict[str, str] = {}
-        self._ensure_schema()
+        self._ensure_schema_if_needed()
         self._load()
 
     def _default_connect(self, dsn: str) -> Any:
@@ -429,15 +433,51 @@ class PostgreSQLStore(InMemoryStore):
             with connection:
                 with connection.cursor() as cursor:
                     cursor.execute(schema_sql)
+                    try:
+                        cursor.execute(
+                            """
+                            INSERT INTO ai_quant.schema_migrations (version, description)
+                            VALUES (%s, %s)
+                            ON CONFLICT (version)
+                            DO UPDATE SET description = EXCLUDED.description, applied_at = now()
+                            """,
+                            (BASELINE_SCHEMA_VERSION, f"Applied {self.schema_path}"),
+                        )
+                    except TypeError:
+                        cursor.execute(
+                            f"""
+                            INSERT INTO ai_quant.schema_migrations (version, description)
+                            VALUES ('{BASELINE_SCHEMA_VERSION}', 'Applied {self.schema_path}')
+                            ON CONFLICT (version)
+                            DO UPDATE SET description = EXCLUDED.description, applied_at = now()
+                            """
+                        )
+
+    def _baseline_schema_recorded(self) -> bool:
+        try:
+            with closing(self._connect()) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT to_regclass('ai_quant.schema_migrations') IS NOT NULL")
+                    row = cursor.fetchone()
+                    if not row or not bool(row[0]):
+                        return False
+                    cursor.execute("SELECT 1 FROM ai_quant.schema_migrations WHERE version = %s", (BASELINE_SCHEMA_VERSION,))
+                    return cursor.fetchone() is not None
+        except Exception:
+            return False
+
+    def _ensure_schema_if_needed(self) -> None:
+        if self._baseline_schema_recorded():
+            return
+        self._ensure_schema()
 
     def _load(self) -> None:
         specs = {collection: (key_field, model_type) for collection, key_field, model_type in COLLECTIONS}
         with closing(self._connect()) as connection:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) FROM ai_quant.records WHERE collection = %s", ("market_data",))
-                self._lazy_market_data_count = int(cursor.fetchone()[0] or 0)
-                eager_limit = int(os.getenv("AI_QUANT_POSTGRES_MARKET_DATA_EAGER_LIMIT", "500000"))
-                if self._lazy_market_data_count > eager_limit:
+                cursor.execute("SELECT to_regclass('ai_quant.market_data_bars') IS NOT NULL")
+                typed_market_data_available = bool(cursor.fetchone()[0])
+                if typed_market_data_available:
                     self._lazy_collections.add("market_data")
                 records_sql = """
                     SELECT collection, item_id, payload, position
@@ -478,7 +518,10 @@ class PostgreSQLStore(InMemoryStore):
         with closing(self._connect()) as connection:
             with connection:
                 with connection.cursor() as cursor:
+                    cursor.execute("SELECT to_regclass('ai_quant.market_data_bars') IS NOT NULL")
+                    typed_market_data_available = bool(cursor.fetchone()[0])
                     current_keys: set[tuple[str, str]] = set()
+                    typed_market_data_keys: set[str] = set()
                     for collection, key_field, _model_type in COLLECTIONS:
                         records = getattr(self, collection)
                         for item_id, item in records.items():
@@ -487,6 +530,13 @@ class PostgreSQLStore(InMemoryStore):
                             payload = to_plain(item)
                             payload_hash = self._payload_hash(payload)
                             if self._record_hashes.get((collection, item_id)) == payload_hash:
+                                if collection == "market_data" and typed_market_data_available:
+                                    typed_market_data_keys.add(item_id)
+                                continue
+                            if collection == "market_data" and typed_market_data_available:
+                                self.upsert_market_data_bar(item, cursor=cursor, payload=payload)
+                                self._record_hashes[(collection, item_id)] = payload_hash
+                                typed_market_data_keys.add(item_id)
                                 continue
                             cursor.execute(
                                 """
@@ -504,7 +554,9 @@ class PostgreSQLStore(InMemoryStore):
                             )
                             self._record_hashes[(collection, item_id)] = payload_hash
                     deletable_previous_keys = {
-                        key for key in self._record_hashes if key[0] not in self._lazy_collections and key not in current_keys
+                        key
+                        for key in self._record_hashes
+                        if key[0] != "market_data" and key[0] not in self._lazy_collections and key not in current_keys
                     }
                     for collection, item_id in sorted(deletable_previous_keys):
                         cursor.execute("DELETE FROM ai_quant.records WHERE collection = %s AND item_id = %s", (collection, item_id))
@@ -569,6 +621,85 @@ class PostgreSQLStore(InMemoryStore):
                     for event_id in sorted(set(self._audit_hashes) - current_audit_ids):
                         cursor.execute("DELETE FROM ai_quant.audit_log WHERE event_id = %s", (event_id,))
                         self._audit_hashes.pop(event_id, None)
+        if typed_market_data_available and typed_market_data_keys:
+            for item_id in typed_market_data_keys:
+                self.market_data.pop(item_id, None)
+                self._record_hashes.pop(("market_data", item_id), None)
+
+    def market_data_bars_available(self) -> bool:
+        with closing(self._connect()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT to_regclass('ai_quant.market_data_bars') IS NOT NULL")
+                row = cursor.fetchone()
+        return bool(row and row[0])
+
+    def upsert_market_data_bar(self, point: MarketDataPoint, *, cursor: Any | None = None, payload: dict[str, Any] | None = None) -> None:
+        plain_payload = payload or to_plain(point)
+        rights_tag = plain_payload.get("rights_tag", {})
+        amount = float(plain_payload.get("amount", 0.0) or 0.0)
+        params = (
+            point.security_id,
+            point.source_id,
+            point.data_type,
+            point.as_of_date,
+            point.market,
+            point.currency,
+            point.open,
+            point.high,
+            point.low,
+            point.close,
+            point.adjusted_close,
+            point.volume,
+            amount,
+            point.data_id,
+            json.dumps(rights_tag, ensure_ascii=False, sort_keys=True),
+            json.dumps(plain_payload, ensure_ascii=False, sort_keys=True),
+            point.created_at,
+        )
+        sql = """
+            INSERT INTO ai_quant.market_data_bars (
+                security_id,
+                source_id,
+                data_type,
+                as_of_date,
+                market,
+                currency,
+                open,
+                high,
+                low,
+                close,
+                adjusted_close,
+                volume,
+                amount,
+                data_id,
+                rights_tag,
+                payload,
+                created_at
+            )
+            VALUES (%s, %s, %s, %s::date, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+            ON CONFLICT (security_id, source_id, data_type, as_of_date)
+            DO UPDATE SET
+                market = EXCLUDED.market,
+                currency = EXCLUDED.currency,
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                adjusted_close = EXCLUDED.adjusted_close,
+                volume = EXCLUDED.volume,
+                amount = EXCLUDED.amount,
+                data_id = EXCLUDED.data_id,
+                rights_tag = EXCLUDED.rights_tag,
+                payload = EXCLUDED.payload,
+                updated_at = now()
+        """
+        if cursor is not None:
+            cursor.execute(sql, params)
+            return
+        with closing(self._connect()) as connection:
+            with connection:
+                with connection.cursor() as local_cursor:
+                    local_cursor.execute(sql, params)
 
     def query_market_data_points(
         self,
@@ -583,44 +714,126 @@ class PostgreSQLStore(InMemoryStore):
         limit: int = 50,
         descending: bool = True,
     ) -> list[MarketDataPoint]:
-        clauses = ["collection = %s"]
-        params: list[Any] = ["market_data"]
+        if self.market_data_bars_available():
+            return self._query_market_data_bars(
+                security_id=security_id,
+                market=market,
+                source_id=source_id,
+                data_type=data_type,
+                start_date=start_date,
+                end_date=end_date,
+                as_of_date_lte=as_of_date_lte,
+                limit=limit,
+                descending=descending,
+            )
+        return []
+
+    def _query_market_data_bars(
+        self,
+        *,
+        security_id: str = "",
+        market: str = "",
+        source_id: str = "",
+        data_type: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        as_of_date_lte: str = "",
+        limit: int = 50,
+        descending: bool = True,
+    ) -> list[MarketDataPoint]:
+        clauses = ["TRUE"]
+        params: list[Any] = []
         if security_id:
-            clauses.append("payload->>'security_id' = %s")
+            clauses.append("b.security_id = %s")
             params.append(security_id)
         if market:
-            clauses.append("payload->>'market' = %s")
+            clauses.append("b.market = %s")
             params.append(market)
         if source_id:
-            clauses.append("payload->>'source_id' = %s")
+            clauses.append("b.source_id = %s")
             params.append(source_id)
         if data_type:
-            clauses.append("payload->>'data_type' = %s")
+            clauses.append("b.data_type = %s")
             params.append(data_type)
         if start_date:
-            clauses.append("payload->>'as_of_date' >= %s")
+            clauses.append("b.as_of_date >= %s::date")
             params.append(start_date)
         if end_date:
-            clauses.append("payload->>'as_of_date' <= %s")
+            clauses.append("b.as_of_date <= %s::date")
             params.append(end_date)
         if as_of_date_lte:
-            clauses.append("payload->>'as_of_date' <= %s")
+            clauses.append("b.as_of_date <= %s::date")
             params.append(as_of_date_lte)
         order = "DESC" if descending else "ASC"
         bounded_limit = max(1, min(int(limit or 50), 10000))
         params.append(bounded_limit)
         sql = f"""
-            SELECT payload
-            FROM ai_quant.records
+            SELECT
+                b.data_id,
+                b.security_id,
+                b.source_id,
+                b.market,
+                b.as_of_date::text,
+                b.data_type,
+                b.currency,
+                b.open,
+                b.high,
+                b.low,
+                b.close,
+                b.adjusted_close,
+                b.volume,
+                b.amount,
+                b.rights_tag,
+                b.created_at
+            FROM ai_quant.market_data_bars AS b
             WHERE {' AND '.join(clauses)}
-            ORDER BY payload->>'as_of_date' {order}, item_id {order}
+            ORDER BY b.as_of_date {order}, b.data_id {order}
             LIMIT %s
         """
         with closing(self._connect()) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(sql, tuple(params))
                 rows = cursor.fetchall()
-        return [_hydrate_model(MarketDataPoint, _json_payload(payload)) for (payload,) in rows]
+        return [
+            MarketDataPoint.from_dict(
+                {
+                    "data_id": str(data_id),
+                    "security_id": str(row_security_id),
+                    "source_id": str(row_source_id),
+                    "market": str(row_market),
+                    "as_of_date": str(row_as_of_date),
+                    "data_type": str(row_data_type),
+                    "currency": str(row_currency or ""),
+                    "open": float(row_open or 0.0),
+                    "high": float(row_high or 0.0),
+                    "low": float(row_low or 0.0),
+                    "close": float(row_close or 0.0),
+                    "adjusted_close": float(row_adjusted_close or row_close or 0.0),
+                    "volume": float(row_volume or 0.0),
+                    "amount": float(row_amount or 0.0),
+                    "rights_tag": _json_payload(row_rights_tag),
+                    "created_at": row_created_at,
+                }
+            )
+            for (
+                data_id,
+                row_security_id,
+                row_source_id,
+                row_market,
+                row_as_of_date,
+                row_data_type,
+                row_currency,
+                row_open,
+                row_high,
+                row_low,
+                row_close,
+                row_adjusted_close,
+                row_volume,
+                row_amount,
+                row_rights_tag,
+                row_created_at,
+            ) in rows
+        ]
 
     def count_market_data_points(
         self,
@@ -630,22 +843,41 @@ class PostgreSQLStore(InMemoryStore):
         source_id: str = "",
         data_type: str = "",
     ) -> int:
-        clauses = ["collection = %s"]
-        params: list[Any] = ["market_data"]
-        if security_id:
-            clauses.append("payload->>'security_id' = %s")
-            params.append(security_id)
-        if market:
-            clauses.append("payload->>'market' = %s")
-            params.append(market)
-        if source_id:
-            clauses.append("payload->>'source_id' = %s")
-            params.append(source_id)
-        if data_type:
-            clauses.append("payload->>'data_type' = %s")
-            params.append(data_type)
-        sql = f"SELECT COUNT(*) FROM ai_quant.records WHERE {' AND '.join(clauses)}"
+        if self.market_data_bars_available():
+            clauses = ["TRUE"]
+            params: list[Any] = []
+            if security_id:
+                clauses.append("security_id = %s")
+                params.append(security_id)
+            if market:
+                clauses.append("market = %s")
+                params.append(market)
+            if source_id:
+                clauses.append("source_id = %s")
+                params.append(source_id)
+            if data_type:
+                clauses.append("data_type = %s")
+                params.append(data_type)
+            sql = f"SELECT COUNT(*) FROM ai_quant.market_data_bars WHERE {' AND '.join(clauses)}"
+            with closing(self._connect()) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(sql, tuple(params))
+                    return int(cursor.fetchone()[0] or 0)
+        return 0
+
+    def estimate_market_data_points(self) -> int:
+        if not self.market_data_bars_available():
+            return int(self._lazy_market_data_count or 0)
         with closing(self._connect()) as connection:
             with connection.cursor() as cursor:
-                cursor.execute(sql, tuple(params))
-                return int(cursor.fetchone()[0] or 0)
+                cursor.execute(
+                    """
+                    SELECT GREATEST(
+                        COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE schemaname = 'ai_quant' AND relname = 'market_data_bars'), 0),
+                        COALESCE((SELECT reltuples::bigint FROM pg_class WHERE oid = 'ai_quant.market_data_bars'::regclass), 0)
+                    )::bigint
+                    """
+                )
+                row = cursor.fetchone()
+        estimate = int(row[0] or 0) if row else 0
+        return max(estimate, int(self._lazy_market_data_count or 0), len(self.market_data))
