@@ -255,6 +255,7 @@ PIPELINE_ARGS=(
   "--analysis-timeout-seconds" "${AI_QUANT_DAILY_ANALYSIS_TIMEOUT_SECONDS:-1800}"
   "--latest-analysis-semantic-timeout-seconds" "${AI_QUANT_DAILY_LATEST_ANALYSIS_SEMANTIC_TIMEOUT_SECONDS:-8}"
   "--import-timeout-seconds" "${AI_QUANT_DAILY_IMPORT_TIMEOUT_SECONDS:-7200}"
+  "--scope-refresh-timeout-seconds" "${AI_QUANT_DAILY_SCOPE_REFRESH_TIMEOUT_SECONDS:-300}"
   "--us-tickers" "${AI_QUANT_DAILY_US_TICKERS:-AAPL,MSFT,NVDA,TSLA,SPY}"
   "--research-binding-tickers" "${AI_QUANT_DAILY_RESEARCH_BINDING_TICKERS:-AAPL,MSFT,NVDA,TSLA,SPY,300750,600519,000001,600000}"
   "--research-binding-artifact-limit" "${AI_QUANT_DAILY_RESEARCH_BINDING_ARTIFACT_LIMIT:-40}"

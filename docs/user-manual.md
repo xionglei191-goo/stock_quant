@@ -891,6 +891,16 @@ bash scripts/run_daily_data_update.sh
 python scripts/daily_data_update_pipeline.py --dsn "数据库地址"
 ```
 
+每日运行会生成 `daily-update-YYYY-MM-DD.json`。优先看这几个字段：
+
+- `summary.market_data`: 各市场最新日期、行数增量、是否仍为 typed-only PostgreSQL K 线存储。
+- `summary.actionable_insight`: 今日异动、研报/证据绑定数量和可读摘要。
+- `summary.latency`: 市场数据、dashboard、latest analysis、graph query 的延迟门禁。
+- `artifact_manifest`: 本次所有 JSON/Markdown 产物是否存在、状态和大小。
+- `operator_next_actions`: 失败或非阻断异常的下一步处理建议。
+
+公开源目录刷新和分析层都有独立超时。若 baostock/Yahoo/分析接口短时卡住，日更会写失败 artifact，并继续执行后续 storage audit、daily insight 和 latency audit；不要把单个 `allowed_failure` 当成数据回退，先看 `operator_next_actions` 和对应 artifact。
+
 ### 6.3 研究工作流
 
 #### 处理研报

@@ -59,6 +59,30 @@ python3 scripts/staging_lineage_registry_acceptance.py http://127.0.0.1:8000 --o
 python3 scripts/staging_vision_gate_acceptance.py http://127.0.0.1:8000 --record-launch-checklist
 ```
 
+## 3.1 本机每日刷新闭环
+
+本机个人生产使用 `scripts/run_daily_data_update.sh` 作为统一入口。它会启动 compose 服务、获取互斥锁、按 state offset 推进 A 股/美股增量，并写入 `artifacts/daily-update-local/latest-run.json`。
+
+关键产物是每次运行目录里的 `daily-update-YYYY-MM-DD.json`：
+
+- `summary.market_data` 记录 A/U 最新日期、行数增量、typed-only K 线存储和旧 JSONB 记录数。
+- `summary.actionable_insight` 记录今日可读研究摘要、异动标的、研报证据公司数和质量门禁。
+- `summary.latency` 记录关键 API 的最慢 probe 和阈值。
+- `artifact_manifest` 列出本次所有 artifact 的存在性、状态和大小。
+- `operator_next_actions` 是第一优先级排障入口。
+
+公开源 scope 刷新默认有独立短超时 `AI_QUANT_DAILY_SCOPE_REFRESH_TIMEOUT_SECONDS=300`，不会占用 `AI_QUANT_DAILY_IMPORT_TIMEOUT_SECONDS` 的长导入窗口。`latest_analysis_run.py` 也受 `AI_QUANT_DAILY_ANALYSIS_TIMEOUT_SECONDS` 外层约束；超时或失败时会在目标 artifact 路径写入失败 JSON，随后继续执行 daily insight、latency audit 和本机生产审计。若需要把非阻断失败改成阻断，关闭对应 `ALLOW_*_FAILURE` 环境变量。
+
+日更调度验收：
+
+```bash
+python3 scripts/audit_daily_update_schedule.py \
+  --repo-root . \
+  --output-dir artifacts/daily-update-local \
+  --require-latest-run \
+  --output artifacts/daily-update-local/daily-update-schedule-audit.json
+```
+
 进入 staging 后，对真实部署地址执行 HTTP 验收。该脚本只会使用模拟成交，不会开启真实券商或自动下单：
 
 ```bash

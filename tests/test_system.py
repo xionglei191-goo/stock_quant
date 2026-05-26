@@ -12623,7 +12623,7 @@ class SystemServiceTests(unittest.TestCase):
     def test_daily_pipeline_runs_research_binding_before_insight_gate(self) -> None:
         commands = []
 
-        def fake_run_command(name, command, *, timeout, allow_failure=False):
+        def fake_run_command(name, command, *, timeout, allow_failure=False, artifact_path=None):
             commands.append((name, command, allow_failure))
             return {"name": name, "status": "passed", "returncode": 0}
 
@@ -12723,6 +12723,7 @@ class SystemServiceTests(unittest.TestCase):
                     latency_threshold_ms=5000.0,
                     api_timeout_seconds=1.0,
                     import_timeout_seconds=1,
+                    scope_refresh_timeout_seconds=1,
                     analysis_timeout_seconds=1,
                     audit_timeout_seconds=1,
                     insight_top_limit=4,
@@ -12748,10 +12749,229 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("--tickers", binding_command)
         self.assertIn("AAPL,MSFT", binding_command)
 
+    def test_daily_pipeline_emits_operator_summary_and_artifact_manifest(self) -> None:
+        def fake_run_command(name, command, *, timeout, allow_failure=False, artifact_path=None):
+            return {"name": name, "status": "passed", "returncode": 0}
+
+        db_snapshots = iter(
+            [
+                {
+                    "status": "passed",
+                    "sources": [
+                        {"market": "A", "source_id": "public_eod_market_data", "rows": 100, "min_date": "2026-01-01", "max_date": "2026-05-22"},
+                        {"market": "U", "source_id": "yahoo_chart_us_eod", "rows": 50, "min_date": "2026-01-01", "max_date": "2026-05-22"},
+                    ],
+                },
+                {
+                    "status": "passed",
+                    "sources": [
+                        {"market": "A", "source_id": "public_eod_market_data", "rows": 103, "min_date": "2026-01-01", "max_date": "2026-05-25"},
+                        {"market": "U", "source_id": "yahoo_chart_us_eod", "rows": 52, "min_date": "2026-01-01", "max_date": "2026-05-22"},
+                    ],
+                },
+            ]
+        )
+
+        def fake_storage_audit(**_kwargs):
+            return {
+                "status": "passed",
+                "passed": True,
+                "failure_count": 0,
+                "legacy_market_data_records": 0,
+                "typed_market_data_bars": {"estimated_count": 155, "max_date": "2026-05-25", "min_date": "2026-01-01"},
+            }
+
+        def fake_insight(**_kwargs):
+            return {
+                "status": "passed",
+                "passed": True,
+                "actionable_research_summary": {
+                    "headline": "直接研报证据优先: A 600519 高端消费链",
+                    "abnormal_headline": "A 市场首要异动: 600519 涨跌幅 3.10%",
+                    "direct_report_evidence_company_count": 2,
+                },
+                "quality_gates": {
+                    "has_min_direct_report_evidence": True,
+                    "direct_report_evidence_company_count": 2,
+                    "useful_evidence_sample_count": 5,
+                    "failure_count": 0,
+                    "failures": [],
+                },
+            }
+
+        def fake_latency(*_args, **kwargs):
+            payload = {
+                "status": "passed",
+                "passed": True,
+                "failure_count": 0,
+                "threshold_ms": 5000.0,
+                "probes": [
+                    {"name": "market_data_latest", "elapsed_ms": 18.0, "success": True},
+                    {"name": "dashboard_ceo", "elapsed_ms": 123.0, "success": True},
+                ],
+            }
+            output = kwargs.get("output")
+            if output:
+                Path(output).write_text(json.dumps(payload), encoding="utf-8")
+            return payload
+
+        original_run = daily_data_update_pipeline_script._run_command
+        original_dates = daily_data_update_pipeline_script._latest_db_dates
+        original_storage = daily_data_update_pipeline_script.build_market_data_storage_audit
+        original_insight = daily_data_update_pipeline_script.build_daily_market_insight
+        original_markdown = daily_data_update_pipeline_script.build_insight_markdown
+        original_latency = daily_data_update_pipeline_script._latency_audit
+        try:
+            daily_data_update_pipeline_script._run_command = fake_run_command  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latest_db_dates = lambda _dsn: next(db_snapshots)  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_market_data_storage_audit = fake_storage_audit  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_daily_market_insight = fake_insight  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_insight_markdown = lambda _payload: "# daily insight\n"  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latency_audit = fake_latency  # type: ignore[assignment]
+            with TemporaryDirectory() as temp_dir:
+                args = argparse.Namespace(
+                    dsn="postgresql://example.invalid/ai_quant",
+                    base_url="http://127.0.0.1:8000",
+                    run_date="2026-05-25",
+                    end_date="2026-05-25",
+                    output_dir=temp_dir,
+                    output=str(Path(temp_dir) / "daily.json"),
+                    run_ashare_incremental=False,
+                    run_ashare_scope_refresh=False,
+                    skip_ashare=True,
+                    skip_us=True,
+                    tdx_incremental=False,
+                    vipdoc_path="",
+                    tdx_start_date="",
+                    tdx_lookback_days=7,
+                    tdx_batch_size=5000,
+                    skip_tdx_coverage_audit=True,
+                    fail_on_tdx_coverage_needs_import=False,
+                    tdx_coverage_start_date="",
+                    tdx_coverage_lookback_days=30,
+                    tdx_coverage_max_symbols=0,
+                    tdx_symbol_prefix="",
+                    tdx_coverage_sample_limit=20,
+                    tdx_coverage_statement_timeout_ms=120000,
+                    tdx_coverage_strict_file_scan=False,
+                    ashare_start_date="",
+                    ashare_offset=0,
+                    ashare_batch_size=100,
+                    max_ashare_symbols=0,
+                    us_tickers="AAPL,MSFT",
+                    us_tickers_from_db=False,
+                    us_ticker_filter="",
+                    us_offset=0,
+                    us_batch_size=100,
+                    max_us_tickers=0,
+                    us_start_date="",
+                    us_lookback_days=7,
+                    latest_symbols="600000",
+                    sample_security_id="sec_000001",
+                    sample_source_id="public_eod_market_data",
+                    commit_every=200,
+                    artifact_symbol_limit=500,
+                    allow_import_failure=False,
+                    skip_research_binding=True,
+                    allow_research_binding_failure=False,
+                    research_binding_dry_run=False,
+                    research_binding_market="",
+                    research_binding_tickers="AAPL,MSFT",
+                    research_binding_limit=100,
+                    research_binding_max_matches_per_report=2,
+                    research_binding_artifact_limit=10,
+                    research_binding_timeout_seconds=99,
+                    skip_latest_analysis=True,
+                    allow_latest_analysis_failure=False,
+                    latest_analysis_semantic_timeout_seconds=2.5,
+                    skip_local_production_audit=True,
+                    skip_project_completion_audit=True,
+                    run_project_completion_audit=False,
+                    latency_threshold_ms=5000.0,
+                    api_timeout_seconds=1.0,
+                    import_timeout_seconds=1,
+                    scope_refresh_timeout_seconds=1,
+                    analysis_timeout_seconds=1,
+                    audit_timeout_seconds=1,
+                    insight_top_limit=4,
+                    insight_current_row_limit=100,
+                    insight_history_rows=20,
+                    insight_recent_days=7,
+                    min_direct_evidence_companies=1,
+                )
+                result = daily_data_update_pipeline_script.run_daily_pipeline(args)
+        finally:
+            daily_data_update_pipeline_script._run_command = original_run  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latest_db_dates = original_dates  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_market_data_storage_audit = original_storage  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_daily_market_insight = original_insight  # type: ignore[assignment]
+            daily_data_update_pipeline_script.build_insight_markdown = original_markdown  # type: ignore[assignment]
+            daily_data_update_pipeline_script._latency_audit = original_latency  # type: ignore[assignment]
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["summary"]["market_data"]["latest_by_market"]["A"], "2026-05-25")
+        self.assertTrue(result["summary"]["market_data"]["typed_storage_only"])
+        self.assertEqual(result["summary"]["market_data"]["typed_table_rows_estimate"], 155)
+        a_delta = next(item for item in result["summary"]["market_data"]["source_deltas"] if item["market"] == "A")
+        self.assertEqual(a_delta["row_delta"], 3)
+        self.assertEqual(result["summary"]["actionable_insight"]["direct_report_evidence_company_count"], 2)
+        self.assertEqual(result["summary"]["latency"]["slowest_probe"], "dashboard_ceo")
+        self.assertIn("artifact_manifest", result)
+        manifest_names = {item["name"] for item in result["artifact_manifest"]["artifacts"]}
+        self.assertIn("market-data-storage-audit", manifest_names)
+        self.assertIn("daily-insight-json", manifest_names)
+        self.assertTrue(result["operator_next_actions"][0].startswith("No blocking action required"))
+
+    def test_daily_pipeline_command_timeout_writes_failure_artifact(self) -> None:
+        original_run = daily_data_update_pipeline_script.subprocess.run
+        try:
+            def fake_run(*_args, **_kwargs):
+                raise daily_data_update_pipeline_script.subprocess.TimeoutExpired(cmd=["python"], timeout=3, output="partial out", stderr="partial err")
+
+            daily_data_update_pipeline_script.subprocess.run = fake_run  # type: ignore[assignment]
+            with TemporaryDirectory() as temp_dir:
+                output = Path(temp_dir) / "scope.json"
+                result = daily_data_update_pipeline_script._run_command(  # type: ignore[attr-defined]
+                    "ashare_current_universe_scope",
+                    ["python", "scripts/scope_ashare_current_baostock_universe.py", "--output", str(output)],
+                    timeout=3,
+                    allow_failure=True,
+                )
+                artifact = json.loads(output.read_text(encoding="utf-8"))
+        finally:
+            daily_data_update_pipeline_script.subprocess.run = original_run  # type: ignore[assignment]
+
+        self.assertEqual(result["status"], "allowed_failure")
+        self.assertEqual(result["error_type"], "TimeoutExpired")
+        self.assertEqual(artifact["status"], "allowed_failure")
+        self.assertFalse(artifact["passed"])
+        self.assertEqual(artifact["step"], "ashare_current_universe_scope")
+        self.assertEqual(artifact["timeout_seconds"], 3)
+
+    def test_daily_pipeline_operator_actions_include_allowed_failures(self) -> None:
+        summary = {
+            "market_data": {"typed_storage_only": True},
+            "actionable_insight": {"status": "passed"},
+            "latency": {"status": "passed"},
+            "nonblocking_issues": [
+                {
+                    "name": "ashare_current_universe_scope",
+                    "status": "allowed_failure",
+                    "artifact": "artifacts/scope.json",
+                    "error": "command timed out after 300 seconds",
+                }
+            ],
+        }
+
+        actions = daily_data_update_pipeline_script._operator_next_actions(summary, {"daily-insight-md": "artifacts/insight.md"}, [])  # type: ignore[attr-defined]
+
+        self.assertIn("Review non-blocking step ashare_current_universe_scope", actions[0])
+        self.assertIn("artifacts/scope.json", actions[0])
+
     def test_daily_pipeline_passes_bounded_semantic_timeout_to_latest_analysis(self) -> None:
         commands = []
 
-        def fake_run_command(name, command, *, timeout, allow_failure=False):
+        def fake_run_command(name, command, *, timeout, allow_failure=False, artifact_path=None):
             commands.append((name, command, allow_failure))
             return {"name": name, "status": "passed", "returncode": 0}
 
@@ -12832,6 +13052,7 @@ class SystemServiceTests(unittest.TestCase):
                     latency_threshold_ms=5000.0,
                     api_timeout_seconds=1.0,
                     import_timeout_seconds=1,
+                    scope_refresh_timeout_seconds=1,
                     analysis_timeout_seconds=1,
                     audit_timeout_seconds=1,
                     insight_top_limit=4,
@@ -12933,6 +13154,21 @@ class SystemServiceTests(unittest.TestCase):
                 json.dumps(
                     {
                         "status": "passed",
+                        "summary": {
+                            "market_data": {
+                                "typed_storage_only": True,
+                                "latest_by_market": {"A": "2026-05-25", "U": "2026-05-22"},
+                                "typed_table_rows_estimate": 28352527,
+                            },
+                            "actionable_insight": {
+                                "status": "passed",
+                                "headline": "直接研报证据优先: ok",
+                                "direct_report_evidence_company_count": 1,
+                            },
+                            "latency": {"status": "passed", "slowest_probe": "dashboard_ceo"},
+                        },
+                        "artifact_manifest": {"artifact_count": 2, "artifacts": []},
+                        "operator_next_actions": ["No blocking action required."],
                         "artifacts": {
                             "latest_analysis": str(run_dir / "latest-analysis-2026-05-25" / "latest-analysis.json"),
                             "daily-insight-json": str(run_dir / "daily-insight-json-2026-05-25.json"),
@@ -12972,8 +13208,14 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(gates["timer_has_morning_and_evening_runs"])
         self.assertTrue(gates["latest_pipeline_storage_audit"])
         self.assertTrue(gates["latest_pipeline_daily_insight"])
+        self.assertTrue(gates["latest_pipeline_operator_summary"])
+        self.assertTrue(gates["latest_pipeline_artifact_manifest"])
+        self.assertTrue(gates["latest_pipeline_typed_storage_summary"])
+        self.assertTrue(gates["latest_pipeline_actionable_insight_summary"])
         self.assertTrue(gates["latest_analysis_artifact_shape"])
         self.assertTrue(gates["daily_insight_artifact_shape"])
+        self.assertEqual(audit["latest_pipeline_summary"]["latest_by_market"]["A"], "2026-05-25")
+        self.assertEqual(audit["latest_pipeline_summary"]["slowest_probe"], "dashboard_ceo")
 
     def test_daily_update_runner_records_skipped_current_batches(self) -> None:
         runner = Path("scripts/run_daily_data_update.sh").read_text(encoding="utf-8")

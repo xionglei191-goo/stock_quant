@@ -54,6 +54,28 @@ def _artifact_summary(artifact: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _latest_pipeline_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    market_data = summary.get("market_data") if isinstance(summary.get("market_data"), dict) else {}
+    insight = summary.get("actionable_insight") if isinstance(summary.get("actionable_insight"), dict) else {}
+    latency = summary.get("latency") if isinstance(summary.get("latency"), dict) else {}
+    artifact_manifest = payload.get("artifact_manifest") if isinstance(payload.get("artifact_manifest"), dict) else {}
+    operator_actions = payload.get("operator_next_actions") if isinstance(payload.get("operator_next_actions"), list) else []
+    return {
+        "has_summary": bool(summary),
+        "typed_storage_only": bool(market_data.get("typed_storage_only")),
+        "latest_by_market": market_data.get("latest_by_market") if isinstance(market_data.get("latest_by_market"), dict) else {},
+        "typed_table_rows_estimate": market_data.get("typed_table_rows_estimate"),
+        "actionable_insight_status": str(insight.get("status") or ""),
+        "actionable_headline": str(insight.get("headline") or ""),
+        "direct_report_evidence_company_count": insight.get("direct_report_evidence_company_count"),
+        "latency_status": str(latency.get("status") or ""),
+        "slowest_probe": str(latency.get("slowest_probe") or ""),
+        "artifact_count": artifact_manifest.get("artifact_count"),
+        "operator_next_actions": [str(item) for item in operator_actions[:5]],
+    }
+
+
 def _latest_pipeline_artifact(output_dir: Path) -> Path | None:
     pointer = output_dir / "latest-run.json"
     if pointer.exists():
@@ -137,6 +159,7 @@ def build_daily_update_schedule_audit(
     timer_text = timer_path.read_text(encoding="utf-8") if timer_path.exists() else ""
     latest_artifact = _latest_pipeline_artifact(output_root) if output_root.exists() else None
     latest_payload = _load_json(latest_artifact) if latest_artifact else {}
+    latest_summary = _latest_pipeline_summary(latest_payload) if latest_payload else {}
     latest_steps = latest_payload.get("steps") if isinstance(latest_payload.get("steps"), list) else []
     step_names = {str(step.get("name")) for step in latest_steps if isinstance(step, dict)}
     latest_status = latest_payload.get("status") if latest_payload else ""
@@ -179,6 +202,10 @@ def build_daily_update_schedule_audit(
                 _gate("latest_pipeline_passed", latest_status == "passed", str(latest_status or "not_found")),
                 _gate("latest_pipeline_storage_audit", "market_data_storage_audit" in step_names, "market_data_storage_audit step required"),
                 _gate("latest_pipeline_daily_insight", "daily_market_insight" in step_names, "daily_market_insight step required"),
+                _gate("latest_pipeline_operator_summary", bool(latest_summary.get("has_summary")), "Daily run should expose machine-readable summary for operators"),
+                _gate("latest_pipeline_artifact_manifest", bool(latest_summary.get("artifact_count")), "Daily run should expose artifact_manifest for retention/debugging"),
+                _gate("latest_pipeline_typed_storage_summary", latest_summary.get("typed_storage_only") is True, "Daily summary should confirm typed-only K-line storage"),
+                _gate("latest_pipeline_actionable_insight_summary", latest_summary.get("actionable_insight_status") == "passed", "Daily summary should include passed actionable insight status"),
                 _gate("latest_analysis_artifact_shape", latest_analysis.get("exists") and isinstance(latest_analysis_payload.get("analysis"), dict), str(latest_analysis.get("path") or "")),
                 _gate("daily_insight_artifact_shape", daily_insight.get("exists") and isinstance(daily_insight_payload.get("actionable_research_summary"), dict), str(daily_insight.get("path") or "")),
             ]
@@ -199,6 +226,7 @@ def build_daily_update_schedule_audit(
         "output_dir": str(output_root),
         "latest_pipeline_artifact": str(latest_artifact) if latest_artifact else "",
         "latest_pipeline_status": latest_status,
+        "latest_pipeline_summary": latest_summary,
         "latest_analysis_artifact": _artifact_summary(latest_analysis),
         "daily_insight_artifact": _artifact_summary(daily_insight),
         "systemd": systemd_status,

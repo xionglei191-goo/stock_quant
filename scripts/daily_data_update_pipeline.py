@@ -44,16 +44,71 @@ def _write_text(path: str | Path, text: str) -> None:
     output.write_text(text, encoding="utf-8")
 
 
-def _run_command(name: str, command: list[str], *, timeout: int, allow_failure: bool = False) -> dict[str, Any]:
+def _command_output_path(command: list[str]) -> Path | None:
+    for index, part in enumerate(command):
+        if part == "--output" and index + 1 < len(command):
+            return Path(command[index + 1])
+    return None
+
+
+def _write_command_failure_artifact(path: Path | None, payload: Mapping[str, Any]) -> None:
+    if path is None or path.exists():
+        return
+    try:
+        _write_json(path, payload)
+    except Exception:
+        return
+
+
+def _run_command(
+    name: str,
+    command: list[str],
+    *,
+    timeout: int,
+    allow_failure: bool = False,
+    artifact_path: str | Path | None = None,
+) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
+    output_path = Path(artifact_path) if artifact_path else _command_output_path(command)
     result: dict[str, Any] = {
         "name": name,
         "command": " ".join(shlex.quote(part) for part in command),
         "started_at": started.isoformat(),
         "timeout_seconds": timeout,
     }
+    if output_path is not None:
+        result["artifact"] = str(output_path)
     try:
         completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        result.update(
+            {
+                "status": "allowed_failure" if allow_failure else "failed",
+                "returncode": None,
+                "error": f"command timed out after {timeout} seconds",
+                "error_type": type(exc).__name__,
+                "stdout_tail": str(exc.stdout or "")[-8000:],
+                "stderr_tail": str(exc.stderr or "")[-8000:],
+                "elapsed_seconds": round((datetime.now(timezone.utc) - started).total_seconds(), 3),
+            }
+        )
+        if not allow_failure:
+            result["blocking"] = True
+        _write_command_failure_artifact(
+            output_path,
+            {
+                "status": result["status"],
+                "passed": False,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "step": name,
+                "command": result["command"],
+                "timeout_seconds": timeout,
+                "error": result["error"],
+                "error_type": result["error_type"],
+                "blocking": bool(result.get("blocking")),
+            },
+        )
+        return result
     except Exception as exc:
         result.update(
             {
@@ -66,6 +121,20 @@ def _run_command(name: str, command: list[str], *, timeout: int, allow_failure: 
         )
         if not allow_failure:
             result["blocking"] = True
+        _write_command_failure_artifact(
+            output_path,
+            {
+                "status": result["status"],
+                "passed": False,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "step": name,
+                "command": result["command"],
+                "timeout_seconds": timeout,
+                "error": result["error"],
+                "error_type": result["error_type"],
+                "blocking": bool(result.get("blocking")),
+            },
+        )
         return result
 
     status = "passed" if completed.returncode == 0 else "allowed_failure" if allow_failure else "failed"
@@ -80,6 +149,21 @@ def _run_command(name: str, command: list[str], *, timeout: int, allow_failure: 
     )
     if completed.returncode != 0 and not allow_failure:
         result["blocking"] = True
+    if completed.returncode != 0:
+        _write_command_failure_artifact(
+            output_path,
+            {
+                "status": status,
+                "passed": False,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "step": name,
+                "command": result["command"],
+                "returncode": completed.returncode,
+                "stdout_tail": result.get("stdout_tail", ""),
+                "stderr_tail": result.get("stderr_tail", ""),
+                "blocking": bool(result.get("blocking")),
+            },
+        )
     return result
 
 
@@ -219,6 +303,266 @@ def _latest_market_date(summary: Mapping[str, Any], *, market: str, source_id: s
     return ""
 
 
+def _load_json_artifact(path: str | Path | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    artifact_path = Path(path)
+    if not artifact_path.exists() or not artifact_path.is_file():
+        return {}
+    try:
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _artifact_manifest_entry(name: str, path: str | Path) -> dict[str, Any]:
+    artifact_path = Path(path)
+    entry: dict[str, Any] = {
+        "name": name,
+        "path": str(artifact_path),
+        "exists": artifact_path.exists(),
+        "type": "directory" if artifact_path.is_dir() else artifact_path.suffix.lstrip(".") or "file",
+    }
+    if artifact_path.exists() and artifact_path.is_file():
+        stat = artifact_path.stat()
+        entry.update(
+            {
+                "size_bytes": stat.st_size,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            }
+        )
+        if artifact_path.suffix.lower() == ".json":
+            payload = _load_json_artifact(artifact_path)
+            entry.update(
+                {
+                    "status": str(payload.get("status") or ""),
+                    "passed": payload.get("passed"),
+                    "failure_count": payload.get("failure_count"),
+                    "warning_count": payload.get("warning_count"),
+                }
+            )
+    return entry
+
+
+def _int_value(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_value(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _source_rows(summary: Mapping[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    sources = summary.get("sources")
+    if not isinstance(sources, list):
+        return rows
+    for item in sources:
+        if not isinstance(item, Mapping):
+            continue
+        market = str(item.get("market") or "")
+        source_id = str(item.get("source_id") or "")
+        if not market or not source_id:
+            continue
+        row_count = _int_value(item.get("rows"))
+        rows[(market, source_id)] = {
+            "market": market,
+            "source_id": source_id,
+            "rows": row_count,
+            "min_date": str(item.get("min_date") or ""),
+            "max_date": str(item.get("max_date") or ""),
+        }
+    return rows
+
+
+def _market_data_delta_summary(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, Any]:
+    before_rows = _source_rows(before)
+    after_rows = _source_rows(after)
+    keys = sorted(set(before_rows) | set(after_rows))
+    deltas = []
+    latest_by_market: dict[str, str] = {}
+    for key in keys:
+        before_item = before_rows.get(key, {"rows": 0})
+        after_item = after_rows.get(key, {"rows": 0, "market": key[0], "source_id": key[1], "min_date": "", "max_date": ""})
+        max_date = str(after_item.get("max_date") or "")
+        market = str(after_item.get("market") or key[0])
+        if max_date and max_date > latest_by_market.get(market, ""):
+            latest_by_market[market] = max_date
+        deltas.append(
+            {
+                "market": market,
+                "source_id": str(after_item.get("source_id") or key[1]),
+                "rows_before": _int_value(before_item.get("rows")),
+                "rows_after": _int_value(after_item.get("rows")),
+                "row_delta": _int_value(after_item.get("rows")) - _int_value(before_item.get("rows")),
+                "min_date": str(after_item.get("min_date") or ""),
+                "max_date": max_date,
+            }
+        )
+    return {
+        "latest_by_market": latest_by_market,
+        "source_deltas": deltas,
+    }
+
+
+def _artifact_payloads(artifacts: Mapping[str, str]) -> dict[str, dict[str, Any]]:
+    return {name: _load_json_artifact(path) for name, path in artifacts.items() if str(path).lower().endswith(".json")}
+
+
+def _daily_summary(
+    *,
+    run_date: str,
+    requested_end_date: str,
+    effective_end_dates: Mapping[str, str],
+    db_before: Mapping[str, Any],
+    db_after: Mapping[str, Any],
+    steps: list[dict[str, Any]],
+    artifacts: Mapping[str, str],
+    blocking_failures: list[dict[str, Any]],
+) -> dict[str, Any]:
+    nonblocking_issues = [
+        {
+            "name": str(step.get("name") or ""),
+            "status": str(step.get("status") or ""),
+            "artifact": str(step.get("artifact") or ""),
+            "error": _short_for_action(str(step.get("error") or step.get("stderr_tail") or "")),
+        }
+        for step in steps
+        if not (step.get("blocking") or step.get("status") == "failed")
+        and str(step.get("status") or "") not in {"", "passed"}
+    ]
+    payloads = _artifact_payloads(artifacts)
+    storage = payloads.get("market-data-storage-audit", {})
+    insight = payloads.get("daily-insight-json", {})
+    latency = payloads.get("latency-audit", {})
+    latest_analysis = payloads.get("latest_analysis", {})
+    local_production = payloads.get("local-production-audit", {})
+    project_completion = payloads.get("project-completion-audit", {})
+
+    action_summary = insight.get("actionable_research_summary") if isinstance(insight.get("actionable_research_summary"), Mapping) else {}
+    quality_gates = insight.get("quality_gates") if isinstance(insight.get("quality_gates"), Mapping) else {}
+    analysis = latest_analysis.get("analysis") if isinstance(latest_analysis.get("analysis"), Mapping) else {}
+    probes = latency.get("probes") if isinstance(latency.get("probes"), list) else []
+    slowest_probe = max((probe for probe in probes if isinstance(probe, Mapping)), key=lambda item: _float_value(item.get("elapsed_ms")), default={})
+    market_delta = _market_data_delta_summary(db_before, db_after)
+    storage_rows = storage.get("typed_market_data_bars") if isinstance(storage.get("typed_market_data_bars"), Mapping) else {}
+    typed_only = (
+        storage.get("status") == "passed"
+        and storage.get("legacy_market_data_records") == 0
+        and _int_value(storage_rows.get("estimated_count")) > 0
+    )
+
+    return {
+        "status": "passed" if not blocking_failures else "failed",
+        "run_date": run_date,
+        "requested_end_date": requested_end_date,
+        "effective_end_dates": dict(effective_end_dates),
+        "market_data": {
+            **market_delta,
+            "storage_audit_status": str(storage.get("status") or ""),
+            "typed_storage_only": typed_only,
+            "typed_table_rows_estimate": _int_value(storage_rows.get("estimated_count")),
+            "typed_table_max_date": str(storage_rows.get("max_date") or ""),
+            "legacy_market_data_records": _int_value(storage.get("legacy_market_data_records")),
+        },
+        "latest_analysis": {
+            "status": str(latest_analysis.get("status") or ""),
+            "latest_market_date": str(analysis.get("latest_market_date") or ""),
+            "decision_readiness": str((analysis.get("data_quality") or {}).get("decision_readiness") or "") if isinstance(analysis.get("data_quality"), Mapping) else "",
+            "headline": str((analysis.get("decision_summary") or {}).get("headline") or "") if isinstance(analysis.get("decision_summary"), Mapping) else "",
+        },
+        "actionable_insight": {
+            "status": str(insight.get("status") or ""),
+            "headline": str(action_summary.get("headline") or ""),
+            "abnormal_headline": str(action_summary.get("abnormal_headline") or ""),
+            "direct_report_evidence_company_count": _int_value(action_summary.get("direct_report_evidence_company_count") or quality_gates.get("direct_report_evidence_company_count")),
+            "useful_evidence_sample_count": _int_value(quality_gates.get("useful_evidence_sample_count")),
+            "quality_gate_failure_count": _int_value(quality_gates.get("failure_count")),
+            "markdown_artifact": str(artifacts.get("daily-insight-md") or ""),
+        },
+        "latency": {
+            "status": str(latency.get("status") or ""),
+            "failure_count": _int_value(latency.get("failure_count")),
+            "threshold_ms": _float_value(latency.get("threshold_ms")),
+            "slowest_probe": str(slowest_probe.get("name") or ""),
+            "max_elapsed_ms": _float_value(slowest_probe.get("elapsed_ms")),
+        },
+        "local_production": {
+            "status": str(local_production.get("status") or ""),
+            "ready_for_launch": bool(local_production.get("ready_for_launch")),
+            "failure_count": _int_value(local_production.get("failure_count")),
+            "warning_count": _int_value(local_production.get("warning_count")),
+        },
+        "project_completion": {
+            "status": str(project_completion.get("status") or ""),
+            "target_mode": str(project_completion.get("target_mode") or ""),
+        },
+        "step_count": len(steps),
+        "failure_count": len(blocking_failures),
+        "nonblocking_issue_count": len(nonblocking_issues),
+        "nonblocking_issues": nonblocking_issues[:10],
+        "first_failure": {
+            "name": str(blocking_failures[0].get("name") or ""),
+            "status": str(blocking_failures[0].get("status") or ""),
+            "artifact": str(blocking_failures[0].get("artifact") or ""),
+            "error": str(blocking_failures[0].get("error") or ""),
+        }
+        if blocking_failures
+        else {},
+    }
+
+
+def _operator_next_actions(summary: Mapping[str, Any], artifacts: Mapping[str, str], blocking_failures: list[dict[str, Any]]) -> list[str]:
+    actions: list[str] = []
+    if blocking_failures:
+        for failure in blocking_failures[:5]:
+            artifact_path = str(failure.get("artifact") or "")
+            error = str(failure.get("error") or failure.get("stderr_tail") or "").strip()
+            detail = f"; inspect {artifact_path}" if artifact_path else ""
+            if error:
+                detail += f"; error={_short_for_action(error)}"
+            actions.append(f"Fix failed step {failure.get('name')}{detail}.")
+        return actions
+
+    nonblocking_issues = summary.get("nonblocking_issues") if isinstance(summary.get("nonblocking_issues"), list) else []
+    for issue in nonblocking_issues[:5]:
+        if not isinstance(issue, Mapping):
+            continue
+        artifact_path = str(issue.get("artifact") or "")
+        error = str(issue.get("error") or "")
+        detail = f"; inspect {artifact_path}" if artifact_path else ""
+        if error:
+            detail += f"; error={error}"
+        actions.append(f"Review non-blocking step {issue.get('name')} ({issue.get('status')}){detail}.")
+
+    market_data = summary.get("market_data") if isinstance(summary.get("market_data"), Mapping) else {}
+    insight = summary.get("actionable_insight") if isinstance(summary.get("actionable_insight"), Mapping) else {}
+    latency = summary.get("latency") if isinstance(summary.get("latency"), Mapping) else {}
+    if not market_data.get("typed_storage_only"):
+        actions.append(f"Run market data storage audit before trusting K-line reads: {artifacts.get('market-data-storage-audit', '')}.")
+    if insight.get("status") != "passed":
+        actions.append(f"Review daily insight quality gates: {artifacts.get('daily-insight-json', '')}.")
+    if latency.get("status") != "passed":
+        actions.append(f"Review API latency audit: {artifacts.get('latency-audit', '')}.")
+    if not actions:
+        actions.append(f"No blocking action required; review the actionable summary at {artifacts.get('daily-insight-md', '')} and let the next scheduled run advance offsets.")
+    return actions
+
+
+def _short_for_action(value: str, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "..."
+
+
 def _previous_weekday(value: str) -> str:
     current = date.fromisoformat(value)
     while current.weekday() >= 5:
@@ -312,7 +656,14 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "--output",
             str(scope_output),
         ]
-        steps.append(_run_command("ashare_current_universe_scope", command, timeout=args.import_timeout_seconds, allow_failure=args.allow_import_failure))
+        steps.append(
+            _run_command(
+                "ashare_current_universe_scope",
+                command,
+                timeout=args.scope_refresh_timeout_seconds,
+                allow_failure=args.allow_import_failure,
+            )
+        )
 
     if args.run_ashare_incremental and not args.skip_ashare:
         ashare_output = artifact("ashare-eod-baostock-incremental")
@@ -428,7 +779,14 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
                 "--output",
                 str(us_scope_output),
             ]
-            steps.append(_run_command("us_yahoo_universe_scope", command, timeout=args.import_timeout_seconds, allow_failure=args.allow_import_failure))
+            steps.append(
+                _run_command(
+                    "us_yahoo_universe_scope",
+                    command,
+                    timeout=args.scope_refresh_timeout_seconds,
+                    allow_failure=args.allow_import_failure,
+                )
+            )
 
         us_output = artifact("us-eod-yahoo-incremental")
         us_start = args.us_start_date or (date.fromisoformat(run_date) - timedelta(days=args.us_lookback_days)).isoformat()
@@ -470,7 +828,14 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
                 "--output",
                 str(us_scope_post_output),
             ]
-            steps.append(_run_command("us_yahoo_universe_scope_post_import", command, timeout=args.import_timeout_seconds, allow_failure=args.allow_import_failure))
+            steps.append(
+                _run_command(
+                    "us_yahoo_universe_scope_post_import",
+                    command,
+                    timeout=args.scope_refresh_timeout_seconds,
+                    allow_failure=args.allow_import_failure,
+                )
+            )
 
     storage_output = artifact("market-data-storage-audit")
     storage_started = datetime.now(timezone.utc)
@@ -556,7 +921,15 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "--semantic-timeout-seconds",
             str(args.latest_analysis_semantic_timeout_seconds),
         ]
-        steps.append(_run_command("latest_analysis", command, timeout=args.analysis_timeout_seconds, allow_failure=args.allow_latest_analysis_failure))
+        steps.append(
+            _run_command(
+                "latest_analysis",
+                command,
+                timeout=args.analysis_timeout_seconds,
+                allow_failure=args.allow_latest_analysis_failure,
+                artifact_path=latest_output_dir / "latest-analysis.json",
+            )
+        )
 
     insight_output = artifact("daily-insight-json")
     insight_md_output = artifact("daily-insight-md", ".md")
@@ -637,6 +1010,25 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 
     db_after = _latest_db_dates(args.dsn)
     blocking_failures = [step for step in steps if step.get("blocking") or step.get("status") == "failed"]
+    effective_dates = {
+        "A": ashare_end_date,
+        "U": us_end_date,
+        "TDX": tdx_end_date,
+    }
+    summary = _daily_summary(
+        run_date=run_date,
+        requested_end_date=requested_end_date,
+        effective_end_dates=effective_dates,
+        db_before=db_before,
+        db_after=db_after,
+        steps=steps,
+        artifacts=artifacts,
+        blocking_failures=blocking_failures,
+    )
+    artifact_manifest = {
+        "artifact_count": len(artifacts),
+        "artifacts": [_artifact_manifest_entry(name, path) for name, path in sorted(artifacts.items())],
+    }
     result = {
         "status": "passed" if not blocking_failures else "failed",
         "passed": not blocking_failures,
@@ -644,17 +1036,16 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "run_date": run_date,
         "requested_end_date": requested_end_date,
-        "effective_end_dates": {
-            "A": ashare_end_date,
-            "U": us_end_date,
-            "TDX": tdx_end_date,
-        },
+        "effective_end_dates": effective_dates,
         "market_date_strategy": date_plan["strategy"],
         "production_boundary": "local_personal_production_daily_refresh_no_live_broker_no_auto_order",
         "db_before": db_before,
         "db_after": db_after,
         "steps": steps,
         "artifacts": artifacts,
+        "artifact_manifest": artifact_manifest,
+        "summary": summary,
+        "operator_next_actions": _operator_next_actions(summary, artifacts, blocking_failures),
         "failure_count": len(blocking_failures),
         "blocking_failures": blocking_failures,
         "usage_note": "Schedule this script from cron/systemd. Without --end-date it targets each market's latest EOD date only after that market's ready window has passed; A-share refresh is resumable with --ashare-offset and --ashare-batch-size.",
@@ -730,6 +1121,7 @@ def main() -> None:
     parser.add_argument("--latency-threshold-ms", type=float, default=5000.0)
     parser.add_argument("--api-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--import-timeout-seconds", type=int, default=7200)
+    parser.add_argument("--scope-refresh-timeout-seconds", type=int, default=300, help="Short timeout for public universe scope refreshes so external directory stalls do not occupy the daily runner for hours.")
     parser.add_argument("--analysis-timeout-seconds", type=int, default=1800)
     parser.add_argument("--audit-timeout-seconds", type=int, default=600)
     parser.add_argument("--insight-top-limit", type=int, default=12)
