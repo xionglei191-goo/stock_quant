@@ -741,6 +741,36 @@ class ResearchTask:
 
 
 @dataclass(slots=True)
+class ChokepointResearchRun:
+    run_id: str
+    topic: str
+    ticker: str = ""
+    theme: str = ""
+    chokepoint_node: str = ""
+    playbook: str = "generic"
+    mode: str = "strict"
+    status: str = "draft"
+    current_step: str = "sourceLedger"
+    steps: list[dict[str, Any]] = field(default_factory=list)
+    issues: list[dict[str, Any]] = field(default_factory=list)
+    validation_context: dict[str, Any] = field(default_factory=dict)
+    conclusion: dict[str, Any] = field(default_factory=dict)
+    review_snapshot: dict[str, Any] = field(default_factory=dict)
+    automation_allowed: bool = False
+    live_execution_allowed: bool = False
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"draft", "running", "paused", "review", "completed", "failed"}, "status")
+        _validate_choice(self.mode, {"strict", "balanced", "exploratory"}, "mode")
+        if self.automation_allowed:
+            raise ValidationError("chokepoint research runs must keep automation_allowed=false")
+        if self.live_execution_allowed:
+            raise ValidationError("chokepoint research runs must keep live_execution_allowed=false")
+
+
+@dataclass(slots=True)
 class BenchmarkConfig:
     benchmark_id: str
     language: str

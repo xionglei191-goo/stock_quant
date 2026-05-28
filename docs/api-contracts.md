@@ -2424,6 +2424,149 @@
 - `severity`
 - `owner`
 
+### 4.x 瓶颈研究
+
+#### `POST /api/chokepoint/runs`
+
+创建可持久化的 Serenity-style 瓶颈研究流水线 run。返回 7 个固定步骤：来源台账、事实审计、问题窄化、价值链映射、Chokepoint 排名、Thesis 草稿、验证与证伪。返回固定 `automation_allowed=false`、`live_execution_allowed=false`。
+
+请求字段：
+
+- `run_id` 可选
+- `topic`
+- `ticker`
+- `theme`
+- `chokepoint_node`
+- `playbook`
+- `mode`：`strict`、`balanced`、`exploratory`
+
+#### `GET /api/chokepoint/runs`
+
+查询历史瓶颈研究 run。
+
+请求字段：
+
+- `status`
+- `topic` / `q`
+- `ticker`
+- `limit`
+
+#### `GET|POST /api/chokepoint/readiness-report`
+
+汇总瓶颈研究流水线的生产就绪度，不触发 LLM、图数据库、向量库或交易系统。报告会对样本 run 的来源 URL 覆盖、`confirmed/inferred/speculative/unknown` 分层比例、fallback 命中、验证任务关闭率、边界违规命中（投资建议/思维链）进行打分和门禁检查。
+
+请求字段：
+
+- `run_ids`（可选）
+- `topic` / `q`（可选）
+- `ticker`（可选）
+- `status`（可选）
+- `limit`（可选）
+- `min_runs`
+- `min_source_url_coverage`
+- `min_confirmed_ratio`
+- `max_fallback_rate`
+- `min_needs_verification_closure_rate`
+- `max_boundary_violation_rate`
+- `record_readiness`
+
+返回字段：
+
+- `ready_for_chokepoint_research_production`
+- `ready_for_external_acceptance`
+- `missing_requirements`
+- `gates`
+- `scope`
+- `coverage_report`
+- `automation_allowed=false`
+- `live_execution_allowed=false`
+- `usage_boundary`
+
+#### `GET /api/chokepoint/runs/{run_id}`
+
+读取完整 run，包括 steps、issues、validation_context、conclusion 和 review_snapshot。
+
+#### `POST /api/chokepoint/runs/{run_id}/steps/{step_id}/run`
+
+运行或重跑单个步骤。后端使用 approved `llmtpl_chokepoint_step_v1` 调用 LLM，并持久化 `input_prompt`、`llm_run_id`、`output_text`、`summary`、`evidence_quality`、`issues` 和调优记录。若来源台账无 URL、输出含投资建议、出现思维链或 LLM fallback，则步骤进入 `review`。
+
+请求字段：
+
+- `input_prompt`
+- `role`
+- `max_tokens`
+- `temperature`
+- `timeout_seconds`
+- `tuning_notes`
+
+#### `POST /api/chokepoint/runs/{run_id}/run`
+
+从当前步骤顺序运行流水线。门禁问题会写入 step/issues 并保留为 `review`，流水线继续推进；如果跑到最后一步且所有步骤进入 `done`/`review`，后端会自动执行 finalize，生成 `conclusion` 并固化验证任务。LLM 结论生成失败或限流时，仍返回规则结论，并在 `conclusion.fallback_used` 标记回退。
+
+请求字段：
+
+- `start_step`
+- `step_limit`
+- `role`
+- `max_tokens`
+- `temperature`
+- `timeout_seconds`
+
+#### `POST /api/chokepoint/runs/{run_id}/finalize`
+
+生成或刷新瓶颈研究流水线结论。后端先根据 steps、issues、evidence_quality 和 validation_context 生成稳定规则结论，再尝试使用 approved `llmtpl_chokepoint_conclusion_v1` 做可读综合；AI 失败时不清空结论。接口会自动调用验证任务生成逻辑，把 open issue、unknown、needs_verification 和 P0 验证项固化为幂等 `ResearchTask`，并刷新验证资源计数。
+
+请求字段：
+
+- `role`
+- `max_tokens`
+- `temperature`
+- `timeout_seconds`
+- `verification_task_limit`
+
+返回 `conclusion` 固定包含：
+
+- `status`：`ready_for_review`、`needs_evidence` 或 `failed`
+- `one_line_conclusion`
+- `thesis_strength_score`
+- `confidence`
+- `evidence_quality_summary`
+- `confirmed_summary`
+- `inferred_summary`
+- `speculative_summary`
+- `unknowns`
+- `key_chokepoints`
+- `catalysts`
+- `falsification_conditions`
+- `validation_summary`
+- `open_issues`
+- `next_actions`
+- `verification_tasks`
+- `llm_run_id`
+- `fallback_used`
+- `usage_boundary=research_only_not_investment_advice`
+
+#### `POST /api/chokepoint/runs/{run_id}/review`
+
+人工复核 run 或 step，可追加调优记录、关闭 issue、更新 review snapshot。
+
+请求字段：
+
+- `step_id`
+- `status`
+- `run_status`
+- `tuning_notes`
+- `close_issue_ids`
+- `review_snapshot`
+
+#### `POST /api/chokepoint/runs/{run_id}/verification-tasks`
+
+把 open issue、unknown、needs_verification 和 P0 验证项固化为 `ResearchTask`。重复调用按稳定 task id 幂等返回 existing。
+
+请求字段：
+
+- `limit`
+
 #### `POST /api/playbooks/seed`
 
 写入默认事故剧本和季度演练计划，覆盖文档解析失败、数据采集失败、检索降级、LLM 网关失败和权限/敏感数据泄漏五类事故。返回 `playbooks` 与 `schedules`。

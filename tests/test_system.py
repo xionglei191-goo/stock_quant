@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 from tempfile import TemporaryDirectory
 import hashlib
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
 import threading
+import time
 import unittest
 import zipfile
 import zlib
@@ -21,7 +24,7 @@ from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, DecisionPack, SystemAlert
+from app.models import AlertNotification, DecisionPack, RightsTag, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
 from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
@@ -67,7 +70,7 @@ from scripts.staging_acceptance import run_staging_acceptance
 from scripts.staging_lineage_registry_acceptance import run_staging_lineage_registry_acceptance
 from scripts.staging_security_acceptance import run_staging_security_acceptance
 from scripts.ui_cross_browser_matrix_check import validate_cross_browser_matrix
-from scripts.ui_static_check import validate_ui_html
+from scripts.ui_static_check import REQUIRED_IDS, REQUIRED_JS_FUNCTIONS, validate_ui_html
 
 
 class _FakePostgresCursor:
@@ -320,6 +323,18 @@ class _FakeSecSingleNameConnectors:
 
 class SystemServiceTests(unittest.TestCase):
     def setUp(self) -> None:
+        preserved_ai_quant_env = {key: value for key, value in os.environ.items() if key.startswith("AI_QUANT_")}
+        for key in list(os.environ):
+            if key.startswith("AI_QUANT_"):
+                os.environ.pop(key, None)
+
+        def _restore_ai_quant_env() -> None:
+            for key in list(os.environ):
+                if key.startswith("AI_QUANT_"):
+                    os.environ.pop(key, None)
+            os.environ.update(preserved_ai_quant_env)
+
+        self.addCleanup(_restore_ai_quant_env)
         self.service = SystemService()
         self.service.document_parser = PaddleOCRParser(token="")
         self.router = ApiRouter(self.service)
@@ -4777,6 +4792,58 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(metrics.data["runs"], 1)
         self.assertEqual(metrics.data["failed_runs"], 0)
 
+    def test_llm_gateway_endpoint_accepts_request_timeout_without_forwarding_it(self) -> None:
+        sent = []
+
+        def fake_send(request, timeout):
+            sent.append({"timeout": timeout, "body": json.loads(request.data.decode("utf-8"))})
+            return '{"id":"chatcmpl_timeout","choices":[{"message":{"content":"OK"}}]}'.encode("utf-8")
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            timeout=120,
+            http_send=fake_send,
+        )
+        response = self.router.dispatch(
+            "POST",
+            "/api/llm/openai/chat/completions",
+            {"messages": [{"role": "user", "content": "ping"}], "timeout_seconds": 9},
+            actor="analyst",
+            role="nlp_ml",
+        )
+        self.assertTrue(response.success, response.error)
+        self.assertEqual(sent[0]["timeout"], 9)
+        self.assertNotIn("timeout_seconds", sent[0]["body"])
+        self.assertEqual(response.data["timeout_seconds"], 9)
+
+    def test_llm_gateway_request_timeout_is_hard_capped(self) -> None:
+        def slow_send(request, timeout):
+            time.sleep(2)
+            return b"{}"
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            timeout=120,
+            http_send=slow_send,
+        )
+        started = time.monotonic()
+        response = self.router.dispatch(
+            "POST",
+            "/api/llm/openai/chat/completions",
+            {"messages": [{"role": "user", "content": "ping"}], "timeout_seconds": 1},
+            actor="analyst",
+            role="nlp_ml",
+        )
+        elapsed = time.monotonic() - started
+        self.assertFalse(response.success)
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("timed out", response.error["message"])
+        self.assertLess(elapsed, 1.7)
+
     def test_llm_task_falls_back_to_rule_summary_when_gateway_unavailable(self) -> None:
         self.service.llm_gateway = LLMGateway(api_key="", http_send=lambda _request, _timeout: b"{}")
         self.router.dispatch("POST", "/api/llm/task-templates/seed", {}, actor="ml", role="nlp_ml")
@@ -4843,6 +4910,287 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(llm_review_notifications)
         self.assertEqual(llm_review_notifications[0]["status"], "pending")
         self.assertEqual(llm_review_notifications[0]["payload"]["type"], "llm_task_escalation")
+
+    def test_chokepoint_research_run_persists_steps_and_verification_tasks(self) -> None:
+        def fake_send(request, timeout):
+            body = json.loads(request.data.decode("utf-8"))
+            prompt = body["messages"][0]["content"]
+            if "来源台账" in prompt:
+                content = (
+                    "事实编号 | 事实陈述 | URL | 发布日期 | 来源类型 | confirmed/inferred/speculative | 置信度 | 下一步验证\n"
+                    "1 | DOE HALEU funding supports non-Russian supply chain | https://www.energy.gov/ | 2024-01-01 | government | confirmed | high | verify awards\n"
+                    "2 | SWU price remains unknown |  | unknown | unknown | unknown | low | needs_verification"
+                )
+            else:
+                content = "阶段结论：unknown 待验证，不构成投资建议。"
+            return json.dumps({"id": "chatcmpl_cp", "choices": [{"message": {"content": content}}]}).encode("utf-8")
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            http_send=fake_send,
+        )
+        self.service.store.securities["sec_ccj"] = services_module.Security(
+            security_id="sec_ccj",
+            issuer_id="issuer_ccj",
+            ticker="CCJ",
+            market="U",
+            currency="USD",
+        )
+        self.service.store.market_data["md_ccj"] = services_module.MarketDataPoint(
+            data_id="md_ccj",
+            security_id="sec_ccj",
+            market="U",
+            as_of_date="2026-05-26",
+            close=50.0,
+            adjusted_close=50.0,
+            volume=1000,
+            source_id="public_eod_market_data",
+            data_type="eod",
+            rights_tag=RightsTag("public"),
+        )
+        self.service.store.documents["doc_nuclear_note"] = services_module.Document(
+            document_id="doc_nuclear_note",
+            issuer_id="issuer_ccj",
+            security_id="sec_ccj",
+            source_id="local_research_reports",
+            source_type="local_reference",
+            document_type="research",
+            source_uri="research-report://nuclear-note",
+            title="Nuclear fuel chain opinion",
+            body="Research opinion only.",
+            rights_tag=RightsTag("local_research_reference", display_use="restricted"),
+        )
+        self.service.store.evidence["evi_nuclear_opinion"] = services_module.Evidence(
+            evidence_id="evi_nuclear_opinion",
+            document_id="doc_nuclear_note",
+            section="research_report_citation",
+            page_no=1,
+            bbox="research-report://nuclear-note;chunk=0",
+            span_text="Opinion: non-Russian SWU may be tight.",
+            canonical_text="Opinion: non-Russian SWU may be tight.",
+            confidence=0.7,
+        )
+
+        created = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs",
+            {
+                "run_id": "cprun_nuclear",
+                "topic": "核能候选池",
+                "ticker": "CCJ",
+                "theme": "核能 / 核燃料链",
+                "chokepoint_node": "非俄转化、浓缩、HALEU",
+                "playbook": "nuclear",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(created.success, created.error)
+        self.assertEqual(len(created.data["steps"]), 7)
+        self.assertFalse(created.data["automation_allowed"])
+        self.assertFalse(created.data["live_execution_allowed"])
+        self.assertEqual(created.data["validation_context"]["market_data"]["count"], 1)
+        self.assertEqual(created.data["validation_context"]["opinions"]["count"], 1)
+        self.assertEqual(created.data["validation_context"]["facts"]["count"], 0)
+
+        step = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs/cprun_nuclear/steps/sourceLedger/run",
+            {"role": "分析师", "max_tokens": 500},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(step.success, step.error)
+        self.assertEqual(step.data["steps"][0]["status"], "done")
+        self.assertTrue(step.data["steps"][0]["llm_run_id"].startswith("llmrun_cprun_nuclear_sourceLedger"))
+        self.assertGreaterEqual(step.data["steps"][0]["evidence_quality"]["url_count"], 1)
+        self.assertEqual(self.service.store.llm_task_runs[step.data["steps"][0]["llm_run_id"]].task_type, "chokepoint_research_step")
+
+        tasks = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs/cprun_nuclear/verification-tasks",
+            {},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(tasks.success, tasks.error)
+        self.assertGreaterEqual(tasks.data["created_count"], 1)
+        self.assertFalse(tasks.data["automation_allowed"])
+        again = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs/cprun_nuclear/verification-tasks",
+            {},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(again.success, again.error)
+        self.assertEqual(again.data["created_count"], 0)
+        self.assertGreaterEqual(again.data["existing_count"], 1)
+
+    def test_chokepoint_source_ledger_without_url_blocks_gate_and_fallback_requires_review(self) -> None:
+        def no_url_send(request, timeout):
+            return json.dumps({"id": "chatcmpl_cp", "choices": [{"message": {"content": "事实 | 来源\nSWU price unknown | unknown\n买入建议：不应出现"}}]}).encode("utf-8")
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            http_send=no_url_send,
+        )
+        created = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs",
+            {"run_id": "cprun_block", "topic": "核能转化瓶颈", "mode": "strict"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(created.success, created.error)
+        run = self.router.dispatch("POST", "/api/chokepoint/runs/cprun_block/run", {"step_limit": 1}, actor="analyst", role="analyst")
+        self.assertTrue(run.success, run.error)
+        self.assertEqual(run.data["status"], "paused")
+        self.assertEqual(run.data["current_step"], "sourceLedger")
+        self.assertEqual(run.data["steps"][0]["status"], "review")
+        messages = [item["message"] for item in run.data["issues"]]
+        self.assertTrue(any("来源台账没有可点击 URL" in item for item in messages))
+        self.assertTrue(any("投资建议" in item for item in messages))
+
+        self.service.llm_gateway = LLMGateway(api_key="", http_send=lambda _request, _timeout: b"{}")
+        fallback_created = self.router.dispatch("POST", "/api/chokepoint/runs", {"run_id": "cprun_fallback", "topic": "核能 HALEU"}, actor="analyst", role="analyst")
+        self.assertTrue(fallback_created.success, fallback_created.error)
+        fallback = self.router.dispatch("POST", "/api/chokepoint/runs/cprun_fallback/steps/sourceLedger/run", {}, actor="analyst", role="analyst")
+        self.assertTrue(fallback.success, fallback.error)
+        self.assertEqual(fallback.data["steps"][0]["status"], "review")
+        self.assertTrue(fallback.data["steps"][0]["evidence_quality"]["fallback_used"])
+
+    def test_chokepoint_pipeline_runs_all_steps_even_when_review_issues_exist(self) -> None:
+        calls: list[str] = []
+
+        def no_url_send(request, timeout):
+            body = json.loads(request.data.decode("utf-8"))
+            content = body["messages"][-1]["content"]
+            marker = "流水线结论" if "流水线结论" in content or "规则结论" in content else "未知步骤"
+            if marker == "未知步骤":
+                step_match = re.search(r"步骤：([^\n]+)", content)
+                if step_match:
+                    marker = step_match.group(1).strip()
+            calls.append(marker)
+            return json.dumps({"id": f"chatcmpl_{len(calls)}", "choices": [{"message": {"content": f"{marker} | unknown | 待验证"}}]}).encode("utf-8")
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            http_send=no_url_send,
+        )
+        created = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs",
+            {"run_id": "cprun_run_all", "topic": "核能转化瓶颈", "mode": "strict"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(created.success, created.error)
+        run = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs/cprun_run_all/run",
+            {"step_limit": 7},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(run.success, run.error)
+        self.assertEqual(calls[:7], ["来源台账", "事实审计", "问题窄化", "价值链映射", "Chokepoint 排名", "Thesis 草稿", "验证与证伪"])
+        self.assertEqual(calls[-1], "流水线结论")
+        self.assertEqual([step["status"] for step in run.data["steps"]], ["review", "done", "done", "done", "done", "done", "done"])
+        self.assertEqual(run.data["status"], "completed")
+        self.assertEqual(run.data["conclusion"]["status"], "needs_evidence")
+        self.assertGreaterEqual(run.data["conclusion"]["verification_tasks"]["created_count"], 1)
+
+    def test_chokepoint_finalize_fallback_is_idempotent_and_research_only(self) -> None:
+        def step_then_conclusion_failure(request, timeout):
+            body = json.loads(request.data.decode("utf-8"))
+            content = body["messages"][-1]["content"]
+            if "流水线结论" in content or "规则结论" in content:
+                raise RuntimeError("rate limited")
+            return json.dumps(
+                {
+                    "id": "chatcmpl_cp_step",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "事实 | URL | 分层\n核燃料链 chokepoint 待验证 | https://example.com/source | confirmed\nP0: 核验许可周期 unknown"
+                            }
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            http_send=step_then_conclusion_failure,
+        )
+        created = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs",
+            {"run_id": "cprun_finalize", "topic": "核能许可瓶颈", "mode": "strict"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(created.success, created.error)
+        first = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs/cprun_finalize/run",
+            {"step_limit": 7},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(first.success, first.error)
+        self.assertEqual(first.data["conclusion"]["fallback_used"], "rule_summary")
+        self.assertIn(first.data["conclusion"]["status"], {"ready_for_review", "needs_evidence"})
+        rendered = json.dumps(first.data["conclusion"], ensure_ascii=False)
+        for forbidden in ["买入", "卖出", "仓位", "目标价", "投资建议"]:
+            self.assertNotIn(forbidden, rendered)
+
+        second = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs/cprun_finalize/finalize",
+            {},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(second.success, second.error)
+        self.assertEqual(second.data["conclusion"]["verification_tasks"]["created_count"], 0)
+        self.assertGreaterEqual(second.data["conclusion"]["verification_tasks"]["existing_count"], 1)
+
+    def test_chokepoint_step_passes_request_timeout_to_llm_gateway(self) -> None:
+        sent = []
+
+        def fake_send(request, timeout):
+            sent.append({"timeout": timeout, "body": json.loads(request.data.decode("utf-8"))})
+            return json.dumps({"id": "chatcmpl_cp_timeout", "choices": [{"message": {"content": "事实 | URL | 分层\nA | https://example.com | confirmed"}}]}).encode("utf-8")
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            timeout=120,
+            http_send=fake_send,
+        )
+        created = self.router.dispatch("POST", "/api/chokepoint/runs", {"run_id": "cprun_timeout", "topic": "核能 HALEU"}, actor="analyst", role="analyst")
+        self.assertTrue(created.success, created.error)
+        step = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs/cprun_timeout/steps/sourceLedger/run",
+            {"timeout_seconds": 7, "max_tokens": 120},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(step.success, step.error)
+        self.assertEqual(sent[0]["timeout"], 7)
+        self.assertNotIn("timeout_seconds", sent[0]["body"])
 
     def test_llm_readiness_report_tracks_prompt_quality_budget_and_challenger_evidence(self) -> None:
         self.router.dispatch("POST", "/api/llm/task-templates/seed", {}, actor="ml", role="nlp_ml")
@@ -13390,9 +13738,56 @@ class SystemServiceTests(unittest.TestCase):
         result = validate_ui_html(run_node=False)
         self.assertEqual(result["nav_labels"], 8)
         self.assertEqual(result["status_labels"], 8)
-        self.assertEqual(result["required_ids"], 145)
-        self.assertEqual(result["required_functions"], 48)
+        self.assertEqual(result["required_ids"], len(REQUIRED_IDS))
+        self.assertEqual(result["required_functions"], len(REQUIRED_JS_FUNCTIONS))
         self.assertEqual(result["node_check"], "skipped")
+
+    def test_server_import_does_not_auto_load_dotenv(self) -> None:
+        import app.server as server_module
+
+        dotenv_path = Path(".env")
+        original_content = dotenv_path.read_text(encoding="utf-8") if dotenv_path.exists() else None
+        marker_key = f"AI_QUANT_DOTENV_IMPORT_ISOLATION_{int(time.time() * 1000)}"
+        marker_value = "from_dotenv_only_when_explicit"
+        os.environ.pop(marker_key, None)
+        self.addCleanup(lambda: os.environ.pop(marker_key, None))
+        try:
+            content = (original_content + "\n" if original_content else "") + f"{marker_key}={marker_value}\n"
+            dotenv_path.write_text(content, encoding="utf-8")
+            reloaded = importlib.reload(server_module)
+            self.assertNotIn(marker_key, os.environ)
+            reloaded._load_dotenv(dotenv_path)
+            self.assertEqual(os.environ.get(marker_key), marker_value)
+        finally:
+            if original_content is None:
+                dotenv_path.unlink(missing_ok=True)
+            else:
+                dotenv_path.write_text(original_content, encoding="utf-8")
+
+    def test_non_local_deployment_mode_rejects_header_only_auth(self) -> None:
+        import app.server as server_module
+
+        original_router = server_module.ROUTER
+        server_module.ROUTER = None
+        os.environ["AI_QUANT_DEPLOYMENT_MODE"] = "production"
+        os.environ["AI_QUANT_AUTH_MODE"] = "x-role-header"
+        try:
+            with self.assertRaises(RuntimeError):
+                server_module.get_router()
+        finally:
+            server_module.ROUTER = original_router
+
+    def test_gateway_and_parser_tolerate_empty_string_env_values(self) -> None:
+        os.environ["AI_QUANT_LLM_TIMEOUT_SECONDS"] = ""
+        os.environ["AI_QUANT_PADDLEOCR_TIMEOUT_SECONDS"] = ""
+        os.environ["AI_QUANT_PADDLEOCR_POLL_INTERVAL_SECONDS"] = ""
+        os.environ["AI_QUANT_PADDLEOCR_MAX_POLLS"] = ""
+        gateway = LLMGateway(api_key="token")
+        parser = PaddleOCRParser(token="")
+        self.assertEqual(gateway.timeout, 120)
+        self.assertEqual(parser.timeout, 60)
+        self.assertEqual(parser.poll_interval, 5.0)
+        self.assertEqual(parser.max_polls, 120)
 
     def test_ui_cross_browser_matrix_validator_requires_families_viewports_and_text(self) -> None:
         invalid = validate_cross_browser_matrix(
@@ -15205,8 +15600,8 @@ class SystemServiceTests(unittest.TestCase):
             self.assertIn(fragment, local_production_stack)
         dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
         self.assertIn("COPY scripts ./scripts", dockerfile)
-        self.assertIn("psycopg[binary]", dockerfile)
-        self.assertIn("baostock==0.9.1", dockerfile)
+        self.assertIn("pip install", dockerfile)
+        self.assertIn(".[postgres,market-data]", dockerfile)
         compose = Path("docker-compose.yml").read_text(encoding="utf-8")
         for fragment in ["postgres:", "minio:", "opensearch:", "neo4j:", "qdrant:", "otel-collector:"]:
             self.assertIn(fragment, compose)

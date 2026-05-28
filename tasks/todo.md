@@ -22,6 +22,64 @@
 
 近期优先级：本机长期使用口径下，优先保持 Compose 栈、备份恢复、本机证据包、LLM/OCR 冒烟、最新分析产物和 `local_production_audit` 可复验；日常启动建议使用 `scripts/local_production_stack.sh`。研报解析底座和研报接入业务分析/UI 看板已经全量收口，`artifacts/latest-analysis/latest-analysis.json` 已包含 A 股、美股、产业链、财报、行情和研报观点 evidence，`artifacts/latest-analysis/research-evidence-recall-audit.json` 已确认研报只进入观点/参考层，不进入事实源、训练源或真实交易信号。M6-M9 代码层已收口，剩余 `BLOCKED` 项保留为“非本机/组织级生产或大样本质量增强”证据缺口，不阻塞本机使用。
 
+## 项目经理整理 / 当前工程治理待办
+
+项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做投资分析、证据研究、模拟组合和复盘反馈，不接真实券商，不做自动下单。
+
+- `DONE` T-424 测试健康与 UI 静态契约收敛
+  - 对应：E7-US1, E8-US2, E9-US2；愿景扩展/生产化增强
+  - 背景：`python3 -m py_compile app/*.py tests/*.py scripts/*.py` 已通过；清理外部运行时环境后，`python3 -m unittest discover -s tests` 仅剩 `test_ui_static_contract_matches_target_information_architecture` 失败，原因是测试仍期望 `required_ids=145`，而 `scripts/ui_static_check.py` 当前返回 `required_ids=151`。
+  - **已完成（本轮）**：`test_ui_static_contract_matches_target_information_architecture` 改为读取 `len(REQUIRED_IDS)` 与 `len(REQUIRED_JS_FUNCTIONS)`，避免 UI 契约迭代导致硬编码漂移。
+  - **已完成（本轮）**：`python3 scripts/ui_static_check.py` 返回 `required_ids=151`、`required_functions=50`、`node_check=passed`，与测试断言一致。
+  - 输出：测试断言修复、UI 静态契约变更记录、一次干净环境全量单测输出。
+  - 验收：干净本地环境下 `python3 -m unittest discover -s tests` 204/204 通过；`python3 scripts/ui_static_check.py` 返回 `node_check=passed`；UI 契约变动在任务记录中可追溯。
+
+- `DONE` T-425 配置加载、`.env` 隔离和测试可复现
+  - 对应：E3-US4, E6-US4, E8-US2, E9-US2；愿景扩展/生产化增强
+  - 背景：`app.server` 在 import 阶段自动加载 `.env`，会把 PostgreSQL/S3/OpenSearch/LLM/OCR 等本机生产配置注入测试进程；直接跑单测时曾触发 `psycopg` 缺失、S3 DNS 访问和 storage readiness 断言漂移。空字符串环境变量还会触发 `int("")` / `float("")` 类型错误。
+  - **已完成（本轮）**：`app.server` 改为懒加载 router，移除 import 阶段 `.env` 副作用；`.env` 仅在 `python -m app.server` 启动路径显式加载。
+  - **已完成（本轮）**：新增统一环境变量解析 helper：`app/utils.py` 中 `env_text/env_int/env_float`；接入 `app/llm_gateway.py`、`app/document_parser.py`、`app/services.py`、`scripts/staging_acceptance.py`，空字符串不再触发 `int("")/float("")`。
+  - **已完成（本轮）**：`tests/test_system.py` 的 `setUp` 统一隔离 `AI_QUANT_*`；新增 `.env` 导入隔离回归测试和空字符串 env 解析回归测试。
+  - 输出：配置加载重构、测试隔离 fixture、环境变量解析单测、README 中的测试运行说明。
+  - 验收：存在生产 `.env` 时，全量单测不访问真实 PostgreSQL/S3/OpenSearch/LLM/OCR；空字符串环境变量不导致服务初始化失败；`python3 -m unittest discover -s tests` 无需手工清理 `AI_QUANT_*` 即可通过。
+
+- `DONE` T-426 依赖声明与运行环境一致性
+  - 对应：E3-US4, E8-US2, E9-US2；愿景扩展/生产化增强
+  - 背景：`pyproject.toml` 主依赖为空，但 Dockerfile 手动安装 `psycopg`、`pandas`、`baostock` 等运行依赖；本地、容器和 CI 依赖来源不一致，容易产生“本机能跑、CI/容器失败”的漂移。
+  - **已完成（本轮）**：`pyproject.toml` 增加 `build-system`，并补齐 `postgres`、`market-data`、`ui-acceptance`、`test` extras。
+  - **已完成（本轮）**：`Dockerfile` 由手写散装依赖改为 `pip install ".[postgres,market-data]"`，避免与项目声明脱节。
+  - **已完成（本轮）**：`README.md` 增加 Python 3.11/3.12 支持矩阵、`python3 -m pip install '.[test]'` 一条命令测试依赖安装，以及 `.[market-data]` 独立安装说明。
+  - 输出：更新后的依赖声明、Dockerfile 安装策略、开发环境安装命令、CI 依赖缓存策略。
+  - 验收：新环境按 README 一条命令可安装测试依赖并运行单测；Docker 依赖与 `pyproject.toml` 对齐；`postgres/market-data` extra 可独立安装。
+
+- `DONE` T-427 `SystemService` 模块化拆分计划
+  - 对应：E3-US1, E3-US4, E5-US1, E6-US4, E8-US2；愿景扩展/生产化增强
+  - 背景：`app/services.py` 已超过 2.5 万行，数据接入、证据抽取、研究问答、组合、图谱、LLM、workflow、readiness 和治理都集中在一个类中；继续叠功能会增加回归风险和交接成本。
+  - **已完成（本轮）**：新增 ADR `docs/systemservice-modularization-adr.md`，明确目标边界、迁移阶段、回归清单和 guardrails。
+  - **已完成（本轮）**：完成第一批低风险抽取：`safe_identifier()` 抽取到 `app/service_modules/common.py`，`SystemService` 通过 facade 方法委托，无行为变化。
+  - 输出：模块拆分 ADR、迁移顺序、每阶段回归测试清单、第一批低风险 helper/service 抽取 PR。
+  - 验收：首批拆分后 API 行为不变；全量单测通过；后续新增功能按 ADR 约束走模块化路径。
+
+- `DONE` T-428 本机安全边界与非本机发布授权策略
+  - 对应：E2-US1, E2-US3, E6-US2, E6-US4, E9-US1；愿景扩展/生产化增强
+  - 背景：当前 API 角色主要由 `X-Role` 请求头自声明，适合本机工具和验收脚本，不适合作为非本机网络服务授权机制。项目边界仍是模拟交易，但非本机部署前必须补真实认证、授权和密钥管理策略。
+  - **已完成（本轮）**：新增 ADR `docs/security-boundary-modes-adr.md`，定义 local/staging/production 模式差异、认证模式演进和红队任务拆分。
+  - **已完成（本轮）**：`app/server.py` 增加非本机启动门禁：`AI_QUANT_DEPLOYMENT_MODE` 为非本机时，若 `AI_QUANT_AUTH_MODE` 仍是 header-only 则拒绝启动。
+  - **已完成（本轮）**：新增单测 `test_non_local_deployment_mode_rejects_header_only_auth` 验证门禁行为。
+  - 输出：安全边界 ADR、权限矩阵升级方案、非本机发布前置检查、红队验收脚本任务拆分。
+  - 验收：本机模式保持低摩擦；非本机 header-only 模式拒绝启动；`scripts/security_check.py .` 保持 `ok=true`。
+
+- `DONE` T-429 CI 验收命令、产物治理和交接清单
+  - 对应：E7-US1, E8-US2, E9-US2；愿景扩展/生产化增强
+  - 背景：仓库存在大量本机 artifacts、运行脚本和验收输出；当前 `git status` 也有多处未提交修改和新增文件。需要把“日常可复验”固化为 PM 可追踪的交接清单，避免个人机器状态成为唯一事实来源。
+  - **已完成（本轮）**：新增 `Makefile` `local-ci`，串联 `py_compile`、`unittest`、`ui_static_check`、`security_check`、`check_handoffs`。
+  - **已完成（本轮）**：新增 `docs/artifact-governance.md`，定义 artifact 分类与提交规则。
+  - **已完成（本轮）**：新增 `docs/worktree-change-grouping-2026-05-28.md`，给出当前未提交变更分组说明。
+  - **已完成（本轮）**：`README.md` 与 `AGENTS.md` 增加 `make local-ci` 入口说明。
+  - **已完成（本轮）**：`python3 scripts/production_task_closure_audit.py` 复验输出 `todo_status_counts.todo=0`、`doing=0`；剩余开放项均为 `blocked_external_evidence`（17 项）。
+  - 输出：本机 CI 脚本或 Make 目标、artifact 提交规则、交接 checklist、当前未提交变更分组说明。
+  - 验收：项目交接时可用一条命令复验核心质量门（`make local-ci`）；artifact 提交规则与分组说明可追溯。
+
 ## 已落地基线
 
 - `DONE` T-301 后端核心对象、API 路由和治理规则原型
@@ -191,6 +249,19 @@
   - 已有：`GET|POST /api/hotspots/readiness-report` 汇总词表命中、三层产业链扩散、公司定位 slot/evidence 覆盖、facts/opinions/inferences/needs_verification 分层、缺口 research task 固化、图谱 edge 元数据、LLM rerank 离线评估摘要和 artifact URI；固定 `automation_allowed=false` / `live_execution_allowed=false`
   - 待做：用真实大样本 query/gold refs 跑 LLM rerank 质量评估并归档报告；所有输出已区分事实、观点、推断和待验证任务
   - 验收：给定一个热点词能生成至少 3 层产业链扩散路径；每个候选公司都有明确产业链节点、角色定位、至少一个数据槽位和证据/来源边界；缺失证据会进入 research task，而不是被当成结论；输出固定 `automation_allowed=false`
+
+- `DONE` T-406B 瓶颈研究模块自动化与验证闭环
+  - 对应：E3-US2, E5-US1, E5-US2, E6-US3, E6-US4, E7-US2, E8-US2；愿景扩展/生产化增强
+  - 目标：面向没有系统分析基础的普通投资者，把 @aleabitoreddit / Serenity 式 bottom-up chokepoint research 固化为 AI 辅助研究流水线，帮助用户从终端需求、价值链、供应链、监管/许可、渠道和利润池出发，寻找可验证的不对称机会；模块只做研究辅助和模拟组合输入，不输出真实交易建议，不接真实券商，不承诺收益
+  - 已有：前端“瓶颈研究”工作台、跨行业 playbook、核能/核燃料链模板、AI 提示词模板、来源台账、事实审计、问题窄化、价值链映射、Chokepoint 排名、Thesis 草稿、验证与证伪等前端内存流水线；UI 可展示当前步骤、阶段输出、问题清单和调优入口
+  - **已完成（本轮）**：新增 `ChokepointResearchRun` 持久化模型和 `chokepoint_research_runs` collection，保存 run、7 步流水线、step 输入、LLM 输出、summary、evidence quality、issues、调优记录、review snapshot、validation context、`automation_allowed=false` 和 `live_execution_allowed=false`
+  - **已完成（本轮）**：新增 `/api/chokepoint/runs`、`/api/chokepoint/runs/{run_id}`、单步运行、流水线运行、人工复核和 verification tasks API；运行步骤会调用 approved `llmtpl_chokepoint_step_v1` 并关联 `LLMTaskRun`
+  - **已完成（本轮）**：后端验证层汇总公开行情/K线、公告/财报 evidence、研报观点 evidence、知识图谱回链和已有 ResearchTask；K线只用于市场定价验证，研报只进入 opinions，公告/财报/监管 evidence 才进入 facts
+  - **已完成（本轮）**：证据门禁会识别无 URL 来源台账、投资建议越界、思维链输出、unknown/needs_verification、推断过多和 LLM fallback；问题可固化为幂等 `ResearchTask`
+  - **已完成（本轮）**：UI 从前端内存流水线升级为后端 run 状态，支持新建研究、保存档案、继续历史研究、运行当前步骤、运行流水线、暂停、重跑、提交人工复核、生成验证任务和验证资源面板
+  - **已完成（本轮）**：新增流水线结论层；7 步完成后自动生成 `conclusion`、刷新验证资源、幂等固化验证任务，并在 UI 展示状态、Thesis 强度、置信度、证据缺口、关键瓶颈、催化剂、证伪条件和下一步动作；LLM 限流/失败时保留规则结论并标记 fallback
+  - 文档：`docs/chokepoint-research-module.md`
+  - 验收：给定一个行业或主题，系统能自动生成可复核的来源台账、价值链地图、瓶颈候选排名、催化剂时间线、反方论点、证伪条件和待验证任务；所有结论能区分事实、推断、投机和未知；所有输出固定 `automation_allowed=false`、`live_execution_allowed=false`，不得把 AI 输出、社交媒体或研报观点直接当成核心事实或投资建议
 
 ## P1 下一批 / M7 经营驾驶舱和投研闭环
 

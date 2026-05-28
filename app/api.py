@@ -468,6 +468,17 @@ class ApiRouter:
             ("POST", r"^/api/research/tasks/from-hotspot/batch$", self._create_research_tasks_from_hotspot_batch),
             ("POST", r"^/api/research/tasks/from-hotspot$", self._create_research_tasks_from_hotspot),
             ("POST", r"^/api/research/tasks/(?P<task_id>[^/]+)/status$", self._update_research_task_status),
+            ("GET", r"^/api/chokepoint/readiness-report$", self._chokepoint_readiness_report),
+            ("POST", r"^/api/chokepoint/readiness-report$", self._chokepoint_readiness_report),
+            ("POST", r"^/api/chokepoint/runs$", self._create_chokepoint_research_run),
+            ("GET", r"^/api/chokepoint/runs$", self._list_chokepoint_research_runs),
+            ("POST", r"^/api/chokepoint/runs/query$", self._list_chokepoint_research_runs),
+            ("GET", r"^/api/chokepoint/runs/(?P<run_id>[^/]+)$", self._get_chokepoint_research_run),
+            ("POST", r"^/api/chokepoint/runs/(?P<run_id>[^/]+)/steps/(?P<step_id>[^/]+)/run$", self._run_chokepoint_research_step),
+            ("POST", r"^/api/chokepoint/runs/(?P<run_id>[^/]+)/run$", self._run_chokepoint_research_pipeline),
+            ("POST", r"^/api/chokepoint/runs/(?P<run_id>[^/]+)/finalize$", self._finalize_chokepoint_research_run),
+            ("POST", r"^/api/chokepoint/runs/(?P<run_id>[^/]+)/review$", self._review_chokepoint_research_run),
+            ("POST", r"^/api/chokepoint/runs/(?P<run_id>[^/]+)/verification-tasks$", self._create_chokepoint_verification_tasks),
             ("POST", r"^/api/extractions/run$", self._extract_structured_facts),
             ("GET", r"^/api/extractions/(?P<extraction_id>[^/]+)$", self._get_extraction_result),
             ("POST", r"^/api/evidence/extract$", self._extract_evidence),
@@ -1807,6 +1818,39 @@ class ApiRouter:
     def _update_research_task_status(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/research/tasks/(?P<task_id>[^/]+)/status$", path)
         return to_plain(self.service.update_research_task_status(match["task_id"], body, actor=actor))
+
+    def _chokepoint_readiness_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.chokepoint_readiness_report(body, actor=actor)
+
+    def _create_chokepoint_research_run(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.create_chokepoint_research_run(body, actor=actor))
+
+    def _list_chokepoint_research_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.chokepoint_research_runs_payload(body)
+
+    def _get_chokepoint_research_run(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/chokepoint/runs/(?P<run_id>[^/]+)$", path)
+        return to_plain(self.service.get_chokepoint_research_run(match["run_id"]))
+
+    def _run_chokepoint_research_step(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/chokepoint/runs/(?P<run_id>[^/]+)/steps/(?P<step_id>[^/]+)/run$", path)
+        return to_plain(self.service.run_chokepoint_research_step(match["run_id"], match["step_id"], body, actor=actor))
+
+    def _run_chokepoint_research_pipeline(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/chokepoint/runs/(?P<run_id>[^/]+)/run$", path)
+        return to_plain(self.service.run_chokepoint_research_pipeline(match["run_id"], body, actor=actor))
+
+    def _finalize_chokepoint_research_run(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/chokepoint/runs/(?P<run_id>[^/]+)/finalize$", path)
+        return to_plain(self.service.finalize_chokepoint_research_run(match["run_id"], body, actor=actor))
+
+    def _review_chokepoint_research_run(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/chokepoint/runs/(?P<run_id>[^/]+)/review$", path)
+        return to_plain(self.service.review_chokepoint_research_run(match["run_id"], body, actor=actor))
+
+    def _create_chokepoint_verification_tasks(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/chokepoint/runs/(?P<run_id>[^/]+)/verification-tasks$", path)
+        return self.service.create_chokepoint_verification_tasks(match["run_id"], body, actor=actor)
 
     def _query_graph(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.query_graph(body)

@@ -34,6 +34,7 @@ from .models import (
     BenchmarkRun,
     BenchmarkSample,
     CacheRetentionRunRecord,
+    ChokepointResearchRun,
     CompanyPosition,
     CorporateAction,
     DrillSchedule,
@@ -94,7 +95,8 @@ from .models import (
 from .object_store import create_object_store_from_env
 from .search import LocalSearchIndex, LocalSemanticIndex, SearchRecord, create_search_index_from_env
 from .store import InMemoryStore
-from .utils import chunk_text, chunk_text_by_page, looks_like_html, new_id, parse_datetime, pdf_bytes_to_text, to_plain, utcnow
+from .service_modules import safe_identifier
+from .utils import chunk_text, chunk_text_by_page, env_float, env_int, looks_like_html, new_id, parse_datetime, pdf_bytes_to_text, to_plain, utcnow
 
 
 DEFAULT_SEC_USER_AGENT = "ai-native-quant-org/0.1 contact@example.com"
@@ -340,6 +342,74 @@ class SystemService:
                 "output_schema": {
                     "required": ["falsifiers", "weaknesses", "human_review_items"],
                     "acceptance_thresholds": {"min_falsifiers": 2, "human_review_required": True, "max_unlinked_claims": 0},
+                },
+            },
+            {
+                "template_id": "llmtpl_chokepoint_step_v1",
+                "task_type": "chokepoint_research_step",
+                "prompt_name": "chokepoint-research-step",
+                "content": (
+                    "你是严谨的跨行业投资研究助手，正在执行一个 Serenity-style chokepoint research 流水线步骤。\n"
+                    "步骤：{{step_label}}\n"
+                    "研究主题：{{topic}}\n"
+                    "研究档案：{{research_context}}\n"
+                    "验证资源摘要：{{validation_context}}\n"
+                    "历史步骤产物：{{prior_outputs}}\n\n"
+                    "用户步骤提示：\n{{step_prompt}}\n\n"
+                    "硬性规则：\n"
+                    "- 不输出思维链、内部推理或 Deep thinking。\n"
+                    "- 关键事实必须带 URL、发布日期、来源类型和置信度。\n"
+                    "- 所有结论分为 confirmed / inferred / speculative / unknown。\n"
+                    "- 无法确认请写 unknown 或 needs_verification，不得编造链接、报告标题、日期、市场份额、TAM、产能、价格或客户关系。\n"
+                    "- 研报、社交媒体、Substack 和二手摘要只能作为 opinions 或 clues，不能作为 confirmed facts。\n"
+                    "- 输出只用于研究辅助和模拟组合输入，不构成投资建议，不得输出买入、卖出、仓位或目标价建议。\n"
+                    "请输出可审计表格、阶段结论、问题清单和下一步验证任务。"
+                ),
+                "data_domains": ["public_filing", "public_market_data", "local_research_reference", "knowledge_graph", "llm_gateway"],
+                "allowed_roles": ["CEO", "CIO", "PM", "分析师", "海外研究负责人", "风险/合规"],
+                "risk_level": "high",
+                "fallback_chain": ["rule_summary", "manual_review"],
+                "input_schema": {
+                    "required": ["step_label", "topic", "research_context", "validation_context", "step_prompt"],
+                    "source_boundary": "evidence_backed_research_only",
+                },
+                "output_schema": {
+                    "required": ["source_ledger_or_step_output", "issues", "needs_verification", "boundary_notes"],
+                    "acceptance_thresholds": {"must_separate_fact_inference": True, "max_unlinked_claims": 0, "human_review_required": True},
+                },
+            },
+            {
+                "template_id": "llmtpl_chokepoint_conclusion_v1",
+                "task_type": "chokepoint_research_conclusion",
+                "prompt_name": "chokepoint-research-conclusion",
+                "content": (
+                    "你是严谨的跨行业投资研究复核助手。请综合 1-7 步 Serenity-style chokepoint research 流水线产物，"
+                    "生成可读但可审计的流水线结论。\n"
+                    "研究主题：{{topic}}\n"
+                    "研究档案：{{research_context}}\n"
+                    "规则结论：{{rule_conclusion}}\n"
+                    "步骤摘要：{{steps_summary}}\n"
+                    "开放问题：{{issues}}\n"
+                    "验证资源：{{validation_context}}\n\n"
+                    "硬性规则：\n"
+                    "- 不输出思维链、内部推理或 Deep thinking。\n"
+                    "- 不得把 unknown、研报观点、社交媒体线索或 AI 推断升级为 confirmed。\n"
+                    "- 关键事实必须保留 URL、日期、来源类型和置信度；缺证据就写 needs_evidence。\n"
+                    "- 只输出研究辅助结论，不得输出买入、卖出、仓位、目标价或实盘投资建议。\n"
+                    "- 必须明确证据缺口、下一步验证任务和证伪条件。\n"
+                    "请按 Markdown 输出：一句话结论、证据质量、关键瓶颈、催化剂、证伪条件、开放问题、下一步验证。"
+                ),
+                "data_domains": ["public_filing", "public_market_data", "local_research_reference", "knowledge_graph", "llm_gateway"],
+                "allowed_roles": ["CEO", "CIO", "PM", "分析师", "海外研究负责人", "风险/合规"],
+                "risk_level": "high",
+                "fallback_chain": ["rule_summary", "manual_review"],
+                "input_schema": {
+                    "required": ["topic", "research_context", "rule_conclusion", "steps_summary", "issues", "validation_context"],
+                    "source_boundary": "evidence_backed_research_only",
+                },
+                "output_schema": {
+                    "required": ["one_line_conclusion", "evidence_gaps", "next_verification_tasks", "usage_boundary"],
+                    "acceptance_thresholds": {"must_preserve_rule_conclusion": True, "human_review_required": True, "max_unlinked_claims": 0},
                 },
             },
             {
@@ -739,7 +809,7 @@ class SystemService:
         }
 
     def _configured_llm_cost_budget(self) -> float:
-        return float(os.environ.get("AI_QUANT_LLM_COST_BUDGET", "10") or 10)
+        return env_float("AI_QUANT_LLM_COST_BUDGET", 10.0, minimum=0.0)
 
     def _effective_llm_cost_budget(self, configured_budget: float) -> float:
         now = utcnow()
@@ -1047,6 +1117,8 @@ class SystemService:
         body.setdefault("model", model)
         body.setdefault("temperature", float(payload.get("temperature", 0.2)))
         body.setdefault("messages", [{"role": "user", "content": prompt}])
+        if payload.get("timeout_seconds") is not None:
+            body.setdefault("timeout_seconds", int(payload.get("timeout_seconds") or 0))
         return body
 
     def _anthropic_task_payload(self, payload: Mapping[str, Any], prompt: str, *, model: str) -> dict[str, Any]:
@@ -1054,6 +1126,8 @@ class SystemService:
         body.setdefault("model", model)
         body.setdefault("max_tokens", int(payload.get("max_tokens", 1024)))
         body.setdefault("messages", [{"role": "user", "content": prompt}])
+        if payload.get("timeout_seconds") is not None:
+            body.setdefault("timeout_seconds", int(payload.get("timeout_seconds") or 0))
         return body
 
     def _llm_task_fallback(
@@ -1087,7 +1161,7 @@ class SystemService:
             reasons.append(f"risk_{template.risk_level}")
         if template and template.max_latency_ms and run.latency_ms > template.max_latency_ms:
             reasons.append("latency_sla_breach")
-        if run.estimated_cost > float(os.environ.get("AI_QUANT_LLM_REVIEW_COST_THRESHOLD", "1") or 1):
+        if run.estimated_cost > env_float("AI_QUANT_LLM_REVIEW_COST_THRESHOLD", 1.0, minimum=0.0):
             reasons.append("cost_threshold_breach")
         return sorted(set(reasons))
 
@@ -1343,7 +1417,7 @@ class SystemService:
         return {"low": 1, "medium": 2, "high": 3, "critical": 4}.get(str(severity), 0)
 
     def _safe_identifier(self, value: Any) -> str:
-        return re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_") or "item"
+        return safe_identifier(value)
 
     def _strategy_replay_compare_row(self, replay: StrategyReplay) -> dict[str, Any]:
         decision = self.store.decisions.get(replay.decision_id)
@@ -3725,6 +3799,9 @@ class SystemService:
         approval_state: str = "",
         trace_id: str = "",
     ) -> None:
+        mark_dirty = getattr(self.store, "mark_dirty_for_resource", None)
+        if callable(mark_dirty):
+            mark_dirty(resource_type)
         self.store.audit_log.append(
             AuditEvent(
                 event_id=new_id("evt"),
@@ -4922,7 +4999,7 @@ class SystemService:
         )
 
     def _cache_retention_runtime_rows(self, *, as_of: Any) -> list[dict[str, Any]]:
-        ttl_days = max(1, int(os.environ.get("AI_QUANT_PADDLEOCR_CACHE_TTL_DAYS", "7") or 7))
+        ttl_days = env_int("AI_QUANT_PADDLEOCR_CACHE_TTL_DAYS", 7, minimum=1)
         rows: list[dict[str, Any]] = []
         for cache_key, cached in self.document_parse_cache.items():
             cached_at = self._safe_datetime(cached.get("cached_at"), fallback=as_of)
@@ -10195,7 +10272,10 @@ class SystemService:
         elapsed_ms = max(0, int((time.perf_counter() - started) * 1000))
         enriched["elapsed_ms"] = elapsed_ms
         enriched["cache_hit"] = False
-        enriched["estimated_cost"] = round(float(enriched.get("page_count", 0) or 0) * float(os.environ.get("AI_QUANT_PADDLEOCR_COST_PER_PAGE", "0") or 0), 6)
+        enriched["estimated_cost"] = round(
+            float(enriched.get("page_count", 0) or 0) * env_float("AI_QUANT_PADDLEOCR_COST_PER_PAGE", 0.0, minimum=0.0),
+            6,
+        )
         enriched["cache_key"] = cache_key
         enriched["cached_at"] = to_plain(utcnow())
         if cache_enabled:
@@ -18843,6 +18923,761 @@ class SystemService:
             "live_execution_allowed": False,
             "usage_boundary": "batch_research_task_queue_for_public_analysis_and_simulated_feedback_only",
         }
+
+    CHOKEPOINT_RESEARCH_STEPS = [
+        {"step_id": "sourceLedger", "label": "来源台账", "template_id": "sourceLedger", "gate": True},
+        {"step_id": "factAudit", "label": "事实审计", "template_id": "factAudit", "gate": True},
+        {"step_id": "scopeNarrowing", "label": "问题窄化", "template_id": "scopeNarrowing", "gate": False},
+        {"step_id": "mappingTable", "label": "价值链映射", "template_id": "mappingTable", "gate": False},
+        {"step_id": "analysisCore", "label": "Chokepoint 排名", "template_id": "analysisCore", "gate": False},
+        {"step_id": "thesisFull", "label": "Thesis 草稿", "template_id": "thesisFull", "gate": False},
+        {"step_id": "verification", "label": "验证与证伪", "template_id": "verification", "gate": True},
+    ]
+
+    CHOKEPOINT_STEP_PROMPTS = {
+        "sourceLedger": "建立来源台账。只输出可核验来源、事实、URL、发布日期、来源类型、confirmed/inferred/speculative/unknown、置信度和下一步验证。无 URL 的事实不得标为 confirmed。",
+        "factAudit": "审计当前研究草稿和历史步骤，剔除幻觉、过期事实、无 URL 事实、日期不一致和把推断写成 confirmed 的问题。",
+        "scopeNarrowing": "把宽泛主题拆成 2-4 个可执行 chokepoint 子问题。每个子题只能包含一个主瓶颈，并给出必查 P0 来源和证伪条件。",
+        "mappingTable": "用表格构建多层价值链/供应链地图，区分终端需求、付费方、产品/服务、关键环节、资源/设备/渠道/监管和上游输入。",
+        "analysisCore": "基于已通过门禁的事实识别 3-5 个 chokepoint，比较集中度、切换成本、供给弹性、客户依赖、估值/利润池错配和催化剂。",
+        "thesisFull": "生成研究 thesis 草稿。必须包含来源台账摘要、价值链地图、核心论点、催化剂、主要风险、证伪条件和下一步验证任务。",
+        "verification": "作为魔鬼代言人验证 thesis，列出致命漏洞、反方证据、竞争威胁、替代路径、监管风险和 P0/P1/P2 验证任务。",
+    }
+
+    def create_chokepoint_research_run(self, payload: Mapping[str, Any], *, actor: str = "system") -> ChokepointResearchRun:
+        topic = str(payload.get("topic") or payload.get("target") or payload.get("theme") or "").strip()
+        if not topic:
+            raise ValidationError("chokepoint research run requires topic")
+        run_id = str(payload.get("run_id") or new_id("cprun")).strip()
+        if run_id in self.store.chokepoint_research_runs:
+            raise ConflictError(f"chokepoint research run {run_id} already exists")
+        mode = str(payload.get("mode", "strict")).strip() or "strict"
+        steps = [self._new_chokepoint_step(item) for item in self.CHOKEPOINT_RESEARCH_STEPS]
+        run = ChokepointResearchRun(
+            run_id=run_id,
+            topic=topic,
+            ticker=str(payload.get("ticker", "")).strip(),
+            theme=str(payload.get("theme", topic)).strip(),
+            chokepoint_node=str(payload.get("chokepoint_node", payload.get("node", ""))).strip(),
+            playbook=str(payload.get("playbook", "generic")).strip() or "generic",
+            mode=mode,
+            status="draft",
+            current_step=steps[0]["step_id"],
+            steps=steps,
+            validation_context=self._chokepoint_validation_context(payload),
+            review_snapshot={
+                "boundary": "research_only_not_investment_advice",
+                "fact_layers": ["confirmed", "inferred", "speculative", "unknown"],
+                "methodology": "Serenity-style bottom-up chokepoint research",
+            },
+        )
+        self.store.chokepoint_research_runs[run.run_id] = run
+        self._audit(actor, "create_chokepoint_research_run", "chokepoint_research_run", run.run_id, source="chokepoint_workbench", approval_state=run.status)
+        return run
+
+    def chokepoint_research_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        status = str(filters.get("status", "")).strip()
+        topic = str(filters.get("topic", filters.get("q", ""))).strip().lower()
+        ticker = str(filters.get("ticker", "")).strip().lower()
+        limit = self._bounded_limit(filters.get("limit", 50), 500)
+        rows = list(self.store.chokepoint_research_runs.values())
+        if status:
+            rows = [item for item in rows if item.status == status]
+        if topic:
+            rows = [item for item in rows if topic in item.topic.lower() or topic in item.theme.lower() or topic in item.chokepoint_node.lower()]
+        if ticker:
+            rows = [item for item in rows if ticker == item.ticker.lower()]
+        rows.sort(key=lambda item: item.updated_at, reverse=True)
+        return {"count": len(rows), "runs": [to_plain(item) for item in rows[:limit]]}
+
+    def get_chokepoint_research_run(self, run_id: str) -> ChokepointResearchRun:
+        run = self.store.chokepoint_research_runs.get(run_id)
+        if run is None:
+            raise NotFoundError(f"chokepoint research run {run_id} not found")
+        return run
+
+    def run_chokepoint_research_step(self, run_id: str, step_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> ChokepointResearchRun:
+        payload = payload or {}
+        run = self.get_chokepoint_research_run(run_id)
+        step_index = self._chokepoint_step_index(run, step_id)
+        step = dict(run.steps[step_index])
+        started_at = utcnow()
+        input_prompt = str(payload.get("input_prompt") or self._chokepoint_step_prompt(run, step)).strip()
+        prior_outputs = self._chokepoint_prior_outputs(run, step_index)
+        if "llmtpl_chokepoint_step_v1" not in self.store.llm_task_templates:
+            self.seed_default_llm_task_templates(actor=actor)
+        llm_run = self.run_llm_task(
+            {
+                "run_id": str(payload.get("llm_run_id") or f"llmrun_{run_id}_{step_id}_{int(time.time() * 1000)}"),
+                "template_id": "llmtpl_chokepoint_step_v1",
+                "role": str(payload.get("role", "分析师")),
+                "variables": {
+                    "step_label": step["label"],
+                    "topic": run.topic,
+                    "research_context": json.dumps(self._chokepoint_research_context(run), ensure_ascii=False, default=str),
+                    "validation_context": json.dumps(run.validation_context, ensure_ascii=False, default=str),
+                    "prior_outputs": prior_outputs,
+                    "step_prompt": input_prompt,
+                },
+                "temperature": float(payload.get("temperature", 0.2)),
+                "max_tokens": int(payload.get("max_tokens", 900)),
+                "timeout_seconds": int(payload.get("timeout_seconds", payload.get("timeout", 45)) or 45),
+                "human_review_required": True,
+            },
+            actor=actor,
+        )
+        output_text = self._llm_output_text(llm_run.output).strip()
+        analysis = self._analyze_chokepoint_step_output(step, output_text, llm_run=llm_run)
+        updated_step = {
+            **step,
+            "status": analysis["status"],
+            "input_prompt": input_prompt,
+            "llm_run_id": llm_run.run_id,
+            "output_text": output_text,
+            "summary": analysis["summary"],
+            "evidence_quality": analysis["evidence_quality"],
+            "issues": analysis["issues"],
+            "started_at": started_at,
+            "completed_at": utcnow(),
+            "tuning_notes": str(payload.get("tuning_notes", step.get("tuning_notes", ""))),
+        }
+        steps = list(run.steps)
+        steps[step_index] = updated_step
+        issues = self._merge_chokepoint_issues(run.issues, analysis["issues"], step["label"])
+        has_block = any(item.get("severity") == "block" for item in analysis["issues"])
+        next_step = self._next_chokepoint_step_id(steps, step_index)
+        status = "review" if has_block else ("completed" if self._chokepoint_completed(steps) else "paused")
+        if llm_run.status == "failed":
+            status = "failed"
+        updated = self._replace_chokepoint_run(
+            run,
+            steps=steps,
+            issues=issues,
+            current_step=step["step_id"] if has_block else next_step,
+            status=status,
+            validation_context=self._chokepoint_validation_context(self._chokepoint_research_context(run)),
+        )
+        self._audit(actor, "run_chokepoint_research_step", "chokepoint_research_run", run_id, source=step_id, approval_state=status, model_version=llm_run.model, prompt_version=llm_run.prompt_version)
+        return updated
+
+    def run_chokepoint_research_pipeline(self, run_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> ChokepointResearchRun:
+        payload = payload or {}
+        run = self.get_chokepoint_research_run(run_id)
+        limit = self._bounded_limit(payload.get("step_limit", len(run.steps)), len(run.steps))
+        start_index = self._chokepoint_step_index(run, str(payload.get("start_step", run.current_step)))
+        current = self._replace_chokepoint_run(run, status="running", current_step=run.steps[start_index]["step_id"])
+        end_index = min(start_index + limit, len(current.steps))
+        for index in range(start_index, end_index):
+            step = current.steps[index]
+            current = self.run_chokepoint_research_step(run_id, str(step["step_id"]), payload, actor=actor)
+            refreshed_step = current.steps[index]
+            if current.status == "failed" or str(refreshed_step.get("status")) == "failed":
+                return self._replace_chokepoint_run(current, status="failed", current_step=str(step["step_id"]))
+        final_status = "completed" if self._chokepoint_completed(current.steps) else "paused"
+        current = self._replace_chokepoint_run(current, status=final_status)
+        if final_status == "completed":
+            return self.finalize_chokepoint_research_run(run_id, payload, actor=actor)
+        return current
+
+    def finalize_chokepoint_research_run(self, run_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> ChokepointResearchRun:
+        payload = payload or {}
+        run = self.get_chokepoint_research_run(run_id)
+        validation_context = self._chokepoint_validation_context(self._chokepoint_research_context(run))
+        verification_tasks = self.create_chokepoint_verification_tasks(
+            run_id,
+            {"limit": payload.get("verification_task_limit", payload.get("limit", 30))},
+            actor=actor,
+        )
+        run = self.get_chokepoint_research_run(run_id)
+        validation_context = self._chokepoint_validation_context(self._chokepoint_research_context(run))
+        rule_conclusion = self._chokepoint_rule_conclusion(run, validation_context, verification_tasks)
+        llm_run_id = ""
+        fallback_used = ""
+        llm_summary = ""
+        if "llmtpl_chokepoint_conclusion_v1" not in self.store.llm_task_templates:
+            self.seed_default_llm_task_templates(actor=actor)
+        try:
+            llm_run = self.run_llm_task(
+                {
+                    "run_id": str(payload.get("conclusion_llm_run_id") or f"llmrun_{run_id}_conclusion_{int(time.time() * 1000)}"),
+                    "template_id": "llmtpl_chokepoint_conclusion_v1",
+                    "role": str(payload.get("role", "分析师")),
+                    "variables": {
+                        "topic": run.topic,
+                        "research_context": json.dumps(self._chokepoint_research_context(run), ensure_ascii=False, default=str),
+                        "rule_conclusion": json.dumps(rule_conclusion, ensure_ascii=False, default=str),
+                        "steps_summary": json.dumps(self._chokepoint_steps_summary(run), ensure_ascii=False, default=str),
+                        "issues": json.dumps(run.issues, ensure_ascii=False, default=str),
+                        "validation_context": json.dumps(validation_context, ensure_ascii=False, default=str),
+                    },
+                    "temperature": float(payload.get("temperature", 0.1)),
+                    "max_tokens": int(payload.get("max_tokens", 900)),
+                    "timeout_seconds": int(payload.get("timeout_seconds", payload.get("timeout", 45)) or 45),
+                    "human_review_required": True,
+                },
+                actor=actor,
+            )
+            llm_run_id = llm_run.run_id
+            fallback_used = llm_run.fallback_used
+            llm_summary = self._sanitize_chokepoint_conclusion_text(self._llm_output_text(llm_run.output).strip())
+        except Exception as exc:
+            fallback_used = "rule_conclusion"
+            llm_summary = self._sanitize_chokepoint_conclusion_text(f"AI 综合未完成：{exc}")
+        conclusion = {
+            **rule_conclusion,
+            "llm_run_id": llm_run_id,
+            "fallback_used": fallback_used,
+            "llm_summary": llm_summary,
+            "generated_at": utcnow(),
+            "usage_boundary": "research_only_not_investment_advice",
+        }
+        review_snapshot = {
+            **run.review_snapshot,
+            "last_conclusion_at": conclusion["generated_at"],
+            "conclusion_generation": "rule_summary_plus_optional_llm",
+        }
+        status = "completed" if self._chokepoint_completed(run.steps) and run.status != "failed" else run.status
+        updated = self._replace_chokepoint_run(
+            run,
+            status=status,
+            conclusion=conclusion,
+            validation_context=validation_context,
+            review_snapshot=review_snapshot,
+        )
+        self._audit(actor, "finalize_chokepoint_research_run", "chokepoint_research_run", run_id, approval_state=str(conclusion.get("status", "")))
+        return updated
+
+    def review_chokepoint_research_run(self, run_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> ChokepointResearchRun:
+        run = self.get_chokepoint_research_run(run_id)
+        step_id = str(payload.get("step_id", run.current_step)).strip()
+        steps = list(run.steps)
+        if step_id:
+            index = self._chokepoint_step_index(run, step_id)
+            step = dict(steps[index])
+            notes = [str(item) for item in step.get("tuning_notes", [])] if isinstance(step.get("tuning_notes"), list) else ([str(step.get("tuning_notes"))] if step.get("tuning_notes") else [])
+            if payload.get("tuning_notes"):
+                notes.append(str(payload.get("tuning_notes")))
+            if payload.get("status"):
+                step["status"] = str(payload["status"])
+            step["tuning_notes"] = notes
+            step["reviewed_by"] = actor
+            step["reviewed_at"] = utcnow()
+            steps[index] = step
+        closed = {str(item) for item in payload.get("close_issue_ids", [])}
+        issues = []
+        for item in run.issues:
+            issue = dict(item)
+            if closed and str(issue.get("issue_id", "")) in closed:
+                issue["status"] = "closed"
+                issue["closed_by"] = actor
+                issue["closed_at"] = utcnow()
+            issues.append(issue)
+        review_snapshot = {**run.review_snapshot, **dict(payload.get("review_snapshot", {})), "last_reviewed_by": actor, "last_reviewed_at": utcnow()}
+        updated_status = str(payload.get("run_status", run.status))
+        updated = self._replace_chokepoint_run(run, steps=steps, issues=issues, review_snapshot=review_snapshot, status=updated_status)
+        self._audit(actor, "review_chokepoint_research_run", "chokepoint_research_run", run_id, approval_state=updated.status)
+        return updated
+
+    def create_chokepoint_verification_tasks(self, run_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        run = self.get_chokepoint_research_run(run_id)
+        candidates = self._chokepoint_verification_candidates(run)
+        max_tasks = self._bounded_limit(payload.get("limit", 20), 100)
+        created: list[dict[str, Any]] = []
+        existing: list[dict[str, Any]] = []
+        for candidate in candidates[:max_tasks]:
+            task_id = str(candidate["task_id"])
+            if task_id in self.store.research_tasks:
+                existing.append(to_plain(self.store.research_tasks[task_id]))
+                continue
+            task = self._build_research_task(task_id, str(candidate["task_type"]), candidate)
+            self.store.research_tasks[task.task_id] = task
+            created.append(to_plain(task))
+            self._audit(actor, "create_chokepoint_verification_task", "research_task", task.task_id, source=run_id)
+        return {
+            "run_id": run_id,
+            "created_count": len(created),
+            "existing_count": len(existing),
+            "created_tasks": created,
+            "existing_tasks": existing,
+            "automation_allowed": False,
+            "live_execution_allowed": False,
+            "usage_boundary": "chokepoint_verification_tasks_are_research_only_not_trade_signal",
+        }
+
+    def _new_chokepoint_step(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "step_id": str(item["step_id"]),
+            "label": str(item["label"]),
+            "template_id": str(item["template_id"]),
+            "gate": bool(item.get("gate", False)),
+            "status": "pending",
+            "input_prompt": "",
+            "llm_run_id": "",
+            "output_text": "",
+            "summary": "等待运行",
+            "evidence_quality": {},
+            "issues": [],
+            "started_at": None,
+            "completed_at": None,
+            "tuning_notes": [],
+        }
+
+    def _replace_chokepoint_run(self, run: ChokepointResearchRun, **updates: Any) -> ChokepointResearchRun:
+        data = to_plain(run)
+        data.update(updates)
+        data["automation_allowed"] = False
+        data["live_execution_allowed"] = False
+        data["updated_at"] = utcnow()
+        updated = ChokepointResearchRun(**data)
+        self.store.chokepoint_research_runs[updated.run_id] = updated
+        return updated
+
+    def _chokepoint_step_index(self, run: ChokepointResearchRun, step_id: str) -> int:
+        for index, step in enumerate(run.steps):
+            if step.get("step_id") == step_id:
+                return index
+        raise NotFoundError(f"chokepoint research step {step_id} not found")
+
+    def _next_chokepoint_step_id(self, steps: list[dict[str, Any]], index: int) -> str:
+        if index + 1 < len(steps):
+            return str(steps[index + 1]["step_id"])
+        return str(steps[index]["step_id"])
+
+    def _chokepoint_completed(self, steps: list[dict[str, Any]]) -> bool:
+        return all(str(step.get("status")) in {"done", "review"} for step in steps)
+
+    def _chokepoint_research_context(self, run: ChokepointResearchRun | Mapping[str, Any]) -> dict[str, Any]:
+        if isinstance(run, ChokepointResearchRun):
+            return {
+                "topic": run.topic,
+                "ticker": run.ticker,
+                "theme": run.theme,
+                "chokepoint_node": run.chokepoint_node,
+                "playbook": run.playbook,
+                "mode": run.mode,
+            }
+        return {
+            "topic": str(run.get("topic", run.get("theme", ""))),
+            "ticker": str(run.get("ticker", "")),
+            "theme": str(run.get("theme", "")),
+            "chokepoint_node": str(run.get("chokepoint_node", run.get("node", ""))),
+            "playbook": str(run.get("playbook", "generic")),
+            "mode": str(run.get("mode", "strict")),
+        }
+
+    def _chokepoint_validation_context(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        context = self._chokepoint_research_context(payload)
+        ticker = str(context.get("ticker", "")).strip().lower()
+        topic_terms = [term.lower() for term in re.findall(r"[\w\u4e00-\u9fff]+", " ".join(str(context.get(key, "")) for key in ["topic", "theme", "chokepoint_node"])) if len(term) >= 2]
+        securities = [item for item in self.store.securities.values() if ticker and (item.ticker.lower() == ticker or item.security_id.lower() == ticker)]
+        security_ids = {item.security_id for item in securities}
+        issuer_ids = {item.issuer_id for item in securities if item.issuer_id}
+        market_rows = [item for item in self.store.market_data.values() if item.security_id in security_ids]
+        market_rows.sort(key=lambda item: str(item.as_of_date), reverse=True)
+        document_ids = {
+            document.document_id
+            for document in self.store.documents.values()
+            if (security_ids and document.security_id in security_ids) or (issuer_ids and document.issuer_id in issuer_ids)
+        }
+        evidence_rows: list[Evidence] = []
+        max_scan = 600 if document_ids else 120
+        for evidence in self.store.evidence.values():
+            if document_ids and evidence.document_id in document_ids:
+                evidence_rows.append(evidence)
+            elif not document_ids and topic_terms and self._chokepoint_light_evidence_match(evidence, topic_terms[:6]):
+                evidence_rows.append(evidence)
+            if len(evidence_rows) >= 30:
+                break
+            max_scan -= 1
+            if max_scan <= 0:
+                break
+        facts = [self._chokepoint_evidence_row(item) for item in evidence_rows if item.section != "research_report_citation"]
+        opinions = [self._chokepoint_evidence_row(item) for item in evidence_rows if item.section == "research_report_citation"]
+        tasks = []
+        for task in self.store.research_tasks.values():
+            if task.source not in {"chokepoint_research", "hotspot_expansion"}:
+                continue
+            if not topic_terms or any(term in (task.reason + json.dumps(task.metadata, ensure_ascii=False)).lower() for term in topic_terms[:6]):
+                tasks.append(to_plain(task))
+            if len(tasks) >= 20:
+                break
+        return {
+            "market_data": {
+                "role": "market_pricing_validation_only",
+                "count": len(market_rows),
+                "latest": [to_plain(item) for item in market_rows[:10]],
+            },
+            "facts": {
+                "role": "confirmed_candidate_only_if_public_filing_or_regulatory_source",
+                "count": len(facts),
+                "items": facts[:12],
+            },
+            "opinions": {
+                "role": "research_reports_and_secondary_views_not_core_facts",
+                "count": len(opinions),
+                "items": opinions[:12],
+            },
+            "knowledge_graph": {
+                "role": "traceability_context",
+                "security_ids": sorted(security_ids),
+                "issuer_ids": sorted(issuer_ids),
+                "document_ids": sorted(document_ids)[:20],
+            },
+            "needs_verification": {
+                "role": "open_research_tasks",
+                "count": len(tasks),
+                "items": tasks,
+            },
+        }
+
+    def _chokepoint_light_evidence_match(self, evidence: Evidence, topic_terms: list[str]) -> bool:
+        haystack = " ".join(
+            [
+                evidence.section,
+                evidence.document_id,
+                evidence.security_id,
+                evidence.issuer_id,
+                evidence.chain_id,
+                " ".join(evidence.evidence_topics[:8]),
+                " ".join(evidence.risk_tags[:8]),
+                " ".join(evidence.financial_metric_tags[:8]),
+            ]
+        ).lower()
+        return any(term in haystack for term in topic_terms)
+
+    def _chokepoint_evidence_row(self, evidence: Evidence) -> dict[str, Any]:
+        document = self.store.documents.get(evidence.document_id)
+        return {
+            "evidence_id": evidence.evidence_id,
+            "document_id": evidence.document_id,
+            "section": evidence.section,
+            "source_uri": document.source_uri if document else "",
+            "page_no": evidence.page_no,
+            "snippet": (evidence.canonical_text or evidence.span_text)[:240],
+            "confidence": evidence.confidence,
+        }
+
+    def _chokepoint_step_prompt(self, run: ChokepointResearchRun, step: Mapping[str, Any]) -> str:
+        mode_notes = {
+            "strict": "严格证据模式：宁可输出 unknown，也不要把未核验内容写成结论；门禁不过时停止并提出调优建议。",
+            "balanced": "平衡推进模式：可以继续形成结构化草稿，但任何无 URL 数字和时间线必须保留为待验证。",
+            "exploratory": "探索发散模式：允许提出更多候选，但未核验内容必须标为 speculative/unknown。",
+        }
+        base = self.CHOKEPOINT_STEP_PROMPTS.get(str(step.get("step_id")), "")
+        return f"{mode_notes.get(run.mode, mode_notes['strict'])}\n{base}"
+
+    def _chokepoint_prior_outputs(self, run: ChokepointResearchRun, step_index: int) -> str:
+        blocks = []
+        for step in run.steps[:step_index]:
+            output = str(step.get("output_text", "")).strip()
+            if output:
+                blocks.append(f"## {step.get('label')}\n{output[:2500]}")
+        return "\n\n".join(blocks) if blocks else "无"
+
+    def _chokepoint_steps_summary(self, run: ChokepointResearchRun) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for step in run.steps:
+            quality = dict(step.get("evidence_quality") or {})
+            rows.append(
+                {
+                    "step_id": step.get("step_id", ""),
+                    "label": step.get("label", ""),
+                    "status": step.get("status", "pending"),
+                    "summary": step.get("summary", ""),
+                    "llm_run_id": step.get("llm_run_id", ""),
+                    "url_count": quality.get("url_count", 0),
+                    "confirmed_count": quality.get("confirmed_count", 0),
+                    "inferred_count": quality.get("inferred_count", 0),
+                    "speculative_count": quality.get("speculative_count", 0),
+                    "unknown_count": quality.get("unknown_count", 0),
+                    "fallback_used": quality.get("fallback_used", ""),
+                    "issue_count": len(step.get("issues") or []),
+                }
+            )
+        return rows
+
+    def _chokepoint_rule_conclusion(
+        self,
+        run: ChokepointResearchRun,
+        validation_context: Mapping[str, Any],
+        verification_tasks: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        summaries = self._chokepoint_steps_summary(run)
+        completed_count = sum(1 for item in summaries if str(item.get("status")) in {"done", "review"})
+        review_count = sum(1 for item in summaries if str(item.get("status")) == "review")
+        failed_count = sum(1 for item in summaries if str(item.get("status")) == "failed")
+        url_count = sum(int(item.get("url_count") or 0) for item in summaries)
+        confirmed_count = sum(int(item.get("confirmed_count") or 0) for item in summaries)
+        inferred_count = sum(int(item.get("inferred_count") or 0) for item in summaries)
+        speculative_count = sum(int(item.get("speculative_count") or 0) for item in summaries)
+        unknown_count = sum(int(item.get("unknown_count") or 0) for item in summaries)
+        fallback_count = sum(1 for item in summaries if item.get("fallback_used"))
+        open_issues = [dict(item) for item in run.issues if item.get("status", "open") == "open"]
+        block_count = sum(1 for item in open_issues if item.get("severity") == "block")
+        market_count = int((validation_context.get("market_data") or {}).get("count") or 0)
+        facts_count = int((validation_context.get("facts") or {}).get("count") or 0)
+        opinion_count = int((validation_context.get("opinions") or {}).get("count") or 0)
+        task_count = int((validation_context.get("needs_verification") or {}).get("count") or 0)
+        status = "failed" if failed_count or run.status == "failed" else "ready_for_review"
+        if status != "failed" and (block_count or review_count or fallback_count or unknown_count or url_count == 0 or confirmed_count == 0 or facts_count == 0):
+            status = "needs_evidence"
+        score = 5.0
+        score += min(2.0, confirmed_count / 4)
+        score += min(1.0, facts_count / 3)
+        score += min(1.0, completed_count / max(1, len(run.steps)))
+        score -= min(2.0, block_count * 0.7)
+        score -= min(1.5, fallback_count * 0.5)
+        score -= min(1.0, unknown_count * 0.12)
+        score -= min(0.8, opinion_count * 0.05)
+        score = round(max(1.0, min(10.0, score)), 1)
+        confidence = "low" if status in {"failed", "needs_evidence"} or score < 4.5 else ("medium" if score < 7.5 else "high")
+        if status == "failed":
+            one_line = f"{run.topic} 的瓶颈研究流水线未完成，当前只能作为失败 run 的排障记录。"
+        elif status == "needs_evidence":
+            one_line = f"{run.topic} 已形成瓶颈研究草稿，但证据缺口仍高，需要先补来源和事实验证。"
+        else:
+            one_line = f"{run.topic} 已形成可人工复核的瓶颈研究结论，可进入验证任务和模拟组合前审查。"
+        verification_compact = {
+            "created_count": int(verification_tasks.get("created_count", 0) or 0),
+            "existing_count": int(verification_tasks.get("existing_count", 0) or 0),
+            "created_tasks": [
+                {"task_id": item.get("task_id", ""), "reason": self._sanitize_chokepoint_conclusion_text(str(item.get("reason", ""))[:180]), "priority": item.get("priority")}
+                for item in verification_tasks.get("created_tasks", [])[:8]
+            ],
+            "existing_tasks": [
+                {"task_id": item.get("task_id", ""), "reason": self._sanitize_chokepoint_conclusion_text(str(item.get("reason", ""))[:180]), "priority": item.get("priority")}
+                for item in verification_tasks.get("existing_tasks", [])[:8]
+            ],
+            "usage_boundary": verification_tasks.get("usage_boundary", "research_only_not_trade_signal"),
+        }
+        next_actions = [
+            "人工复核来源台账，补齐 P0 官方/监管/公司原始链接。",
+            "把 unknown、needs_verification 和反方问题逐条关闭或降级。",
+            "用公告/财报/监管 evidence 校验核心事实，研报只保留为 opinions。",
+            "复核 K线/行情只作为市场定价与催化剂反应验证，不作为事实来源。",
+        ]
+        if fallback_count:
+            next_actions.insert(0, "LLM 曾使用 fallback，需重跑相关步骤或人工确认后再进入 thesis。")
+        if facts_count == 0:
+            next_actions.insert(0, "当前没有公告/财报/监管 fact evidence，必须先补证据层。")
+        return {
+            "status": status,
+            "one_line_conclusion": one_line,
+            "thesis_strength_score": score,
+            "confidence": confidence,
+            "evidence_quality_summary": {
+                "completed_steps": completed_count,
+                "total_steps": len(run.steps),
+                "review_steps": review_count,
+                "failed_steps": failed_count,
+                "url_count": url_count,
+                "confirmed_count": confirmed_count,
+                "inferred_count": inferred_count,
+                "speculative_count": speculative_count,
+                "unknown_count": unknown_count,
+                "fallback_step_count": fallback_count,
+                "open_issue_count": len(open_issues),
+                "block_issue_count": block_count,
+                "facts_count": facts_count,
+                "opinions_count": opinion_count,
+                "market_data_count": market_count,
+                "verification_task_count": task_count,
+            },
+            "confirmed_summary": self._chokepoint_layer_summary(run, "confirmed", confirmed_count),
+            "inferred_summary": self._chokepoint_layer_summary(run, "inferred", inferred_count),
+            "speculative_summary": self._chokepoint_layer_summary(run, "speculative", speculative_count),
+            "unknowns": self._chokepoint_extract_lines(run, r"unknown|未知|待验证|无法确认|needs_verification|P0", limit=8)
+            or [item.get("message", "") for item in open_issues[:5]],
+            "key_chokepoints": self._chokepoint_extract_lines(run, r"chokepoint|瓶颈|咽喉|卡点|Strait", limit=8)
+            or ([run.chokepoint_node] if run.chokepoint_node else []),
+            "catalysts": self._chokepoint_extract_lines(run, r"催化|里程碑|合同|订单|审批|许可|qualification|ramp|M&A|政策", limit=8),
+            "falsification_conditions": self._chokepoint_extract_lines(run, r"证伪|反方|风险|替代|失败|推迟|取消|falsification|bear case", limit=8),
+            "validation_summary": {
+                "market_data": {"count": market_count, "role": (validation_context.get("market_data") or {}).get("role", "")},
+                "facts": {"count": facts_count, "role": (validation_context.get("facts") or {}).get("role", "")},
+                "opinions": {"count": opinion_count, "role": (validation_context.get("opinions") or {}).get("role", "")},
+                "knowledge_graph": validation_context.get("knowledge_graph", {}),
+                "needs_verification": {"count": task_count},
+            },
+            "open_issues": [
+                {
+                    "issue_id": item.get("issue_id", ""),
+                    "step": item.get("step", ""),
+                    "severity": item.get("severity", ""),
+                    "message": self._sanitize_chokepoint_conclusion_text(str(item.get("message", ""))),
+                    "suggestion": self._sanitize_chokepoint_conclusion_text(str(item.get("suggestion", ""))),
+                }
+                for item in open_issues[:12]
+            ],
+            "next_actions": next_actions,
+            "verification_tasks": verification_compact,
+            "llm_run_id": "",
+            "fallback_used": "",
+            "usage_boundary": "research_only_not_investment_advice",
+        }
+
+    def _chokepoint_layer_summary(self, run: ChokepointResearchRun, layer: str, count: int) -> str:
+        if count <= 0:
+            return f"暂无 {layer} 标记进入流水线结论。"
+        examples = self._chokepoint_extract_lines(run, rf"\b{re.escape(layer)}\b", limit=3)
+        suffix = f" 示例：{'；'.join(examples)}" if examples else ""
+        return f"步骤输出中出现 {count} 处 {layer} 标记，仍需按来源台账逐条回链复核。{suffix}"[:900]
+
+    def _chokepoint_extract_lines(self, run: ChokepointResearchRun, pattern: str, *, limit: int = 6) -> list[str]:
+        rows: list[str] = []
+        seen: set[str] = set()
+        compiled = re.compile(pattern, flags=re.I)
+        for step in run.steps:
+            for line in str(step.get("output_text", "")).splitlines():
+                normalized = " ".join(line.strip().split())
+                if len(normalized) < 12 or not compiled.search(normalized):
+                    continue
+                normalized = self._sanitize_chokepoint_conclusion_text(normalized[:260])
+                key = normalized.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(normalized)
+                if len(rows) >= limit:
+                    return rows
+        return rows
+
+    def _sanitize_chokepoint_conclusion_text(self, text: str) -> str:
+        sanitized = str(text or "")
+        replacements = {
+            "买入": "研究边界",
+            "卖出": "研究边界",
+            "目标价": "估值待验证",
+            "仓位": "风险敞口待验证",
+            "配置": "模拟组合输入待验证",
+            "投资建议": "研究辅助",
+        }
+        for source, target in replacements.items():
+            sanitized = sanitized.replace(source, target)
+        return sanitized
+
+    def _analyze_chokepoint_step_output(self, step: Mapping[str, Any], output: str, *, llm_run: LLMTaskRun) -> dict[str, Any]:
+        text = output or ""
+        lower = text.lower()
+        issues: list[dict[str, Any]] = []
+        has_url = bool(re.search(r"https?://", text))
+        if step.get("step_id") == "sourceLedger" and not has_url:
+            issues.append(self._chokepoint_issue(step, "block", "来源台账没有可点击 URL。", "缩小范围，先补 3-5 个官方/公司/监管来源后重跑。"))
+        if re.search(r"投资建议|买入|卖出|目标价|仓位|配置", text):
+            issues.append(self._chokepoint_issue(step, "warn", "输出含投资建议或仓位表达。", "提交事实审计或人工复核，删除或降级为研究边界说明。"))
+        if re.search(r"deep thinking|思维链|内部推理", text, flags=re.I):
+            issues.append(self._chokepoint_issue(step, "block", "输出包含思维链或内部推理。", "重跑当前步骤，只允许输出表格和可审计结论。"))
+        if re.search(r"无法实时核验|unknown|未知|待验证|无法确认|needs_verification", text, flags=re.I):
+            issues.append(self._chokepoint_issue(step, "warn", "存在 unknown 或待验证事实。", "进入事实审计，或生成 ResearchTask 补证。"))
+        if llm_run.status != "succeeded" or llm_run.fallback_used:
+            issues.append(self._chokepoint_issue(step, "block", "LLM 使用 fallback 或运行未成功。", "需要人工复核，不得把 fallback 文本当作 confirmed 研究成果。"))
+        confirmed_count = len(re.findall(r"\bconfirmed\b", lower))
+        inferred_count = len(re.findall(r"\binferred\b", lower))
+        speculative_count = len(re.findall(r"\bspeculative\b", lower))
+        unknown_count = len(re.findall(r"\bunknown\b|未知|待验证|无法确认", lower))
+        if inferred_count + speculative_count > confirmed_count + 3:
+            issues.append(self._chokepoint_issue(step, "warn", "推断/猜测显著多于已确认事实。", "补来源台账后再推进 thesis。"))
+        lines = [line.strip() for line in text.splitlines() if len(line.strip()) > 20]
+        summary = (lines[0] if lines else "已生成步骤产物")[:180]
+        quality = {
+            "has_url": has_url,
+            "url_count": len(re.findall(r"https?://", text)),
+            "confirmed_count": confirmed_count,
+            "inferred_count": inferred_count,
+            "speculative_count": speculative_count,
+            "unknown_count": unknown_count,
+            "research_opinion_mentions": len(re.findall(r"研报|research report|opinion", text, flags=re.I)),
+            "contains_investment_advice": bool(re.search(r"投资建议|买入|卖出|目标价|仓位|配置", text)),
+            "fallback_used": llm_run.fallback_used,
+            "llm_status": llm_run.status,
+        }
+        status = "review" if any(item["severity"] == "block" for item in issues) else "done"
+        return {"status": status, "summary": summary, "issues": issues, "evidence_quality": quality}
+
+    def _chokepoint_issue(self, step: Mapping[str, Any], severity: str, message: str, suggestion: str) -> dict[str, Any]:
+        basis = f"{step.get('step_id')}|{severity}|{message}"
+        return {
+            "issue_id": f"cpissue_{safe_source_part(basis)}",
+            "step_id": str(step.get("step_id", "")),
+            "step": str(step.get("label", step.get("step_id", ""))),
+            "severity": severity,
+            "message": message,
+            "suggestion": suggestion,
+            "status": "open",
+            "created_at": utcnow(),
+        }
+
+    def _merge_chokepoint_issues(self, existing: list[dict[str, Any]], new_issues: list[dict[str, Any]], step_label: str) -> list[dict[str, Any]]:
+        retained = [dict(item) for item in existing if item.get("step") != step_label]
+        by_id = {str(item.get("issue_id")): item for item in retained}
+        for issue in new_issues:
+            by_id[str(issue.get("issue_id"))] = dict(issue)
+        return list(by_id.values())
+
+    def _chokepoint_verification_candidates(self, run: ChokepointResearchRun) -> list[dict[str, Any]]:
+        candidates: dict[str, dict[str, Any]] = {}
+        for issue in run.issues:
+            if issue.get("status") == "closed":
+                continue
+            reason = f"{issue.get('step')}: {issue.get('message')} {issue.get('suggestion')}"
+            task_type = "chokepoint_verification"
+            task_id = f"rtask_{safe_source_part(run.run_id + '|' + str(issue.get('issue_id', reason)))}"
+            candidates[task_id] = {
+                "task_id": task_id,
+                "task_type": task_type,
+                "source": "chokepoint_research",
+                "reason": reason,
+                "status": "open",
+                "priority": 80 if issue.get("severity") == "block" else 60,
+                "required_slots": ["source_url", "published_date", "source_type", "confidence", "fact_layer"],
+                "metadata": {
+                    "run_id": run.run_id,
+                    "topic": run.topic,
+                    "step_id": issue.get("step_id", ""),
+                    "usage_boundary": "research_only_not_trade_signal",
+                    "automation_allowed": False,
+                    "live_execution_allowed": False,
+                },
+            }
+        for step in run.steps:
+            text = str(step.get("output_text", ""))
+            for index, line in enumerate([line.strip() for line in text.splitlines() if re.search(r"unknown|未知|待验证|无法确认|needs_verification|P0", line, re.I)][:8]):
+                task_id = f"rtask_{safe_source_part(run.run_id + '|' + str(step.get('step_id')) + '|' + str(index) + '|' + line[:80])}"
+                candidates.setdefault(
+                    task_id,
+                    {
+                        "task_id": task_id,
+                        "task_type": "chokepoint_verification",
+                        "source": "chokepoint_research",
+                        "reason": line[:500],
+                        "status": "open",
+                        "priority": 70,
+                        "required_slots": ["official_source", "source_url", "published_date", "verification_result"],
+                        "metadata": {
+                            "run_id": run.run_id,
+                            "topic": run.topic,
+                            "step_id": step.get("step_id", ""),
+                            "usage_boundary": "research_only_not_trade_signal",
+                            "automation_allowed": False,
+                            "live_execution_allowed": False,
+                        },
+                    },
+                )
+        if not candidates:
+            task_id = f"rtask_{safe_source_part(run.run_id + '|manual_review')}"
+            candidates[task_id] = {
+                "task_id": task_id,
+                "task_type": "chokepoint_verification",
+                "source": "chokepoint_research",
+                "reason": "人工复核瓶颈研究来源台账、事实分层和证伪条件。",
+                "status": "open",
+                "priority": 50,
+                "required_slots": ["source_ledger_review", "falsification_review"],
+                "metadata": {"run_id": run.run_id, "topic": run.topic, "usage_boundary": "research_only_not_trade_signal"},
+            }
+        return list(candidates.values())
 
     def _build_research_task(self, task_id: str, task_type: str, payload: Mapping[str, Any]) -> ResearchTask:
         if task_type == "company_position_backfill":

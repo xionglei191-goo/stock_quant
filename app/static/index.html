@@ -517,6 +517,241 @@
       justify-self: start;
       min-height: 30px;
     }
+    .method-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+      gap: 12px;
+    }
+    .method-lane {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(94px, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .method-node {
+      min-height: 78px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fbfdff;
+      display: grid;
+      gap: 6px;
+      align-content: start;
+    }
+    .method-node strong {
+      font-size: 13px;
+    }
+    .method-node span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .method-node.hot {
+      border-color: #efc15e;
+      background: #fff9eb;
+    }
+    .score-band {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .score-tile {
+      min-height: 82px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fbfdff;
+      display: grid;
+      gap: 5px;
+    }
+    .score-tile strong {
+      font-size: 20px;
+      line-height: 1;
+    }
+    .score-tile span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .template-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .prompt-builder {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(260px, 0.55fr);
+      gap: 12px;
+    }
+    .prompt-box {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0e1726;
+      color: #dce7f7;
+      min-height: 320px;
+      max-height: 520px;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .phase-list {
+      display: grid;
+      gap: 8px;
+    }
+    .phase-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfdff;
+      padding: 10px;
+      min-height: 62px;
+    }
+    .phase-item strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
+    .phase-item span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .pipeline-grid {
+      display: grid;
+      grid-template-columns: minmax(230px, 0.65fr) minmax(0, 1.35fr) minmax(260px, 0.8fr);
+      gap: 12px;
+    }
+    .pipeline-steps {
+      display: grid;
+      gap: 8px;
+    }
+    .pipeline-step {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfdff;
+      padding: 10px;
+      display: grid;
+      gap: 5px;
+      min-height: 72px;
+    }
+    .pipeline-step.active {
+      border-color: #7aa7ff;
+      background: #eef5ff;
+    }
+    .pipeline-step.running {
+      border-color: #efc15e;
+      background: #fff9eb;
+    }
+    .pipeline-step.done {
+      border-color: #99d7b6;
+      background: #f1fbf5;
+    }
+    .pipeline-step.review {
+      border-color: #efc15e;
+      background: #fff9eb;
+    }
+    .pipeline-step.failed {
+      border-color: #f0a5a5;
+      background: #fff3f3;
+    }
+    .pipeline-step strong {
+      font-size: 13px;
+    }
+    .pipeline-step span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .pipeline-step button {
+      justify-self: start;
+      min-height: 28px;
+      padding: 5px 8px;
+      font-size: 12px;
+    }
+    .pipeline-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .pipeline-metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px;
+      background: #fbfdff;
+      min-height: 64px;
+    }
+    .pipeline-metric strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1.1;
+      margin-bottom: 4px;
+    }
+    .pipeline-metric span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .pipeline-output {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      min-height: 260px;
+      max-height: 520px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0e1726;
+      color: #dce7f7;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .issue-list {
+      display: grid;
+      gap: 7px;
+      margin-top: 8px;
+    }
+    .issue-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #fbfdff;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .issue-item.block {
+      border-color: #f0a5a5;
+      background: #fff3f3;
+      color: #8b2d2d;
+    }
+    .issue-item.warn {
+      border-color: #efc15e;
+      background: #fff9eb;
+      color: #7a5600;
+    }
+    .check-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      min-height: 30px;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    .check-row:last-child {
+      border-bottom: 0;
+    }
+    .check-mark {
+      display: inline-grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: #e8f6ef;
+      color: var(--green);
+      font-weight: 800;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -599,6 +834,7 @@
       .span-2, .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
       .workspace-hero { grid-template-columns: 1fr; }
       .flow, .agent-grid, .system-strip, .quick-start { grid-template-columns: 1fr; }
+      .method-grid, .method-lane, .template-grid, .score-band, .prompt-builder, .pipeline-grid, .pipeline-summary { grid-template-columns: 1fr; }
       .flow-step::after { display: none; }
       .risk-row { grid-template-columns: 1fr; }
     }
@@ -642,6 +878,7 @@
       <button class="active" data-open="dashboard">总览</button>
       <button data-open="ingestion">数据中台</button>
       <button data-open="search">研究工作台</button>
+      <button data-open="chokepoint">瓶颈研究</button>
       <button data-open="agents">智能体协作</button>
       <button data-open="review">策略实验室</button>
       <button data-open="committee">投委会</button>
@@ -847,6 +1084,286 @@
               <div class="system-box"><strong>审计日志</strong><span id="sysAudit">0 条</span></div>
               <div class="system-box"><strong>服务健康</strong><span id="sysHealth">检查中</span></div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section data-tab="chokepoint">
+        <div class="method-grid">
+          <div class="panel">
+            <div class="analysis-header">
+              <div class="analysis-title">
+                <strong>Chokepoint Theory 研究工作台</strong>
+                <span>从终端需求反向拆供应链，寻找集中度高、切换成本高、市场尚未充分定价的窄点。</span>
+              </div>
+              <span class="badge warn">研究模板</span>
+            </div>
+            <div class="method-lane" aria-label="价值链逆向工程流程">
+              <div class="method-node"><strong>终端需求</strong><span>最终产品、服务场景、客户预算、消费/企业需求</span></div>
+              <div class="method-node"><strong>价值链</strong><span>交付路径、商业模式、渠道、监管和标准</span></div>
+              <div class="method-node"><strong>关键环节</strong><span>材料、工艺、数据、牌照、分销、人才或设备</span></div>
+              <div class="method-node hot"><strong>瓶颈节点</strong><span>稀缺资源、独占能力、高认证成本或有限产能</span></div>
+              <div class="method-node"><strong>控制者</strong><span>sole source、寡头、平台、牌照方、渠道入口</span></div>
+              <div class="method-node"><strong>催化剂</strong><span>客户验证、放量、价格、政策、M&A、机构覆盖</span></div>
+            </div>
+            <div class="score-band">
+              <div class="score-tile"><strong id="cpTotalScore">82</strong><span>瓶颈综合分</span></div>
+              <div class="score-tile"><strong id="cpConcentrationScore">88</strong><span>供应集中度</span></div>
+              <div class="score-tile"><strong id="cpSwitchingScore">80</strong><span>切换成本</span></div>
+              <div class="score-tile"><strong id="cpCapacityScore">76</strong><span>产能约束</span></div>
+              <div class="score-tile"><strong id="cpValidationScore">84</strong><span>验证/催化剂</span></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2>研究动作</h2>
+            <div class="row">
+              <div class="field">
+                <label for="cpPlaybook">选择模板</label>
+                <select id="cpPlaybook" aria-label="选择瓶颈研究模板">
+                  <option value="generic">通用行业瓶颈研究</option>
+                  <option value="hardtech">硬科技 / 制造</option>
+                  <option value="consumer">消费 / 渠道</option>
+                  <option value="healthcare">医药 / 医疗</option>
+                  <option value="energy">资源 / 能源</option>
+                  <option value="nuclear">核能 / 核燃料链</option>
+                </select>
+              </div>
+              <button id="loadCpPlaybook" class="primary">载入模板</button>
+            </div>
+            <div class="check-row"><span class="check-mark">1</span><span>先画完整价值链/供应链地图，再讨论公司。</span></div>
+            <div class="check-row"><span class="check-mark">2</span><span>每个关键节点都问：如果这里卡住，整个行业扩张或客户交付会怎样？</span></div>
+            <div class="check-row"><span class="check-mark">3</span><span>只把原始来源、公司公告、财报、论文、产业报告放进核心证据层。</span></div>
+            <div class="check-row"><span class="check-mark">4</span><span>写清楚证伪条件，避免把叙事误当事实。</span></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:12px">
+          <div class="panel span-12">
+            <h2>Thesis 建档</h2>
+            <div class="row">
+              <div class="field compact">
+                <label for="cpTicker">标的</label>
+                <input id="cpTicker" value="待研究标的" aria-label="瓶颈研究标的">
+              </div>
+              <div class="field">
+                <label for="cpTheme">赛道</label>
+                <input id="cpTheme" value="行业/赛道" aria-label="瓶颈研究赛道">
+              </div>
+              <div class="field">
+                <label for="cpNode">瓶颈节点</label>
+                <input id="cpNode" value="关键瓶颈节点" aria-label="瓶颈节点">
+              </div>
+              <div class="field compact">
+                <label for="cpMarketCap">市值</label>
+                <input id="cpMarketCap" value="待填" aria-label="当前市值">
+              </div>
+              <button id="buildCpMemo" class="primary">生成记录</button>
+            </div>
+            <div class="template-grid">
+              <div>
+                <h3>价值链/供应链地图</h3>
+                <textarea id="cpMap" aria-label="价值链/供应链地图" style="width:100%;min-height:124px;border:1px solid var(--line);border-radius:6px;padding:10px">终端需求 -> 产品/服务 -> 关键交付环节 -> 稀缺资源/能力 -> 控制者/供应商 -> 原材料/基础设施</textarea>
+              </div>
+              <div>
+                <h3>证据与催化剂</h3>
+                <textarea id="cpCatalysts" aria-label="证据与催化剂" style="width:100%;min-height:124px;border:1px solid var(--line);border-radius:6px;padding:10px">客户验证、订单/合同、产能扩张、价格变化、渠道准入、监管审批、并购、机构覆盖、财报验证</textarea>
+              </div>
+              <div>
+                <h3>证伪条件</h3>
+                <textarea id="cpFalsifiers" aria-label="证伪条件" style="width:100%;min-height:124px;border:1px solid var(--line);border-radius:6px;padding:10px">替代方案出现、供给快速扩张、客户绕开该节点、价格/毛利不改善、需求下修、稀释/负债吞噬上行</textarea>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel span-12">
+            <h2>研究输入与调优</h2>
+            <div class="prompt-builder">
+              <div>
+                <div class="row">
+                  <div class="field compact">
+                    <label for="cpPromptTemplate">当前步骤提示</label>
+                    <select id="cpPromptTemplate" aria-label="选择提示模板">
+                      <option value="sourceLedger">A 来源台账 Source Ledger</option>
+                      <option value="factAudit">B 事实审计 Fact Audit</option>
+                      <option value="scopeNarrowing">C 问题窄化 Scope</option>
+                      <option value="collectionBasic">D 基础概念+价值链概览</option>
+                      <option value="collectionDeep">E 深度多源收集</option>
+                      <option value="mappingMermaid">F 价值链地图 Mermaid</option>
+                      <option value="mappingTable">G 多层价值链表格</option>
+                      <option value="analysisCore">H Chokepoint 排名</option>
+                      <option value="analysisEffects">I 二三阶效应</option>
+                      <option value="thesisFull">J 完整 Thesis</option>
+                      <option value="verification">K 魔鬼代言人验证</option>
+                      <option value="dailyTracking">L 每日跟踪</option>
+                      <option value="researchCard">M 结构化研究卡片</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="cpPromptTarget">研究对象</label>
+                    <input id="cpPromptTarget" value="某公司/某技术/某行业瓶颈" aria-label="提示模板目标">
+                  </div>
+                  <div class="field compact">
+                    <label for="cpPromptDate">日期</label>
+                    <input id="cpPromptDate" value="2026-05-26" aria-label="提示模板日期">
+                  </div>
+                  <button id="buildCpPrompt">查看步骤提示</button>
+                  <button id="runCpAiResearch" class="primary">运行 AI 研究流水线</button>
+                  <span class="badge warn" id="cpAiStatus">待运行</span>
+                </div>
+                <div id="cpPromptBox" class="prompt-box" aria-label="生成的提示词"></div>
+              </div>
+              <div>
+                <div class="row" style="margin-bottom:8px">
+                  <div class="field">
+                    <label for="cpAiModel">模型</label>
+                    <input id="cpAiModel" value="" aria-label="AI研究模型" placeholder="留空使用默认模型">
+                  </div>
+                  <div class="field compact">
+                    <label for="cpAiMaxTokens">输出上限</label>
+                    <input id="cpAiMaxTokens" value="900" aria-label="AI研究输出上限">
+                  </div>
+                  <div class="field compact">
+                    <label for="cpAiTemperature">温度</label>
+                    <input id="cpAiTemperature" value="0.2" aria-label="AI研究温度">
+                  </div>
+                  <div class="field compact">
+                    <label for="cpAiTimeout">超时秒数</label>
+                    <input id="cpAiTimeout" value="180" aria-label="AI研究超时秒数">
+                  </div>
+                </div>
+                <div class="phase-list">
+                  <div class="phase-item"><strong>0. 门禁</strong><span>A/B：先出来源台账和事实审计，无 URL 不入库。</span></div>
+                  <div class="phase-item"><strong>1. 窄化</strong><span>C：把大主题拆成可验证的 chokepoint 子题。</span></div>
+                  <div class="phase-item"><strong>2. 收集</strong><span>D/E：只收事实和来源，不急着给投资结论。</span></div>
+                  <div class="phase-item"><strong>3. 映射</strong><span>F/G：画出终端需求到资源/能力/渠道的多层链条。</span></div>
+                  <div class="phase-item"><strong>4. 分析</strong><span>H/I：找 3-5 个真正卡住扩张或交付的节点。</span></div>
+                  <div class="phase-item"><strong>5. 综合</strong><span>J/M：形成 thesis 和结构化研究卡片。</span></div>
+                  <div class="phase-item"><strong>6. 验证</strong><span>K/L：魔鬼代言人、每日催化剂和证伪条件。</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel span-12">
+            <div class="analysis-header">
+              <div class="analysis-title">
+                <strong>自动研究流水线</strong>
+                <span>按门禁、窄化、收集、映射、排名、综合、验证自动推进；每一步都保留产物、问题和可调参数。</span>
+              </div>
+              <span class="badge warn" id="cpPipelineStatus">未开始</span>
+            </div>
+            <div class="row" style="margin-bottom:10px">
+              <button id="createCpRun" class="primary">新建研究</button>
+              <button id="saveCpRun">保存档案</button>
+              <button id="loadCpRuns">继续历史研究</button>
+              <button id="runCpPipeline" class="primary">自动运行流水线</button>
+              <button id="runCpCurrentStep">只运行当前步骤</button>
+              <button id="pauseCpPipeline">暂停</button>
+              <button id="rerunCpCurrentStep">重跑当前步骤</button>
+              <button id="reviewCpRun">提交人工复核</button>
+              <button id="createCpVerificationTasks">生成验证任务</button>
+              <div class="field compact">
+                <label for="cpPipelineMode">调优模式</label>
+                <select id="cpPipelineMode" aria-label="流水线调优模式">
+                  <option value="strict">严格证据</option>
+                  <option value="balanced">平衡推进</option>
+                  <option value="exploratory">探索发散</option>
+                </select>
+              </div>
+              <div class="field compact">
+                <label for="cpPipelineStepLimit">步数上限</label>
+                <input id="cpPipelineStepLimit" value="7" aria-label="流水线步数上限">
+              </div>
+              <div class="field compact">
+                <label for="cpRunId">Run ID</label>
+                <input id="cpRunId" value="" aria-label="瓶颈研究Run ID" placeholder="自动生成">
+              </div>
+            </div>
+            <div id="cpRunRows" class="issue-list" style="margin-bottom:10px"></div>
+            <div class="pipeline-summary">
+              <div class="pipeline-metric"><strong id="cpPipelineProgress">0/7</strong><span>步骤进度</span></div>
+              <div class="pipeline-metric"><strong id="cpPipelineGate">待检查</strong><span>证据门禁</span></div>
+              <div class="pipeline-metric"><strong id="cpPipelineIssueCount">0</strong><span>问题数量</span></div>
+              <div class="pipeline-metric"><strong id="cpPersistStatus">未保存</strong><span>持久化状态</span></div>
+            </div>
+            <div class="pipeline-grid">
+              <div>
+                <h3>步骤状态</h3>
+                <div id="cpPipelineSteps" class="pipeline-steps"></div>
+              </div>
+              <div>
+                <h3>当前步骤产物</h3>
+                <div id="cpPipelineOutput" class="pipeline-output">尚未运行。点击“运行 AI 研究流水线”后会自动新建/续用研究 run，并按步骤保存产物、问题和验证资源。</div>
+              </div>
+              <div>
+                <h3>问题与调优建议</h3>
+                <div id="cpPipelineIssues" class="issue-list"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel span-12">
+            <div class="analysis-header">
+              <div class="analysis-title">
+                <strong>流水线结论</strong>
+                <span>7 步完成后自动生成规则结论，并尝试调用 AI 综合；LLM 限流时仍保留可审计结论和验证任务。</span>
+              </div>
+              <button id="refreshCpConclusion">刷新结论</button>
+            </div>
+            <div class="pipeline-summary">
+              <div class="pipeline-metric"><strong id="cpConclusionStatus">待生成</strong><span>结论状态</span></div>
+              <div class="pipeline-metric"><strong id="cpConclusionScore">-</strong><span>Thesis 强度</span></div>
+              <div class="pipeline-metric"><strong id="cpConclusionConfidence">-</strong><span>置信度</span></div>
+              <div class="pipeline-metric"><strong id="cpConclusionTaskCount">0</strong><span>验证任务</span></div>
+            </div>
+            <pre id="cpConclusionBox">流水线尚未完成。跑完 1-7 步后会自动生成结论、证据缺口、下一步验证任务和研究边界。</pre>
+          </div>
+
+          <div class="panel span-12">
+            <h2>验证资源</h2>
+            <div class="pipeline-summary">
+              <div class="pipeline-metric"><strong id="cpMarketDataCount">0</strong><span>K线/行情</span></div>
+              <div class="pipeline-metric"><strong id="cpFactEvidenceCount">0</strong><span>公告/财报事实</span></div>
+              <div class="pipeline-metric"><strong id="cpOpinionEvidenceCount">0</strong><span>研报观点</span></div>
+              <div class="pipeline-metric"><strong id="cpVerificationTaskCount">0</strong><span>待验证任务</span></div>
+            </div>
+            <pre id="cpValidationBox">尚未保存研究。新建研究后会展示 K线、研报观点、公告/财报 evidence、知识图谱回链和待验证任务。</pre>
+          </div>
+
+          <div class="panel span-8">
+            <h2>瓶颈候选 Watchlist</h2>
+            <table>
+              <thead><tr><th>节点</th><th>候选标的</th><th>为什么可能是窄点</th><th>下一步验证</th></tr></thead>
+              <tbody id="cpWatchRows"></tbody>
+            </table>
+          </div>
+
+          <div class="panel span-4">
+            <h2>来源优先级</h2>
+            <div class="check-row"><span class="check-mark">A</span><span>公司 10-K/20-F、年报、电话会、客户/供应商公告。</span></div>
+            <div class="check-row"><span class="check-mark">B</span><span>学术论文、专利、Gartner/IQVIA/Rystad/Yole/TrendForce 等行业报告。</span></div>
+            <div class="check-row"><span class="check-mark">C</span><span>无 URL、无日期、无来源类型的数字只能列入待验证，不能进 confirmed。</span></div>
+            <div class="check-row"><span class="check-mark">D</span><span>X thread/Substack 只作为线索，必须回到原始资料。</span></div>
+            <div class="check-row"><span class="check-mark">E</span><span>AI 工具用于整理和压力测试，不作为独立证据来源。</span></div>
+          </div>
+
+          <div class="panel span-6">
+            <h2>Thesis 记录</h2>
+            <pre id="cpMemoBox"></pre>
+          </div>
+
+          <div class="panel span-6">
+            <h2>当前 AI 步骤输出</h2>
+            <pre id="cpAiResultBox"></pre>
+          </div>
+
+          <div class="panel span-6">
+            <h2>@aleabitoreddit 方法样例</h2>
+            <table>
+              <thead><tr><th>主题</th><th>链接</th><th>用途</th></tr></thead>
+              <tbody id="cpReadingRows"></tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -1626,6 +2143,399 @@
     const status = $("status");
     let activeEntitySecurityId = "";
     let activeEntityIssuerId = "";
+    const chokepointPlaybooks = {
+      generic: {
+        scores: [80, 78, 82, 76, 84],
+        ticker: "待研究标的",
+        theme: "行业/赛道",
+        node: "关键瓶颈节点",
+        marketCap: "待填",
+        map: "终端需求 -> 产品/服务 -> 关键交付环节 -> 稀缺资源/能力 -> 控制者/供应商 -> 原材料/基础设施",
+        catalysts: "客户验证、订单/合同、产能扩张、价格变化、渠道准入、监管审批、并购、机构覆盖、财报验证",
+        falsifiers: "替代方案出现、供给快速扩张、客户绕开该节点、价格/毛利不改善、需求下修、稀释/负债吞噬上行",
+        watchlist: [
+          ["稀缺输入", "材料/数据/人才/牌照控制者", "供给难以快速复制，需求上行时议价权可能向该节点集中。", "核对供给集中度、扩产周期、价格和客户锁定情况。"],
+          ["认证/准入", "标准制定者/监管许可方", "客户切换或行业准入需要时间，验证周期本身就是护城河。", "查认证清单、审批记录、客户导入周期和失败案例。"],
+          ["渠道入口", "分销商/平台/关键客户接口", "控制终端流量、采购入口或结算关系，可能截留利润池。", "验证渠道份额、续约条款、返利结构和客户集中度。"],
+          ["交付能力", "设备/工程/服务商", "行业扩张可能受安装、实施、运维或本地资源约束。", "跟踪 backlog、交付周期、人员招聘和区域瓶颈。"]
+        ]
+      },
+      hardtech: {
+        scores: [84, 86, 84, 82, 78],
+        ticker: "制造/材料候选",
+        theme: "硬科技 / 制造",
+        node: "关键材料、设备或工艺能力",
+        marketCap: "待填",
+        map: "终端产品 -> 子系统 -> 关键零部件 -> 材料/工艺 -> 设备/产线 -> 原料/能源",
+        catalysts: "客户认证、良率爬坡、产线扩建、价格上涨、国产替代/本土化、长期供货协议",
+        falsifiers: "客户双供成功、竞品良率追上、价格下行、扩产过快、关键设备或原料受限",
+        watchlist: [
+          ["关键材料", "上游材料/化学品公司", "材料纯度、稳定性或产能可能限制下游放量。", "查客户认证、产能利用率、价格和新增供给。"],
+          ["专用设备", "设备/工具供应商", "交期长、验证慢，扩产周期会先反映在设备订单。", "跟踪订单、backlog、交付周期和客户资本开支。"],
+          ["工艺能力", "代工/加工/封装服务商", "Know-how 和良率曲线难复制，切换成本高。", "核对良率、客户集中度、专利和产线折旧。"],
+          ["质量认证", "头部客户/标准体系", "一旦进入关键客户供应链，替换需要重新验证。", "找认证周期、设计导入、退货率和供应协议。"]
+        ]
+      },
+      consumer: {
+        scores: [73, 70, 76, 68, 82],
+        ticker: "消费/渠道候选",
+        theme: "消费 / 渠道",
+        node: "稀缺渠道、品牌心智或供应入口",
+        marketCap: "待填",
+        map: "消费者需求 -> 使用场景 -> 品类/品牌 -> 渠道入口 -> 供应/履约 -> 原料/产能",
+        catalysts: "同店增长、渠道扩张、爆品复购、价格带上移、会员/订阅、供应成本改善",
+        falsifiers: "复购下滑、渠道获客成本上升、竞品复制、库存堆积、品牌降价损害毛利",
+        watchlist: [
+          ["渠道入口", "平台/零售商/分销网络", "有限货架、流量入口或区域渠道可能决定放量速度。", "看渠道占比、take rate、返利、库存周转和续约。"],
+          ["品牌心智", "龙头品牌/细分品类冠军", "消费者选择成本高时，品牌可截留价格和毛利。", "跟踪复购、NPS、搜索热度、价格带和促销强度。"],
+          ["履约能力", "仓配/冷链/门店网络", "体验和成本可能被本地履约能力卡住。", "核对门店密度、配送成本、损耗率和坪效。"],
+          ["稀缺供应", "原料/代工/独家 IP", "稀缺输入会影响产品差异化和毛利弹性。", "查供货协议、替代品、成本曲线和议价权。"]
+        ]
+      },
+      healthcare: {
+        scores: [81, 76, 88, 70, 86],
+        ticker: "医药/医疗候选",
+        theme: "医药 / 医疗",
+        node: "临床证据、审批、支付或生产能力",
+        marketCap: "待填",
+        map: "患者需求 -> 诊疗路径 -> 药械/服务 -> 临床证据 -> 审批/支付 -> 生产/渠道",
+        catalysts: "临床读出、监管审批、指南纳入、医保/商业支付、产能放行、真实世界数据",
+        falsifiers: "临床失败、安全性问题、审批延迟、支付不及预期、医生/患者采用慢、竞品疗效更优",
+        watchlist: [
+          ["临床证据", "药企/器械公司/CRO", "疗效和安全性数据决定后续审批、支付和采用。", "核对试验设计、终点、入组速度和同类数据。"],
+          ["监管审批", "药监/认证路径", "审批节奏和适应症范围直接影响上市时间和市场空间。", "跟踪受理、补充资料、审评会议和标签范围。"],
+          ["支付准入", "医保/商保/医院采购", "没有支付和采购入口，需求可能难以兑现为收入。", "查支付价格、准入名单、DRG/控费和招标。"],
+          ["生产质量", "CDMO/产线/质控体系", "生物药、细胞治疗、耗材等可能被产能和质量系统限制。", "验证产能、批次成功率、监管检查和供应协议。"]
+        ]
+      },
+      energy: {
+        scores: [79, 74, 78, 88, 72],
+        ticker: "资源/能源候选",
+        theme: "资源 / 能源",
+        node: "资源禀赋、许可、运输或并网能力",
+        marketCap: "待填",
+        map: "终端需求 -> 能源/资源消耗 -> 项目开发 -> 许可/并网/运输 -> 设备/服务 -> 原料/土地/水",
+        catalysts: "价格上行、项目获批、并网/运输释放、长期合同、政策补贴、资本开支周期",
+        falsifiers: "价格回落、许可受阻、替代资源释放、成本通胀、融资收紧、政策转向",
+        watchlist: [
+          ["资源禀赋", "矿山/油气/电力资产", "高品位资源或低成本资产难复制，价格上行时弹性大。", "查储量、现金成本、品位、递耗和资本开支。"],
+          ["许可审批", "项目开发商/地方监管", "矿权、环评、土地、水权和社区关系会拖慢供给释放。", "跟踪许可进度、诉讼、听证和监管文件。"],
+          ["运输/并网", "管线/港口/电网/铁路", "瓶颈常出现在资源到客户之间的基础设施。", "看利用率、拥堵、扩建计划和价格差。"],
+          ["设备服务", "工程承包/设备商", "扩产潮会传导到钻机、变压器、工程和运维能力。", "核对订单、交期、毛利和人力瓶颈。"]
+        ]
+      },
+      nuclear: {
+        scores: [85, 82, 88, 80, 86],
+        ticker: "核能候选池",
+        theme: "核能 / 核燃料链",
+        node: "非俄转化、浓缩、HALEU 与核级设备/许可",
+        marketCap: "待填：按铀矿、转化/浓缩、设备、EPC、公用事业分层",
+        map: "电力需求/能源安全 -> 核电延寿/新建/SMR -> 反应堆/EPC/核级设备 -> 核燃料需求 -> 铀矿 -> 转化 -> 浓缩/HALEU -> 燃料组件制造 -> 许可/监管/废料",
+        catalysts: "长期燃料合同、非俄供应链政策、DOE/政府燃料链资助、HALEU 合同与许可、核电延寿/重启、新建核电批准、SMR 里程碑、转化/浓缩价格上行",
+        falsifiers: "新建核电继续延期或取消、SMR 商业化推迟、非俄转化/浓缩产能扩张快于预期、铀价上涨但 SWU/转化价格不跟、天然气/储能压低核电需求、政策补贴退潮、项目成本失控",
+        watchlist: [
+          ["铀矿供给", "CCJ / KAP / NXE / UEC / URA", "候选上游弹性表达，但未必是最窄节点；需要先核验矿山重启、品位和长期合同。", "查 WNA/公司年报/公用事业采购数据，确认产量、库存、合同价和国家风险。"],
+          ["转化能力", "Cameco / Orano / ConverDyn", "候选中游瓶颈；是否比铀矿更窄，取决于 UF6 转化产能、重启进度和非俄替代需求。", "查官方产能、Metropolis/Port Hope 等工厂状态、转化价格、订单和客户合同。"],
+          ["浓缩 / SWU", "LEU / Orano / Urenco / Rosatom 替代链", "候选核心 chokepoint；需要验证 SWU 供给集中度、政策限制、客户长协和扩产周期。", "查 SWU 价格、扩产公告、俄燃料禁令/豁免、客户预付款和长期合同期限。"],
+          ["HALEU", "LEU / DOE 合同方 / advanced reactor supply chain", "候选 advanced reactor 前置瓶颈；需区分试点许可、示范交付和商业规模供应。", "查 DOE award、NRC 许可、实际 kg/吨级交付、客户承购协议和替代燃料路线。"],
+          ["核级设备/EPC", "BWXT / Doosan / Mitsubishi Heavy / Fluor / Jacobs", "候选建设瓶颈；核级认证与大型部件交期可能限制项目节奏，但需逐项验证。", "查核级 backlog、交期、NQA-1/ASME 认证、项目延期原因和毛利率。"],
+          ["许可与项目融资", "公用事业 / NRC / 地方监管 / 政府担保", "候选非物理瓶颈；审批、成本回收和融资结构可能比设备更硬。", "查 NRC docket、延寿/重启批文、PPA/成本回收、政府贷款担保和反对诉讼。"]
+        ]
+      }
+    };
+
+    const chokepointReadings = [
+      ["NeoCloud Thesis", "https://x.com/aleabitoreddit/status/1972016308662513748", "学习 capex funnel 和不对称表达"],
+      ["SIVE CPO laser", "https://x.com/aleabitoreddit/status/2056691097594925522", "学习 chokepoint 叙事和客户图谱"],
+      ["Photonics chain", "https://x.com/aleabitoreddit/status/2055822766600016238", "学习多层供应链拆解"],
+      ["AXTI / SMTOY", "https://x.com/aleabitoreddit/status/2004569946492453003", "学习上游材料瓶颈"],
+      ["SOI / Soitec", "https://x.com/aleabitoreddit/status/2031648475310616604", "学习 substrate monopoly"],
+      ["BOT / NAV risk", "https://x.com/aleabitoreddit/status/2055970949762302055", "学习反 hype 和估值证伪"],
+      ["PENG / CXL", "https://x.com/aleabitoreddit/status/2056011024982282674", "学习术语拆穿与营收归因"]
+    ];
+
+    const chokepointPipelineSteps = [
+      { id: "sourceLedger", label: "来源台账", template: "sourceLedger", gate: true },
+      { id: "factAudit", label: "事实审计", template: "factAudit", gate: true },
+      { id: "scopeNarrowing", label: "问题窄化", template: "scopeNarrowing" },
+      { id: "mappingTable", label: "价值链映射", template: "mappingTable" },
+      { id: "analysisCore", label: "Chokepoint 排名", template: "analysisCore" },
+      { id: "thesisFull", label: "Thesis 草稿", template: "thesisFull" },
+      { id: "verification", label: "验证与证伪", template: "verification", gate: true }
+    ];
+    let chokepointPipeline = {
+      run: null,
+      currentIndex: 0,
+      running: false,
+      paused: false,
+      results: {},
+      issues: []
+    };
+
+    const chokepointPromptTemplates = {
+      sourceLedger: {
+        phase: "Evidence Gate",
+        title: "来源台账 Source Ledger",
+        body: (target, date) => `请先为以下研究对象建立“来源台账”，不要输出投资结论，也不要直接写 thesis。
+
+研究对象：${target}
+当前日期：${date}
+
+目标：
+只收集可核验的一手或高质量来源，为后续价值链映射和 chokepoint 分析打底。
+
+必须覆盖的来源类型：
+1. 官方/监管：监管机构、政府部门、行业协会、许可/审批 docket、法律或政策原文
+2. 公司原始资料：10-K/20-F/年报、电话会、投资者材料、新闻稿、客户/供应商公告
+3. 行业数据：可追溯的行业报告、交易所/价格机构摘要、公开数据库
+4. 主流新闻：仅用于事件时间线，不得替代原始材料
+
+输出格式只允许使用表格：
+事实编号 | 事实陈述 | URL | 发布日期 | 来源类型 | confirmed/inferred/speculative | 置信度 | 为什么相关 | 下一步验证
+
+硬性规则：
+- 没有可点击 URL 的事实一律写入“待验证”，不能当 confirmed。
+- 不得编造报告标题、日期、URL 或市场份额。
+- 如果你不能联网或无法核验，请明确写“无法实时核验”，并只列出应该去查的来源清单。
+- 不要输出思维链、内部推理或投资建议。`
+      },
+      factAudit: {
+        phase: "Evidence Gate",
+        title: "事实审计 Fact Audit",
+        body: () => `请审计下面这份研究草稿，目标是剔除幻觉、过期信息和未经验证的结论。
+
+[在这里粘贴 AI 输出或研究草稿]
+
+请输出：
+1. 红旗清单：疑似编造链接、无 URL 引用、日期不一致、把推演写成 confirmed、过时事实、投资建议越界
+2. 事实重分层：将每条关键事实重标为 confirmed / inferred / speculative / unknown
+3. 需要手动验证的 P0 事实：最多 8 条，每条给出应该查的官方来源或数据库
+4. 不允许进入 thesis 的内容：列出必须删除或降级的句子
+5. 下一步更窄的问题：把原主题拆成 2-4 个可研究的 chokepoint 子问题
+
+输出格式：
+问题类型 | 原句/事实 | 风险 | 正确处理 | 推荐来源 | 优先级
+
+硬性规则：
+- 不要为了礼貌保留不可靠内容。
+- 无链接、无日期、无来源类型的市场份额/TAM/价格/产能，不得标为 confirmed。
+- 不输出思维链或投资建议。`
+      },
+      scopeNarrowing: {
+        phase: "Scoping",
+        title: "问题窄化 Scope",
+        body: (target, date) => `请把以下大主题拆成可执行的 Serenity-style chokepoint 子研究问题。
+
+主题：${target}
+当前日期：${date}
+
+请输出 2-4 个互相独立的子题，每个子题必须足够窄，可以在后续 1-2 小时内通过来源台账验证。
+
+输出格式：
+子题 | 终端需求 | 候选 chokepoint | 关键控制者 | 必查 P0 来源 | 需要验证的数字 | 可能证伪条件 | 为什么值得研究
+
+硬性规则：
+- 不要输出完整 thesis。
+- 不要混合多个瓶颈到同一个子题，例如“转化/浓缩/HALEU/设备/许可”应拆开。
+- 每个子题最多包含一个主 chokepoint。
+- 必查 P0 来源必须优先写官方/监管/公司原始资料，不写社交媒体。
+- 不输出思维链或投资建议。`
+      },
+      collectionBasic: {
+        phase: "Collection",
+        title: "基础概念+价值链概览",
+        body: (target, date) => `你是一位跨行业供应链、价值链与商业模式高级分析师，用初学者友好、结构化的中文解释。
+
+目标公司/技术/资源/渠道/行业节点：${target}
+当前日期：${date}
+
+请提供：
+1. 该对象在目标行业价值链中的作用，先说明终端需求和付费方
+2. 主要上下游、替代品、渠道、监管/标准环节，列出 Tier 1-3 关键玩家
+3. 当前市场规模、增长预测、利润池分布和主要瓶颈
+4. 关键竞争对手、替代方案和市场份额
+5. 最近重要新闻或催化剂，优先覆盖 2025-2026 年
+
+硬性要求：
+- 每条客户、供应商、渠道、市场份额、审批/认证、交付时间、TAM、产能/库存/价格信息都要标注来源链接、发布日期、来源类型和置信度。
+- 将结论分为 confirmed / inferred / speculative 三层；无法确认请写“未知”，不要猜成事实。
+- 先输出“来源台账摘要”，再输出概览；没有 URL 的数字只能放入“待验证”。
+- 不要编造报告标题、链接或日期；不能实时核验时必须明说。
+- X/Substack/社交媒体只能作为线索，不得作为核心事实来源。
+- 这是研究用途，不构成投资建议。`
+      },
+      collectionDeep: {
+        phase: "Collection",
+        title: "深度多源收集",
+        body: (target, date) => `请为以下主题进行全面价值链/供应链尽职调查：
+
+主题：${target}
+当前日期：${date}
+
+要求：
+- 如果是上市公司，搜索并总结最新 10-K/10-Q/20-F、年报、财报电话会；如果不是上市公司，搜索监管文件、官网、客户公告、招股书、行业数据库和新闻
+- 列出所有已知客户、供应商、渠道、合作伙伴，并区分 confirmed / inferred / speculative
+- 提取认证/审批/客户导入/渠道准入/合同周期、产能、扩张、供应或分销协议信息
+- 查找专利、行业报告、学术论文、监管数据库、客户/供应商/渠道公告
+- 识别潜在风险：地缘、竞争、技术替代、监管、支付/渠道、稀释、毛利率、客户集中度
+
+输出格式：
+1. 核心事实表：事实 | 来源链接 | 日期 | 来源类型 | 置信度 | 备注
+2. 价值链参与者表：层级 | 公司/机构 | 角色 | 证据 | 置信度
+3. 风险表：风险 | 触发条件 | 监控指标 | 证伪意义
+
+硬性要求：无来源不下结论；无法确认写“未知”。`
+      },
+      mappingMermaid: {
+        phase: "Mapping",
+        title: "价值链地图 Mermaid",
+        body: (target) => `请帮我构建 ${target} 的完整价值链/供应链地图。
+
+要求：
+1. 从终端需求开始，逐层向下拆解：终端客户/需求 -> 产品/服务 -> 关键环节 -> 资源/能力/渠道/许可 -> 上游输入/基础设施
+2. 标注每个层级的关键参与者和集中度：sole source / dominant / oligopoly / fragmented
+3. 用 Mermaid flowchart 输出可视化地图
+4. 特别突出潜在 chokepoint 节点
+5. 用中文解释每个关键节点的切换难度：低/中/高，以及原因，包括时间、成本、监管、客户关系或技术门槛
+
+输出必须包含：
+- Mermaid 代码块
+- 节点解释表：节点 | 控制者/参与者 | 集中度 | 切换难度 | 证据链接 | 置信度
+- 未确认关系清单：哪些关系只是推断，下一步怎么验证`
+      },
+      mappingTable: {
+        phase: "Mapping",
+        title: "多层价值链表格",
+        body: (target) => `用表格形式呈现 ${target} 的多层价值链/供应链。
+
+列包括：
+层级 | 环节/资源/能力 | 主要参与者 | 市场份额/控制力 | 瓶颈程度 | 依赖方/客户 | 来源链接 | 置信度 | 备注
+
+要求：
+- 基于最新可验证信息填充。
+- 将“已确认事实”和“推断关系”分开。
+- 对每个瓶颈程度给出一句理由。
+- 最后列出 5 个最需要手动验证的事实。`
+      },
+      analysisCore: {
+        phase: "Analysis",
+        title: "核心 Chokepoint 分析",
+        body: () => `基于以下价值链/供应链信息，请进行 Serenity-style Chokepoint 分析：
+
+[在这里粘贴收集/映射结果]
+
+请输出：
+1. 先列“证据门禁”：哪些事实有 URL 支撑，哪些仍是 unknown，哪些只是 inferred/speculative
+2. 识别 3-5 个最强 chokepoints，并解释为什么关键客户、渠道或行业参与者必须依赖
+3. 每个 chokepoint 的切换成本、认证/审批/客户导入时间、扩张难度
+4. 当前估值/市值 vs 潜在 TAM、收入、利润池或市场份额的不对称性；无 URL 的数字必须写 unknown
+5. 催化剂时间表：客户验证、认证/审批、放量、合同重签、价格变化、M&A、指数纳入、政策、财报验证
+6. 宏观风险：地缘、能源、政策、监管、利率、关键资源、需求周期
+7. 用“Strait of XXX”风格命名关键瓶颈，并给研究逻辑强度评分 1-10
+
+硬性要求：
+- 评分必须解释扣分原因。
+- 每个结论后标注 confirmed / inferred / speculative。
+- 没有来源台账支持的事实，不得作为评分依据。
+- 不输出买入建议，只输出研究判断和待验证事项。`
+      },
+      analysisEffects: {
+        phase: "Analysis",
+        title: "第二、三阶效应",
+        body: (target) => `针对 ${target} 的 thesis，请分析：
+
+- 第二阶效应：如果这个节点扩张，会带动哪些上游、下游、渠道、成本结构或利润池变化？
+- 第三阶效应：地缘政治、能源/资源、监管、支付/渠道规则、资本开支周期会如何影响？
+- 反面论点：哪些竞争技术、替代供应商、客户策略、渠道变化或监管变化会削弱 thesis？
+- falsification 条件：出现什么事实，就应该承认 thesis 错了？
+- 机构轮动可能性：谁可能后期接盘，为什么他们现在可能还没定价？
+
+输出格式：
+效应层级 | 受影响对象 | 机制 | 证据 | 置信度 | 如何跟踪`
+      },
+      thesisFull: {
+        phase: "Synthesis",
+        title: "完整 Thesis 生成器",
+        body: (target) => `请帮我生成一份完整的 Serenity-style 研究笔记。
+
+主题：${target}
+
+必须包含：
+- 标题，例如 “The Strait of ___”
+- 一句话核心论点
+- 来源台账摘要：只列 confirmed 事实和 URL；unknown 不得进入核心论点
+- 供应链/价值链地图：Mermaid 或表格
+- 关键 Chokepoints 详解
+- 不对称机会量化：当前估值/市值、潜在收入、利润池、毛利率、估值倍数、下行/基准/上行情景
+- 催化剂时间线：2026-2028
+- 主要风险、对冲和证伪条件
+- 下一步手动验证任务
+
+语言风格：专业但易懂，直接，有 conviction，但必须区分事实和推断。
+边界：仅供研究和模拟，不构成投资建议或仓位建议。`
+      },
+      verification: {
+        phase: "Verification",
+        title: "魔鬼代言人验证",
+        body: () => `我有以下 thesis：
+
+[在这里粘贴 thesis]
+
+请作为魔鬼代言人：
+1. 列出所有可能错误的假设、幻觉信息和过度推断
+2. 建议需要手动验证的 3-5 个关键事实及验证方法
+3. 提供反面证据、竞争威胁、替代路径、监管或渠道风险
+4. 明确 falsification 条件：什么事实出现，这个 thesis 应该失效？
+5. 给出改进建议：哪些数据、来源、估值敏感性还缺失？
+
+要求：
+- 不要为了平衡而泛泛质疑，要指出最可能致命的漏洞。
+- 给出验证优先级：P0/P1/P2。`
+      },
+      dailyTracking: {
+        phase: "Tracking",
+        title: "每日跟踪",
+        body: (target, date) => `今天是 ${date}。请搜索并总结 ${target} 的最新动态。
+
+重点关注：
+- 财报、订单、客户、合作伙伴、供应商、渠道、产能、库存、价格、认证/审批周期
+- 与该 thesis 的瓶颈节点、终端需求、供给、渠道、监管、竞争格局相关的内容
+- 股价催化剂、指数纳入、融资/稀释、M&A、政策或监管变化
+- 是否触发原 thesis 的催化剂或证伪条件
+
+输出：
+日期 | 事件 | 来源链接 | 对 thesis 的影响 | 置信度 | 下一步动作
+
+要求：优先官方来源和主流新闻；社交媒体只作为线索。`
+      },
+      researchCard: {
+        phase: "Synthesis",
+        title: "结构化研究卡片",
+        body: (target) => `请把以上研究结果转成结构化研究卡片。
+
+主题：${target}
+
+字段：
+- 主题
+- 目标公司/技术/资源/渠道
+- 供应链/价值链层级
+- chokepoint 节点
+- 已确认事实 confirmed
+- 推断 inferred
+- 猜测 speculative
+- 核心来源链接
+- 关键数字
+- 催化剂时间线
+- 证伪条件
+- 下一步手动验证任务
+- 仅研究/模拟边界
+
+要求：
+- 不输出投资建议。
+- 无法确认的信息写“未知”。
+- 每个关键数字必须带来源链接、日期和置信度。`
+      }
+    };
 
     function headers(roleOverride) {
       return {
@@ -1639,7 +2549,8 @@
       const response = await fetch(path, {
         method: options.method || "GET",
         headers: headers(options.role),
-        body: options.body ? JSON.stringify(options.body) : undefined
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: options.signal
       });
       const payload = await response.json();
       if (!payload.success) throw new Error(`${payload.error.type}: ${payload.error.message}`);
@@ -1801,6 +2712,651 @@
 
     function renderScheduleSummary(data) {
       $("scheduleBox").textContent = userPretty(data);
+    }
+
+    function renderChokepointPlaybook(key = "generic") {
+      const item = chokepointPlaybooks[key] || chokepointPlaybooks.generic;
+      const scoreIds = ["cpTotalScore", "cpConcentrationScore", "cpSwitchingScore", "cpCapacityScore", "cpValidationScore"];
+      scoreIds.forEach((id, index) => setText(id, `${item.scores[index]}`));
+      setValue("cpTicker", item.ticker);
+      setValue("cpTheme", item.theme);
+      setValue("cpNode", item.node);
+      setValue("cpMarketCap", item.marketCap);
+      setValue("cpPromptTarget", `${item.ticker} / ${item.node} / ${item.theme}`);
+      if (key === "nuclear") {
+        setValue("cpPromptTemplate", "sourceLedger");
+        setValue("cpAiMaxTokens", "700");
+        setValue("cpAiTimeout", "240");
+      }
+      setValue("cpMap", item.map);
+      setValue("cpCatalysts", item.catalysts);
+      setValue("cpFalsifiers", item.falsifiers);
+      $("cpWatchRows").innerHTML = rows(item.watchlist, "暂无候选", (row) => `<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td><td>${row[3]}</td></tr>`);
+      $("cpReadingRows").innerHTML = rows(chokepointReadings, "暂无阅读入口", (row) => `<tr><td>${row[0]}</td><td><a href="${row[1]}" target="_blank" rel="noopener">打开</a></td><td>${row[2]}</td></tr>`);
+      buildChokepointMemo(false);
+      buildChokepointPrompt(false);
+      resetChokepointPipeline();
+    }
+
+    function pipelineStatusLabel(status) {
+      const labels = { pending: "待运行", running: "运行中", done: "已完成", review: "需复核", failed: "失败" };
+      return labels[status] || statusLabel(status || "pending");
+    }
+
+    function stepStatus(step) {
+      return chokepointPipeline.results[step.id]?.status || chokepointPipeline.run?.steps?.find((item) => item.step_id === step.id)?.status || "pending";
+    }
+
+    function cpPipelineMode() {
+      return formValue("cpPipelineMode", "strict");
+    }
+
+    function cpShouldPauseForGate(result) {
+      return result?.status === "failed";
+    }
+
+    function nextRunnableChokepointIndex() {
+      const currentStatus = stepStatus(chokepointPipelineSteps[chokepointPipeline.currentIndex] || chokepointPipelineSteps[0]);
+      if (!["done", "review"].includes(currentStatus)) {
+        return Math.max(0, chokepointPipeline.currentIndex || 0);
+      }
+      const nextPending = chokepointPipelineSteps.findIndex((step, index) => index > chokepointPipeline.currentIndex && !["done", "review"].includes(stepStatus(step)));
+      if (nextPending >= 0) return nextPending;
+      const anyPending = chokepointPipelineSteps.findIndex((step) => !["done", "review"].includes(stepStatus(step)));
+      return anyPending >= 0 ? anyPending : Math.max(0, chokepointPipeline.currentIndex || 0);
+    }
+
+    function renderChokepointPipeline() {
+      const total = chokepointPipelineSteps.length;
+      const completed = chokepointPipelineSteps.filter((step) => ["done", "review"].includes(stepStatus(step))).length;
+      const active = chokepointPipelineSteps[chokepointPipeline.currentIndex] || chokepointPipelineSteps[0];
+      setText("cpPipelineProgress", `${completed}/${total}`);
+      setText("cpPipelineStatus", chokepointPipeline.running ? `运行中 · ${active.label}` : chokepointPipeline.paused ? "已暂停" : completed ? `已完成 ${completed}/${total}` : "未开始");
+      setText("cpPipelineGate", chokepointPipeline.issues.some((item) => item.severity === "block") ? "需人工确认" : completed ? "通过/观察" : "待检查");
+      setText("cpPipelineIssueCount", `${chokepointPipeline.issues.length}`);
+      setText("cpPersistStatus", chokepointPipeline.run?.run_id ? `已保存 · ${compactId(chokepointPipeline.run.run_id)}` : "未保存");
+      setValue("cpRunId", chokepointPipeline.run?.run_id || formValue("cpRunId", ""));
+      const stepsEl = $("cpPipelineSteps");
+      if (stepsEl) {
+        stepsEl.innerHTML = chokepointPipelineSteps.map((step, index) => {
+          const result = chokepointPipeline.results[step.id] || chokepointPipeline.run?.steps?.find((item) => item.step_id === step.id) || {};
+          const status = result.status || "pending";
+          const isActive = index === chokepointPipeline.currentIndex;
+          return `<div class="pipeline-step ${status} ${isActive ? "active" : ""}">
+            <strong>${index + 1}. ${step.label}</strong>
+            <span>${pipelineStatusLabel(status)}${result.llm_run_id ? ` · ${compactId(result.llm_run_id)}` : ""}</span>
+            <span>${result.summary || "等待运行"}</span>
+            <button data-pipeline-step="${index}">查看</button>
+          </div>`;
+        }).join("");
+      }
+      const outputEl = $("cpPipelineOutput");
+      if (outputEl) {
+        const current = chokepointPipelineSteps[chokepointPipeline.currentIndex] || chokepointPipelineSteps[0];
+        const result = chokepointPipeline.results[current.id];
+        outputEl.textContent = result?.output || (chokepointPipeline.running ? `正在自动运行：${active.label}\n\n请稍候，本步骤完成后会自动刷新产物和问题。` : "尚未运行。点击“自动运行流水线”后会新建或续用研究 run，并逐步保存产物、问题和验证资源。");
+      }
+      const issuesEl = $("cpPipelineIssues");
+      if (issuesEl) {
+        issuesEl.innerHTML = chokepointPipeline.issues.length
+          ? chokepointPipeline.issues.map((item) => `<div class="issue-item ${item.severity}"><strong>${item.step}</strong><br>${item.message}<br><span>${item.suggestion}</span></div>`).join("")
+          : `<div class="issue-item">暂无问题。运行来源台账后会自动识别缺失 URL、待验证事实和越界建议。</div>`;
+      }
+      renderChokepointConclusion();
+      renderChokepointValidation();
+    }
+
+    function resetChokepointPipeline() {
+      chokepointPipeline = { run: null, currentIndex: 0, running: false, paused: false, results: {}, issues: [] };
+      setValue("cpRunId", "");
+      renderChokepointPipeline();
+    }
+
+    function syncChokepointRun(run) {
+      if (!run) return;
+      const results = {};
+      (run.steps || []).forEach((step) => {
+        results[step.step_id] = {
+          status: step.status || "pending",
+          output: step.output_text || "",
+          summary: step.summary || "等待运行",
+          trace_id: step.llm_run_id || "",
+          llm_run_id: step.llm_run_id || "",
+          evidence_quality: step.evidence_quality || {},
+          issues: step.issues || []
+        };
+      });
+      const currentIndex = Math.max(0, chokepointPipelineSteps.findIndex((step) => step.id === run.current_step));
+      const wasRunning = Boolean(chokepointPipeline.running);
+      chokepointPipeline = {
+        run,
+        currentIndex,
+        running: wasRunning || run.status === "running",
+        paused: wasRunning ? false : ["paused", "review"].includes(run.status),
+        results,
+        issues: run.issues || []
+      };
+      setValue("cpRunId", run.run_id || "");
+      if (run.ticker) setValue("cpTicker", run.ticker);
+      if (run.theme) setValue("cpTheme", run.theme);
+      if (run.chokepoint_node) setValue("cpNode", run.chokepoint_node);
+      if (run.mode) setValue("cpPipelineMode", run.mode);
+      renderChokepointPipeline();
+    }
+
+    function chokepointRunPayload() {
+      const theme = formValue("cpTheme", "行业/赛道");
+      const node = formValue("cpNode", "关键瓶颈节点");
+      return {
+        run_id: formValue("cpRunId", ""),
+        topic: formValue("cpPromptTarget", `${formValue("cpTicker", "待研究标的")} / ${node} / ${theme}`),
+        ticker: formValue("cpTicker", ""),
+        theme,
+        chokepoint_node: node,
+        playbook: formValue("cpPlaybook", "generic"),
+        mode: formValue("cpPipelineMode", "strict"),
+        market_cap: formValue("cpMarketCap", ""),
+        map: formValue("cpMap", ""),
+        catalysts: formValue("cpCatalysts", ""),
+        falsifiers: formValue("cpFalsifiers", "")
+      };
+    }
+
+    async function ensureChokepointRun() {
+      if (chokepointPipeline.run?.run_id) return chokepointPipeline.run;
+      const payload = chokepointRunPayload();
+      if (!payload.run_id) delete payload.run_id;
+      const { data } = await api("/api/chokepoint/runs", { method: "POST", role: "analyst", body: payload });
+      syncChokepointRun(data);
+      setStatus(`瓶颈研究已保存 · ${data.run_id}`);
+      return data;
+    }
+
+    async function createChokepointRun() {
+      const payload = chokepointRunPayload();
+      delete payload.run_id;
+      const { data } = await api("/api/chokepoint/runs", { method: "POST", role: "analyst", body: payload });
+      syncChokepointRun(data);
+      setStatus(`新建瓶颈研究 · ${data.run_id}`);
+    }
+
+    async function saveChokepointRun() {
+      const run = await ensureChokepointRun();
+      const { data } = await api(`/api/chokepoint/runs/${run.run_id}/review`, {
+        method: "POST",
+        role: "analyst",
+        body: {
+          run_status: run.status || "paused",
+          review_snapshot: chokepointRunPayload(),
+          tuning_notes: "保存当前工作台档案"
+        }
+      });
+      syncChokepointRun(data);
+      setStatus(`瓶颈研究已保存 · ${data.run_id}`);
+    }
+
+    async function loadChokepointRuns() {
+      const { data } = await api("/api/chokepoint/runs?limit=10", { role: "analyst" });
+      const runs = data.runs || [];
+      const box = $("cpRunRows");
+      if (box) {
+        box.innerHTML = runs.length
+          ? runs.map((run) => `<div class="issue-item"><strong>${run.topic || run.run_id}</strong><br>${compactId(run.run_id)} · ${statusLabel(run.status)} · ${run.updated_at || ""}<br><button data-cp-run="${run.run_id}">打开</button></div>`).join("")
+          : `<div class="issue-item">暂无历史瓶颈研究。</div>`;
+      }
+      setStatus(`已加载历史研究 · ${runs.length}`);
+    }
+
+    async function openChokepointRun(runId) {
+      const { data } = await api(`/api/chokepoint/runs/${runId}`, { role: "analyst" });
+      syncChokepointRun(data);
+      setStatus(`已打开瓶颈研究 · ${data.run_id}`);
+    }
+
+    async function finalizeChokepointRun(options = {}) {
+      const run = await ensureChokepointRun();
+      const button = $("refreshCpConclusion");
+      if (button && !options.silent) {
+        button.disabled = true;
+        button.textContent = "生成中...";
+      }
+      try {
+        const { data } = await api(`/api/chokepoint/runs/${run.run_id}/finalize`, {
+          method: "POST",
+          role: "analyst",
+          body: {
+            role: "分析师",
+            max_tokens: Number(formValue("cpAiMaxTokens", "900")),
+            temperature: Number(formValue("cpAiTemperature", "0.2")),
+            timeout_seconds: Number(formValue("cpAiTimeout", "180")),
+            verification_task_limit: 30
+          }
+        });
+        syncChokepointRun(data);
+        const conclusion = data.conclusion || {};
+        const fallback = conclusion.fallback_used ? ` · AI 综合回退：${conclusion.fallback_used}` : "";
+        if (!options.silent) setStatus(`流水线结论已刷新 · ${conclusion.status || "ready"}${fallback}`);
+        return data;
+      } catch (error) {
+        if (!options.silent) setStatus(`流水线结论生成失败：${error.message}`, true);
+        throw error;
+      } finally {
+        if (button && !options.silent) {
+          button.disabled = false;
+          button.textContent = "刷新结论";
+        }
+      }
+    }
+
+    function renderChokepointValidation() {
+      const ctx = chokepointPipeline.run?.validation_context || {};
+      const market = ctx.market_data || {};
+      const facts = ctx.facts || {};
+      const opinions = ctx.opinions || {};
+      const tasks = ctx.needs_verification || {};
+      setText("cpMarketDataCount", `${market.count || 0}`);
+      setText("cpFactEvidenceCount", `${facts.count || 0}`);
+      setText("cpOpinionEvidenceCount", `${opinions.count || 0}`);
+      setText("cpVerificationTaskCount", `${tasks.count || 0}`);
+      const box = $("cpValidationBox");
+      if (box) {
+        box.textContent = chokepointPipeline.run
+          ? userPretty({
+              boundary: "research only · no broker execution · not investment advice",
+              market_data: market,
+              facts,
+              opinions,
+              knowledge_graph: ctx.knowledge_graph || {},
+              needs_verification: tasks
+            })
+          : "尚未保存研究。新建研究后会展示 K线、研报观点、公告/财报 evidence、知识图谱回链和待验证任务。";
+      }
+    }
+
+    function renderChokepointConclusion() {
+      const conclusion = chokepointPipeline.run?.conclusion || {};
+      const quality = conclusion.evidence_quality_summary || {};
+      const verification = conclusion.verification_tasks || {};
+      const taskCount = Number(verification.created_count || 0) + Number(verification.existing_count || 0);
+      setText("cpConclusionStatus", conclusion.status || "待生成");
+      setText("cpConclusionScore", conclusion.thesis_strength_score ? `${conclusion.thesis_strength_score}/10` : "-");
+      setText("cpConclusionConfidence", conclusion.confidence || "-");
+      setText("cpConclusionTaskCount", `${taskCount || quality.verification_task_count || 0}`);
+      const box = $("cpConclusionBox");
+      if (!box) return;
+      if (!chokepointPipeline.run) {
+        box.textContent = "流水线尚未开始。点击“运行 AI 研究流水线”会自动新建研究 run，并在 7 步完成后生成结论。";
+        return;
+      }
+      if (!conclusion.status) {
+        box.textContent = "结论尚未生成。跑完 1-7 步后会自动生成，也可以点击“刷新结论”。";
+        return;
+      }
+      const fallbackNote = conclusion.fallback_used
+        ? `规则结论已生成；AI 综合使用回退/失败：${conclusion.fallback_used}`
+        : "规则结论已生成；AI 综合已尝试完成。";
+      box.textContent = userPretty({
+        status: conclusion.status,
+        one_line_conclusion: conclusion.one_line_conclusion,
+        thesis_strength_score: conclusion.thesis_strength_score,
+        confidence: conclusion.confidence,
+        fallback_note: fallbackNote,
+        evidence_quality_summary: quality,
+        confirmed_summary: conclusion.confirmed_summary,
+        inferred_summary: conclusion.inferred_summary,
+        speculative_summary: conclusion.speculative_summary,
+        unknowns: conclusion.unknowns || [],
+        key_chokepoints: conclusion.key_chokepoints || [],
+        catalysts: conclusion.catalysts || [],
+        falsification_conditions: conclusion.falsification_conditions || [],
+        validation_summary: conclusion.validation_summary || {},
+        open_issues: conclusion.open_issues || [],
+        next_actions: conclusion.next_actions || [],
+        verification_tasks: verification,
+        llm_run_id: conclusion.llm_run_id || "",
+        usage_boundary: conclusion.usage_boundary || "research_only_not_investment_advice"
+      });
+    }
+
+    function pipelineModeInstructions() {
+      const mode = formValue("cpPipelineMode", "strict");
+      if (mode === "exploratory") {
+        return "调优模式：探索发散。允许提出更多候选子题，但必须把未核验内容标为 speculative/unknown，不能进入 confirmed。";
+      }
+      if (mode === "balanced") {
+        return "调优模式：平衡推进。优先推进到下一步，但任何无 URL 的数字和时间线必须保留为待验证。";
+      }
+      return "调优模式：严格证据。宁可输出 unknown，也不要把未核验内容写成结论；自动流水线会继续跑完 1-7 步，但把门禁问题保留为人工复核项。";
+    }
+
+    function pipelinePromptForStep(step) {
+      setValue("cpPromptTemplate", step.template);
+      buildChokepointPrompt(false);
+      const prior = chokepointPipelineSteps
+        .slice(0, chokepointPipeline.currentIndex)
+        .map((item) => {
+          const result = chokepointPipeline.results[item.id];
+          if (!result?.output) return "";
+          return `## 上一步产物 · ${item.label}\n${result.output.slice(0, 2500)}`;
+        })
+        .filter(Boolean)
+        .join("\n\n");
+      const gate = step.gate ? "\n\n本步骤是门禁步骤：如果证据不足，请明确输出“需要人工确认”，并列出不能继续自动推进的原因。" : "";
+      return `${$("cpPromptBox").textContent}\n\n${pipelineModeInstructions()}${gate}${prior ? `\n\n历史步骤上下文：\n${prior}` : ""}`;
+    }
+
+    function analyzePipelineOutput(step, output) {
+      const text = output || "";
+      const lower = text.toLowerCase();
+      const issues = [];
+      const hasUrl = /https?:\/\//i.test(text);
+      if (step.id === "sourceLedger" && !hasUrl) {
+        issues.push({ severity: "block", step: step.label, message: "来源台账没有发现可点击 URL。", suggestion: "降低范围，先只查 3-5 个 P0 官方来源，或手动补充链接后重跑。" });
+      }
+      if (/投资建议|买入|卖出|仓位|配置/.test(text)) {
+        issues.push({ severity: "warn", step: step.label, message: "输出含投资建议或仓位表达。", suggestion: "切换到事实审计，删除或降级为研究边界说明。" });
+      }
+      if (/deep thinking|思维链|内部推理/i.test(text)) {
+        issues.push({ severity: "block", step: step.label, message: "输出包含思维链或内部推理。", suggestion: "重跑当前步骤，并要求只输出表格和可审计结论。" });
+      }
+      if (/无法实时核验|unknown|未知|待验证|无法确认/i.test(text)) {
+        issues.push({ severity: "warn", step: step.label, message: "存在未知或待验证事实。", suggestion: "进入事实审计或缩小研究对象后重跑来源台账。" });
+      }
+      if ((lower.match(/inferred|speculative/g) || []).length > (lower.match(/confirmed/g) || []).length + 3) {
+        issues.push({ severity: "warn", step: step.label, message: "推断/猜测显著多于已确认事实。", suggestion: "提高证据严格度，先补来源台账再继续分析。" });
+      }
+      const summary = text.split(/\n/).find((line) => line.trim().length > 20)?.trim().slice(0, 140) || "已生成产物。";
+      const status = issues.some((item) => item.severity === "block") ? "review" : "done";
+      return { issues, summary, status };
+    }
+
+    async function callChokepointLlm(prompt) {
+      const controller = new AbortController();
+      const timeoutSeconds = Math.max(30, Math.min(300, Number(formValue("cpAiTimeout", "180")) || 180));
+      const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+      const body = {
+        messages: [
+          {
+            role: "system",
+            content: "你是严谨的跨行业投资研究助手。先做来源台账和事实审计，再做 chokepoint 分析；必须区分 confirmed / inferred / speculative / unknown。不得编造链接、日期或来源，不要输出思维链，不要给实盘投资建议。"
+          },
+          { role: "user", content: prompt }
+        ],
+        max_tokens: Number(formValue("cpAiMaxTokens", "900")),
+        temperature: Number(formValue("cpAiTemperature", "0.2")),
+        timeout_seconds: timeoutSeconds
+      };
+      const model = formValue("cpAiModel", "");
+      if (model) body.model = model;
+      try {
+        const { data, trace_id } = await api("/api/llm/openai/chat/completions", {
+          method: "POST",
+          role: "nlp_ml",
+          body,
+          signal: controller.signal
+        });
+        return { text: extractLlmText(data), trace_id, model: data.model || "默认模型" };
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    function buildChokepointMemo(showStatus = true) {
+      const memo = {
+        thesis_template: "Chokepoint Theory",
+        ticker: formValue("cpTicker", "-"),
+        theme: formValue("cpTheme", "-"),
+        chokepoint_node: formValue("cpNode", "-"),
+        current_market_cap: formValue("cpMarketCap", "-"),
+        supply_chain_map: formValue("cpMap", "-"),
+        chokepoint_tests: [
+          "供应集中度是否高，是否存在 sole-source 或寡头供应。",
+          "切换控制者是否需要重新认证、重做流程、重建渠道或牺牲质量/效率。",
+          "扩张是否受设备、工艺、人才、原材料、牌照、渠道或监管限制。",
+          "如果节点延迟，行业扩张或关键客户交付是否会被实质拖慢。",
+          "市场是否仍把它当普通周期股、小票或线性增长故事，而不是战略瓶颈。"
+        ],
+        catalysts: formValue("cpCatalysts", "-"),
+        falsification_conditions: formValue("cpFalsifiers", "-"),
+        evidence_policy: [
+          "X/Substack 只能作为线索。",
+          "核心证据必须回到财报、公告、电话会、监管文件、论文、专利、产业报告。",
+          "每条客户/供应商关系需标注 confirmed / inferred / speculative。",
+          "没有 URL、发布日期和来源类型的 TAM、市场份额、产能、价格和时间线，不得进入 confirmed。",
+          "每次 earnings 或关键事件后更新 TAM、利润池、产能/库存/价格、毛利、现金流和稀释风险。"
+        ],
+        position_policy: "仅用于研究和模拟组合；实盘前必须完成证据复核、估值压力测试和退出条件确认。"
+      };
+      $("cpMemoBox").textContent = userPretty(memo);
+      if (showStatus) setStatus(`瓶颈研究记录已生成 · ${memo.ticker}`);
+    }
+
+    function buildChokepointPrompt(showStatus = true) {
+      const key = formValue("cpPromptTemplate", "collectionBasic");
+      const template = chokepointPromptTemplates[key] || chokepointPromptTemplates.collectionBasic;
+      const target = formValue("cpPromptTarget", formValue("cpTheme", "cross-industry chokepoint thesis"));
+      const date = formValue("cpPromptDate", new Date().toISOString().slice(0, 10));
+      const context = `\n\n当前工作台研究档案：\n- 标的/候选池：${formValue("cpTicker", "待填")}\n- 赛道：${formValue("cpTheme", "待填")}\n- 瓶颈假设：${formValue("cpNode", "待填")}\n- 当前市值/表达方式：${formValue("cpMarketCap", "待填")}\n- 价值链/供应链地图：${formValue("cpMap", "待填")}\n- 已知催化剂：${formValue("cpCatalysts", "待填")}\n- 证伪条件：${formValue("cpFalsifiers", "待填")}\n\n请优先围绕这份工作台档案展开；如果档案信息不足，列出需要手动验证的事实。`;
+      const guardrail = `\n\n全局护栏：\n- 先判断研究对象所在行业，不要默认套用 AI、半导体或任何单一赛道。\n- 客户、供应商、渠道、市场份额、审批/认证、交付时间、TAM、利润池、产能/库存/价格、财务数字必须带来源链接、发布日期、来源类型和置信度。\n- 将信息分为 confirmed / inferred / speculative / unknown；无法确认写“未知”。\n- 没有可点击 URL、发布日期和来源类型的市场份额/TAM/价格/产能/时间线，不得标为 confirmed。\n- 不得编造 URL、报告标题、发布日期或市场份额；不能实时核验时必须明确说明。\n- 不要输出思维链、内部推理、Deep thinking 或逐步隐藏推理；只输出可审计结论和表格。\n- 社交媒体、X thread、Substack、二手摘要只能作为线索，不得作为核心事实。\n- 输出仅用于研究和模拟组合，不构成投资建议。`;
+      const prompt = `# ${template.phase} · ${template.title}\n\n${template.body(target, date)}${context}${guardrail}`;
+      $("cpPromptBox").textContent = prompt;
+      if (showStatus) setStatus(`提示词已生成 · ${template.title}`);
+    }
+
+    function extractLlmText(data) {
+      const response = data?.response || {};
+      const choices = response.choices || [];
+      const first = choices[0] || {};
+      if (first.message?.content) return first.message.content;
+      if (first.text) return first.text;
+      if (Array.isArray(response.content)) {
+        return response.content.map((item) => item.text || item.content || "").filter(Boolean).join("\n");
+      }
+      if (response.raw) return response.raw;
+      return userPretty(response || data || {});
+    }
+
+    async function runChokepointAiResearch() {
+      const runButton = $("runCpAiResearch");
+      const statusBadge = $("cpAiStatus");
+      try {
+        buildChokepointPrompt(false);
+        runButton.disabled = true;
+        runButton.textContent = "流水线运行中...";
+        statusBadge.textContent = "进入流水线";
+        statusBadge.className = "badge warn";
+        $("cpAiResultBox").textContent = "正在启动瓶颈研究流水线。系统会先新建或续用研究 run，然后逐步保存来源台账、阶段结论、问题和验证资源。";
+        $("cpPipelineOutput").scrollIntoView({ block: "center" });
+        await runChokepointPipeline();
+        const status = chokepointPipeline.run?.status || "done";
+        const current = chokepointPipelineSteps[chokepointPipeline.currentIndex] || chokepointPipelineSteps[0];
+        const result = chokepointPipeline.results[current.id] || {};
+        $("cpAiResultBox").textContent = result.output || $("cpPipelineOutput").textContent || "流水线已运行，请查看当前步骤产物。";
+        if (status === "review") {
+          statusBadge.textContent = "需复核";
+          statusBadge.className = "badge warn";
+        } else if (status === "failed") {
+          statusBadge.textContent = "失败";
+          statusBadge.className = "badge block";
+        } else {
+          statusBadge.textContent = "已保存";
+          statusBadge.className = "badge ok";
+        }
+      } catch (error) {
+        const message = error.name === "AbortError" ? "AI 研究超时：上游模型可能仍在排队或生成中。请降低输出上限、缩小步骤，或把超时秒数调高后重试。" : error.message;
+        $("cpAiResultBox").textContent = `流水线启动失败：${message}\n\n如果提示 AI_QUANT_LLM_API_KEY 缺失，请在启动服务前配置该环境变量并重启。`;
+        statusBadge.textContent = "失败";
+        statusBadge.className = "badge block";
+        setStatus(message, true);
+      } finally {
+        runButton.disabled = false;
+        runButton.textContent = "运行 AI 研究流水线";
+      }
+    }
+
+    async function runChokepointPipelineStep(index = chokepointPipeline.currentIndex) {
+      const step = chokepointPipelineSteps[index] || chokepointPipelineSteps[0];
+      const persistedRun = await ensureChokepointRun();
+      chokepointPipeline.currentIndex = index;
+      chokepointPipeline.results[step.id] = { status: "running", summary: "正在运行..." };
+      renderChokepointPipeline();
+      const startedAt = performance.now();
+      try {
+        const prompt = pipelinePromptForStep(step);
+        $("cpPipelineOutput").textContent = `正在运行：${step.label}\n\n${prompt.slice(0, 1200)}${prompt.length > 1200 ? "\n..." : ""}`;
+        const { data } = await api(`/api/chokepoint/runs/${persistedRun.run_id}/steps/${step.id}/run`, {
+          method: "POST",
+          role: "analyst",
+          body: {
+            input_prompt: prompt,
+            role: "分析师",
+            max_tokens: Number(formValue("cpAiMaxTokens", "900")),
+            temperature: Number(formValue("cpAiTemperature", "0.2")),
+            timeout_seconds: Number(formValue("cpAiTimeout", "180")),
+            tuning_notes: pipelineModeInstructions()
+          }
+        });
+        syncChokepointRun(data);
+        const result = chokepointPipeline.results[step.id] || {};
+        result.duration_ms = performance.now() - startedAt;
+        chokepointPipeline.results[step.id] = result;
+        $("cpAiResultBox").textContent = result.output || "";
+        setStatus(`流水线步骤完成 · ${step.label} · ${result.llm_run_id || data.run_id}`);
+        return result;
+      } catch (error) {
+        const message = error.name === "AbortError" ? "AI 研究超时：上游模型可能仍在排队或生成中。请降低输出上限、缩小步骤，或把超时秒数调高后重试。" : error.message;
+        chokepointPipeline.results[step.id] = {
+          status: "failed",
+          output: `运行失败：${message}`,
+          summary: message,
+          duration_ms: performance.now() - startedAt
+        };
+        chokepointPipeline.issues = [
+          ...chokepointPipeline.issues.filter((item) => item.step !== step.label),
+          { severity: "block", step: step.label, message, suggestion: "调整调优模式、降低输出上限或缩小研究对象后重跑当前步骤。" }
+        ];
+        setStatus(message, true);
+        return chokepointPipeline.results[step.id];
+      } finally {
+        renderChokepointPipeline();
+      }
+    }
+
+    async function runChokepointPipeline() {
+      if (chokepointPipeline.running) return;
+      const runButton = $("runCpPipeline");
+      const mainButton = $("runCpAiResearch");
+      const persistedRun = await ensureChokepointRun();
+      chokepointPipeline.running = true;
+      chokepointPipeline.paused = false;
+      if (runButton) {
+        runButton.disabled = true;
+        runButton.textContent = "自动运行中...";
+      }
+      if (mainButton && mainButton !== runButton) mainButton.disabled = true;
+      renderChokepointPipeline();
+      const limit = Math.max(1, Math.min(chokepointPipelineSteps.length, Number(formValue("cpPipelineStepLimit", `${chokepointPipelineSteps.length}`)) || chokepointPipelineSteps.length));
+      try {
+        const startIndex = nextRunnableChokepointIndex();
+        chokepointPipeline.currentIndex = startIndex;
+        for (let offset = 0; offset < limit && startIndex + offset < chokepointPipelineSteps.length; offset += 1) {
+          const index = startIndex + offset;
+          const step = chokepointPipelineSteps[index];
+          chokepointPipeline.currentIndex = index;
+          $("cpAiResultBox").textContent = `正在运行：${step.label}`;
+          $("cpPipelineOutput").textContent = `正在自动运行第 ${index + 1}/${chokepointPipelineSteps.length} 步：${step.label}\n\n系统正在调用 AI 模板并保存 run/step 状态。`;
+          setStatus(`自动流水线运行中 · ${step.label}`);
+          renderChokepointPipeline();
+          const result = await runChokepointPipelineStep(index);
+          if (result?.status === "failed") {
+            chokepointPipeline.paused = true;
+            setStatus(`流水线失败 · ${step.label}`, true);
+            break;
+          }
+          if (cpShouldPauseForGate(result)) {
+            chokepointPipeline.paused = true;
+            setStatus(`自动流水线暂停 · ${step.label} 请求失败，请查看问题并调优后重跑。`, true);
+            break;
+          }
+          if (result?.status === "review") {
+            setStatus(`${$("cpPipelineMode").selectedOptions[0].textContent}模式继续推进 · ${step.label} 的门禁问题已保留，继续下一步。`);
+          }
+          if (index < chokepointPipelineSteps.length - 1) {
+            chokepointPipeline.currentIndex = index + 1;
+            if (chokepointPipeline.run) {
+              chokepointPipeline.run.current_step = chokepointPipelineSteps[index + 1].id;
+              if (chokepointPipeline.run.status === "review") {
+                chokepointPipeline.run.status = "paused";
+              }
+            }
+          }
+        }
+        if (!chokepointPipeline.paused) {
+          const completed = chokepointPipelineSteps.every((step) => ["done", "review"].includes(stepStatus(step)));
+          if (completed) {
+            $("cpPipelineOutput").textContent = "1-7 步已完成，正在生成流水线结论和验证任务。";
+            await finalizeChokepointRun({ silent: true });
+            const conclusion = chokepointPipeline.run?.conclusion || {};
+            setStatus(`瓶颈研究流水线已完成 · 结论：${conclusion.status || "已生成"}`);
+          } else {
+            setStatus("瓶颈研究流水线已运行。");
+          }
+        }
+      } catch (error) {
+        const current = chokepointPipelineSteps[chokepointPipeline.currentIndex] || chokepointPipelineSteps[0];
+        const message = error.name === "AbortError" ? "AI 研究超时：上游模型可能仍在排队或生成中。请降低输出上限、缩小步骤，或把超时秒数调高后重试。" : error.message;
+        chokepointPipeline.issues = [
+          ...chokepointPipeline.issues.filter((item) => item.step !== current.label),
+          { severity: "block", step: current.label, message, suggestion: "检查 LLM 配置、降低输出上限，或先只运行当前步骤定位问题。" }
+        ];
+        $("cpPipelineOutput").textContent = `流水线运行失败：${message}`;
+        $("cpAiResultBox").textContent = `流水线运行失败：${message}`;
+        setStatus(message, true);
+        throw error;
+      } finally {
+        chokepointPipeline.running = false;
+        if (runButton) {
+          runButton.disabled = false;
+          runButton.textContent = "自动运行流水线";
+        }
+        if (mainButton && mainButton !== runButton) mainButton.disabled = false;
+        renderChokepointPipeline();
+      }
+    }
+
+    function pauseChokepointPipeline() {
+      chokepointPipeline.paused = true;
+      chokepointPipeline.running = false;
+      setStatus("流水线已暂停，可调优后重跑当前步骤。");
+      renderChokepointPipeline();
+    }
+
+    async function reviewChokepointRun() {
+      const run = await ensureChokepointRun();
+      const step = chokepointPipelineSteps[chokepointPipeline.currentIndex] || chokepointPipelineSteps[0];
+      const { data } = await api(`/api/chokepoint/runs/${run.run_id}/review`, {
+        method: "POST",
+        role: "analyst",
+        body: {
+          step_id: step.id,
+          run_status: "review",
+          tuning_notes: "提交人工复核：检查来源台账、事实分层、反方论点和证伪条件。"
+        }
+      });
+      syncChokepointRun(data);
+      setStatus(`已提交人工复核 · ${data.run_id}`);
+    }
+
+    async function createChokepointVerificationTasks() {
+      const run = await ensureChokepointRun();
+      const { data } = await api(`/api/chokepoint/runs/${run.run_id}/verification-tasks`, {
+        method: "POST",
+        role: "analyst",
+        body: { limit: 30 }
+      });
+      setStatus(`验证任务已生成 · 新增 ${data.created_count} / 已有 ${data.existing_count}`);
+      const refreshed = await api(`/api/chokepoint/runs/${run.run_id}`, { role: "analyst" });
+      syncChokepointRun(refreshed.data);
     }
 
     function renderIssuerSummary(item) {
@@ -3530,6 +5086,44 @@
     $("approvePromptChange").addEventListener("click", approvePromptChange);
     $("loadPromptChanges").addEventListener("click", loadPromptChanges);
     $("loadPermissionMatrix").addEventListener("click", loadPermissionMatrix);
+    $("loadCpPlaybook").addEventListener("click", () => {
+      renderChokepointPlaybook($("cpPlaybook").value);
+      setStatus(`瓶颈研究模板已载入 · ${$("cpPlaybook").selectedOptions[0].textContent}`);
+    });
+    $("buildCpMemo").addEventListener("click", () => buildChokepointMemo(true));
+    $("buildCpPrompt").addEventListener("click", () => buildChokepointPrompt(true));
+    $("runCpAiResearch").addEventListener("click", runChokepointAiResearch);
+    $("cpPromptTemplate").addEventListener("change", () => buildChokepointPrompt(false));
+    $("createCpRun").addEventListener("click", createChokepointRun);
+    $("saveCpRun").addEventListener("click", saveChokepointRun);
+    $("loadCpRuns").addEventListener("click", loadChokepointRuns);
+    $("runCpPipeline").addEventListener("click", runChokepointPipeline);
+    $("runCpCurrentStep").addEventListener("click", () => runChokepointPipelineStep(chokepointPipeline.currentIndex));
+    $("pauseCpPipeline").addEventListener("click", pauseChokepointPipeline);
+    $("reviewCpRun").addEventListener("click", reviewChokepointRun);
+    $("createCpVerificationTasks").addEventListener("click", createChokepointVerificationTasks);
+    $("refreshCpConclusion").addEventListener("click", () => finalizeChokepointRun());
+    $("rerunCpCurrentStep").addEventListener("click", () => {
+      const step = chokepointPipelineSteps[chokepointPipeline.currentIndex] || chokepointPipelineSteps[0];
+      delete chokepointPipeline.results[step.id];
+      chokepointPipeline.issues = chokepointPipeline.issues.filter((item) => item.step !== step.label);
+      runChokepointPipelineStep(chokepointPipeline.currentIndex);
+    });
+    $("cpPipelineSteps").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-pipeline-step]");
+      if (!button) return;
+      chokepointPipeline.currentIndex = Number(button.dataset.pipelineStep || "0");
+      renderChokepointPipeline();
+    });
+    $("cpRunRows").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-cp-run]");
+      if (!button) return;
+      openChokepointRun(button.dataset.cpRun);
+    });
+    $("cpPipelineMode").addEventListener("change", () => {
+      setStatus(`调优模式已切换 · ${$("cpPipelineMode").selectedOptions[0].textContent}`);
+      buildChokepointPrompt(false);
+    });
     $("runSecSingleName").addEventListener("click", runSecSingleName);
     $("runFilingQa").addEventListener("click", runFilingQa);
     $("runHotspotExpansion").addEventListener("click", runHotspotExpansion);
@@ -3565,6 +5159,7 @@
       return `opr_${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}`;
     }
     $("reportId").value = currentReportId();
+    renderChokepointPlaybook("generic");
     loadDashboard();
   </script>
 </body>

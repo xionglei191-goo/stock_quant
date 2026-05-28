@@ -18,6 +18,7 @@ from .models import (
     BenchmarkRun,
     BenchmarkSample,
     CacheRetentionRunRecord,
+    ChokepointResearchRun,
     CorporateAction,
     CompanyPosition,
     DrillSchedule,
@@ -112,6 +113,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("company_positions", "position_id", CompanyPosition),
     ("hotspot_lexicons", "lexicon_id", HotspotLexicon),
     ("research_tasks", "task_id", ResearchTask),
+    ("chokepoint_research_runs", "run_id", ChokepointResearchRun),
     ("benchmarks", "benchmark_id", BenchmarkConfig),
     ("benchmark_samples", "sample_id", BenchmarkSample),
     ("benchmark_results", "result_id", BenchmarkResult),
@@ -149,6 +151,96 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
 )
 
 
+_COLLECTION_BY_NAME = {collection: (key_field, model_type) for collection, key_field, model_type in COLLECTIONS}
+
+
+def _candidate_collections_for_resource(resource_type: str) -> list[str]:
+    normalized = resource_type.strip().replace("-", "_")
+    aliases = {
+        "source": "sources",
+        "source_review": "source_reviews",
+        "astock_connector": "astock_connectors",
+        "ingestion_job": "ingestion_jobs",
+        "ingestion_schedule": "ingestion_schedules",
+        "issuer": "issuers",
+        "security": "securities",
+        "market_data_point": "market_data",
+        "market_data": "market_data",
+        "corporate_action": "corporate_actions",
+        "document": "documents",
+        "evidence": "evidence",
+        "thesis": "theses",
+        "thesis_card": "theses",
+        "signal": "signals",
+        "research_signal": "signals",
+        "decision": "decisions",
+        "decision_pack": "decisions",
+        "execution_intent": "execution_intents",
+        "simulated_execution": "simulated_executions",
+        "review": "reviews",
+        "manual_review": "manual_reviews",
+        "operating_report": "operating_reports",
+        "strategy_replay": "strategy_replays",
+        "portfolio_proposal": "portfolio_proposals",
+        "portfolio_transaction": "portfolio_transactions",
+        "macro_theme": "macro_themes",
+        "industry_chain": "industry_chains",
+        "industry_chain_template_candidate": "industry_chain_template_candidates",
+        "industry_chain_template_review": "industry_chain_template_reviews",
+        "company_position": "company_positions",
+        "hotspot_lexicon": "hotspot_lexicons",
+        "research_task": "research_tasks",
+        "chokepoint_research_run": "chokepoint_research_runs",
+        "benchmark": "benchmarks",
+        "benchmark_config": "benchmarks",
+        "benchmark_sample": "benchmark_samples",
+        "benchmark_result": "benchmark_results",
+        "benchmark_run": "benchmark_runs",
+        "extraction_result": "extraction_results",
+        "entity_mapping": "entity_mappings",
+        "entity_mapping_label": "entity_mapping_labels",
+        "scorecard": "scorecards",
+        "scorecard_profile": "scorecards",
+        "drill_schedule": "drill_schedules",
+        "readiness_check": "readiness_checks",
+        "secret_rotation": "secret_rotations",
+        "cache_retention_run": "cache_retention_runs",
+        "prompt_change": "prompt_changes",
+        "llm_budget_approval": "llm_budget_approvals",
+        "llm_task_template": "llm_task_templates",
+        "llm_task_run": "llm_task_runs",
+        "workflow_definition": "workflow_definitions",
+        "workflow_run": "workflow_runs",
+        "lineage_event": "lineage_events",
+        "model_version": "model_versions",
+        "template": "templates",
+        "research_answer": "research_answers",
+        "research_card": "research_cards",
+        "research_report": "research_reports",
+        "research_report_asset": "research_reports",
+        "crowding": "crowding",
+        "crowding_snapshot": "crowding",
+        "institutional_holding": "institutional_holdings",
+        "disclosure_event": "disclosure_events",
+        "challenger": "challengers",
+        "challenger_result": "challengers",
+        "playbook": "playbooks",
+        "incident_playbook": "playbooks",
+        "incident_report": "incident_reports",
+        "alert_rule": "alert_rules",
+        "system_alert": "system_alerts",
+        "alert_notification": "alert_notifications",
+        "exception": "exceptions",
+        "exception_item": "exceptions",
+    }
+    candidates = [aliases.get(normalized, ""), normalized, f"{normalized}s"]
+    if normalized.endswith("y"):
+        candidates.append(f"{normalized[:-1]}ies")
+    if normalized.endswith("_run"):
+        candidates.append(f"{normalized}s")
+    return [item for item in candidates if item in _COLLECTION_BY_NAME]
+
+
 DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     Evidence: ("created_at",),
     SourceReviewRecord: ("reviewed_at", "next_review_due_at"),
@@ -175,6 +267,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     CompanyPosition: ("created_at",),
     HotspotLexicon: ("created_at",),
     ResearchTask: ("created_at", "updated_at"),
+    ChokepointResearchRun: ("created_at", "updated_at"),
     BenchmarkConfig: ("created_at",),
     BenchmarkSample: ("created_at",),
     BenchmarkResult: ("created_at",),
@@ -296,6 +389,7 @@ class InMemoryStore:
     company_positions: dict[str, CompanyPosition] = field(default_factory=dict)
     hotspot_lexicons: dict[str, HotspotLexicon] = field(default_factory=dict)
     research_tasks: dict[str, ResearchTask] = field(default_factory=dict)
+    chokepoint_research_runs: dict[str, ChokepointResearchRun] = field(default_factory=dict)
     benchmarks: dict[str, BenchmarkConfig] = field(default_factory=dict)
     benchmark_samples: dict[str, BenchmarkSample] = field(default_factory=dict)
     benchmark_results: dict[str, BenchmarkResult] = field(default_factory=dict)
@@ -362,6 +456,9 @@ class SQLiteStore(InMemoryStore):
                     """
                 )
 
+    def _ensure_schema_if_needed(self) -> None:
+        self._ensure_schema()
+
     def _load(self) -> None:
         with closing(self._connect()) as connection:
             rows = connection.execute(
@@ -414,6 +511,7 @@ class PostgreSQLStore(InMemoryStore):
         self._lazy_market_data_count = 0
         self._record_hashes: dict[tuple[str, str], str] = {}
         self._audit_hashes: dict[str, str] = {}
+        self._dirty_collections: set[str] = set()
         self._ensure_schema_if_needed()
         self._load()
 
@@ -514,6 +612,9 @@ class PostgreSQLStore(InMemoryStore):
     def _payload_hash(self, payload: Any) -> str:
         return json.dumps(to_plain(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
+    def mark_dirty_for_resource(self, resource_type: str) -> None:
+        self._dirty_collections.update(_candidate_collections_for_resource(resource_type))
+
     def commit(self) -> None:
         with closing(self._connect()) as connection:
             with connection:
@@ -522,7 +623,12 @@ class PostgreSQLStore(InMemoryStore):
                     typed_market_data_available = bool(cursor.fetchone()[0])
                     current_keys: set[tuple[str, str]] = set()
                     typed_market_data_keys: set[str] = set()
+                    target_collections = set(self._dirty_collections)
+                    if not target_collections:
+                        target_collections = {collection for collection, _key_field, _model_type in COLLECTIONS}
                     for collection, key_field, _model_type in COLLECTIONS:
+                        if collection not in target_collections:
+                            continue
                         records = getattr(self, collection)
                         for item_id, item in records.items():
                             item_id = str(getattr(item, key_field))
@@ -553,14 +659,15 @@ class PostgreSQLStore(InMemoryStore):
                                 ),
                             )
                             self._record_hashes[(collection, item_id)] = payload_hash
-                    deletable_previous_keys = {
-                        key
-                        for key in self._record_hashes
-                        if key[0] != "market_data" and key[0] not in self._lazy_collections and key not in current_keys
-                    }
-                    for collection, item_id in sorted(deletable_previous_keys):
-                        cursor.execute("DELETE FROM ai_quant.records WHERE collection = %s AND item_id = %s", (collection, item_id))
-                        self._record_hashes.pop((collection, item_id), None)
+                    if not self._dirty_collections:
+                        deletable_previous_keys = {
+                            key
+                            for key in self._record_hashes
+                            if key[0] != "market_data" and key[0] not in self._lazy_collections and key not in current_keys
+                        }
+                        for collection, item_id in sorted(deletable_previous_keys):
+                            cursor.execute("DELETE FROM ai_quant.records WHERE collection = %s AND item_id = %s", (collection, item_id))
+                            self._record_hashes.pop((collection, item_id), None)
                     current_audit_ids: set[str] = set()
                     for position, event in enumerate(self.audit_log):
                         event_payload = to_plain(event)
@@ -621,6 +728,7 @@ class PostgreSQLStore(InMemoryStore):
                     for event_id in sorted(set(self._audit_hashes) - current_audit_ids):
                         cursor.execute("DELETE FROM ai_quant.audit_log WHERE event_id = %s", (event_id,))
                         self._audit_hashes.pop(event_id, None)
+        self._dirty_collections.clear()
         if typed_market_data_available and typed_market_data_keys:
             for item_id in typed_market_data_keys:
                 self.market_data.pop(item_id, None)
