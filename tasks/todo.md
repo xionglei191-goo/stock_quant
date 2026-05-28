@@ -263,6 +263,30 @@
   - 文档：`docs/chokepoint-research-module.md`
   - 验收：给定一个行业或主题，系统能自动生成可复核的来源台账、价值链地图、瓶颈候选排名、催化剂时间线、反方论点、证伪条件和待验证任务；所有结论能区分事实、推断、投机和未知；所有输出固定 `automation_allowed=false`、`live_execution_allowed=false`，不得把 AI 输出、社交媒体或研报观点直接当成核心事实或投资建议
 
+- `TODO` T-406C 瓶颈研究真实样本质量包与可复验基线
+  - 对应：E3-US2, E4-US1, E5-US1, E6-US3, E8-US2；愿景扩展/生产化增强
+  - 目标：把瓶颈研究从“能生成流水线”推进到“能用真实主题复验质量”。优先选择 5-10 个真实赛道/主题样本，例如核燃料链、AI 数据中心电力、CPO/光模块、药械审批、稀缺材料和消费渠道入口，批量跑完整 7 步流水线并归档质量报告。
+  - 待做：新增 `scripts/local_chokepoint_quality_package.py`，自动创建/运行 chokepoint run，导出样本 manifest、step 输出摘要、来源台账覆盖、事实分层统计、人工复核标注样例和 readiness report。
+  - 待做：为每个样本人工标注核心结论的 `confirmed` / `inferred` / `speculative` / `unknown`，记录错分、无 URL、无日期、事实升级、投资建议越界和 LLM fallback 问题。
+  - 待做：形成本机质量基线指标：来源 URL 覆盖率、confirmed 比例、unknown 数量、verification task 生成率、人工 review 关闭率、fallback 率和边界违规率。
+  - 验收：质量包能在本机一条命令重跑；至少 5 个真实主题样本有完整 run、结论、验证任务和人工标注摘要；所有样本输出保持 `automation_allowed=false` / `live_execution_allowed=false`。
+
+- `TODO` T-406D 瓶颈研究结构化结论、评分模型和证据门禁
+  - 对应：E3-US2, E5-US1, E5-US2, E6-US3, E8-US2；愿景扩展/生产化增强
+  - 目标：把 `conclusion` 从可读文本升级为结构化研究档案，明确区分核心事实、推断、投机、未知、证伪条件和下一步验证，并引入可解释 chokepoint 评分模型。
+  - 待做：扩展 `conclusion` schema，固定输出 `core_facts`、`inferences`、`speculations`、`unknowns`、`falsification_conditions`、`next_verification_tasks`、`evidence_gaps`、`market_pricing_context` 和 `usage_boundary`。
+  - 待做：新增 chokepoint 评分维度：供应集中度、切换成本、供给扩张周期、客户依赖、监管/认证壁垒、利润池错配、催化剂可验证性；每个分数必须带 evidence refs、置信度和缺口说明。
+  - 待做：强化来源台账硬门禁；缺 URL、发布日期、来源类型或事实层级的内容不得进入 `core_facts`，研报/社媒只能进入 `opinions` 或 `clues`。
+  - 验收：任一 run 的结论可机器读取并追溯到证据或验证任务；无来源事实不会进入核心事实区；评分不是裸数字，而是可解释的 evidence-backed scorecard。
+
+- `TODO` T-406E 瓶颈研究验证任务闭环与复盘反馈
+  - 对应：E5-US1, E5-US2, E6-US4, E7-US1, E8-US1；愿景扩展/生产化增强
+  - 目标：让瓶颈研究从“一次性 AI 报告”升级为可持续复盘的研究档案。验证任务关闭后应反向刷新 run 的结论、置信度、证据缺口和证伪状态。
+  - 待做：把 `ResearchTask` 的完成结果回写到 chokepoint run，更新 `unknowns`、`core_facts`、`confidence`、`thesis_strength_score` 和 `falsification_status`。
+  - 待做：记录每个 run 创建时的价格、估值、行情上下文、关键催化剂、证伪条件和后续事件，连接模拟组合反馈和策略复盘。
+  - 待做：新增 UI “质量门禁 / 证据缺口 / 复盘”面板，展示 verification task 关闭率、已证实/已证伪项、仍待验证项和下一步动作。
+  - 验收：关闭验证任务后，run 结论能幂等刷新；被证伪的 thesis 不会继续显示为 ready；复盘档案可展示当时假设、后续证据和模拟反馈，不触发真实交易。
+
 ## P1 下一批 / M7 经营驾驶舱和投研闭环
 
 - `BLOCKED` T-407 CEO Dashboard 与 UI 图对齐验收
