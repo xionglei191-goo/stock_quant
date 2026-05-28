@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import mimetypes
-import os
 import time
 import uuid
 from typing import Any, Callable, Mapping
@@ -10,6 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .errors import ValidationError
+from .utils import env_float, env_int, env_text
 
 
 DEFAULT_PADDLEOCR_JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
@@ -33,12 +33,12 @@ class PaddleOCRParser:
         max_polls: int | None = None,
         http_send: Callable[[Request, int], bytes] | None = None,
     ):
-        self.job_url = (job_url or os.environ.get("AI_QUANT_PADDLEOCR_JOB_URL") or DEFAULT_PADDLEOCR_JOB_URL).rstrip("/")
-        self.token = token if token is not None else os.environ.get("AI_QUANT_PADDLEOCR_TOKEN", "")
-        self.model = model or os.environ.get("AI_QUANT_PADDLEOCR_MODEL") or DEFAULT_PADDLEOCR_MODEL
-        self.timeout = int(timeout or os.environ.get("AI_QUANT_PADDLEOCR_TIMEOUT_SECONDS", "60"))
-        self.poll_interval = float(poll_interval if poll_interval is not None else os.environ.get("AI_QUANT_PADDLEOCR_POLL_INTERVAL_SECONDS", "5"))
-        self.max_polls = int(max_polls or os.environ.get("AI_QUANT_PADDLEOCR_MAX_POLLS", "120"))
+        self.job_url = (job_url or env_text("AI_QUANT_PADDLEOCR_JOB_URL", DEFAULT_PADDLEOCR_JOB_URL) or DEFAULT_PADDLEOCR_JOB_URL).rstrip("/")
+        self.token = token if token is not None else str(env_text("AI_QUANT_PADDLEOCR_TOKEN", "") or "")
+        self.model = model or env_text("AI_QUANT_PADDLEOCR_MODEL", DEFAULT_PADDLEOCR_MODEL) or DEFAULT_PADDLEOCR_MODEL
+        self.timeout = int(timeout) if timeout is not None else env_int("AI_QUANT_PADDLEOCR_TIMEOUT_SECONDS", 60, minimum=1)
+        self.poll_interval = float(poll_interval) if poll_interval is not None else env_float("AI_QUANT_PADDLEOCR_POLL_INTERVAL_SECONDS", 5.0, minimum=0.0)
+        self.max_polls = int(max_polls) if max_polls is not None else env_int("AI_QUANT_PADDLEOCR_MAX_POLLS", 120, minimum=1)
         self._http_send = http_send or self._default_send
 
     def configured(self) -> bool:

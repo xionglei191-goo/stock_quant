@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.utils import env_float
 from scripts.ui_browser_acceptance import run_ui_browser_acceptance
 from scripts.ui_cross_browser_matrix_check import load_and_validate_cross_browser_matrix, validate_cross_browser_matrix
 from scripts.readiness_evidence_package_check import validate_readiness_evidence_package
@@ -594,13 +595,13 @@ def main() -> None:
     parser.add_argument(
         "--capacity-default-threshold-ms",
         type=float,
-        default=float(os.environ.get("AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS", "1000")),
+        default=env_float("AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS", 1000.0, minimum=1.0),
         help="Default max latency threshold for HTTP staging capacity readiness checks.",
     )
     parser.add_argument(
         "--capacity-simulate-threshold-ms",
         type=float,
-        default=float(os.environ.get("AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS", "2000")),
+        default=env_float("AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS", 2000.0, minimum=1.0),
         help="Max latency threshold for the simulated execution HTTP readiness check.",
     )
     args = parser.parse_args()

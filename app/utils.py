@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+import os
 import re
 import uuid
 from typing import Any
@@ -27,6 +28,48 @@ def parse_datetime(value: Any) -> datetime:
         dt = datetime.fromisoformat(normalized)
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     raise TypeError(f"Unsupported datetime value: {type(value)!r}")
+
+
+def env_text(name: str, default: str | None = None) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = str(raw).strip()
+    if not value:
+        return default
+    return value
+
+
+def env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = env_text(name)
+    if raw is None:
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def env_float(name: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
+    raw = env_text(name)
+    if raw is None:
+        value = default
+    else:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
 
 
 class _HTMLTextExtractor(HTMLParser):

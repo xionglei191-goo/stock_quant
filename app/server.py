@@ -9,14 +9,46 @@ from urllib.parse import parse_qs, urlparse
 from .api import ApiRouter, create_default_router
 from .services import SystemService
 from .store import PostgreSQLStore, SQLiteStore
-from .utils import to_plain
+from .utils import env_text, to_plain
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+
+
+def _load_dotenv(path: Path = ROOT_DIR / ".env") -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or key in os.environ:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+def _validate_startup_security_mode() -> None:
+    deployment_mode = str(env_text("AI_QUANT_DEPLOYMENT_MODE", "local") or "local").strip().lower()
+    auth_mode = str(env_text("AI_QUANT_AUTH_MODE", "x-role-header") or "x-role-header").strip().lower()
+    if deployment_mode in {"preprod", "staging", "production", "nonlocal", "non-local"} and auth_mode in {"x-role-header", "header", "none"}:
+        raise RuntimeError(
+            "AI_QUANT_DEPLOYMENT_MODE is non-local but AI_QUANT_AUTH_MODE is not production-safe. "
+            "Set AI_QUANT_AUTH_MODE to service-token/jwt/oidc before startup."
+        )
 
 
 def _create_router() -> ApiRouter:
-    postgres_dsn = os.environ.get("AI_QUANT_POSTGRES_DSN") or os.environ.get("AI_QUANT_DATABASE_URL")
+    _validate_startup_security_mode()
+    postgres_dsn = env_text("AI_QUANT_POSTGRES_DSN") or env_text("AI_QUANT_DATABASE_URL")
     if postgres_dsn:
         return ApiRouter(SystemService(PostgreSQLStore(postgres_dsn)))
-    db_path = os.environ.get("AI_QUANT_DB")
+    db_path = env_text("AI_QUANT_DB")
     if db_path and db_path.startswith(("postgresql://", "postgres://")):
         return ApiRouter(SystemService(PostgreSQLStore(db_path)))
     if db_path:
@@ -24,8 +56,15 @@ def _create_router() -> ApiRouter:
     return create_default_router()
 
 
-ROUTER = _create_router()
+ROUTER: ApiRouter | None = None
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def get_router() -> ApiRouter:
+    global ROUTER
+    if ROUTER is None:
+        ROUTER = _create_router()
+    return ROUTER
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -90,13 +129,13 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
-        response = ROUTER.dispatch("GET", path, self._query_body(parsed_url.query), actor=self._actor(), role=self._role())
+        response = get_router().dispatch("GET", path, self._query_body(parsed_url.query), actor=self._actor(), role=self._role())
         self._send_json(response.to_dict(), response.status_code)
 
     def do_POST(self) -> None:  # noqa: N802
         body = self._read_json()
         parsed_url = urlparse(self.path)
-        response = ROUTER.dispatch("POST", parsed_url.path, body, actor=self._actor(), role=self._role())
+        response = get_router().dispatch("POST", parsed_url.path, body, actor=self._actor(), role=self._role())
         self._send_json(response.to_dict(), response.status_code)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003
@@ -110,5 +149,6 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
 
 
 if __name__ == "__main__":
-    import os
-    serve(host=os.environ.get("AI_QUANT_HOST", "127.0.0.1"))
+    _load_dotenv()
+    get_router()
+    serve(host=str(env_text("AI_QUANT_HOST", "127.0.0.1") or "127.0.0.1"))
