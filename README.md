@@ -9,11 +9,25 @@
 - `docs/`: 项目与架构文档
 - `tasks/`: 执行待办清单
 
+## Python 支持矩阵
+
+- Python `3.11`
+- Python `3.12`
+
 ## 运行测试
 
 ```bash
+python3 -m pip install '.[test]'
 python3 -m unittest discover -s tests
 python3 -m py_compile app/*.py tests/*.py scripts/*.py
+```
+
+单测默认会隔离本机 `AI_QUANT_*` 变量，不需要手工清理本地 `.env`。
+
+日常本机质量门可直接执行：
+
+```bash
+make local-ci
 ```
 
 ## 公开基础信息回填
@@ -77,6 +91,12 @@ AI_QUANT_DB=./data/state.db python3 -m app.server
 ```bash
 python3 -m pip install '.[postgres]'
 AI_QUANT_POSTGRES_DSN=postgresql://user:password@localhost:5432/ai_quant python3 -m app.server
+```
+
+A 股增量脚本依赖 `baostock` + `psycopg`，可单独安装：
+
+```bash
+python3 -m pip install '.[market-data]'
 ```
 
 从 SQLite 状态库迁移到 PostgreSQL 时，使用显式迁移脚本。`--replace` 会重写目标 PostgreSQL 的 `ai_quant.records` 和 `ai_quant.audit_log`：
