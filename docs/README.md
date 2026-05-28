@@ -8,8 +8,17 @@
 - [risk-register.md](./risk-register.md): 风险与依赖登记册
 - [development-task-book.md](./development-task-book.md): 开发任务书
 - [product-requirements-document.md](./product-requirements-document.md): PRD
+- [chokepoint-research-module.md](./chokepoint-research-module.md): 瓶颈研究模块方向文档
 - [mvp-backlog.md](./mvp-backlog.md): MVP backlog
 - [workstreams-by-role.md](./workstreams-by-role.md): 按角色拆分的执行包
+- [agent-handoffs/README.md](./agent-handoffs/README.md): 多 agent 交接记录目录与使用规则
+- [agent-handoffs/TEMPLATE.md](./agent-handoffs/TEMPLATE.md): 标准交接记录模板
+- [pr-checklist.md](./pr-checklist.md): PR 与合并检查清单（含多 agent 交接必查项）
+- [systemservice-modularization-adr.md](./systemservice-modularization-adr.md): `SystemService` 模块化拆分 ADR 与迁移顺序
+- [security-boundary-modes-adr.md](./security-boundary-modes-adr.md): 本机/非本机访问控制边界与认证模式 ADR
+- [artifact-governance.md](./artifact-governance.md): 产物提交规则与本机 CI 质量门
+- [worktree-change-grouping-2026-05-28.md](./worktree-change-grouping-2026-05-28.md): 当前未提交变更分组说明
+- [../AGENTS.md](../AGENTS.md): 多 agent / 开发小组协作、交接记录和文档标准
 - [../tasks/todo.md](../tasks/todo.md): 执行待办清单
 - [system-architecture.md](./system-architecture.md): 系统架构设计
 - [data-structure-design.md](./data-structure-design.md): 数据结构设计
