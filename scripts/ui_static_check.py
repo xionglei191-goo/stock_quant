@@ -177,6 +177,12 @@ REQUIRED_IDS = [
     "sourceReviewRows",
     "sourceReviewOwnerRows",
     "sourceReviewNotificationRows",
+    "cpConclusionStatus",
+    "cpConclusionScore",
+    "cpConclusionConfidence",
+    "cpConclusionTaskCount",
+    "cpConclusionBox",
+    "refreshCpConclusion",
 ]
 
 REQUIRED_JS_FUNCTIONS = [
@@ -228,6 +234,8 @@ REQUIRED_JS_FUNCTIONS = [
     "loadIncidents",
     "loadSourceReviews",
     "notifySourceReviews",
+    "renderChokepointConclusion",
+    "finalizeChokepointRun",
 ]
 
 REQUIRED_INTERACTION_MARKERS = [
