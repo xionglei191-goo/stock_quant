@@ -738,6 +738,66 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("rr_demo_unbound", self.service.store.structured_research_reports)
         self.assertTrue(any(item.issuer_id == "issuer_001" for item in self.service.store.report_viewpoints.values()))
 
+    def test_company_database_coverage_audit_reports_missing_sections(self) -> None:
+        self.service.register_market_data_point(
+            {
+                "data_id": "md_demo_coverage_latest",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "market": "A",
+                "as_of_date": "2026-06-24",
+                "close": 12.3,
+                "volume": 123456,
+            },
+            actor="data",
+        )
+        built = self.router.dispatch(
+            "POST",
+            "/api/company-database/build",
+            {"symbols": ["DEMO"], "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(built.success, built.error)
+        audit = self.router.dispatch(
+            "POST",
+            "/api/company-database/coverage/audit",
+            {"symbols": ["DEMO"], "limit": 1},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(audit.success, audit.error)
+        self.assertEqual(audit.data["issuer_count"], 1)
+        row = audit.data["companies"][0]
+        self.assertEqual(row["issuer_id"], "issuer_001")
+        self.assertTrue(row["section_available"]["company_profile"])
+        self.assertTrue(row["section_available"]["security"])
+        self.assertTrue(row["section_available"]["market_data"])
+        self.assertIn("financial_snapshot", row["missing_sections"])
+        self.assertGreater(row["coverage_score"], 0.0)
+
+    def test_company_database_batch_build_aggregates_batches_and_coverage(self) -> None:
+        result = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/build",
+            {
+                "symbols": ["DEMO"],
+                "limit": 1,
+                "batch_size": 1,
+                "build_events": False,
+                "build_relationships": False,
+                "build_workflow": False,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.data["status"], "dry_run")
+        self.assertEqual(result.data["issuer_count"], 1)
+        self.assertEqual(result.data["batch_count"], 1)
+        self.assertEqual(result.data["totals"]["profiles_planned"], 1)
+        self.assertEqual(result.data["coverage_after"]["issuer_count"], 1)
+
     def test_company_event_builder_creates_market_and_research_attention_events(self) -> None:
         market_point = self.service.register_market_data_point(
             {
@@ -897,6 +957,113 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(aggregated.success, aggregated.error)
         self.assertEqual(aggregated.data["section_counts"]["company_relationships"], 4)
         self.assertTrue(aggregated.data["data_quality"]["relationship_graph_available"])
+
+    def test_company_relationship_review_approves_rejects_and_merges_candidates(self) -> None:
+        approved = self.service.register_company_relationship(
+            {
+                "relationship_id": "rel_candidate_approve",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "company",
+                "object_id": "external_company_mega_cloud",
+                "relationship_type": "customer_candidate",
+                "relationship_status": "unknown",
+                "review_status": "needs_review",
+                "confidence": 0.55,
+                "metadata": {"candidate_status": "candidate"},
+            },
+            actor="data",
+        )
+        rejected = self.service.register_company_relationship(
+            {
+                "relationship_id": "rel_candidate_reject",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "company",
+                "object_id": "external_company_bad",
+                "relationship_type": "supplier_candidate",
+                "relationship_status": "unknown",
+                "review_status": "needs_review",
+                "confidence": 0.55,
+                "metadata": {"candidate_status": "candidate"},
+            },
+            actor="data",
+        )
+        target = self.service.register_company_relationship(
+            {
+                "relationship_id": "rel_candidate_target",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "company",
+                "object_id": "external_company_partner",
+                "relationship_type": "partner_candidate",
+                "relationship_status": "unknown",
+                "review_status": "needs_review",
+                "confidence": 0.55,
+                "evidence_ids": ["ev_target"],
+                "metadata": {"candidate_status": "candidate"},
+            },
+            actor="data",
+        )
+        source = self.service.register_company_relationship(
+            {
+                "relationship_id": "rel_candidate_merge",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "company",
+                "object_id": "external_company_partner_alias",
+                "relationship_type": "partner_candidate",
+                "relationship_status": "unknown",
+                "review_status": "needs_review",
+                "confidence": 0.55,
+                "evidence_ids": ["ev_source"],
+                "metadata": {"candidate_status": "candidate"},
+            },
+            actor="data",
+        )
+
+        approved_response = self.router.dispatch(
+            "POST",
+            f"/api/company-relationships/{approved.relationship_id}/review",
+            {"action": "approve", "reason": "evidence checked"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(approved_response.success, approved_response.error)
+        self.assertEqual(approved_response.data["review_status"], "approved")
+        self.assertEqual(approved_response.data["relationship_status"], "active")
+        self.assertGreaterEqual(approved_response.data["confidence"], 0.8)
+
+        rejected_response = self.router.dispatch(
+            "POST",
+            f"/api/company-relationships/{rejected.relationship_id}/review",
+            {"action": "reject", "reason": "false positive"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(rejected_response.success, rejected_response.error)
+        self.assertEqual(rejected_response.data["review_status"], "rejected")
+        self.assertEqual(rejected_response.data["relationship_status"], "inactive")
+
+        merged_response = self.router.dispatch(
+            "POST",
+            f"/api/company-relationships/{source.relationship_id}/review",
+            {"action": "merge", "target_relationship_id": target.relationship_id},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(merged_response.success, merged_response.error)
+        self.assertEqual(merged_response.data["review_status"], "merged")
+        self.assertEqual(self.service.store.company_relationships[target.relationship_id].evidence_ids, ["ev_target", "ev_source"])
+        self.assertIn(source.relationship_id, self.service.store.company_relationships[target.relationship_id].metadata["merged_from"])
 
     def test_company_workflow_builder_creates_observation_conclusion_and_paper_feedback(self) -> None:
         self.service.register_market_data_point(
@@ -1075,6 +1242,101 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(updated.performance["return_pct"], 0.2)
         self.assertTrue(updated.validation["paper_only"])
         self.assertFalse(updated.validation["live_execution_allowed"])
+
+    def test_research_report_realization_update_recomputes_target_price_and_analyst_score(self) -> None:
+        self.service.register_market_data_point(
+            {
+                "data_id": "md_demo_realization_latest",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "market": "A",
+                "as_of_date": "2026-06-24",
+                "close": 12.0,
+                "volume": 123456,
+            },
+            actor="data",
+        )
+        self.service.register_analyst_profile(
+            {
+                "analyst_id": "analyst_realization",
+                "name": "Analyst Realization",
+                "institution_id": "local_research_reports",
+                "covered_issuer_ids": ["issuer_001"],
+                "report_count": 1,
+            },
+            actor="data",
+        )
+        self.service.register_structured_research_report(
+            {
+                "research_report_id": "srr_realization",
+                "title": "Demo target price report",
+                "institution_id": "local_research_reports",
+                "institution_name": "Local Broker",
+                "analyst_ids": ["analyst_realization"],
+                "analyst_names": ["Analyst Realization"],
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "rating": "buy",
+                "target_price": 11.0,
+                "parser_status": "metadata_only",
+            },
+            actor="data",
+        )
+        viewpoint = self.service.register_report_viewpoint(
+            {
+                "viewpoint_id": "vp_realization",
+                "research_report_id": "srr_realization",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "statement": "Target price should be reached.",
+                "target_price": 11.0,
+                "rating": "buy",
+            },
+            actor="data",
+        )
+        forecast = self.service.register_report_forecast(
+            {
+                "forecast_id": "fc_realization",
+                "research_report_id": "srr_realization",
+                "viewpoint_id": viewpoint.viewpoint_id,
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "forecast_type": "target_price",
+                "period": "latest",
+                "forecast_value": 11.0,
+                "currency": "CNY",
+            },
+            actor="data",
+        )
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/research-reports/realization/update",
+            {"symbols": ["DEMO"]},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["forecast_planned"], 1)
+        self.assertEqual(self.service.store.report_forecasts[forecast.forecast_id].actual_value, 0.0)
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/research-reports/realization/update",
+            {"symbols": ["DEMO"], "execute": True},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["forecast_updated"], 1)
+        self.assertEqual(executed.data["viewpoint_updated"], 1)
+        self.assertEqual(executed.data["analyst_scores_recomputed"], 1)
+        updated_forecast = self.service.store.report_forecasts[forecast.forecast_id]
+        updated_viewpoint = self.service.store.report_viewpoints[viewpoint.viewpoint_id]
+        self.assertEqual(updated_forecast.actual_value, 12.0)
+        self.assertEqual(updated_forecast.realization_status, "realized")
+        self.assertEqual(updated_viewpoint.realization_status, "realized")
+        self.assertTrue(self.service.store.analyst_reliability_scores)
 
     def test_latest_analysis_api_summarizes_local_artifact_for_ui(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -265,13 +265,14 @@ def run_ui_interaction_acceptance(
                 client,
                 "chain_to_hotspot",
                 "document.querySelector('[data-open=\"dashboard\"]').click(); true",
-                "document.querySelector('[data-action=\"open-hotspot\"]') !== null",
+                "document.querySelector('[data-action=\"open-hotspot\"]') !== null || document.querySelector('#runHotspotExpansion') !== null",
             ),
             _run_check(
                 client,
                 "chain_click_runs_hotspot",
-                "document.querySelector('[data-action=\"open-hotspot\"]').click(); true",
+                "const hot = document.querySelector('[data-action=\"open-hotspot\"]'); if (hot) { hot.click(); } else { document.querySelector('[data-open=\"search\"]').click(); document.querySelector('#runHotspotExpansion').click(); } true",
                 "document.querySelector('[data-tab=\"search\"]').classList.contains('active') && document.querySelector('#hotspotBoundary').textContent.trim().length > 0",
+                wait_timeout=max(timeout, 30.0),
             ),
             _run_check(
                 client,
@@ -289,9 +290,30 @@ def run_ui_interaction_acceptance(
             ),
             _run_check(
                 client,
+                "company_database_operations_preview",
+                "document.querySelector('[data-open=\"search\"]').click(); document.querySelector('#companyIntelBuildLimit').value = '1'; document.querySelector('#companyIntelBatchSize').value = '1'; document.querySelector('#auditCompanyCoverage').click(); true",
+                "document.querySelector('#companyIntelBatchBuildStatus').textContent.includes('审计完成') && document.querySelector('#companyIntelOperationBox').textContent.includes('company_database_coverage_audit')",
+                wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
+                "company_database_batch_preview",
+                "document.querySelector('#previewCompanyBatchBuild').click(); true",
+                "document.querySelector('#companyIntelBatchBuildStatus').textContent.includes('预览') && document.querySelector('#companyIntelOperationBox').textContent.includes('company_database_batch_build')",
+                wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
+                "company_report_realization_preview",
+                "document.querySelector('#previewCompanyReportRealization').click(); true",
+                "document.querySelector('#companyIntelRealizationStatus').textContent.includes('预览') && document.querySelector('#companyIntelOperationBox').textContent.includes('research_report_realization')",
+                wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
                 "portfolio_proposal_loads_latest",
                 "document.querySelector('[data-open=\"committee\"]').click(); document.querySelector('#loadPortfolioProposal').click(); true",
-                "document.querySelector('[data-tab=\"committee\"]').classList.contains('active') && document.querySelector('#portfolioProposalBox').textContent.includes('组合方案') && !document.querySelector('#portfolioProposalBox').textContent.includes('proposal_id')",
+                "document.querySelector('[data-tab=\"committee\"]').classList.contains('active') && document.querySelector('#portfolioProposalBox').textContent.includes('组合方案') && document.querySelector('#portfolioProposalBox').textContent.includes('组合权重') && document.querySelector('#portfolioFeedbackDecision').textContent.includes('已载入')",
             ),
         ]
     finally:

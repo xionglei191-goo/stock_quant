@@ -1498,6 +1498,51 @@
             <table><thead><tr><th>类型</th><th>对象</th><th>状态</th><th>摘要</th></tr></thead><tbody id="companyIntelResearchRows"></tbody></table>
           </div>
           <div class="panel span-12">
+            <h2>公司数据库补齐</h2>
+            <div class="row">
+              <div class="field compact">
+                <label for="companyIntelBuildLimit">目标上限</label>
+                <input id="companyIntelBuildLimit" value="20" aria-label="公司数据库构建目标上限">
+                <span class="hint">当前公司或同批代码</span>
+              </div>
+              <div class="field compact">
+                <label for="companyIntelBatchSize">批次规模</label>
+                <input id="companyIntelBatchSize" value="10" aria-label="公司数据库构建批次规模">
+                <span class="hint">小批量执行</span>
+              </div>
+              <label class="field compact">
+                <span>结构化研报</span>
+                <input id="companyIntelBatchStructureReports" type="checkbox" aria-label="批量构建时结构化研报">
+                <span class="hint">耗时更长</span>
+              </label>
+              <button id="auditCompanyCoverage">覆盖审计</button>
+              <button id="previewCompanyBatchBuild">预览补齐</button>
+              <button id="runCompanyBatchBuild" class="primary">执行补齐</button>
+              <button id="previewCompanyReportRealization">预览兑现</button>
+              <button id="runCompanyReportRealization" class="primary">更新兑现</button>
+            </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>覆盖率</strong><span id="companyIntelCoverageScore">0%</span></div>
+              <div class="system-box"><strong>缺失层</strong><span id="companyIntelCoverageMissing">0</span></div>
+              <div class="system-box"><strong>补齐状态</strong><span id="companyIntelBatchBuildStatus">待执行</span></div>
+              <div class="system-box"><strong>兑现状态</strong><span id="companyIntelRealizationStatus">待检查</span></div>
+              <div class="system-box"><strong>兑现更新</strong><span id="companyIntelRealizationUpdated">0/0</span></div>
+            </div>
+            <table><thead><tr><th>公司</th><th>覆盖率</th><th>缺失层</th><th>计数</th></tr></thead><tbody id="companyIntelCoverageRows"></tbody></table>
+            <pre id="companyIntelOperationBox">载入公司后可审计覆盖率、预览补齐和更新研报兑现。</pre>
+          </div>
+          <div class="panel span-12">
+            <h2>关系候选审核</h2>
+            <div class="row">
+              <div class="field">
+                <label for="companyIntelRelationshipMergeTarget">合并目标</label>
+                <input id="companyIntelRelationshipMergeTarget" value="" aria-label="关系候选合并目标">
+                <span class="hint">填写目标关系 ID 后可执行合并</span>
+              </div>
+            </div>
+            <table><thead><tr><th>关系</th><th>对象</th><th>状态</th><th>操作</th></tr></thead><tbody id="companyIntelRelationshipReviewRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
             <h2>研报结构化</h2>
             <div class="row">
               <div class="field compact">
@@ -4689,6 +4734,194 @@
       }
     }
 
+    function companyIntelBuildPayload(execute = false) {
+      const symbol = formValue("companyIntelSymbol", "SPCX").trim();
+      const profile = latestCompanyIntelligence?.company_profile || {};
+      const issuerId = activeEntityIssuerId || profile.issuer?.issuer_id || "";
+      const limit = Math.max(1, Math.min(500, Number(formValue("companyIntelBuildLimit", "20")) || 20));
+      const batchSize = Math.max(1, Math.min(100, Number(formValue("companyIntelBatchSize", "10")) || 10));
+      const payload = {
+        limit,
+        batch_size: batchSize,
+        execute,
+        dry_run: !execute,
+        build_events: true,
+        build_relationships: true,
+        build_workflow: true,
+        structure_reports: Boolean($("companyIntelBatchStructureReports")?.checked)
+      };
+      if (issuerId) payload.issuer_ids = [issuerId];
+      if (!issuerId && symbol) payload.symbols = [symbol];
+      return payload;
+    }
+
+    function companyIntelScopedPayload(limit = 20) {
+      const symbol = formValue("companyIntelSymbol", "SPCX").trim();
+      const profile = latestCompanyIntelligence?.company_profile || {};
+      const issuerId = activeEntityIssuerId || profile.issuer?.issuer_id || "";
+      const payload = { limit };
+      if (issuerId) payload.issuer_ids = [issuerId];
+      if (!issuerId && symbol) payload.symbols = [symbol];
+      return payload;
+    }
+
+    function renderCompanyCoverageAudit(data) {
+      const companies = data.companies || [];
+      const first = companies[0] || {};
+      $("companyIntelCoverageScore").textContent = pct(first.coverage_score || data.average_coverage_score || 0);
+      $("companyIntelCoverageMissing").textContent = `${(first.missing_sections || []).length || Object.values(data.missing_counts || {}).reduce((sum, value) => sum + Number(value || 0), 0)}`;
+      $("companyIntelCoverageRows").innerHTML = rows(companies, "暂无覆盖率审计结果", (item) => {
+        const counts = item.counts || {};
+        const countLine = [
+          `证券 ${counts.securities || 0}`,
+          `事件 ${counts.company_events || 0}`,
+          `关系 ${counts.company_relationships || 0}`,
+          `研报 ${counts.research_reports || 0}`,
+          `反馈 ${counts.simulation_feedback || 0}`
+        ].join(" · ");
+        return `<tr><td>${compactId(item.issuer_id)}${metaLine("名称", item.display_name || "")}</td><td>${pct(item.coverage_score || 0)} · ${statusLabel(item.coverage_level || "")}</td><td>${(item.missing_sections || []).map(statusLabel).join(" ") || "-"}</td><td>${countLine}</td></tr>`;
+      });
+      $("companyIntelOperationBox").textContent = userPretty({
+        status: data.status,
+        issuer_count: data.issuer_count,
+        average_coverage_score: data.average_coverage_score,
+        missing_counts: data.missing_counts,
+        usage_boundary: data.usage_boundary,
+        companies: companies.slice(0, 10)
+      });
+    }
+
+    async function auditCompanyCoverage() {
+      try {
+        $("companyIntelBatchBuildStatus").textContent = "审计中";
+        const { data, trace_id } = await api("/api/company-database/coverage/audit", {
+          method: "POST",
+          role: "analyst",
+          body: companyIntelScopedPayload(Number(formValue("companyIntelBuildLimit", "20")) || 20)
+        });
+        renderCompanyCoverageAudit(data);
+        $("companyIntelBatchBuildStatus").textContent = "审计完成";
+        setStatus(`公司数据库覆盖审计完成 · ${data.issuer_count || 0} 家 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelBatchBuildStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    function renderCompanyBatchBuild(data) {
+      $("companyIntelBatchBuildStatus").textContent = data.execute ? "已执行" : "预览";
+      if (data.coverage_after) renderCompanyCoverageAudit(data.coverage_after);
+      $("companyIntelOperationBox").textContent = userPretty({
+        status: data.status,
+        execute: data.execute,
+        issuer_count: data.issuer_count,
+        batch_count: data.batch_count,
+        batch_size: data.batch_size,
+        totals: data.totals,
+        coverage_after: data.coverage_after ? {
+          issuer_count: data.coverage_after.issuer_count,
+          average_coverage_score: data.coverage_after.average_coverage_score,
+          missing_counts: data.coverage_after.missing_counts
+        } : {},
+        usage_boundary: data.usage_boundary
+      });
+    }
+
+    async function buildCompanyDatabaseBatch(execute = false) {
+      try {
+        $("companyIntelBatchBuildStatus").textContent = execute ? "执行中" : "预览中";
+        const { data, trace_id } = await api("/api/company-database/batch/build", {
+          method: "POST",
+          role: "data_engineer",
+          body: companyIntelBuildPayload(execute)
+        });
+        renderCompanyBatchBuild(data);
+        if (execute) await loadCompanyIntelligence(false);
+        setStatus(`${execute ? "公司数据库补齐已执行" : "公司数据库补齐预览完成"} · ${data.issuer_count || 0} 家 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelBatchBuildStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    function renderCompanyReportRealization(data) {
+      $("companyIntelRealizationStatus").textContent = data.execute ? "已更新" : "预览";
+      $("companyIntelRealizationUpdated").textContent = `${data.forecast_updated || data.forecast_planned || 0}/${data.viewpoint_updated || data.viewpoint_planned || 0}`;
+      $("companyIntelOperationBox").textContent = userPretty({
+        status: data.status,
+        execute: data.execute,
+        forecast_planned: data.forecast_planned,
+        forecast_updated: data.forecast_updated,
+        forecast_skipped: data.forecast_skipped,
+        viewpoint_planned: data.viewpoint_planned,
+        viewpoint_updated: data.viewpoint_updated,
+        viewpoint_skipped: data.viewpoint_skipped,
+        analyst_scores_recomputed: data.analyst_scores_recomputed,
+        forecasts: (data.forecasts || []).slice(0, 10),
+        viewpoints: (data.viewpoints || []).slice(0, 10),
+        usage_boundary: data.usage_boundary
+      });
+    }
+
+    async function updateCompanyReportRealization(execute = false) {
+      try {
+        $("companyIntelRealizationStatus").textContent = execute ? "更新中" : "预览中";
+        const payload = companyIntelScopedPayload(Number(formValue("companyIntelBuildLimit", "20")) || 20);
+        payload.execute = execute;
+        payload.dry_run = !execute;
+        const { data, trace_id } = await api("/api/research-reports/realization/update", {
+          method: "POST",
+          role: "analyst",
+          body: payload
+        });
+        renderCompanyReportRealization(data);
+        if (execute) await loadCompanyIntelligence(false);
+        setStatus(`${execute ? "研报兑现已更新" : "研报兑现预览完成"} · 预测 ${data.forecast_updated || data.forecast_planned || 0} · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelRealizationStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    function renderCompanyRelationshipReview(data) {
+      const relationships = data.relationships?.company_relationships || [];
+      const candidates = relationships.filter((item) => {
+        const type = String(item.relationship_type || "");
+        const status = String(item.review_status || "");
+        const candidateStatus = String(item.metadata?.candidate_status || "");
+        return type.endsWith("_candidate") || status === "needs_review" || candidateStatus === "candidate";
+      }).slice(0, 20);
+      $("companyIntelRelationshipReviewRows").innerHTML = rows(candidates, "暂无待审核关系候选", (item) => {
+        const objectName = item.metadata?.entity_name || item.object_id || "";
+        const actions = [
+          `<button data-action="review-company-relationship" data-review-action="approve" data-relationship-id="${item.relationship_id}">通过</button>`,
+          `<button data-action="review-company-relationship" data-review-action="reject" data-relationship-id="${item.relationship_id}">拒绝</button>`,
+          `<button data-action="review-company-relationship" data-review-action="merge" data-relationship-id="${item.relationship_id}">合并</button>`
+        ].join(" ");
+        return `<tr><td>${compactId(item.relationship_id)}${metaLine("类型", statusLabel(item.relationship_type || ""))}</td><td>${String(objectName).slice(0, 120)}${metaLine("证据", `${(item.evidence_ids || []).length}`)}</td><td>${statusLabel(item.review_status || "")}${metaLine("置信", formatScore(item.confidence || 0))}</td><td>${actions}</td></tr>`;
+      });
+    }
+
+    async function reviewCompanyRelationship(relationshipId, action) {
+      if (!relationshipId) return;
+      const payload = { action };
+      if (action === "merge") {
+        const target = formValue("companyIntelRelationshipMergeTarget", "").trim();
+        if (!target) {
+          setStatus("请先填写合并目标关系 ID。", true);
+          return;
+        }
+        payload.target_relationship_id = target;
+      }
+      const { data, trace_id } = await api(`/api/company-relationships/${encodeURIComponent(relationshipId)}/review`, {
+        method: "POST",
+        role: "analyst",
+        body: payload
+      });
+      setStatus(`关系候选已${action === "approve" ? "通过" : action === "reject" ? "拒绝" : "合并"} · ${compactId(data.relationship_id)} · ${trace_id}`);
+      await loadCompanyIntelligence(false);
+    }
+
     function renderCompanyIntelligence(data) {
       latestCompanyIntelligence = data;
       const counts = data.section_counts || {};
@@ -4738,6 +4971,7 @@
         ...(data.next_actions || []).map((item) => ({ type: "下一步", id: item.action, status: "todo", detail: `${item.label || ""} · ${item.reason || ""}` }))
       ];
       $("companyIntelActionRows").innerHTML = rows(actionRows, "暂无模拟反馈或后续动作。", (item) => `<tr><td>${item.type}</td><td>${compactId(item.id)}</td><td>${statusLabel(item.status)}</td><td>${String(item.detail || "").slice(0, 180)}</td></tr>`);
+      renderCompanyRelationshipReview(data);
       $("companyIntelRawBox").textContent = userPretty({
         symbol: data.symbol,
         resolution: data.resolution,
@@ -4939,10 +5173,15 @@
           const latestId = listed.data.proposals?.[0]?.proposal_id || "";
           if (latestId) return latestId;
           try {
+            setValue("mdSecurityId", "security_demo_us");
             const created = await createDemoPortfolioProposal();
             return created.proposal_id;
           } catch (creationError) {
-            await api("/api/demo/full-flow", { method: "POST", role: "platform" });
+            try {
+              await api("/api/demo/full-flow", { method: "POST", role: "platform" });
+            } catch (demoError) {
+              if (!String(demoError.message || "").includes("already exists")) throw demoError;
+            }
             setValue("mdSecurityId", "security_demo_us");
             const created = await createDemoPortfolioProposal();
             return created.proposal_id;
@@ -5376,6 +5615,8 @@
           setValue("hotspotChainId", target.dataset.chainId || "");
           openTab("search");
           await runHotspotExpansion();
+        } else if (action === "review-company-relationship") {
+          await reviewCompanyRelationship(target.dataset.relationshipId, target.dataset.reviewAction || "approve");
         } else if (action === "open-ingestion") {
           openTab("ingestion");
           setStatus("已切到数据中台");
@@ -5445,6 +5686,11 @@
       buildChokepointPrompt(false);
     });
     $("loadCompanyIntelligence").addEventListener("click", () => loadCompanyIntelligence(true));
+    $("auditCompanyCoverage").addEventListener("click", auditCompanyCoverage);
+    $("previewCompanyBatchBuild").addEventListener("click", () => buildCompanyDatabaseBatch(false));
+    $("runCompanyBatchBuild").addEventListener("click", () => buildCompanyDatabaseBatch(true));
+    $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));
+    $("runCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(true));
     $("previewCompanyReportStructure").addEventListener("click", () => structureCompanyReports(false));
     $("runCompanyReportStructure").addEventListener("click", () => structureCompanyReports(true));
     $("companyIntelSymbol").addEventListener("keydown", (event) => {

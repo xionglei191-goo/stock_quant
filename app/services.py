@@ -20695,6 +20695,276 @@ class SystemService:
             "compatibility_inputs": ["Issuer", "Security", "MarketDataPoint", "ResearchReportAsset", "DisclosureEvent", "CompanyPosition"],
         }
 
+    def company_database_coverage_audit(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        limit = self._bounded_limit(payload.get("limit", 100), 5000)
+        issuers = self._company_database_target_issuers(payload, limit=limit)
+        rows = [self._company_database_coverage_row(issuer) for issuer in issuers]
+        required_sections = [
+            "company_profile",
+            "security",
+            "market_data",
+            "financial_snapshot",
+            "documents",
+            "disclosure_events",
+            "company_events",
+            "company_relationships",
+            "research_reports",
+            "structured_viewpoints",
+            "observation_items",
+            "analysis_conclusions",
+            "simulation_feedback",
+        ]
+        missing_counts = {
+            section: sum(1 for row in rows if section in row["missing_sections"])
+            for section in required_sections
+        }
+        rows.sort(key=lambda item: (item["coverage_score"], item["issuer_id"]))
+        average_score = round(sum(row["coverage_score"] for row in rows) / len(rows), 4) if rows else 0.0
+        self._audit(
+            actor,
+            "company_database_coverage_audit",
+            "company_database",
+            "coverage",
+            approval_state=f"issuers={len(rows)};average={average_score}",
+        )
+        return {
+            "status": "ready",
+            "issuer_count": len(rows),
+            "average_coverage_score": average_score,
+            "missing_counts": missing_counts,
+            "required_sections": required_sections,
+            "companies": rows,
+            "usage_boundary": "company_database_coverage_audit_uses_local_records_only_no_live_trading",
+        }
+
+    def _company_database_coverage_row(self, issuer: Issuer) -> dict[str, Any]:
+        securities = [item for item in self.store.securities.values() if item.issuer_id == issuer.issuer_id]
+        security_ids = {security.security_id for security in securities}
+        has_market_data = any(self._latest_market_point_for_security(security.security_id) is not None for security in securities)
+        documents = [
+            document
+            for document in self.store.documents.values()
+            if document.issuer_id == issuer.issuer_id or document.security_id in security_ids
+        ]
+        disclosure_events = [
+            event
+            for event in self.store.disclosure_events.values()
+            if event.issuer_id == issuer.issuer_id or event.security_id in security_ids
+        ]
+        company_events = [
+            event
+            for event in self.store.company_events.values()
+            if event.issuer_id == issuer.issuer_id or event.security_id in security_ids
+        ]
+        relationships = [
+            relationship
+            for relationship in self.store.company_relationships.values()
+            if relationship.issuer_id == issuer.issuer_id
+            or relationship.security_id in security_ids
+            or relationship.subject_id == issuer.issuer_id
+            or relationship.object_id == issuer.issuer_id
+        ]
+        reports = [
+            report
+            for report in self.store.research_reports.values()
+            if report.issuer_id == issuer.issuer_id or report.security_id in security_ids
+        ]
+        structured_reports = [
+            report
+            for report in self.store.structured_research_reports.values()
+            if report.issuer_id == issuer.issuer_id or report.security_id in security_ids
+        ]
+        structured_report_ids = {report.research_report_id for report in structured_reports}
+        viewpoints = [
+            viewpoint
+            for viewpoint in self.store.report_viewpoints.values()
+            if viewpoint.issuer_id == issuer.issuer_id
+            or viewpoint.security_id in security_ids
+            or viewpoint.research_report_id in structured_report_ids
+        ]
+        observations = [
+            item
+            for item in self.store.observation_items.values()
+            if item.issuer_id == issuer.issuer_id or item.security_id in security_ids
+        ]
+        conclusions = [
+            item
+            for item in self.store.analysis_conclusions.values()
+            if item.issuer_id == issuer.issuer_id or item.security_id in security_ids
+        ]
+        feedback = [
+            item
+            for item in self.store.simulation_feedback.values()
+            if item.issuer_id == issuer.issuer_id or item.security_id in security_ids
+        ]
+        section_available = {
+            "company_profile": issuer.issuer_id in self.store.company_profiles,
+            "security": bool(securities),
+            "market_data": has_market_data,
+            "financial_snapshot": bool(issuer.fundamentals),
+            "documents": bool(documents),
+            "disclosure_events": bool(disclosure_events),
+            "company_events": bool(company_events),
+            "company_relationships": bool(relationships),
+            "research_reports": bool(reports),
+            "structured_viewpoints": bool(viewpoints),
+            "observation_items": bool(observations),
+            "analysis_conclusions": bool(conclusions),
+            "simulation_feedback": bool(feedback),
+        }
+        missing = [section for section, available in section_available.items() if not available]
+        score = round(sum(1 for available in section_available.values() if available) / len(section_available), 4)
+        return {
+            "issuer_id": issuer.issuer_id,
+            "display_name": issuer.legal_name,
+            "coverage_score": score,
+            "coverage_level": "complete" if score >= 0.9 else ("partial" if score >= 0.5 else "sparse"),
+            "missing_sections": missing,
+            "section_available": section_available,
+            "counts": {
+                "securities": len(securities),
+                "documents": len(documents),
+                "disclosure_events": len(disclosure_events),
+                "company_events": len(company_events),
+                "company_relationships": len(relationships),
+                "research_reports": len(reports),
+                "structured_research_reports": len(structured_reports),
+                "report_viewpoints": len(viewpoints),
+                "observation_items": len(observations),
+                "analysis_conclusions": len(conclusions),
+                "simulation_feedback": len(feedback),
+            },
+        }
+
+    def build_company_database_batch(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        limit = self._bounded_limit(payload.get("limit", 100), 5000)
+        batch_size = self._bounded_limit(payload.get("batch_size", 20), 500)
+        report_match_limit = self._bounded_limit(payload.get("report_match_limit", 100), 2000)
+        structure_reports = self._truthy(payload.get("structure_reports", False))
+        structure_report_limit = self._bounded_limit(payload.get("structure_report_limit", 20), 500)
+        build_events = self._truthy(payload.get("build_events", True))
+        build_relationships = self._truthy(payload.get("build_relationships", True))
+        build_workflow = self._truthy(payload.get("build_workflow", True))
+        issuers = self._company_database_target_issuers(payload, limit=limit)
+        batches: list[dict[str, Any]] = []
+        totals = {
+            "profiles_saved": 0,
+            "profiles_planned": 0,
+            "research_reports_matched": 0,
+            "research_reports_bound": 0,
+            "events_created": 0,
+            "events_planned": 0,
+            "relationships_created": 0,
+            "relationships_planned": 0,
+            "observations_created": 0,
+            "observations_planned": 0,
+            "conclusions_created": 0,
+            "conclusions_planned": 0,
+            "feedback_created": 0,
+            "feedback_planned": 0,
+        }
+        for index in range(0, len(issuers), batch_size):
+            batch_issuers = issuers[index : index + batch_size]
+            batch_issuer_ids = [issuer.issuer_id for issuer in batch_issuers]
+            database_result = self.build_company_database(
+                {
+                    "issuer_ids": batch_issuer_ids,
+                    "limit": len(batch_issuer_ids),
+                    "report_match_limit": report_match_limit,
+                    "structure_reports": structure_reports,
+                    "structure_report_limit": structure_report_limit,
+                    "execute": execute,
+                    "dry_run": dry_run,
+                },
+                actor=actor,
+            )
+            events_result: dict[str, Any] = {}
+            if build_events:
+                events_result = self.build_company_events(
+                    {
+                        "issuer_ids": batch_issuer_ids,
+                        "limit": len(batch_issuer_ids),
+                        "event_limit": payload.get("event_limit", 100),
+                        "execute": execute,
+                        "dry_run": dry_run,
+                    },
+                    actor=actor,
+                )
+            relationships_result: dict[str, Any] = {}
+            if build_relationships:
+                relationships_result = self.build_company_relationships(
+                    {
+                        "issuer_ids": batch_issuer_ids,
+                        "limit": len(batch_issuer_ids),
+                        "relationship_limit": payload.get("relationship_limit", 100),
+                        "execute": execute,
+                        "dry_run": dry_run,
+                    },
+                    actor=actor,
+                )
+            workflow_result: dict[str, Any] = {}
+            if build_workflow:
+                workflow_result = self.build_company_workflow(
+                    {
+                        "issuer_ids": batch_issuer_ids,
+                        "limit": len(batch_issuer_ids),
+                        "link_limit": payload.get("workflow_link_limit", 5),
+                        "execute": execute,
+                        "dry_run": dry_run,
+                    },
+                    actor=actor,
+                )
+            totals["profiles_saved"] += int(database_result.get("profiles_saved", 0))
+            totals["profiles_planned"] += int(database_result.get("profiles_planned", 0))
+            totals["research_reports_matched"] += int(database_result.get("research_reports_matched", 0))
+            totals["research_reports_bound"] += int(database_result.get("research_reports_bound", 0))
+            totals["events_created"] += int(events_result.get("events_created", 0) or 0)
+            totals["events_planned"] += int(events_result.get("events_planned", 0) or 0)
+            totals["relationships_created"] += int(relationships_result.get("relationships_created", 0) or 0)
+            totals["relationships_planned"] += int(relationships_result.get("relationships_planned", 0) or 0)
+            totals["observations_created"] += int(workflow_result.get("observations_created", 0) or 0)
+            totals["observations_planned"] += int(workflow_result.get("observations_planned", 0) or 0)
+            totals["conclusions_created"] += int(workflow_result.get("conclusions_created", 0) or 0)
+            totals["conclusions_planned"] += int(workflow_result.get("conclusions_planned", 0) or 0)
+            totals["feedback_created"] += int(workflow_result.get("feedback_created", 0) or 0)
+            totals["feedback_planned"] += int(workflow_result.get("feedback_planned", 0) or 0)
+            batches.append(
+                {
+                    "batch_index": len(batches) + 1,
+                    "issuer_ids": batch_issuer_ids,
+                    "database_result": database_result,
+                    "events_result": events_result,
+                    "relationships_result": relationships_result,
+                    "workflow_result": workflow_result,
+                }
+            )
+        coverage = self.company_database_coverage_audit({"issuer_ids": [issuer.issuer_id for issuer in issuers], "limit": len(issuers)}, actor=actor) if issuers else {}
+        self._audit(
+            actor,
+            "build_company_database_batch",
+            "company_database",
+            "batch",
+            approval_state=f"execute={execute};issuers={len(issuers)};batches={len(batches)}",
+        )
+        return {
+            "status": "executed" if execute else "dry_run",
+            "execute": execute,
+            "dry_run": dry_run,
+            "issuer_count": len(issuers),
+            "batch_count": len(batches),
+            "batch_size": batch_size,
+            "totals": totals,
+            "coverage_after": coverage,
+            "batches": batches,
+            "usage_boundary": "company_database_batch_build_uses_local_records_only_no_live_trading",
+        }
+
     def build_company_database(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
         execute = self._truthy(payload.get("execute", False))
@@ -21778,6 +22048,68 @@ class SystemService:
         limit = self._bounded_limit(filters.get("limit", 50), 500)
         return {"count": len(rows), "relationships": [to_plain(item) for item in rows[:limit]]}
 
+    def review_company_relationship(self, relationship_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> CompanyRelationship:
+        relationship = self.store.company_relationships.get(str(relationship_id))
+        if relationship is None:
+            raise NotFoundError(f"company relationship {relationship_id} not found")
+        action = str(payload.get("action", payload.get("review_action", "approve"))).strip().lower()
+        if action not in {"approve", "reject", "merge"}:
+            raise ValidationError("relationship review action must be approve, reject, or merge")
+        now = utcnow()
+        review_record = {
+            "action": action,
+            "reviewed_by": str(payload.get("reviewed_by", actor)),
+            "reviewed_at": now.isoformat(),
+            "reason": str(payload.get("reason", "")),
+            "confidence_before": relationship.confidence,
+        }
+        relationship.metadata.setdefault("review_history", [])
+        if isinstance(relationship.metadata["review_history"], list):
+            relationship.metadata["review_history"].append(dict(review_record))
+        if action == "approve":
+            relationship.review_status = "approved"
+            relationship.relationship_status = "active"
+            relationship.confidence = max(float(relationship.confidence), float(payload.get("confidence", 0.8) or 0.8))
+            relationship.metadata["candidate_status"] = "approved"
+            relationship.metadata["verified_by"] = review_record["reviewed_by"]
+            relationship.metadata["verified_at"] = review_record["reviewed_at"]
+        elif action == "reject":
+            relationship.review_status = "rejected"
+            relationship.relationship_status = "inactive"
+            relationship.metadata["candidate_status"] = "rejected"
+            relationship.metadata["rejected_by"] = review_record["reviewed_by"]
+            relationship.metadata["rejected_at"] = review_record["reviewed_at"]
+        else:
+            target_id = str(payload.get("target_relationship_id", "")).strip()
+            if not target_id:
+                raise ValidationError("merge review requires target_relationship_id")
+            target = self.store.company_relationships.get(target_id)
+            if target is None:
+                raise NotFoundError(f"target company relationship {target_id} not found")
+            relationship.review_status = "merged"
+            relationship.relationship_status = "inactive"
+            relationship.metadata["candidate_status"] = "merged"
+            relationship.metadata["merged_into"] = target_id
+            target.metadata.setdefault("merged_from", [])
+            if isinstance(target.metadata["merged_from"], list) and relationship.relationship_id not in target.metadata["merged_from"]:
+                target.metadata["merged_from"].append(relationship.relationship_id)
+            target.evidence_ids = list(dict.fromkeys([*target.evidence_ids, *relationship.evidence_ids]))
+            target.document_ids = list(dict.fromkeys([*target.document_ids, *relationship.document_ids]))
+            target.source_ids = list(dict.fromkeys([*target.source_ids, *relationship.source_ids]))
+            target.review_status = target.review_status if target.review_status == "approved" else "needs_review"
+        self._audit(
+            actor,
+            "review_company_relationship",
+            "company_relationship",
+            relationship.relationship_id,
+            approval_state=f"{action}:{relationship.review_status}",
+        )
+        marker = getattr(self.store, "mark_dirty_for_resource", None)
+        if callable(marker):
+            marker("company_relationship")
+        self.store.commit()
+        return relationship
+
     def _stable_research_child_id(self, prefix: str, *parts: str) -> str:
         raw = "_".join(str(part) for part in parts if str(part).strip())
         safe = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_").lower()
@@ -22101,6 +22433,159 @@ class SystemService:
             "metadata_only_count": metadata_only_count,
             "usage_boundary": "research_reports_are_viewpoint_signal_only_not_fact_source_or_training_data",
             "reports": rows,
+        }
+
+    def update_research_report_realization(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        limit = self._bounded_limit(payload.get("limit", 500), 5000)
+        recompute_analyst_scores = self._truthy(payload.get("recompute_analyst_scores", True))
+        issuer_ids = set()
+        raw_issuer_ids = payload.get("issuer_ids", [])
+        if isinstance(raw_issuer_ids, str):
+            raw_issuer_ids = [raw_issuer_ids]
+        if isinstance(raw_issuer_ids, list):
+            issuer_ids.update(str(item).strip() for item in raw_issuer_ids if str(item).strip())
+        has_company_filter = bool(
+            issuer_ids
+            or payload.get("symbols")
+            or str(payload.get("symbol", "")).strip()
+            or str(payload.get("ticker", "")).strip()
+            or str(payload.get("q", "")).strip()
+        )
+        if not issuer_ids and has_company_filter:
+            issuer_ids.update(issuer.issuer_id for issuer in self._company_database_target_issuers(payload, limit=limit))
+        security_ids = {security.security_id for security in self.store.securities.values() if security.issuer_id in issuer_ids} if issuer_ids else set()
+        forecast_rows = list(self.store.report_forecasts.values())
+        viewpoint_rows = list(self.store.report_viewpoints.values())
+        if issuer_ids:
+            forecast_rows = [item for item in forecast_rows if item.issuer_id in issuer_ids or item.security_id in security_ids]
+            viewpoint_rows = [item for item in viewpoint_rows if item.issuer_id in issuer_ids or item.security_id in security_ids]
+        forecast_rows = [item for item in forecast_rows if item.forecast_type == "target_price" and item.forecast_value > 0][:limit]
+        viewpoint_rows = [item for item in viewpoint_rows if item.target_price > 0][:limit]
+        updated_forecasts = 0
+        planned_forecasts = 0
+        skipped_forecasts = 0
+        updated_viewpoints = 0
+        planned_viewpoints = 0
+        skipped_viewpoints = 0
+        analyst_ids: set[str] = set()
+        forecast_results: list[dict[str, Any]] = []
+        for forecast in forecast_rows:
+            latest = self._latest_market_point_for_security(forecast.security_id)
+            if latest is None:
+                skipped_forecasts += 1
+                forecast_results.append({"forecast_id": forecast.forecast_id, "status": "skipped_no_market_data"})
+                continue
+            actual = float(latest.close or 0.0)
+            error_abs = actual - float(forecast.forecast_value)
+            error_pct = error_abs / float(forecast.forecast_value) if forecast.forecast_value else 0.0
+            realization_status = "realized" if actual >= float(forecast.forecast_value) else "missed"
+            if execute:
+                forecast.actual_value = actual
+                forecast.actual_source_id = latest.source_id
+                forecast.actual_evidence_ids = []
+                forecast.error_abs = round(error_abs, 6)
+                forecast.error_pct = round(error_pct, 6)
+                forecast.realization_status = realization_status
+                forecast.checked_at = utcnow()
+                updated_forecasts += 1
+                structured = self.store.structured_research_reports.get(forecast.research_report_id)
+                if structured:
+                    analyst_ids.update(structured.analyst_ids)
+            else:
+                planned_forecasts += 1
+            forecast_results.append(
+                {
+                    "forecast_id": forecast.forecast_id,
+                    "research_report_id": forecast.research_report_id,
+                    "issuer_id": forecast.issuer_id,
+                    "security_id": forecast.security_id,
+                    "forecast_value": forecast.forecast_value,
+                    "actual_value": actual,
+                    "latest_date": latest.as_of_date,
+                    "error_pct": round(error_pct, 6),
+                    "realization_status": realization_status,
+                    "status": "updated" if execute else "planned",
+                }
+            )
+        viewpoint_results: list[dict[str, Any]] = []
+        for viewpoint in viewpoint_rows:
+            latest = self._latest_market_point_for_security(viewpoint.security_id)
+            if latest is None:
+                skipped_viewpoints += 1
+                viewpoint_results.append({"viewpoint_id": viewpoint.viewpoint_id, "status": "skipped_no_market_data"})
+                continue
+            actual = float(latest.close or 0.0)
+            realization_status = "realized" if actual >= float(viewpoint.target_price) else "missed"
+            if execute:
+                viewpoint.realization_status = realization_status
+                viewpoint.realization_checked_at = utcnow()
+                viewpoint.notes = (viewpoint.notes + "\n" if viewpoint.notes else "") + f"Realization checked against latest close {actual:g} on {latest.as_of_date}."
+                updated_viewpoints += 1
+                structured = self.store.structured_research_reports.get(viewpoint.research_report_id)
+                if structured:
+                    analyst_ids.update(structured.analyst_ids)
+            else:
+                planned_viewpoints += 1
+            viewpoint_results.append(
+                {
+                    "viewpoint_id": viewpoint.viewpoint_id,
+                    "research_report_id": viewpoint.research_report_id,
+                    "issuer_id": viewpoint.issuer_id,
+                    "security_id": viewpoint.security_id,
+                    "target_price": viewpoint.target_price,
+                    "actual_value": actual,
+                    "latest_date": latest.as_of_date,
+                    "realization_status": realization_status,
+                    "status": "updated" if execute else "planned",
+                }
+            )
+        analyst_scores: list[dict[str, Any]] = []
+        if execute and recompute_analyst_scores:
+            for analyst_id in sorted(analyst_ids):
+                score = self.compute_analyst_reliability_score(
+                    {
+                        "analyst_id": analyst_id,
+                        "issuer_id": next((issuer_id for issuer_id in issuer_ids), ""),
+                        "period": "latest",
+                        "notes": "Auto recomputed after research report realization update.",
+                    },
+                    actor=actor,
+                )
+                analyst_scores.append(to_plain(score))
+        self._audit(
+            actor,
+            "update_research_report_realization",
+            "research_report",
+            "batch",
+            approval_state=f"execute={execute};forecasts={updated_forecasts};viewpoints={updated_viewpoints}",
+        )
+        if execute and (updated_forecasts or updated_viewpoints):
+            marker = getattr(self.store, "mark_dirty_for_resource", None)
+            if callable(marker):
+                marker("report_forecast")
+                marker("report_viewpoint")
+                marker("analyst_reliability_score")
+            self.store.commit()
+        return {
+            "status": "executed" if execute else "dry_run",
+            "execute": execute,
+            "dry_run": dry_run,
+            "forecast_planned": planned_forecasts,
+            "forecast_updated": updated_forecasts,
+            "forecast_skipped": skipped_forecasts,
+            "viewpoint_planned": planned_viewpoints,
+            "viewpoint_updated": updated_viewpoints,
+            "viewpoint_skipped": skipped_viewpoints,
+            "analyst_scores_recomputed": len(analyst_scores),
+            "forecasts": forecast_results,
+            "viewpoints": viewpoint_results,
+            "analyst_scores": analyst_scores,
+            "usage_boundary": "research_report_realization_uses_local_market_data_only_opinion_layer_not_fact_source_or_trading_signal",
         }
 
     def register_structured_research_report(self, payload: Mapping[str, Any], *, actor: str = "system") -> ResearchReport:

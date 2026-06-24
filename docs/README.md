@@ -6,7 +6,7 @@
 - [product-requirements-document.md](./product-requirements-document.md): 公司情报平台 PRD，定义产品定位、目标用户、主流程、研报边界和成功指标
 - [system-architecture.md](./system-architecture.md): 公司情报平台目标架构，主线为数据、实体、事件、关系、观点和反馈
 - [data-structure-design.md](./data-structure-design.md): 公司画像、事件、关系、研报观点、观察任务、分析结论和模拟反馈数据结构
-- [../tasks/todo.md](../tasks/todo.md): 执行待办清单；T-431 至 T-443 记录公司情报平台重定位、公司数据库构建、最小反馈闭环、事实事件层、关系候选抽取和模拟反馈表现更新
+- [../tasks/todo.md](../tasks/todo.md): 执行待办清单；T-431 至 T-448 记录公司情报平台重定位、公司数据库构建、事实事件层、关系候选抽取与审核、覆盖率审计、批量补库、模拟反馈表现更新、研报兑现复盘和工作台操作面板
 
 ## 研报、观点和数据边界
 

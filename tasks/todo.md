@@ -153,6 +153,48 @@
   - 验收：单测覆盖 dry-run 不落库、execute 后同时生成上市证券关系、研报机构覆盖关系、客户候选关系和供应商候选关系，并在 `/api/company-intelligence/{symbol}` 中体现关系图谱可用性。
   - 后续增强：补更强的中文/英文实体抽取、同义归并、主体映射、人工审核工作流和来源质量评分，再将复核通过的候选关系提升为事实关系。
 
+- `DONE` T-444 关系候选审核与提升入口
+  - 对应：E3-US1, E5-US1, E7-US3；愿景扩展/生产化增强
+  - 背景：T-443 已能抽取公开披露关系候选，但候选关系需要人工审核后才能进入可信图谱。
+  - **已完成（本轮）**：新增 `POST /api/company-relationships/{relationship_id}/review`，支持 `approve`、`reject`、`merge`。
+  - **已完成（本轮）**：`approve` 会将关系提升为 `review_status=approved`、`relationship_status=active` 并提高置信度；`reject` 会置为 `inactive`；`merge` 会把 evidence/document/source 回链合并到目标关系。
+  - 验收：单测覆盖 approve、reject、merge 三条路径，审核历史写入 metadata，合并关系保留证据回链。
+  - 后续增强：增加 UI 审核队列、批量审核、审核角色权限和候选实体归并。
+
+- `DONE` T-445 公司数据库覆盖率审计
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：样本公司已具备最小闭环，但系统仍需要按公司输出缺失层，指导批量补齐。
+  - **已完成（本轮）**：新增 `GET|POST /api/company-database/coverage/audit`，按公司统计画像、证券、行情、财务、文档、披露事件、公司事件、关系、研报、结构化观点、观察任务、分析结论和模拟反馈覆盖情况。
+  - **已完成（本轮）**：返回 `coverage_score`、`coverage_level`、`missing_sections`、各 section 可用性和全局 `missing_counts`。
+  - 验收：单测覆盖按股票代码审计，能识别已有画像/行情/证券和缺失财务等 section。
+  - 后续增强：输出版本化 coverage artifact、按市场/行业聚合和覆盖率趋势。
+
+- `DONE` T-446 批量公司数据库构建任务
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-437 到 T-440 已有单批构建能力，但还需要服务端批量编排来支持观察池或市场范围补齐。
+  - **已完成（本轮）**：新增 `POST /api/company-database/batch/build`，按 `batch_size` 对目标公司分批调用画像/研报绑定、事件、关系、workflow 构建。
+  - **已完成（本轮）**：支持 `dry_run`、`execute`、`structure_reports`、`build_events`、`build_relationships`、`build_workflow`，并返回批次明细、totals 和 `coverage_after`。
+  - 验收：单测覆盖 dry-run 批量构建，能汇总 batch、profiles planned 和 coverage_after。
+  - 后续增强：增加可恢复 run_id、断点续跑、失败重试和 artifact 输出。
+
+- `DONE` T-447 研报兑现与分析师可靠性更新
+  - 对应：E5-US1, E6-US3, E7-US3；愿景扩展/生产化增强
+  - 背景：研报已结构化为观点和预测，但目标价/预测兑现状态还需要跟随本地行情更新，并反哺分析师可靠性。
+  - **已完成（本轮）**：新增 `POST /api/research-reports/realization/update`，用本地最新行情更新 `ReportForecast` 和 `ReportViewpoint` 的目标价兑现状态。
+  - **已完成（本轮）**：更新字段包括 `actual_value`、`actual_source_id`、`error_abs`、`error_pct`、`realization_status`、`checked_at` 和观点 `realization_checked_at`。
+  - **已完成（本轮）**：执行模式下可自动调用 `compute_analyst_reliability_score` 重算相关分析师可靠性评分。
+  - 验收：单测覆盖 dry-run 不落库、execute 后目标价 forecast/viewpoint 标记为 realized，并生成分析师可靠性评分。
+  - 后续增强：加入目标价期限、评级方向准确率、盈利预测 actuals、相对基准收益和人工复盘解释。
+
+- `DONE` T-448 公司情报工作台操作面板
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-444 至 T-447 已补齐关系审核、覆盖率审计、批量补库和研报兑现后端入口，但 `/ui` 公司情报页仍缺少可见操作入口。
+  - **已完成（本轮）**：公司情报工作台新增“公司数据库补齐”面板，可执行覆盖率审计、批量补齐 dry-run/execute 和研报兑现 dry-run/execute。
+  - **已完成（本轮）**：新增“关系候选审核”面板，展示当前公司待复核关系候选，并支持 `approve`、`reject` 和带目标 ID 的 `merge`。
+  - **已完成（本轮）**：`scripts/ui_static_check.py` 覆盖新增控件和函数；`scripts/ui_interaction_acceptance.py` 增加覆盖率审计、批量补齐预览和研报兑现预览浏览器验收路径。
+  - 验收：静态 UI 检查和浏览器验收脚本覆盖新增可见入口；执行路径仍只调用本地公司数据库与观点复盘 API，不连接真实券商。
+  - 后续增强：补批量审核队列、候选关系筛选、补库 run_id 历史和覆盖率趋势图。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

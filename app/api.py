@@ -456,6 +456,7 @@ class ApiRouter:
             ("GET", r"^/api/research-reports/viewpoint-report$", self._research_report_viewpoint_report),
             ("POST", r"^/api/research-reports/viewpoint-report$", self._research_report_viewpoint_report),
             ("POST", r"^/api/research-reports/structure$", self._structure_research_reports),
+            ("POST", r"^/api/research-reports/realization/update$", self._update_research_report_realization),
             ("GET", r"^/api/research-reports$", self._list_research_reports),
             ("POST", r"^/api/research-reports$", self._list_research_reports),
             ("POST", r"^/api/research-reports/(?P<report_id>[^/]+)/ingest$", self._ingest_research_report),
@@ -636,6 +637,9 @@ class ApiRouter:
             ("POST", r"^/api/company-profiles$", self._register_company_profile),
             ("GET", r"^/api/company-profiles/schema$", self._company_profile_schema),
             ("POST", r"^/api/company-database/build$", self._build_company_database),
+            ("POST", r"^/api/company-database/batch/build$", self._build_company_database_batch),
+            ("GET", r"^/api/company-database/coverage/audit$", self._company_database_coverage_audit),
+            ("POST", r"^/api/company-database/coverage/audit$", self._company_database_coverage_audit),
             ("POST", r"^/api/company-database/events/build$", self._build_company_events),
             ("POST", r"^/api/company-database/relationships/build$", self._build_company_relationships),
             ("POST", r"^/api/company-database/workflow/build$", self._build_company_workflow),
@@ -643,6 +647,7 @@ class ApiRouter:
             ("POST", r"^/api/company-events$", self._register_company_event),
             ("GET", r"^/api/company-relationships$", self._list_company_relationships),
             ("POST", r"^/api/company-relationships$", self._register_company_relationship),
+            ("POST", r"^/api/company-relationships/(?P<relationship_id>[^/]+)/review$", self._review_company_relationship),
             ("GET", r"^/api/research-reports/structured$", self._list_structured_research_reports),
             ("POST", r"^/api/research-reports/structured$", self._register_structured_research_report),
             ("GET", r"^/api/research-report-viewpoints$", self._list_report_viewpoints),
@@ -1407,6 +1412,9 @@ class ApiRouter:
     def _structure_research_reports(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.structure_research_reports(body, actor=actor)
 
+    def _update_research_report_realization(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.update_research_report_realization(body, actor=actor)
+
     def _ingest_research_report(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/research-reports/(?P<report_id>[^/]+)/ingest$", path)
         return self.service.ingest_research_report(match["report_id"], body, actor=actor)
@@ -1843,6 +1851,12 @@ class ApiRouter:
     def _build_company_database(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.build_company_database(body, actor=actor)
 
+    def _build_company_database_batch(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.build_company_database_batch(body, actor=actor)
+
+    def _company_database_coverage_audit(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_database_coverage_audit(body, actor=actor)
+
     def _build_company_events(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.build_company_events(body, actor=actor)
 
@@ -1863,6 +1877,10 @@ class ApiRouter:
 
     def _list_company_relationships(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_relationships_payload(body)
+
+    def _review_company_relationship(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/company-relationships/(?P<relationship_id>[^/]+)/review$", path)
+        return to_plain(self.service.review_company_relationship(match["relationship_id"], body, actor=actor))
 
     def _register_structured_research_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.register_structured_research_report(body, actor=actor))

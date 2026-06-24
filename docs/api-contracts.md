@@ -2282,12 +2282,16 @@
 | `/api/company-profiles` | `GET` / `POST` | 查询或登记 `CompanyProfile`，可由 `Issuer`、`Security`、行情、事件、关系和研报覆盖计算画像质量 |
 | `/api/company-profiles/schema` | `GET` | 返回公司画像核心字段、来源优先级和质量指标 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
+| `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
+| `/api/company-database/coverage/audit` | `GET` / `POST` | 按公司审计画像、证券、行情、财务、文档、事件、关系、研报、观察结论和模拟反馈覆盖情况 |
 | `/api/company-database/events/build` | `POST` | 从已入库公开披露、公开行情和研报覆盖生成最小公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
 | `/api/company-database/relationships/build` | `POST` | 从证券上市关系、研报覆盖记录和公开披露文本生成最小公司关系层；研报覆盖关系固定为观点/关注度关系，公开披露抽取关系默认待复核 |
 | `/api/company-database/workflow/build` | `POST` | 从事件、关系和研报观点生成观察任务、公司情报基线结论和 paper-only 模拟反馈；默认 dry-run |
 | `/api/company-events` | `GET` / `POST` | 查询或登记 `CompanyEvent`，覆盖公告、财报、新闻、政策、订单、诉讼、价格、供需等事件 |
 | `/api/company-relationships` | `GET` / `POST` | 查询或登记 `CompanyRelationship`，覆盖客户、供应商、竞争、股权、机构覆盖、分析师覆盖和上下游 |
+| `/api/company-relationships/{relationship_id}/review` | `POST` | 人工审核关系候选，支持 approve、reject、merge，保留审核历史和证据回链 |
 | `/api/research-reports/structure` | `POST` | 把本地研报资产批量结构化为研报、观点、预测和分析师画像，固定观点层边界 |
+| `/api/research-reports/realization/update` | `POST` | 用本地最新行情更新研报目标价预测和观点兑现状态，并可重算分析师可靠性 |
 | `/api/research-reports/structured` | `GET` / `POST` | 查询或登记结构化 `ResearchReport`，字段包含机构、分析师、发布时间、评级、目标价、估值方法和边界 |
 | `/api/research-report-viewpoints` | `GET` / `POST` | 查询或登记 `ReportViewpoint`，记录研报观点、目标价、核心假设、催化剂、风险和兑现状态 |
 | `/api/research-report-forecasts` | `GET` / `POST` | 查询或登记 `ReportForecast`，记录预测值、实际值、误差和兑现状态 |
@@ -2325,6 +2329,53 @@
 - `companies`：每家公司画像覆盖率、缺失字段、证券和样本研报。
 
 研报绑定是启发式结果，`asset_binding.review_status` 默认 `needs_review`；后续事实层仍需公告、财报、监管披露、公司 IR 或其他可信来源回链。
+
+#### `POST /api/company-database/batch/build`
+
+批量编排公司数据库构建链路，用于把观察池、重点股票清单或市场范围内的一批公司分批补齐。该接口默认 dry-run，只使用本地已有数据，不下载外部资料，不连接真实券商。
+
+请求字段：
+
+- `symbols` / `symbol` / `ticker`：可选；目标股票代码列表或单个代码。
+- `issuer_ids`：可选；直接指定公司主体。
+- `limit`：目标公司数量上限，默认 100。
+- `batch_size`：每批公司数量，默认 20。
+- `report_match_limit`：每家公司研报匹配上限，默认 100。
+- `structure_reports`：默认 `false`；为 `true` 时调用研报结构化。
+- `structure_report_limit`：每批结构化研报数量上限，默认 20。
+- `build_events` / `build_relationships` / `build_workflow`：默认 `true`，分别构建事件、关系和观察反馈闭环。
+- `execute`：默认 `false`；为 `true` 时才落库。
+- `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划。
+
+返回字段：
+
+- `status`：`dry_run` 或 `executed`。
+- `issuer_count` / `batch_count` / `batch_size`：目标公司和批次数。
+- `totals`：画像、研报绑定、事件、关系、观察、结论和反馈的计划/创建汇总。
+- `coverage_after`：同一目标范围的覆盖率审计结果。
+- `batches`：每批的 `database_result`、`events_result`、`relationships_result` 和 `workflow_result`。
+
+该接口是本机补库编排入口；未来可在此基础上增加 run_id、断点续跑、失败重试和 artifact 输出。
+
+#### `GET|POST /api/company-database/coverage/audit`
+
+审计公司数据库覆盖率，输出每家公司哪些层已经可用、哪些层仍为空，用于指导下一轮补库和 UI 缺口提示。该接口只读本地记录。
+
+请求字段：
+
+- `symbols` / `symbol` / `ticker`：可选；目标股票代码列表或单个代码。
+- `issuer_ids`：可选；直接指定公司主体。
+- `limit`：目标公司数量上限，默认 100。
+
+返回字段：
+
+- `issuer_count`：纳入审计的公司数量。
+- `average_coverage_score`：覆盖率平均分。
+- `required_sections`：审计的核心层，包括画像、证券、行情、财务、文档、披露事件、公司事件、关系、研报、结构化观点、观察、结论和模拟反馈。
+- `missing_counts`：每个 section 缺失的公司数量。
+- `companies`：逐公司 `coverage_score`、`coverage_level`、`missing_sections`、`section_available` 和对象计数。
+
+覆盖率分数只表示本地数据库完整度，不代表投资价值或事实质量；事实质量仍依赖来源、证据回链和人工复核。
 
 #### `POST /api/company-database/events/build`
 
@@ -2373,6 +2424,26 @@
 - `companies`：每家公司关系数量、上市关系数、机构覆盖关系数、公开披露候选关系数和样本关系 ID。
 
 公开披露候选关系使用 `review_status=needs_review`、`relationship_status=unknown`，并在 metadata 中记录 `candidate_status=candidate`，同时保留 `disclosure_event_id`、`document_ids`、`evidence_ids` 和 `source_ids`。客户、供应商、竞争、股权、上下游和人员关系后续仍需人工复核、来源质量评分和更细粒度抽取，不能从研报观点直接推断为事实。
+
+#### `POST /api/company-relationships/{relationship_id}/review`
+
+审核公开披露抽取出的候选关系。该接口用于把候选关系纳入可信图谱、拒绝误抽取或合并重复关系；不会从研报观点自动提升客户、供应商或竞争关系。
+
+请求字段：
+
+- `action` / `review_action`：必填；`approve`、`reject` 或 `merge`。
+- `reason`：可选；审核说明。
+- `reviewed_by`：可选；默认使用请求 actor。
+- `confidence`：可选；`approve` 时用于提高置信度，默认至少提升到 0.8。
+- `target_relationship_id`：`merge` 必填；目标关系 ID。
+
+行为：
+
+- `approve`：设置 `review_status=approved`、`relationship_status=active`、`metadata.candidate_status=approved`。
+- `reject`：设置 `review_status=rejected`、`relationship_status=inactive`、`metadata.candidate_status=rejected`。
+- `merge`：源关系设置为 `review_status=merged`、`relationship_status=inactive`，并把 evidence/document/source 回链合并到目标关系。
+
+所有审核动作都会在 `metadata.review_history` 中保留审核时间、审核人、动作和理由。
 
 #### `POST /api/company-database/workflow/build`
 
@@ -2423,6 +2494,30 @@
 - `paper_only=true`、`live_execution_allowed=false`：固定边界声明。
 
 若反馈记录没有最新行情或有效 entry price，会被跳过并返回原因。若 entry price 为空但有最新行情，接口只初始化 paper baseline，不生成真实交易行为。
+
+#### `POST /api/research-reports/realization/update`
+
+用本地最新行情更新结构化研报目标价预测和观点兑现状态，并可同步重算相关分析师可靠性评分。研报仍是观点层和关注度信号；兑现更新只是复盘预测质量，不把研报升级为事实源或交易信号。
+
+请求字段：
+
+- `symbols` / `symbol` / `ticker`：可选；按公司或证券筛选。
+- `issuer_ids`：可选；直接指定公司主体。
+- `limit`：预测或观点处理数量上限，默认 500。
+- `recompute_analyst_scores`：默认 `true`；执行模式下重算相关分析师可靠性。
+- `execute`：默认 `false`；为 `true` 时才写入 forecast/viewpoint/score。
+- `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划。
+
+返回字段：
+
+- `forecast_planned` / `forecast_updated` / `forecast_skipped`：目标价预测计划、更新和跳过数量。
+- `viewpoint_planned` / `viewpoint_updated` / `viewpoint_skipped`：观点兑现计划、更新和跳过数量。
+- `analyst_scores_recomputed`：重算的分析师可靠性评分数量。
+- `forecasts`：每条预测的目标价、最新价、误差和兑现状态。
+- `viewpoints`：每条观点的目标价、最新价和兑现状态。
+- `usage_boundary`：固定声明本地行情、观点层、非事实源、非交易信号边界。
+
+当前实现以“最新收盘价是否达到目标价”作为最小兑现判定；后续应补目标价期限、评级方向准确率、盈利预测 actuals、相对基准收益和人工复盘解释。
 
 #### `GET|POST /api/company-intelligence/{symbol}`
 
