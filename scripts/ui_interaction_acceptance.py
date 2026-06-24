@@ -311,6 +311,13 @@ def run_ui_interaction_acceptance(
             ),
             _run_check(
                 client,
+                "company_database_batch_execute_records_run_history",
+                "document.querySelector('#runCompanyBatchBuild').click(); true",
+                "document.querySelector('#companyIntelBatchBuildStatus').textContent.includes('已执行') && document.querySelector('#companyIntelRunHistoryStatus').textContent.trim().length > 0 && document.querySelector('#companyIntelRunHistoryStatus').textContent !== '待载入' && document.querySelector('#companyIntelRunRows').textContent.includes('executed') && document.querySelector('#companyIntelRunRows').textContent.includes('company_database_build_run_is_local_research_operations_history_no_live_trading')",
+                wait_timeout=max(timeout, 30.0),
+            ),
+            _run_check(
+                client,
                 "company_report_realization_preview",
                 "document.querySelector('#previewCompanyReportRealization').click(); true",
                 "document.querySelector('#companyIntelRealizationStatus').textContent.includes('预览') && document.querySelector('#companyIntelOperationBox').textContent.includes('research_report_realization')",

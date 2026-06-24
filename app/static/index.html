@@ -1525,6 +1525,7 @@
               <button id="auditCompanyCoverage">覆盖审计</button>
               <button id="previewCompanyBatchBuild">预览补齐</button>
               <button id="runCompanyBatchBuild" class="primary">执行补齐</button>
+              <button id="loadCompanyBuildRuns">查看运行历史</button>
               <button id="previewCompanyReportRealization">预览兑现</button>
               <button id="runCompanyReportRealization" class="primary">更新兑现</button>
             </div>
@@ -1532,9 +1533,13 @@
               <div class="system-box"><strong>覆盖率</strong><span id="companyIntelCoverageScore">0%</span></div>
               <div class="system-box"><strong>缺失层</strong><span id="companyIntelCoverageMissing">0</span></div>
               <div class="system-box"><strong>补齐状态</strong><span id="companyIntelBatchBuildStatus">待执行</span></div>
+              <div class="system-box"><strong>最近运行</strong><span id="companyIntelRunHistoryStatus">待载入</span></div>
+              <div class="system-box"><strong>运行数</strong><span id="companyIntelRunHistoryCount">0</span></div>
+              <div class="system-box"><strong>覆盖变化</strong><span id="companyIntelRunHistoryDelta">0%</span></div>
               <div class="system-box"><strong>兑现状态</strong><span id="companyIntelRealizationStatus">待检查</span></div>
               <div class="system-box"><strong>兑现更新</strong><span id="companyIntelRealizationUpdated">0/0</span></div>
             </div>
+            <table><thead><tr><th>运行</th><th>目标/批次</th><th>覆盖变化</th><th>汇总</th></tr></thead><tbody id="companyIntelRunRows"></tbody></table>
             <table><thead><tr><th>公司</th><th>覆盖率</th><th>缺失层</th><th>计数</th></tr></thead><tbody id="companyIntelCoverageRows"></tbody></table>
             <pre id="companyIntelOperationBox">载入公司后可审计覆盖率、预览补齐和更新研报兑现。</pre>
           </div>
@@ -4664,8 +4669,8 @@
       const symbol = formValue("companyIntelSymbol", "SPCX").trim();
       const query = formValue("companyIntelReportQuery", "").trim();
       const profile = latestCompanyIntelligence?.company_profile || {};
-      const issuerId = activeEntityIssuerId || profile.issuer?.issuer_id || "";
-      const securityId = activeEntitySecurityId || profile.primary_security?.security_id || "";
+      const issuerId = currentCompanyIntelIssuerId();
+      const securityId = issuerId ? (profile.primary_security?.security_id || "") : "";
       const limit = Math.max(1, Math.min(100, Number(formValue("companyIntelReportLimit", "20")) || 20));
       const payload = {
         limit,
@@ -4917,6 +4922,8 @@
         issuer_count: data.issuer_count,
         batch_count: data.batch_count,
         batch_size: data.batch_size,
+        run_id: data.run_id,
+        run_recorded: data.run_recorded,
         totals: data.totals,
         coverage_after: data.coverage_after ? {
           issuer_count: data.coverage_after.issuer_count,
@@ -4925,6 +4932,70 @@
         } : {},
         usage_boundary: data.usage_boundary
       });
+    }
+
+    function companyBuildRunCoverageScore(summary) {
+      if (!summary) return 0;
+      if (summary.average_coverage_score !== undefined) return Number(summary.average_coverage_score || 0);
+      const first = (summary.companies || [])[0] || {};
+      return Number(first.coverage_score || 0);
+    }
+
+    function companyBuildRunCoverageDelta(run) {
+      return companyBuildRunCoverageScore(run.coverage_after) - companyBuildRunCoverageScore(run.coverage_before);
+    }
+
+    function renderCompanyBuildRunHistory(data, showDetails = false) {
+      const runs = data.runs || [];
+      const latest = runs[0] || {};
+      const latestDelta = latest.run_id ? companyBuildRunCoverageDelta(latest) : 0;
+      $("companyIntelRunHistoryStatus").textContent = runs.length ? statusLabel(latest.status || "") : "无记录";
+      $("companyIntelRunHistoryCount").textContent = `${data.count || runs.length || 0}`;
+      $("companyIntelRunHistoryDelta").textContent = runs.length ? `${latestDelta >= 0 ? "+" : ""}${pct(latestDelta)}` : "0%";
+      $("companyIntelRunRows").innerHTML = rows(runs, "暂无补库运行历史。执行补齐后会记录本地 run。", (run) => {
+        const totals = run.totals || {};
+        const before = companyBuildRunCoverageScore(run.coverage_before);
+        const after = companyBuildRunCoverageScore(run.coverage_after);
+        const delta = after - before;
+        const targetLine = [
+          `${(run.target_issuer_ids || []).length} 家公司`,
+          `${run.batch_count || 0} 批`,
+          `批量 ${run.batch_size || 0}`
+        ].join(" · ");
+        const totalLine = [
+          `画像 ${Number(totals.profiles_saved || totals.profiles_planned || 0)}`,
+          `事件 ${Number(totals.events_created || totals.events_planned || 0)}`,
+          `关系 ${Number(totals.relationships_created || totals.relationships_planned || 0)}`,
+          `反馈 ${Number(totals.feedback_created || totals.feedback_planned || 0)}`
+        ].join(" · ");
+        return `<tr><td>${compactId(run.run_id)}${metaLine("状态", statusLabel(run.status || ""))}${metaLine("时间", String(run.completed_at || run.created_at || "").slice(0, 19))}</td><td>${targetLine}${metaLine("代码", (run.target_symbols || []).slice(0, 4).join(", ") || "-")}</td><td>${pct(before)} -> ${pct(after)}${metaLine("变化", `${delta >= 0 ? "+" : ""}${pct(delta)}`)}</td><td>${totalLine}${metaLine("边界", boundaryLabel(run.usage_boundary || ""))}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          count: data.count,
+          usage_boundary: data.usage_boundary,
+          runs: runs.slice(0, 10)
+        });
+      }
+    }
+
+    async function loadCompanyBuildRuns(showDetails = false) {
+      try {
+        $("companyIntelRunHistoryStatus").textContent = "载入中";
+        const payload = { limit: 10 };
+        const issuerId = currentCompanyIntelIssuerId();
+        if (issuerId) payload.issuer_id = issuerId;
+        const { data, trace_id } = await api("/api/company-database/batch/runs", {
+          method: "POST",
+          role: "analyst",
+          body: payload
+        });
+        renderCompanyBuildRunHistory(data, showDetails);
+        if (showDetails) setStatus(`补库运行历史已载入 · ${data.count || 0} 条 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelRunHistoryStatus").textContent = "错误";
+        if (showDetails) setStatus(error.message, true);
+      }
     }
 
     async function buildCompanyDatabaseBatch(execute = false) {
@@ -4936,6 +5007,7 @@
           body: companyIntelBuildPayload(execute)
         });
         renderCompanyBatchBuild(data);
+        if (execute || data.run_recorded) await loadCompanyBuildRuns(false);
         if (execute) await loadCompanyIntelligence(false);
         setStatus(`${execute ? "公司数据库补齐已执行" : "公司数据库补齐预览完成"} · ${data.issuer_count || 0} 家 · ${trace_id}`);
       } catch (error) {
@@ -5073,6 +5145,7 @@
       ];
       $("companyIntelActionRows").innerHTML = rows(actionRows, "暂无模拟反馈或后续动作。", (item) => `<tr><td>${item.type}</td><td>${compactId(item.id)}</td><td>${statusLabel(item.status)}</td><td>${String(item.detail || "").slice(0, 180)}</td></tr>`);
       renderCompanyRelationshipReview(data);
+      loadCompanyBuildRuns(false);
       $("companyIntelRawBox").textContent = userPretty({
         symbol: data.symbol,
         resolution: data.resolution,
@@ -5792,6 +5865,7 @@
     $("auditCompanyCoverage").addEventListener("click", auditCompanyCoverage);
     $("previewCompanyBatchBuild").addEventListener("click", () => buildCompanyDatabaseBatch(false));
     $("runCompanyBatchBuild").addEventListener("click", () => buildCompanyDatabaseBatch(true));
+    $("loadCompanyBuildRuns").addEventListener("click", () => loadCompanyBuildRuns(true));
     $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));
     $("runCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(true));
     $("previewCompanyReportStructure").addEventListener("click", () => structureCompanyReports(false));

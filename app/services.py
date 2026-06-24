@@ -21057,6 +21057,132 @@ class SystemService:
             "usage_boundary": "company_database_build_runs_are_local_operations_history_no_live_trading",
         }
 
+    def company_database_coverage_trends(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        limit = self._bounded_limit(payload.get("limit", 50), 500)
+        issuer_id = str(payload.get("issuer_id", "")).strip()
+        status = str(payload.get("status", "")).strip()
+        write_artifact = self._truthy(payload.get("write_artifact", payload.get("record_artifact", False)))
+        runs = list(self.store.company_database_build_runs.values())
+        if issuer_id:
+            runs = [run for run in runs if issuer_id in run.target_issuer_ids]
+        if status:
+            runs = [run for run in runs if run.status == status]
+        runs.sort(key=lambda item: (str(to_plain(item.completed_at)), item.run_id), reverse=True)
+        selected = list(reversed(runs[:limit]))
+        rows = [self._company_database_coverage_trend_row(run) for run in selected]
+        latest = rows[-1] if rows else {}
+        first = rows[0] if rows else {}
+        improved_runs = sum(1 for row in rows if float(row["coverage_delta"]) > 0 or int(row["missing_delta"]) < 0)
+        worsened_runs = sum(1 for row in rows if float(row["coverage_delta"]) < 0 or int(row["missing_delta"]) > 0)
+        unchanged_runs = max(0, len(rows) - improved_runs - worsened_runs)
+        summary = {
+            "run_count": len(rows),
+            "latest_run_id": latest.get("run_id", ""),
+            "first_run_id": first.get("run_id", ""),
+            "first_coverage_score": first.get("coverage_before_score", 0.0),
+            "latest_coverage_score": latest.get("coverage_after_score", 0.0),
+            "cumulative_coverage_delta": round(float(latest.get("coverage_after_score", 0.0)) - float(first.get("coverage_before_score", 0.0)), 4) if rows else 0.0,
+            "latest_missing_count": latest.get("missing_after_count", 0),
+            "cumulative_missing_delta": int(latest.get("missing_after_count", 0)) - int(first.get("missing_before_count", 0)) if rows else 0,
+            "improved_runs": improved_runs,
+            "worsened_runs": worsened_runs,
+            "unchanged_runs": unchanged_runs,
+        }
+        artifact: dict[str, Any] = {}
+        result = {
+            "status": "ready",
+            "issuer_id": issuer_id,
+            "run_count": len(rows),
+            "summary": summary,
+            "trend_rows": rows,
+            "artifact": artifact,
+            "generated_at": utcnow(),
+            "usage_boundary": "company_database_coverage_trends_are_local_research_operations_history_no_live_trading",
+        }
+        if write_artifact:
+            artifact_path = Path(str(payload.get("artifact_path") or "artifacts/company-database-coverage-trends.json"))
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact.update(
+                {
+                    "path": str(artifact_path),
+                    "classification": "local-only",
+                    "producer": "SystemService.company_database_coverage_trends",
+                    "contains_sensitive_data": False,
+                    "acceptable_for_non_local_release_gate": False,
+                    "usage_boundary": "local_research_operations_report_not_production_release_evidence",
+                }
+            )
+            artifact_path.write_text(json.dumps(to_plain(result), ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        self._audit(
+            actor,
+            "company_database_coverage_trends",
+            "company_database",
+            "coverage_trends",
+            approval_state=f"runs={len(rows)};artifact={bool(artifact)}",
+        )
+        return result
+
+    def _company_database_coverage_score(self, summary: Mapping[str, Any] | None) -> float:
+        if not summary:
+            return 0.0
+        if summary.get("average_coverage_score") is not None:
+            return round(float(summary.get("average_coverage_score") or 0.0), 4)
+        companies = summary.get("companies", [])
+        if isinstance(companies, list) and companies:
+            return round(sum(float(item.get("coverage_score", 0.0) or 0.0) for item in companies if isinstance(item, Mapping)) / len(companies), 4)
+        return 0.0
+
+    def _company_database_missing_counts(self, summary: Mapping[str, Any] | None) -> dict[str, int]:
+        if not summary:
+            return {}
+        raw_counts = summary.get("missing_counts", {})
+        if isinstance(raw_counts, Mapping):
+            return {str(key): int(value or 0) for key, value in raw_counts.items()}
+        counts: dict[str, int] = {}
+        companies = summary.get("companies", [])
+        if isinstance(companies, list):
+            for company in companies:
+                if not isinstance(company, Mapping):
+                    continue
+                for section in company.get("missing_sections", []) or []:
+                    key = str(section)
+                    counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _company_database_coverage_trend_row(self, run: CompanyDatabaseBuildRun) -> dict[str, Any]:
+        before_score = self._company_database_coverage_score(run.coverage_before)
+        after_score = self._company_database_coverage_score(run.coverage_after)
+        before_missing = self._company_database_missing_counts(run.coverage_before)
+        after_missing = self._company_database_missing_counts(run.coverage_after)
+        sections = sorted(set(before_missing) | set(after_missing))
+        missing_delta_by_section = {section: int(after_missing.get(section, 0)) - int(before_missing.get(section, 0)) for section in sections}
+        missing_before_count = sum(before_missing.values())
+        missing_after_count = sum(after_missing.values())
+        return {
+            "run_id": run.run_id,
+            "actor": run.actor,
+            "status": run.status,
+            "execute": run.execute,
+            "dry_run": run.dry_run,
+            "target_issuer_ids": list(run.target_issuer_ids),
+            "target_symbols": list(run.target_symbols),
+            "batch_count": run.batch_count,
+            "batch_size": run.batch_size,
+            "completed_at": run.completed_at,
+            "coverage_before_score": before_score,
+            "coverage_after_score": after_score,
+            "coverage_delta": round(after_score - before_score, 4),
+            "missing_before_count": missing_before_count,
+            "missing_after_count": missing_after_count,
+            "missing_delta": missing_after_count - missing_before_count,
+            "missing_delta_by_section": missing_delta_by_section,
+            "improved_sections": [section for section, delta in missing_delta_by_section.items() if delta < 0],
+            "worsened_sections": [section for section, delta in missing_delta_by_section.items() if delta > 0],
+            "totals": dict(run.totals),
+            "usage_boundary": run.usage_boundary,
+        }
+
     def build_company_database(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
         execute = self._truthy(payload.get("execute", False))

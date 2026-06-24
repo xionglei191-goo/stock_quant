@@ -883,6 +883,158 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(run.dry_run)
         self.assertEqual(run.totals["profiles_planned"], 1)
 
+    def test_company_database_coverage_trends_report_and_artifact(self) -> None:
+        first = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/build",
+            {
+                "symbols": ["DEMO"],
+                "limit": 1,
+                "batch_size": 1,
+                "build_events": False,
+                "build_relationships": False,
+                "build_workflow": False,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(first.success, first.error)
+        first_run = self.service.store.company_database_build_runs[first.data["run_id"]]
+        first_run.coverage_before = {"average_coverage_score": 0.25, "missing_counts": {"company_events": 1, "research_reports": 1}}
+        first_run.coverage_after = {"average_coverage_score": 0.5, "missing_counts": {"company_events": 0, "research_reports": 1}}
+
+        second = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/build",
+            {
+                "symbols": ["DEMO"],
+                "limit": 1,
+                "batch_size": 1,
+                "build_events": False,
+                "build_relationships": False,
+                "build_workflow": False,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(second.success, second.error)
+        second_run = self.service.store.company_database_build_runs[second.data["run_id"]]
+        second_run.coverage_before = {"average_coverage_score": 0.5, "missing_counts": {"company_events": 0, "research_reports": 1}}
+        second_run.coverage_after = {"average_coverage_score": 0.75, "missing_counts": {"company_events": 0, "research_reports": 0}}
+
+        with TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "coverage-trends.json"
+            trends = self.router.dispatch(
+                "POST",
+                "/api/company-database/coverage/trends",
+                {"issuer_id": "issuer_001", "limit": 10, "write_artifact": True, "artifact_path": str(artifact_path)},
+                actor="data",
+                role="analyst",
+            )
+            self.assertTrue(trends.success, trends.error)
+            self.assertEqual(trends.data["run_count"], 2)
+            self.assertEqual(trends.data["summary"]["improved_runs"], 2)
+            self.assertEqual(trends.data["summary"]["worsened_runs"], 0)
+            self.assertAlmostEqual(trends.data["summary"]["cumulative_coverage_delta"], 0.5)
+            self.assertEqual(trends.data["summary"]["cumulative_missing_delta"], -2)
+            self.assertEqual(trends.data["trend_rows"][0]["missing_delta_by_section"]["company_events"], -1)
+            self.assertEqual(trends.data["trend_rows"][1]["missing_delta_by_section"]["research_reports"], -1)
+            self.assertEqual(trends.data["artifact"]["classification"], "local-only")
+            self.assertFalse(trends.data["artifact"]["acceptable_for_non_local_release_gate"])
+            self.assertTrue(artifact_path.exists())
+            exported = json.loads(artifact_path.read_text(encoding="utf-8"))
+            self.assertEqual(exported["run_count"], 2)
+            self.assertEqual(exported["usage_boundary"], "company_database_coverage_trends_are_local_research_operations_history_no_live_trading")
+
+    def test_company_database_coverage_trends_filters_by_issuer_and_status(self) -> None:
+        self.service.register_issuer(
+            {
+                "issuer_id": "issuer_002",
+                "legal_name": "Other Corp",
+                "market": ["U"],
+                "country": "US",
+            },
+            actor="platform",
+        )
+        self.service.register_security(
+            {
+                "security_id": "sec_002",
+                "issuer_id": "issuer_002",
+                "ticker": "OTHER",
+                "exchange": "NYSE",
+                "currency": "USD",
+                "market": "U",
+            },
+            actor="platform",
+        )
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/build",
+            {
+                "symbols": ["DEMO"],
+                "limit": 1,
+                "batch_size": 1,
+                "build_events": False,
+                "build_relationships": False,
+                "build_workflow": False,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/build",
+            {
+                "symbols": ["OTHER"],
+                "limit": 1,
+                "batch_size": 1,
+                "build_events": False,
+                "build_relationships": False,
+                "build_workflow": False,
+                "record_run": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+
+        executed_for_demo = self.router.dispatch(
+            "POST",
+            "/api/company-database/coverage/trends",
+            {"issuer_id": "issuer_001", "status": "executed", "limit": 10},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(executed_for_demo.success, executed_for_demo.error)
+        self.assertEqual(executed_for_demo.data["run_count"], 1)
+        self.assertEqual(executed_for_demo.data["trend_rows"][0]["status"], "executed")
+        self.assertEqual(executed_for_demo.data["trend_rows"][0]["target_issuer_ids"], ["issuer_001"])
+
+        executed_for_other = self.router.dispatch(
+            "POST",
+            "/api/company-database/coverage/trends",
+            {"issuer_id": "issuer_002", "status": "executed", "limit": 10},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(executed_for_other.success, executed_for_other.error)
+        self.assertEqual(executed_for_other.data["run_count"], 0)
+
+        dry_runs = self.router.dispatch(
+            "POST",
+            "/api/company-database/coverage/trends",
+            {"status": "dry_run", "limit": 10},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(dry_runs.success, dry_runs.error)
+        self.assertEqual(dry_runs.data["run_count"], 1)
+        self.assertEqual(dry_runs.data["trend_rows"][0]["target_issuer_ids"], ["issuer_002"])
+
     def test_company_event_builder_creates_market_and_research_attention_events(self) -> None:
         market_point = self.service.register_market_data_point(
             {

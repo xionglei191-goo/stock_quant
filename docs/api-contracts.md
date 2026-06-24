@@ -2284,6 +2284,7 @@
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
 | `/api/company-database/batch/runs` | `GET` / `POST` | 查询公司数据库批量补齐运行历史，用于审计、复盘和后续断点续跑 |
+| `/api/company-database/coverage/trends` | `GET` / `POST` | 从补库运行历史生成覆盖率趋势和可选本地 artifact，用于复盘补库是否改善公司数据库 |
 | `/api/company-database/coverage/audit` | `GET` / `POST` | 按公司审计画像、证券、行情、财务、文档、事件、关系、研报、观察结论和模拟反馈覆盖情况 |
 | `/api/company-database/events/build` | `POST` | 从已入库公开披露、披露正文证据、公开行情和研报覆盖生成公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
 | `/api/company-database/relationships/build` | `POST` | 从证券上市关系、研报覆盖记录和公开披露文本生成最小公司关系层；研报覆盖关系固定为观点/关注度关系，公开披露抽取关系默认待复核 |
@@ -2378,6 +2379,26 @@
 - `count`：过滤后的运行记录总数。
 - `runs`：按 `completed_at` 倒序排列的运行记录。
 - `usage_boundary`：固定为本地操作历史，不是交易或生产发布证据。
+
+#### `GET|POST /api/company-database/coverage/trends`
+
+从已持久化的 `CompanyDatabaseBuildRun.coverage_before` / `coverage_after` 快照生成覆盖率趋势报告。该接口不执行补库、不下载外部资料、不连接真实券商；它只用于判断公司数据库补齐是否让画像、事件、关系、研报观点、观察结论和模拟反馈覆盖变好。
+
+请求字段：
+
+- `issuer_id`：可选；只统计包含该公司主体的运行。
+- `status`：可选；`dry_run`、`executed` 或 `failed`。
+- `limit`：运行数量上限，默认 50，最大 500。
+- `write_artifact` / `record_artifact`：默认 `false`；为 `true` 时把趋势报告写入本地 JSON。
+- `artifact_path`：可选；默认 `artifacts/company-database-coverage-trends.json`。该 artifact 固定为 `local-only`，不得作为非本机 production release gate 证据。
+
+返回字段：
+
+- `run_count`：纳入趋势计算的运行数量。
+- `summary`：首尾覆盖率、累计覆盖率变化、最新缺失数、累计缺失变化、改善/恶化/不变运行数。
+- `trend_rows`：按时间升序排列的运行趋势行，包含 `run_id`、状态、目标公司、批次、覆盖率前后、覆盖变化、缺失项前后、分项缺失变化、改善/恶化 section 和构建 totals。
+- `artifact`：当写入本地 artifact 时返回路径、分类、producer、敏感数据标记和非 production 证据边界。
+- `usage_boundary`：固定为本地研究操作历史，不是交易记录或生产发布证据。
 
 #### `GET|POST /api/company-database/coverage/audit`
 

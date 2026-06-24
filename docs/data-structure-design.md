@@ -3,7 +3,7 @@
 - Status: active
 - Owner group: Data and Evidence
 - Last updated: 2026-06-24
-- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451
+- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453
 - Scope: 公司级数据库、事件、关系、研报观点、观察任务、分析结论和模拟反馈核心模型
 - Non-goals: 真实交易订单模型、券商账户模型、把研报作为事实真相源
 
@@ -738,6 +738,31 @@ Required report fields:
   "created_at": "datetime"
 }
 ```
+
+覆盖率趋势报告由 `CompanyDatabaseBuildRun.coverage_before` / `coverage_after` 派生，不新增事实源。核心行字段包括：
+
+```json
+{
+  "run_id": "string",
+  "status": "dry_run|executed|failed",
+  "target_issuer_ids": ["issuer_id"],
+  "coverage_before_score": 0.0,
+  "coverage_after_score": 0.0,
+  "coverage_delta": 0.0,
+  "missing_before_count": 0,
+  "missing_after_count": 0,
+  "missing_delta": 0,
+  "missing_delta_by_section": {
+    "company_events": -1,
+    "research_reports": 0
+  },
+  "improved_sections": ["company_events"],
+  "worsened_sections": [],
+  "usage_boundary": "company_database_build_run_is_local_research_operations_history_no_live_trading"
+}
+```
+
+本地 artifact 输出只用于个人研究复盘，固定 `classification=local-only`，不得当作非本机生产发布证据。
 
 ## 11. Relationship Model
 
