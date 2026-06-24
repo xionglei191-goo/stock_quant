@@ -2281,6 +2281,8 @@
 |---|---|---|
 | `/api/company-profiles` | `GET` / `POST` | 查询或登记 `CompanyProfile`，可由 `Issuer`、`Security`、行情、事件、关系和研报覆盖计算画像质量 |
 | `/api/company-profiles/schema` | `GET` | 返回公司画像核心字段、来源优先级和质量指标 |
+| `/api/company-profiles/coverage/audit` | `GET` / `POST` | 按公司输出画像深字段覆盖率、缺失字段、来源记录、证据回链和推荐补齐来源 |
+| `/api/company-database/profile-field-coverage/audit` | `GET` / `POST` | `company-profiles/coverage/audit` 的兼容别名，用于公司数据库补齐任务按深字段审计 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
 | `/api/company-database/batch/runs` | `GET` / `POST` | 查询公司数据库批量补齐运行历史，用于审计、复盘和后续断点续跑 |
@@ -2306,6 +2308,45 @@
 | `/api/simulation-feedback/performance/update` | `POST` | 使用本地最新行情更新 paper-only 模拟反馈表现，不连接券商 |
 
 过滤字段通用支持 `issuer_id`、`security_id`、`limit`；各接口还支持与对象对应的状态、类型、分析师、研报或结论 ID 过滤。`/api/simulation-feedback` 会拒绝任何 `paper_only=false`、`live_execution_allowed=true` 或 `broker_connected=true` 的请求。
+
+#### `GET|POST /api/company-profiles/coverage/audit`
+
+输出公司画像深字段覆盖率，用于回答“公司数据库还缺哪些字段、应该从哪些受治理来源补齐”。该接口只读本地记录，不触发外部下载，不写入画像，不把研报观点升级为事实源。
+
+兼容别名：`GET|POST /api/company-database/profile-field-coverage/audit`。
+
+请求字段：
+
+- `issuer_ids` / `symbols` / `symbol` / `ticker` / `q`：目标公司解析字段，复用公司数据库目标解析规则。
+- `limit`：目标公司数量上限，默认 100。
+- `required_fields`：可选；只审计指定字段，如 `["legal_name", "business_summary", "authorized_documents"]`。
+- `include_optional`：可选；为 `true` 时增加 `figi`、`isin`、`listing_date`、`gross_margin`、`cash`、`debt` 等字段。
+- `require_evidence`：可选；为 `true` 时 identity/business/financial/source evidence 类事实字段必须有官方/公开证据回链才算 present。
+- `include_research_opinion_slots`：默认 `true`；为 `false` 时研报覆盖、结构化观点和分析师覆盖槽位不计入覆盖率。
+
+返回字段：
+
+- `schema_id`：当前为 `company-profile-deep-field-coverage-v1`。
+- `required_fields` / `field_missing_counts`：本次审计字段和字段级缺失统计。
+- `companies[].field_coverage_score`、`coverage_level`、`missing_fields`：公司级字段覆盖率。
+- `companies[].fields[field]`：字段状态，包含 `group`、`present`、`source_records`、`evidence_ids`、`missing_reason` 和 `source_policy`。
+- `companies[].research_tasks`：缺失字段的补齐任务建议，列出推荐来源类型。
+- `source_plan`：字段组到优先来源的映射，包括官方披露、公司 IR、交易所/监管目录、公开行情、已治理本地记录和人工参考边界。
+- `rules.research_reports`：固定为 `opinion_and_attention_slots_only_not_fact_source`。
+
+字段组：
+
+- `identity`：`legal_name`、`display_name`、`aliases`、`country`、`region`、`sector`、`industry`、`identifiers`。
+- `listing`：`security_ids`、`tickers`、`exchange`、`market`、`currency`、`figi`、`isin`、`security_type`、`status`、`listing_date`。
+- `business`：`business_summary`、`products`、`company_details`。
+- `market_snapshot`：`as_of_date`、`close`、`volume`、`amount`、`valuation_metrics`。
+- `financial_snapshot`：`period`、`revenue`、`net_income`、`gross_margin`、`cash`、`debt`。
+- `source_evidence`：`source_ids`、`authorized_documents`、`field_evidence_ids`、`evidence_backlinks`。
+- `coverage_opinion`：`research_report_count`、`structured_report_count`、`report_viewpoint_count`、`analyst_count`、`latest_report_at`。
+- `workflow_feedback`：`latest_event_at`、`company_event_count`、`relationship_count`、`open_observation_count`、`analysis_conclusion_count`。
+- `quality`：`profile_coverage`、`missing_fields`、`event_backlink_rate`、`relationship_backlink_rate`。
+
+边界：`research_report`、`broker_research`、`local_reference`、`manual_reference` 和 `curated_public_profile` 不满足事实字段；研报只满足 coverage/opinion 字段，人工参考只能生成补齐计划或待复核线索。
 
 #### `POST /api/company-database/build`
 

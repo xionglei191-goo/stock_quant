@@ -24,7 +24,7 @@ from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, CompanyDatabaseBuildRun, DecisionPack, DisclosureEvent, Evidence, ResearchReportAsset, RightsTag, SystemAlert
+from app.models import AlertNotification, CompanyDatabaseBuildRun, DecisionPack, DisclosureEvent, Document, Evidence, ResearchReportAsset, RightsTag, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
 from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
@@ -775,6 +775,162 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(row["section_available"]["market_data"])
         self.assertIn("financial_snapshot", row["missing_sections"])
         self.assertGreater(row["coverage_score"], 0.0)
+
+    def test_company_profile_coverage_audit_reports_deep_missing_fields(self) -> None:
+        audit = self.router.dispatch(
+            "POST",
+            "/api/company-profiles/coverage/audit",
+            {"symbols": ["DEMO"], "limit": 1},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(audit.success, audit.error)
+        self.assertEqual(audit.data["schema_id"], "company-profile-deep-field-coverage-v1")
+        self.assertEqual(audit.data["issuer_count"], 1)
+        row = audit.data["companies"][0]
+        self.assertEqual(row["issuer_id"], "issuer_001")
+        self.assertTrue(row["fields"]["legal_name"]["present"])
+        self.assertTrue(row["fields"]["security_ids"]["present"])
+        self.assertFalse(row["fields"]["business_summary"]["present"])
+        self.assertIn("business_summary", row["missing_fields"])
+        self.assertGreater(audit.data["field_missing_counts"]["business_summary"], 0)
+        self.assertTrue(any(task["field"] == "business_summary" for task in row["research_tasks"]))
+
+        alias = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-coverage/audit",
+            {"symbols": ["DEMO"], "required_fields": ["legal_name", "business_summary"]},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(alias.success, alias.error)
+        self.assertEqual(alias.data["required_fields"], ["legal_name", "business_summary"])
+
+    def test_company_profile_coverage_audit_counts_official_sources_and_evidence(self) -> None:
+        issuer = self.service.store.issuers["issuer_001"]
+        issuer.region = "East China"
+        issuer.sector = "Technology"
+        issuer.industry = "Components"
+        issuer.company_details = {"business_summary": "Demo supplies advanced components.", "products": ["Demo module"]}
+        issuer.fundamentals = {"period": "2026Q1", "revenue": 1200.0, "net_income": 180.0, "gross_margin": 0.42, "cash": 300.0, "debt": 80.0}
+        issuer.valuation_metrics = {"pe": 22.0}
+        issuer.data_sources = ["src_sec"]
+        security = self.service.store.securities["sec_001"]
+        security.security_type = "common_stock"
+        security.listing_date = "2020-01-02"
+        self.service.register_market_data_point(
+            {
+                "data_id": "md_demo_profile_latest",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "market": "A",
+                "as_of_date": "2026-06-24",
+                "close": 12.3,
+                "volume": 123456,
+                "amount": 1000000,
+            },
+            actor="data",
+        )
+        document = Document(
+            document_id="doc_demo_annual",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="annual_report",
+            source_id="src_sec",
+            source_type="regulatory",
+            source_uri="https://example.test/demo-annual-report",
+            rights_tag=RightsTag("public"),
+            body="Demo supplies advanced components. Revenue and profit were disclosed.",
+            title="Demo annual report",
+        )
+        self.service.store.documents[document.document_id] = document
+        self.service.store.evidence["evi_demo_business"] = Evidence(
+            evidence_id="evi_demo_business",
+            document_id=document.document_id,
+            section="business_overview",
+            page_no=1,
+            bbox="p1",
+            span_text="Demo supplies advanced components.",
+            canonical_text="Demo supplies advanced components.",
+            confidence=0.95,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+
+        audit = self.router.dispatch(
+            "POST",
+            "/api/company-profiles/coverage/audit",
+            {"symbols": ["DEMO"], "include_optional": True, "limit": 1},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(audit.success, audit.error)
+        fields = audit.data["companies"][0]["fields"]
+        self.assertTrue(fields["business_summary"]["present"])
+        self.assertTrue(fields["products"]["present"])
+        self.assertTrue(fields["revenue"]["present"])
+        self.assertTrue(fields["net_income"]["present"])
+        self.assertTrue(fields["authorized_documents"]["present"])
+        self.assertTrue(fields["field_evidence_ids"]["present"])
+        self.assertIn("evi_demo_business", fields["evidence_backlinks"]["evidence_ids"])
+        self.assertTrue(fields["close"]["present"])
+        self.assertTrue(fields["amount"]["present"])
+
+    def test_company_profile_coverage_audit_keeps_research_reports_opinion_only(self) -> None:
+        research_document = Document(
+            document_id="doc_demo_research",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="research_report",
+            source_id="local_research_reports",
+            source_type="broker_research",
+            source_uri="local://demo-research",
+            rights_tag=RightsTag("public"),
+            body="Demo Corp research view says business momentum is improving.",
+            title="Demo research report",
+        )
+        self.service.store.documents[research_document.document_id] = research_document
+        self.service.store.evidence["evi_demo_research"] = Evidence(
+            evidence_id="evi_demo_research",
+            document_id=research_document.document_id,
+            section="research_report_citation",
+            page_no=1,
+            bbox="research",
+            span_text="Research opinion on Demo.",
+            canonical_text="Research opinion on Demo.",
+            confidence=0.8,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+        self.service.store.research_reports["rr_demo_bound"] = ResearchReportAsset(
+            report_id="rr_demo_bound",
+            source_id="local_research_reports",
+            broker="Local Broker",
+            file_path="/tmp/demo.pdf",
+            file_name="demo.pdf",
+            title="Demo local research",
+            document_id=research_document.document_id,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            status="text_indexed",
+        )
+
+        audit = self.router.dispatch(
+            "POST",
+            "/api/company-profiles/coverage/audit",
+            {"symbols": ["DEMO"], "required_fields": ["authorized_documents", "field_evidence_ids", "business_summary", "research_report_count"]},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(audit.success, audit.error)
+        fields = audit.data["companies"][0]["fields"]
+        self.assertTrue(fields["research_report_count"]["present"])
+        self.assertEqual(fields["research_report_count"]["source_policy"], "opinion_slot")
+        self.assertFalse(fields["authorized_documents"]["present"])
+        self.assertFalse(fields["field_evidence_ids"]["present"])
+        self.assertFalse(fields["business_summary"]["present"])
+        self.assertEqual(fields["business_summary"]["missing_reason"], "research_report_or_local_reference_is_not_fact_source")
+        self.assertEqual(audit.data["rules"]["research_reports"], "opinion_and_attention_slots_only_not_fact_source")
 
     def test_company_database_batch_build_aggregates_batches_and_coverage(self) -> None:
         result = self.router.dispatch(

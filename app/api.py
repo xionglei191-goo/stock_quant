@@ -635,6 +635,8 @@ class ApiRouter:
             ("POST", r"^/api/company-positions/coverage-report$", self._company_positions_coverage_report),
             ("GET", r"^/api/company-profiles$", self._list_company_profiles),
             ("POST", r"^/api/company-profiles$", self._register_company_profile),
+            ("GET", r"^/api/company-profiles/coverage/audit$", self._company_profile_coverage_audit),
+            ("POST", r"^/api/company-profiles/coverage/audit$", self._company_profile_coverage_audit),
             ("GET", r"^/api/company-profiles/schema$", self._company_profile_schema),
             ("POST", r"^/api/company-database/build$", self._build_company_database),
             ("POST", r"^/api/company-database/batch/build$", self._build_company_database_batch),
@@ -645,6 +647,8 @@ class ApiRouter:
             ("POST", r"^/api/company-database/coverage/trends$", self._company_database_coverage_trends),
             ("GET", r"^/api/company-database/coverage/audit$", self._company_database_coverage_audit),
             ("POST", r"^/api/company-database/coverage/audit$", self._company_database_coverage_audit),
+            ("GET", r"^/api/company-database/profile-field-coverage/audit$", self._company_profile_coverage_audit),
+            ("POST", r"^/api/company-database/profile-field-coverage/audit$", self._company_profile_coverage_audit),
             ("POST", r"^/api/company-database/events/build$", self._build_company_events),
             ("POST", r"^/api/company-database/relationships/build$", self._build_company_relationships),
             ("POST", r"^/api/company-database/workflow/build$", self._build_company_workflow),
@@ -1871,6 +1875,9 @@ class ApiRouter:
 
     def _company_database_coverage_audit(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_database_coverage_audit(body, actor=actor)
+
+    def _company_profile_coverage_audit(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_profile_coverage_audit(body, actor=actor)
 
     def _build_company_events(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.build_company_events(body, actor=actor)

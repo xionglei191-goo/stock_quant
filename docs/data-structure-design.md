@@ -3,7 +3,7 @@
 - Status: active
 - Owner group: Data and Evidence
 - Last updated: 2026-06-24
-- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454
+- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454, T-456
 - Scope: 公司级数据库、事件、关系、研报观点、观察任务、分析结论和模拟反馈核心模型
 - Non-goals: 真实交易订单模型、券商账户模型、把研报作为事实真相源
 
@@ -215,6 +215,74 @@
   "updated_at": "datetime"
 }
 ```
+
+### 6.1.1 CompanyProfileDeepCoverageAudit
+
+`CompanyProfileDeepCoverageAudit` 是只读审计视图，不新增事实源，也不落库。它用于按公司检查画像字段是否由现有本地/公开/授权记录支撑，并为缺字段生成补齐来源计划。
+
+```json
+{
+  "schema_id": "company-profile-deep-field-coverage-v1",
+  "issuer_count": 1,
+  "average_field_coverage_score": 0.0,
+  "required_fields": ["legal_name", "business_summary", "authorized_documents"],
+  "field_missing_counts": {"business_summary": 1},
+  "companies": [
+    {
+      "issuer_id": "issuer_001",
+      "display_name": "Demo Corp",
+      "field_coverage_score": 0.0,
+      "coverage_level": "sparse|partial|complete",
+      "missing_fields": ["business_summary"],
+      "fields": {
+        "business_summary": {
+          "group": "business",
+          "present": false,
+          "source_records": [],
+          "evidence_ids": [],
+          "missing_reason": "no_underlying_record|research_report_or_local_reference_is_not_fact_source|no_authorized_fact_source_document",
+          "source_policy": "fact_or_governed_record|opinion_slot"
+        }
+      },
+      "counts": {
+        "authorized_documents": 0,
+        "official_evidence": 0,
+        "research_reports": 0,
+        "company_events": 0,
+        "company_relationships": 0
+      },
+      "research_tasks": [
+        {
+          "task_type": "company_profile_field_backfill",
+          "field": "business_summary",
+          "recommended_sources": ["annual_report", "10-K/20-F", "company_ir", "official_business_overview"]
+        }
+      ]
+    }
+  ],
+  "source_plan": {
+    "source_priority": ["official_disclosure", "company_ir", "company_official", "public_market_data", "local_reference", "manual_reference"],
+    "research_report_boundary": "research_reports_can_fill_coverage_opinion_fields_only_not_fact_truth_fields",
+    "manual_reference_boundary": "manual_reference_requires_review_before_any_fact_field_can_be_marked_present"
+  }
+}
+```
+
+字段组：
+
+| group | fields |
+|---|---|
+| `identity` | `legal_name`, `display_name`, `aliases`, `country`, `region`, `sector`, `industry`, `identifiers` |
+| `listing` | `security_ids`, `tickers`, `exchange`, `market`, `currency`, `figi`, `isin`, `security_type`, `status`, `listing_date` |
+| `business` | `business_summary`, `products`, `company_details` |
+| `market_snapshot` | `as_of_date`, `close`, `volume`, `amount`, `valuation_metrics` |
+| `financial_snapshot` | `period`, `revenue`, `net_income`, `gross_margin`, `cash`, `debt` |
+| `source_evidence` | `source_ids`, `authorized_documents`, `field_evidence_ids`, `evidence_backlinks` |
+| `coverage_opinion` | `research_report_count`, `structured_report_count`, `report_viewpoint_count`, `analyst_count`, `latest_report_at` |
+| `workflow_feedback` | `latest_event_at`, `company_event_count`, `relationship_count`, `open_observation_count`, `analysis_conclusion_count` |
+| `quality` | `profile_coverage`, `missing_fields`, `event_backlink_rate`, `relationship_backlink_rate` |
+
+事实字段只接受官方披露、公司 IR、公司官网、交易所/监管披露、公开行情或已治理的结构化本地记录。研报只满足 `coverage_opinion`，不能让 business、financial、identity 等事实字段变为 present。`manual_reference` 与边界不清来源只能进入补齐计划和人工复核。
 
 ### 6.2 Security
 

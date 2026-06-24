@@ -20696,6 +20696,304 @@ class SystemService:
             "compatibility_inputs": ["Issuer", "Security", "MarketDataPoint", "ResearchReportAsset", "DisclosureEvent", "CompanyPosition"],
         }
 
+    def company_profile_coverage_audit(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        limit = self._bounded_limit(payload.get("limit", 100), 5000)
+        issuers = self._company_database_target_issuers(payload, limit=limit)
+        default_fields = self._company_profile_deep_coverage_fields(include_optional=self._truthy(payload.get("include_optional", False)))
+        requested_fields = self._string_list(payload.get("required_fields"))
+        required_fields = [field for field in requested_fields if field in default_fields] if requested_fields else default_fields
+        if requested_fields and not required_fields:
+            raise ValidationError("required_fields did not match any supported company profile audit fields")
+        require_evidence = self._truthy(payload.get("require_evidence", False))
+        include_research_opinion_slots = self._truthy(payload.get("include_research_opinion_slots", True))
+        rows = [
+            self._company_profile_deep_coverage_row(
+                issuer,
+                required_fields=required_fields,
+                require_evidence=require_evidence,
+                include_research_opinion_slots=include_research_opinion_slots,
+            )
+            for issuer in issuers
+        ]
+        missing_counts = {
+            field: sum(1 for row in rows if field in row["missing_fields"])
+            for field in required_fields
+        }
+        average_score = round(sum(row["field_coverage_score"] for row in rows) / len(rows), 4) if rows else 0.0
+        self._audit(
+            actor,
+            "company_profile_coverage_audit",
+            "company_profile",
+            "deep_field_coverage",
+            approval_state=f"issuers={len(rows)};average={average_score};require_evidence={require_evidence}",
+        )
+        return {
+            "status": "ready",
+            "schema_id": "company-profile-deep-field-coverage-v1",
+            "issuer_count": len(rows),
+            "average_field_coverage_score": average_score,
+            "required_fields": required_fields,
+            "field_missing_counts": missing_counts,
+            "companies": rows,
+            "source_plan": self._company_profile_deep_source_plan(),
+            "rules": {
+                "fact_fields": "official_disclosure_company_ir_public_market_or_governed_local_records_only",
+                "research_reports": "opinion_and_attention_slots_only_not_fact_source",
+                "require_evidence": require_evidence,
+                "include_research_opinion_slots": include_research_opinion_slots,
+            },
+            "usage_boundary": "company_profile_deep_field_coverage_uses_public_local_authorized_records_only_research_reports_opinion_only_no_live_trading",
+        }
+
+    def _company_profile_deep_coverage_fields(self, *, include_optional: bool = False) -> list[str]:
+        required = [
+            "legal_name",
+            "display_name",
+            "aliases",
+            "country",
+            "region",
+            "sector",
+            "industry",
+            "identifiers",
+            "security_ids",
+            "tickers",
+            "exchange",
+            "market",
+            "currency",
+            "security_type",
+            "status",
+            "business_summary",
+            "products",
+            "company_details",
+            "as_of_date",
+            "close",
+            "volume",
+            "amount",
+            "valuation_metrics",
+            "period",
+            "revenue",
+            "net_income",
+            "source_ids",
+            "authorized_documents",
+            "field_evidence_ids",
+            "evidence_backlinks",
+            "research_report_count",
+            "structured_report_count",
+            "report_viewpoint_count",
+            "analyst_count",
+            "latest_report_at",
+            "latest_event_at",
+            "company_event_count",
+            "relationship_count",
+            "open_observation_count",
+            "analysis_conclusion_count",
+            "profile_coverage",
+            "missing_fields",
+            "event_backlink_rate",
+            "relationship_backlink_rate",
+        ]
+        optional = ["figi", "isin", "listing_date", "gross_margin", "cash", "debt"]
+        return required + optional if include_optional else required
+
+    def _company_profile_deep_source_plan(self) -> dict[str, Any]:
+        return {
+            "source_priority": ["official_disclosure", "company_ir", "company_official", "public_market_data", "local_reference", "manual_reference"],
+            "field_groups": {
+                "identity": ["official_disclosure", "exchange_disclosure", "company_ir", "SEC EDGAR", "HKEXnews", "CNINFO"],
+                "listing": ["exchange_disclosure", "public_market_data", "SEC/Nasdaq directories", "TDX/AkShare/official exchange directories"],
+                "business": ["annual_report", "10-K/20-F", "company_ir", "official_business_overview"],
+                "market_snapshot": ["public_eod_market_data", "TDX vipdoc", "Yahoo/Stooq fallback where governed"],
+                "financial_snapshot": ["annual_report", "quarterly_report", "SEC companyfacts", "public financial summary connectors"],
+                "source_evidence": ["document", "evidence", "source_governance_review"],
+                "coverage_opinion": ["local_research_reports", "structured_research_reports", "analyst_profiles"],
+                "workflow_feedback": ["company_events", "company_relationships", "observation_items", "analysis_conclusions", "simulation_feedback"],
+            },
+            "research_report_boundary": "research_reports_can_fill_coverage_opinion_fields_only_not_fact_truth_fields",
+            "manual_reference_boundary": "manual_reference_requires_review_before_any_fact_field_can_be_marked_present",
+        }
+
+    def _company_profile_document_is_fact_source(self, document: Document) -> bool:
+        source = self.store.sources.get(document.source_id)
+        source_type = str(document.source_type or (source.source_type if source else "")).strip().lower()
+        document_type = str(document.document_type).strip().lower()
+        if document_type == "research_report" or "research" in source_type or "research" in str(document.source_id).lower():
+            return False
+        disallowed_source_types = {"local_reference", "manual_reference", "broker_research", "research", "news", "curated_public_profile"}
+        if source_type in disallowed_source_types:
+            return False
+        allowed_source_types = {"regulatory", "company_ir", "company_official", "official_public", "exchange_disclosure", "issuer_disclosure", "public_company_disclosure"}
+        allowed_document_types = {"annual_report", "10-k", "10-q", "8-k", "20-f", "6-k", "prospectus", "registration_statement", "company_announcement", "official_product_page", "official_business_overview"}
+        return source_type in allowed_source_types or (document_type in allowed_document_types and (source is None or source.risk_level != "red"))
+
+    def _company_profile_deep_coverage_row(
+        self,
+        issuer: Issuer,
+        *,
+        required_fields: list[str],
+        require_evidence: bool,
+        include_research_opinion_slots: bool,
+    ) -> dict[str, Any]:
+        securities = [item for item in self.store.securities.values() if item.issuer_id == issuer.issuer_id]
+        security_ids = {security.security_id for security in securities}
+        profile = self.store.company_profiles.get(issuer.issuer_id) or self._company_profile_from_existing_records(issuer.issuer_id, {})
+        documents = [document for document in self.store.documents.values() if document.issuer_id == issuer.issuer_id or document.security_id in security_ids]
+        fact_documents = [document for document in documents if self._company_profile_document_is_fact_source(document)]
+        research_documents = [document for document in documents if document.document_type == "research_report" or "research" in document.source_id.lower() or "research" in document.source_type.lower()]
+        evidence_rows = [
+            evidence
+            for evidence in self.store.evidence.values()
+            if evidence.issuer_id == issuer.issuer_id
+            or evidence.security_id in security_ids
+            or (evidence.document_id in {document.document_id for document in documents})
+        ]
+        official_evidence_ids = [evidence.evidence_id for evidence in evidence_rows if self._evidence_is_official_public(evidence.evidence_id)]
+        research_evidence_ids = [
+            evidence.evidence_id
+            for evidence in evidence_rows
+            if evidence.section == "research_report_citation"
+            or (self.store.documents.get(evidence.document_id) is not None and self.store.documents[evidence.document_id].document_type == "research_report")
+        ]
+        latest_market = next((point for point in [self._latest_market_point_for_security(security.security_id) for security in securities] if point is not None), None)
+        reports = [report for report in self.store.research_reports.values() if report.issuer_id == issuer.issuer_id or report.security_id in security_ids]
+        structured_reports = [report for report in self.store.structured_research_reports.values() if report.issuer_id == issuer.issuer_id or report.security_id in security_ids]
+        structured_report_ids = {report.research_report_id for report in structured_reports}
+        viewpoints = [
+            viewpoint
+            for viewpoint in self.store.report_viewpoints.values()
+            if viewpoint.issuer_id == issuer.issuer_id
+            or viewpoint.security_id in security_ids
+            or viewpoint.research_report_id in structured_report_ids
+        ]
+        analyst_ids = self._unique_strings([analyst_id for report in structured_reports for analyst_id in report.analyst_ids])
+        events = [event for event in self.store.company_events.values() if event.issuer_id == issuer.issuer_id or event.security_id in security_ids]
+        relationships = [
+            relationship
+            for relationship in self.store.company_relationships.values()
+            if relationship.issuer_id == issuer.issuer_id
+            or relationship.security_id in security_ids
+            or relationship.subject_id == issuer.issuer_id
+            or relationship.object_id == issuer.issuer_id
+        ]
+        observations = [item for item in self.store.observation_items.values() if item.issuer_id == issuer.issuer_id or item.security_id in security_ids]
+        conclusions = [item for item in self.store.analysis_conclusions.values() if item.issuer_id == issuer.issuer_id or item.security_id in security_ids]
+        source_ids = self._unique_strings(
+            [
+                *issuer.data_sources,
+                *profile.source_ids,
+                *(document.source_id for document in fact_documents),
+                *(point.source_id for point in [latest_market] if point is not None),
+            ]
+        )
+        fundamentals = dict(issuer.fundamentals or profile.latest_financial_snapshot or {})
+        company_details = dict(issuer.company_details or {})
+        latest_report_at = max([str(to_plain(report.published_at)) for report in structured_reports] + [f"{report.year}-{report.month or '01'}" for report in reports if report.year], default="")
+        field_defs = {
+            "legal_name": ("identity", bool(issuer.legal_name), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "display_name": ("identity", bool(profile.display_name or issuer.legal_name), [{"resource_type": "company_profile", "resource_id": issuer.issuer_id}]),
+            "aliases": ("identity", bool(issuer.aliases), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "country": ("identity", bool(issuer.country), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "region": ("identity", bool(issuer.region), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "sector": ("identity", bool(issuer.sector or profile.sector), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "industry": ("identity", bool(issuer.industry or profile.industry), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "identifiers": ("identity", bool(issuer.lei or issuer.cik or profile.identifiers), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "security_ids": ("listing", bool(securities), [{"resource_type": "security", "resource_id": security.security_id} for security in securities]),
+            "tickers": ("listing", any(security.ticker for security in securities), [{"resource_type": "security", "resource_id": security.security_id} for security in securities if security.ticker]),
+            "exchange": ("listing", any(security.exchange for security in securities), [{"resource_type": "security", "resource_id": security.security_id} for security in securities if security.exchange]),
+            "market": ("listing", bool(issuer.market or [security.market for security in securities if security.market]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "currency": ("listing", any(security.currency for security in securities), [{"resource_type": "security", "resource_id": security.security_id} for security in securities if security.currency]),
+            "figi": ("listing", any(security.figi for security in securities), [{"resource_type": "security", "resource_id": security.security_id} for security in securities if security.figi]),
+            "isin": ("listing", any(security.isin for security in securities), [{"resource_type": "security", "resource_id": security.security_id} for security in securities if security.isin]),
+            "security_type": ("listing", any(security.security_type for security in securities), [{"resource_type": "security", "resource_id": security.security_id} for security in securities if security.security_type]),
+            "status": ("listing", bool(issuer.status or any(security.status for security in securities)), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "listing_date": ("listing", any(security.listing_date for security in securities), [{"resource_type": "security", "resource_id": security.security_id} for security in securities if security.listing_date]),
+            "business_summary": ("business", bool(profile.business_summary or company_details.get("business_summary") or company_details.get("description")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
+            "products": ("business", bool(profile.products or company_details.get("products")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
+            "company_details": ("business", bool(company_details), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "as_of_date": ("market_snapshot", latest_market is not None and bool(latest_market.as_of_date), [{"resource_type": "market_data", "resource_id": latest_market.data_id}] if latest_market else []),
+            "close": ("market_snapshot", latest_market is not None and float(latest_market.close or 0) != 0, [{"resource_type": "market_data", "resource_id": latest_market.data_id}] if latest_market else []),
+            "volume": ("market_snapshot", latest_market is not None and float(latest_market.volume or 0) != 0, [{"resource_type": "market_data", "resource_id": latest_market.data_id}] if latest_market else []),
+            "amount": ("market_snapshot", latest_market is not None and float(latest_market.amount or 0) != 0, [{"resource_type": "market_data", "resource_id": latest_market.data_id}] if latest_market else []),
+            "valuation_metrics": ("market_snapshot", bool(issuer.valuation_metrics), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "period": ("financial_snapshot", any(fundamentals.get(key) for key in ["period", "report_period", "fiscal_period", "date"]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "revenue": ("financial_snapshot", any(fundamentals.get(key) for key in ["revenue", "operating_revenue", "total_revenue"]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "net_income": ("financial_snapshot", any(fundamentals.get(key) for key in ["net_income", "net_profit", "profit"]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "gross_margin": ("financial_snapshot", bool(fundamentals.get("gross_margin")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "cash": ("financial_snapshot", any(fundamentals.get(key) for key in ["cash", "cash_and_equivalents"]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "debt": ("financial_snapshot", any(fundamentals.get(key) for key in ["debt", "total_debt"]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "source_ids": ("source_evidence", bool(source_ids), [{"resource_type": "source", "resource_id": source_id} for source_id in source_ids]),
+            "authorized_documents": ("source_evidence", bool(fact_documents), [{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]),
+            "field_evidence_ids": ("source_evidence", bool(official_evidence_ids), [{"resource_type": "evidence", "resource_id": evidence_id} for evidence_id in official_evidence_ids[:10]]),
+            "evidence_backlinks": ("source_evidence", bool(official_evidence_ids), [{"resource_type": "evidence", "resource_id": evidence_id} for evidence_id in official_evidence_ids[:10]]),
+            "research_report_count": ("coverage_opinion", include_research_opinion_slots and bool(reports), [{"resource_type": "research_report", "resource_id": report.report_id} for report in reports[:10]]),
+            "structured_report_count": ("coverage_opinion", include_research_opinion_slots and bool(structured_reports), [{"resource_type": "structured_research_report", "resource_id": report.research_report_id} for report in structured_reports[:10]]),
+            "report_viewpoint_count": ("coverage_opinion", include_research_opinion_slots and bool(viewpoints), [{"resource_type": "report_viewpoint", "resource_id": viewpoint.viewpoint_id} for viewpoint in viewpoints[:10]]),
+            "analyst_count": ("coverage_opinion", include_research_opinion_slots and bool(analyst_ids), [{"resource_type": "analyst_profile", "resource_id": analyst_id} for analyst_id in analyst_ids[:10]]),
+            "latest_report_at": ("coverage_opinion", include_research_opinion_slots and bool(latest_report_at), [{"resource_type": "research_report", "resource_id": reports[0].report_id}] if reports else []),
+            "latest_event_at": ("workflow_feedback", bool(events), [{"resource_type": "company_event", "resource_id": event.event_id} for event in events[:10]]),
+            "company_event_count": ("workflow_feedback", bool(events), [{"resource_type": "company_event", "resource_id": event.event_id} for event in events[:10]]),
+            "relationship_count": ("workflow_feedback", bool(relationships), [{"resource_type": "company_relationship", "resource_id": relationship.relationship_id} for relationship in relationships[:10]]),
+            "open_observation_count": ("workflow_feedback", any(item.status in {"open", "in_progress", "waiting"} for item in observations), [{"resource_type": "observation_item", "resource_id": item.observation_id} for item in observations[:10]]),
+            "analysis_conclusion_count": ("workflow_feedback", bool(conclusions), [{"resource_type": "analysis_conclusion", "resource_id": item.analysis_conclusion_id} for item in conclusions[:10]]),
+            "profile_coverage": ("quality", profile.data_quality.get("profile_coverage") is not None, [{"resource_type": "company_profile", "resource_id": issuer.issuer_id}]),
+            "missing_fields": ("quality", profile.data_quality.get("missing_fields") is not None, [{"resource_type": "company_profile", "resource_id": issuer.issuer_id}]),
+            "event_backlink_rate": ("quality", profile.data_quality.get("event_backlink_rate") is not None, [{"resource_type": "company_profile", "resource_id": issuer.issuer_id}]),
+            "relationship_backlink_rate": ("quality", profile.data_quality.get("relationship_backlink_rate") is not None, [{"resource_type": "company_profile", "resource_id": issuer.issuer_id}]),
+        }
+        fields: dict[str, dict[str, Any]] = {}
+        for field_name in required_fields:
+            group, present, source_records = field_defs[field_name]
+            evidence_ids = official_evidence_ids if group in {"identity", "business", "financial_snapshot", "source_evidence"} else []
+            if require_evidence and group not in {"coverage_opinion", "workflow_feedback", "quality", "listing", "market_snapshot"}:
+                present = bool(present and evidence_ids)
+            missing_reason = ""
+            if not present:
+                if group != "coverage_opinion" and (reports or research_documents or research_evidence_ids):
+                    missing_reason = "research_report_or_local_reference_is_not_fact_source"
+                elif group == "source_evidence" and documents and not fact_documents:
+                    missing_reason = "no_authorized_fact_source_document"
+                else:
+                    missing_reason = "no_underlying_record"
+            fields[field_name] = {
+                "group": group,
+                "present": bool(present),
+                "source_records": source_records if present else [],
+                "evidence_ids": evidence_ids[:10] if present else [],
+                "missing_reason": missing_reason,
+                "source_policy": "opinion_slot" if group == "coverage_opinion" else "fact_or_governed_record",
+            }
+        missing_fields = [field_name for field_name, field in fields.items() if not field["present"]]
+        score = round((len(fields) - len(missing_fields)) / len(fields), 4) if fields else 0.0
+        research_tasks = [
+            {
+                "task_type": "company_profile_field_backfill",
+                "field": field_name,
+                "reason": fields[field_name]["missing_reason"],
+                "recommended_sources": self._company_profile_deep_source_plan()["field_groups"].get(fields[field_name]["group"], []),
+            }
+            for field_name in missing_fields[:12]
+        ]
+        return {
+            "issuer_id": issuer.issuer_id,
+            "display_name": profile.display_name or issuer.legal_name,
+            "field_coverage_score": score,
+            "coverage_level": "complete" if score >= 0.9 else ("partial" if score >= 0.5 else "sparse"),
+            "missing_fields": missing_fields,
+            "fields": fields,
+            "counts": {
+                "securities": len(securities),
+                "authorized_documents": len(fact_documents),
+                "official_evidence": len(official_evidence_ids),
+                "research_reports": len(reports),
+                "structured_reports": len(structured_reports),
+                "company_events": len(events),
+                "company_relationships": len(relationships),
+                "open_observations": sum(1 for item in observations if item.status in {"open", "in_progress", "waiting"}),
+                "analysis_conclusions": len(conclusions),
+            },
+            "research_tasks": research_tasks,
+        }
+
     def company_database_coverage_audit(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
         limit = self._bounded_limit(payload.get("limit", 100), 5000)

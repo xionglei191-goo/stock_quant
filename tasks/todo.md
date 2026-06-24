@@ -266,7 +266,18 @@
   - **已完成（本轮）**：内部 usage boundary 在 UI 中显示为“本地补库历史/本地覆盖趋势”，不再把内部常量直接暴露给用户。
   - **已完成（本轮）**：执行补齐和载入公司情报后会刷新运行历史与覆盖趋势；新增 UI 静态契约和交互验收路径。
   - 验收：UI 静态检查覆盖新增 DOM/JS；浏览器交互验收覆盖执行补齐后加载趋势表、累计变化和本地边界标签。
-  - 后续增强：T-456 公司基础画像深字段覆盖审计与来源计划；T-457 官方披露/公司 IR 画像字段抽取；T-458 事件/关系去重、实体归并和来源质量评分。
+  - 后续增强：T-457 官方披露/公司 IR 画像字段抽取；T-458 事件/关系去重、实体归并和来源质量评分。
+
+- `DONE` T-456 公司基础画像深字段覆盖审计与来源计划
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-445 的覆盖率审计只能判断画像、证券、行情、文档、事件、关系等 section 是否存在，仍无法回答公司数据库到底缺 `business_summary`、官网/IR 来源、财务指标、管理层/产品/地址等细字段，也无法指导下一步官方披露/公司 IR 抽取优先级。
+  - **已完成（本轮）**：新增 `GET|POST /api/company-profiles/coverage/audit`，输出 `company-profile-deep-field-coverage-v1` 深字段审计。
+  - **已完成（本轮）**：新增兼容别名 `GET|POST /api/company-database/profile-field-coverage/audit`，便于公司数据库补齐任务按深字段调用。
+  - **已完成（本轮）**：字段分组覆盖 identity、listing、business、market_snapshot、financial_snapshot、source_evidence、coverage_opinion、workflow_feedback 和 quality；返回每个字段的 present、source_records、evidence_ids、missing_reason 和 source_policy。
+  - **已完成（本轮）**：`source_plan` 明确官方披露、公司 IR、公司官网、交易所/监管目录、公开行情、已治理本地记录和人工参考的适用边界；研报只满足观点/覆盖槽位，不满足事实字段。
+  - **已完成（本轮）**：支持 `issuer_ids`、`symbols`、`symbol`、`ticker`、`q`、`required_fields`、`include_optional`、`require_evidence` 和 `include_research_opinion_slots`。
+  - 验收：单测覆盖稀疏画像缺字段、官方/监管文档和 evidence 可计入事实字段、研报只能计入 `research_report_count` 且不能满足 business/source evidence 事实字段。
+  - 后续增强：T-457 官方披露/公司 IR 画像字段抽取；T-458 事件/关系去重、实体归并和来源质量评分；T-459 深字段 coverage UI。
 
 ## 运维/非本机发布附录 / 当前工程治理待办
 
