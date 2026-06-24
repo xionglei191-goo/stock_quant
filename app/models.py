@@ -732,8 +732,15 @@ class CompanyDatabaseBuildRun:
     status: str = "dry_run"
     execute: bool = False
     dry_run: bool = True
+    retry_of: str = ""
+    resume_of: str = ""
+    resume_mode: str = ""
+    attempt: int = 1
+    idempotency_key: str = ""
     target_issuer_ids: list[str] = field(default_factory=list)
     target_symbols: list[str] = field(default_factory=list)
+    completed_issuer_ids: list[str] = field(default_factory=list)
+    skipped_issuer_ids: list[str] = field(default_factory=list)
     batch_count: int = 0
     batch_size: int = 0
     totals: dict[str, Any] = field(default_factory=dict)
@@ -748,7 +755,7 @@ class CompanyDatabaseBuildRun:
     created_at: Any = field(default_factory=utcnow)
 
     def __post_init__(self) -> None:
-        _validate_choice(self.status, {"dry_run", "executed", "failed"}, "status")
+        _validate_choice(self.status, {"dry_run", "executed", "failed", "partial"}, "status")
 
 
 @dataclass(slots=True)

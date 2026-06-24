@@ -182,7 +182,32 @@ def _run_check(
         value = _wait_for(client, assert_expression, timeout=wait_timeout)
         return {"name": name, "status": "passed", "value": value, "duration_ms": round((time.time() - started) * 1000)}
     except Exception as exc:  # noqa: BLE001 - acceptance diagnostics
-        return {"name": name, "status": "failed", "error": str(exc), "duration_ms": round((time.time() - started) * 1000)}
+        diagnostics = client.evaluate(
+            """
+            (() => {
+              const text = (selector) => document.querySelector(selector)?.textContent?.trim() || "";
+              return {
+                status: text("#status"),
+                companyIntelSymbol: document.querySelector("#companyIntelSymbol")?.value || "",
+                companyIntelReportQuery: document.querySelector("#companyIntelReportQuery")?.value || "",
+                companyIntelReportStructureStatus: text("#companyIntelReportStructureStatus"),
+                companyIntelReportStructureBox: text("#companyIntelReportStructureBox").slice(0, 240),
+                companyIntelBatchBuildStatus: text("#companyIntelBatchBuildStatus"),
+                companyIntelRunHistoryStatus: text("#companyIntelRunHistoryStatus"),
+                companyIntelRunRows: text("#companyIntelRunRows").slice(0, 240),
+                companyIntelTrendStatus: text("#companyIntelTrendStatus"),
+                companyIntelTrendRows: text("#companyIntelTrendRows").slice(0, 240)
+              };
+            })()
+            """
+        )
+        return {
+            "name": name,
+            "status": "failed",
+            "error": str(exc),
+            "diagnostics": diagnostics,
+            "duration_ms": round((time.time() - started) * 1000),
+        }
 
 
 def run_ui_interaction_acceptance(
@@ -291,29 +316,36 @@ def run_ui_interaction_acceptance(
             _run_check(
                 client,
                 "company_report_structure_preview_dry_run",
-                "document.querySelector('[data-open=\"search\"]').click(); document.querySelector('#companyIntelReportLimit').value = '2'; document.querySelector('#companyIntelReportQuery').value = 'SPCX'; document.querySelector('#previewCompanyReportStructure').click(); true",
-                "document.querySelector('#companyIntelReportStructureStatus').textContent.includes('预览') && document.querySelector('#companyIntelReportStructureBox').textContent.includes('dry_run') && document.querySelector('#companyIntelReportStructureBox').textContent.includes('research_reports_are_viewpoint_signal')",
+                "document.querySelector('[data-open=\"search\"]').click(); document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#companyIntelReportLimit').value = '2'; document.querySelector('#companyIntelReportQuery').value = 'SPCX'; document.querySelector('#previewCompanyReportStructure').click(); true",
+                "document.querySelector('#companyIntelReportStructureStatus').textContent.includes('预览') && document.querySelector('#companyIntelReportStructureBox').textContent.includes('预览') && document.querySelector('#companyIntelReportStructureBox').textContent.includes('research_reports_are_viewpoint_signal')",
                 wait_timeout=max(timeout, 20.0),
             ),
             _run_check(
                 client,
                 "company_database_operations_preview",
-                "document.querySelector('[data-open=\"search\"]').click(); document.querySelector('#companyIntelBuildLimit').value = '1'; document.querySelector('#companyIntelBatchSize').value = '1'; document.querySelector('#auditCompanyCoverage').click(); true",
+                "document.querySelector('[data-open=\"search\"]').click(); document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#companyIntelBuildLimit').value = '1'; document.querySelector('#companyIntelBatchSize').value = '1'; document.querySelector('#auditCompanyCoverage').click(); true",
                 "document.querySelector('#companyIntelBatchBuildStatus').textContent.includes('审计完成') && document.querySelector('#companyIntelOperationBox').textContent.includes('company_database_coverage_audit')",
                 wait_timeout=max(timeout, 20.0),
             ),
             _run_check(
                 client,
                 "company_database_batch_preview",
-                "document.querySelector('#previewCompanyBatchBuild').click(); true",
+                "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#previewCompanyBatchBuild').click(); true",
                 "document.querySelector('#companyIntelBatchBuildStatus').textContent.includes('预览') && document.querySelector('#companyIntelOperationBox').textContent.includes('company_database_batch_build')",
                 wait_timeout=max(timeout, 20.0),
             ),
             _run_check(
                 client,
                 "company_database_batch_execute_records_run_history",
-                "document.querySelector('#runCompanyBatchBuild').click(); true",
-                "document.querySelector('#companyIntelBatchBuildStatus').textContent.includes('已执行') && document.querySelector('#companyIntelRunHistoryStatus').textContent.trim().length > 0 && document.querySelector('#companyIntelRunHistoryStatus').textContent !== '待载入' && document.querySelector('#companyIntelRunRows').textContent.includes('executed') && document.querySelector('#companyIntelRunRows').textContent.includes('company_database_build_run_is_local_research_operations_history_no_live_trading')",
+                "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#runCompanyBatchBuild').click(); true",
+                "document.querySelector('#companyIntelBatchBuildStatus').textContent.includes('已执行') && document.querySelector('#companyIntelRunHistoryStatus').textContent.trim().length > 0 && document.querySelector('#companyIntelRunHistoryStatus').textContent !== '待载入' && document.querySelector('#companyIntelRunRows').textContent.includes('已执行') && document.querySelector('#companyIntelRunRows').textContent.includes('本地补库历史')",
+                wait_timeout=max(timeout, 30.0),
+            ),
+            _run_check(
+                client,
+                "company_database_coverage_trends_load",
+                "document.querySelector('#loadCompanyCoverageTrends').click(); true",
+                "document.querySelector('#companyIntelTrendStatus').textContent.includes('已载入') && document.querySelector('#companyIntelTrendRows').textContent.includes('本地补库历史') && document.querySelector('#companyIntelTrendDelta').textContent.trim().length > 0 && !document.querySelector('#companyIntelOperationBox').textContent.includes('trend_rows')",
                 wait_timeout=max(timeout, 30.0),
             ),
             _run_check(

@@ -20840,6 +20840,13 @@ class SystemService:
 
     def build_company_database_batch(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
+        resume_run_id = str(payload.get("resume_run_id", "")).strip()
+        if resume_run_id:
+            retry_payload = dict(payload)
+            retry_payload.pop("resume_run_id", None)
+            if "resume_mode" not in retry_payload:
+                retry_payload["resume_mode"] = "remaining" if self._truthy(payload.get("retry_failed", True)) else "all"
+            return self.retry_company_database_build_run(resume_run_id, retry_payload, actor=actor)
         execute = self._truthy(payload.get("execute", False))
         dry_run = self._truthy(payload.get("dry_run", not execute))
         if dry_run:
@@ -20849,6 +20856,7 @@ class SystemService:
         report_match_limit = self._bounded_limit(payload.get("report_match_limit", 100), 2000)
         structure_reports = self._truthy(payload.get("structure_reports", False))
         structure_report_limit = self._bounded_limit(payload.get("structure_report_limit", 20), 500)
+        force_structure = self._truthy(payload.get("force_structure", False))
         build_events = self._truthy(payload.get("build_events", True))
         build_relationships = self._truthy(payload.get("build_relationships", True))
         build_workflow = self._truthy(payload.get("build_workflow", True))
@@ -20859,11 +20867,33 @@ class SystemService:
         include_listings = self._truthy(payload.get("include_listings", True))
         include_institution_coverage = self._truthy(payload.get("include_institution_coverage", True))
         include_disclosure_candidates = self._truthy(payload.get("include_disclosure_candidates", True))
+        event_limit = self._bounded_limit(payload.get("event_limit", 100), 2000)
+        relationship_limit = self._bounded_limit(payload.get("relationship_limit", 100), 2000)
+        workflow_link_limit = self._bounded_limit(payload.get("workflow_link_limit", 5), 100)
         record_run = execute or self._truthy(payload.get("record_run", False))
+        retry_of = str(payload.get("retry_of", "")).strip()
+        resume_of = str(payload.get("resume_of", "")).strip()
+        resume_mode = str(payload.get("resume_mode", "")).strip()
+        attempt = self._company_database_batch_attempt(payload.get("attempt", 1))
+        raw_skipped_issuer_ids = payload.get("skipped_issuer_ids", [])
+        if isinstance(raw_skipped_issuer_ids, str):
+            skipped_issuer_ids = [raw_skipped_issuer_ids]
+        else:
+            skipped_issuer_ids = list(raw_skipped_issuer_ids or [])
+        skipped_issuer_ids = [str(item).strip() for item in skipped_issuer_ids if str(item).strip()]
+        raw_completed_issuer_ids = payload.get("completed_issuer_ids", [])
+        if isinstance(raw_completed_issuer_ids, str):
+            completed_issuer_ids = [raw_completed_issuer_ids]
+        else:
+            completed_issuer_ids = list(raw_completed_issuer_ids or [])
+        completed_issuer_ids = [str(item).strip() for item in completed_issuer_ids if str(item).strip()]
         started_at = utcnow()
         issuers = self._company_database_target_issuers(payload, limit=limit)
         target_issuer_ids = [issuer.issuer_id for issuer in issuers]
-        target_symbols = [str(item) for item in payload.get("symbols", [])] if isinstance(payload.get("symbols"), list) else ([str(payload.get("symbol") or payload.get("ticker"))] if payload.get("symbol") or payload.get("ticker") else [])
+        if isinstance(payload.get("target_symbols"), list):
+            target_symbols = [str(item) for item in payload.get("target_symbols", []) if str(item).strip()]
+        else:
+            target_symbols = [str(item) for item in payload.get("symbols", [])] if isinstance(payload.get("symbols"), list) else ([str(payload.get("symbol") or payload.get("ticker"))] if payload.get("symbol") or payload.get("ticker") else [])
         coverage_filter = {"issuer_ids": target_issuer_ids, "limit": len(target_issuer_ids)}
         coverage_before = self.company_database_coverage_audit(coverage_filter, actor=actor) if issuers else {}
         batches: list[dict[str, Any]] = []
@@ -20883,97 +20913,13 @@ class SystemService:
             "feedback_created": 0,
             "feedback_planned": 0,
         }
-        for index in range(0, len(issuers), batch_size):
-            batch_issuers = issuers[index : index + batch_size]
-            batch_issuer_ids = [issuer.issuer_id for issuer in batch_issuers]
-            database_result = self.build_company_database(
-                {
-                    "issuer_ids": batch_issuer_ids,
-                    "limit": len(batch_issuer_ids),
-                    "report_match_limit": report_match_limit,
-                    "structure_reports": structure_reports,
-                    "structure_report_limit": structure_report_limit,
-                    "execute": execute,
-                    "dry_run": dry_run,
-                },
-                actor=actor,
-            )
-            events_result: dict[str, Any] = {}
-            if build_events:
-                events_result = self.build_company_events(
-                    {
-                        "issuer_ids": batch_issuer_ids,
-                        "limit": len(batch_issuer_ids),
-                        "event_limit": payload.get("event_limit", 100),
-                        "include_market_data": include_market_data,
-                        "include_research_coverage": include_research_coverage,
-                        "include_disclosures": include_disclosures,
-                        "include_structured_disclosures": include_structured_disclosures,
-                        "execute": execute,
-                        "dry_run": dry_run,
-                    },
-                    actor=actor,
-                )
-            relationships_result: dict[str, Any] = {}
-            if build_relationships:
-                relationships_result = self.build_company_relationships(
-                    {
-                        "issuer_ids": batch_issuer_ids,
-                        "limit": len(batch_issuer_ids),
-                        "relationship_limit": payload.get("relationship_limit", 100),
-                        "include_listings": include_listings,
-                        "include_institution_coverage": include_institution_coverage,
-                        "include_disclosure_candidates": include_disclosure_candidates,
-                        "execute": execute,
-                        "dry_run": dry_run,
-                    },
-                    actor=actor,
-                )
-            workflow_result: dict[str, Any] = {}
-            if build_workflow:
-                workflow_result = self.build_company_workflow(
-                    {
-                        "issuer_ids": batch_issuer_ids,
-                        "limit": len(batch_issuer_ids),
-                        "link_limit": payload.get("workflow_link_limit", 5),
-                        "execute": execute,
-                        "dry_run": dry_run,
-                    },
-                    actor=actor,
-                )
-            totals["profiles_saved"] += int(database_result.get("profiles_saved", 0))
-            totals["profiles_planned"] += int(database_result.get("profiles_planned", 0))
-            totals["research_reports_matched"] += int(database_result.get("research_reports_matched", 0))
-            totals["research_reports_bound"] += int(database_result.get("research_reports_bound", 0))
-            totals["events_created"] += int(events_result.get("events_created", 0) or 0)
-            totals["events_planned"] += int(events_result.get("events_planned", 0) or 0)
-            totals["relationships_created"] += int(relationships_result.get("relationships_created", 0) or 0)
-            totals["relationships_planned"] += int(relationships_result.get("relationships_planned", 0) or 0)
-            totals["observations_created"] += int(workflow_result.get("observations_created", 0) or 0)
-            totals["observations_planned"] += int(workflow_result.get("observations_planned", 0) or 0)
-            totals["conclusions_created"] += int(workflow_result.get("conclusions_created", 0) or 0)
-            totals["conclusions_planned"] += int(workflow_result.get("conclusions_planned", 0) or 0)
-            totals["feedback_created"] += int(workflow_result.get("feedback_created", 0) or 0)
-            totals["feedback_planned"] += int(workflow_result.get("feedback_planned", 0) or 0)
-            batches.append(
-                {
-                    "batch_index": len(batches) + 1,
-                    "issuer_ids": batch_issuer_ids,
-                    "database_result": database_result,
-                    "events_result": events_result,
-                    "relationships_result": relationships_result,
-                    "workflow_result": workflow_result,
-                }
-            )
-        coverage = self.company_database_coverage_audit(coverage_filter, actor=actor) if issuers else {}
-        run_id = str(payload.get("run_id") or self._company_database_batch_run_id(actor, target_issuer_ids, started_at))
-        run_record: CompanyDatabaseBuildRun | None = None
         options = self._company_database_batch_options(
             limit=limit,
             batch_size=batch_size,
             report_match_limit=report_match_limit,
             structure_reports=structure_reports,
             structure_report_limit=structure_report_limit,
+            force_structure=force_structure,
             build_events=build_events,
             build_relationships=build_relationships,
             build_workflow=build_workflow,
@@ -20984,31 +20930,170 @@ class SystemService:
             include_listings=include_listings,
             include_institution_coverage=include_institution_coverage,
             include_disclosure_candidates=include_disclosure_candidates,
+            event_limit=event_limit,
+            relationship_limit=relationship_limit,
+            workflow_link_limit=workflow_link_limit,
         )
+        run_id = str(payload.get("run_id") or self._company_database_batch_run_id(actor, target_issuer_ids, started_at))
+        idempotency_key = str(payload.get("idempotency_key", "")).strip() or self._company_database_batch_idempotency_key(
+            actor,
+            target_issuer_ids,
+            options,
+            retry_of=retry_of,
+            resume_of=resume_of,
+            attempt=attempt,
+        )
+        run_record: CompanyDatabaseBuildRun | None = None
+        coverage: dict[str, Any] = {}
+        try:
+            for index in range(0, len(issuers), batch_size):
+                batch_issuers = issuers[index : index + batch_size]
+                batch_issuer_ids = [issuer.issuer_id for issuer in batch_issuers]
+                database_result = self.build_company_database(
+                    {
+                        "issuer_ids": batch_issuer_ids,
+                        "limit": len(batch_issuer_ids),
+                        "report_match_limit": report_match_limit,
+                        "structure_reports": structure_reports,
+                        "structure_report_limit": structure_report_limit,
+                        "force_structure": force_structure,
+                        "execute": execute,
+                        "dry_run": dry_run,
+                    },
+                    actor=actor,
+                )
+                events_result: dict[str, Any] = {}
+                if build_events:
+                    events_result = self.build_company_events(
+                        {
+                            "issuer_ids": batch_issuer_ids,
+                            "limit": len(batch_issuer_ids),
+                            "event_limit": event_limit,
+                            "include_market_data": include_market_data,
+                            "include_research_coverage": include_research_coverage,
+                            "include_disclosures": include_disclosures,
+                            "include_structured_disclosures": include_structured_disclosures,
+                            "execute": execute,
+                            "dry_run": dry_run,
+                        },
+                        actor=actor,
+                    )
+                relationships_result: dict[str, Any] = {}
+                if build_relationships:
+                    relationships_result = self.build_company_relationships(
+                        {
+                            "issuer_ids": batch_issuer_ids,
+                            "limit": len(batch_issuer_ids),
+                            "relationship_limit": relationship_limit,
+                            "include_listings": include_listings,
+                            "include_institution_coverage": include_institution_coverage,
+                            "include_disclosure_candidates": include_disclosure_candidates,
+                            "execute": execute,
+                            "dry_run": dry_run,
+                        },
+                        actor=actor,
+                    )
+                workflow_result: dict[str, Any] = {}
+                if build_workflow:
+                    workflow_result = self.build_company_workflow(
+                        {
+                            "issuer_ids": batch_issuer_ids,
+                            "limit": len(batch_issuer_ids),
+                            "link_limit": workflow_link_limit,
+                            "execute": execute,
+                            "dry_run": dry_run,
+                        },
+                        actor=actor,
+                    )
+                totals["profiles_saved"] += int(database_result.get("profiles_saved", 0))
+                totals["profiles_planned"] += int(database_result.get("profiles_planned", 0))
+                totals["research_reports_matched"] += int(database_result.get("research_reports_matched", 0))
+                totals["research_reports_bound"] += int(database_result.get("research_reports_bound", 0))
+                totals["events_created"] += int(events_result.get("events_created", 0) or 0)
+                totals["events_planned"] += int(events_result.get("events_planned", 0) or 0)
+                totals["relationships_created"] += int(relationships_result.get("relationships_created", 0) or 0)
+                totals["relationships_planned"] += int(relationships_result.get("relationships_planned", 0) or 0)
+                totals["observations_created"] += int(workflow_result.get("observations_created", 0) or 0)
+                totals["observations_planned"] += int(workflow_result.get("observations_planned", 0) or 0)
+                totals["conclusions_created"] += int(workflow_result.get("conclusions_created", 0) or 0)
+                totals["conclusions_planned"] += int(workflow_result.get("conclusions_planned", 0) or 0)
+                totals["feedback_created"] += int(workflow_result.get("feedback_created", 0) or 0)
+                totals["feedback_planned"] += int(workflow_result.get("feedback_planned", 0) or 0)
+                completed_issuer_ids.extend(issuer_id for issuer_id in batch_issuer_ids if issuer_id not in completed_issuer_ids)
+                batches.append(
+                    {
+                        "batch_index": len(batches) + 1,
+                        "issuer_ids": batch_issuer_ids,
+                        "database_result": database_result,
+                        "events_result": events_result,
+                        "relationships_result": relationships_result,
+                        "workflow_result": workflow_result,
+                    }
+                )
+            coverage = self.company_database_coverage_audit(coverage_filter, actor=actor) if issuers else {}
+        except Exception as exc:
+            try:
+                coverage = self.company_database_coverage_audit(coverage_filter, actor=actor) if issuers else {}
+            except Exception:
+                coverage = {}
+            if record_run:
+                run_record = self._record_company_database_build_run(
+                    run_id=run_id,
+                    actor=actor,
+                    status="partial" if batches else "failed",
+                    execute=execute,
+                    dry_run=dry_run,
+                    retry_of=retry_of,
+                    resume_of=resume_of,
+                    resume_mode=resume_mode,
+                    attempt=attempt,
+                    idempotency_key=idempotency_key,
+                    target_issuer_ids=target_issuer_ids,
+                    target_symbols=target_symbols,
+                    completed_issuer_ids=completed_issuer_ids,
+                    skipped_issuer_ids=skipped_issuer_ids,
+                    batch_size=batch_size,
+                    totals=totals,
+                    coverage_before=coverage_before,
+                    coverage_after=coverage,
+                    options=options,
+                    batches=batches,
+                    error=str(exc),
+                    started_at=started_at,
+                )
+            self._audit(
+                actor,
+                "build_company_database_batch",
+                "company_database",
+                "batch",
+                approval_state=f"failed;execute={execute};issuers={len(issuers)};batches={len(batches)}",
+            )
+            raise
         if record_run:
-            run_record = CompanyDatabaseBuildRun(
+            run_record = self._record_company_database_build_run(
                 run_id=run_id,
                 actor=actor,
                 status="executed" if execute else "dry_run",
                 execute=execute,
                 dry_run=dry_run,
+                retry_of=retry_of,
+                resume_of=resume_of,
+                resume_mode=resume_mode,
+                attempt=attempt,
+                idempotency_key=idempotency_key,
                 target_issuer_ids=target_issuer_ids,
                 target_symbols=target_symbols,
-                batch_count=len(batches),
+                completed_issuer_ids=completed_issuer_ids,
+                skipped_issuer_ids=skipped_issuer_ids,
                 batch_size=batch_size,
                 totals=totals,
                 coverage_before=coverage_before,
                 coverage_after=coverage,
                 options=options,
                 batches=batches,
+                error="",
                 started_at=started_at,
-                completed_at=utcnow(),
             )
-            self.store.company_database_build_runs[run_id] = run_record
-            marker = getattr(self.store, "mark_dirty_for_resource", None)
-            if callable(marker):
-                marker("company_database_build_run")
-            self.store.commit()
         self._audit(
             actor,
             "build_company_database_batch",
@@ -21033,9 +21118,198 @@ class SystemService:
             "usage_boundary": "company_database_batch_build_uses_local_records_only_no_live_trading",
         }
 
+    def retry_company_database_build_run(self, run_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        source_run = self.store.company_database_build_runs.get(str(run_id))
+        if source_run is None:
+            raise NotFoundError(f"company database build run not found: {run_id}")
+        resume_mode = str(payload.get("resume_mode") or ("remaining" if source_run.status in {"failed", "partial"} else "all")).strip()
+        if resume_mode not in {"all", "remaining"}:
+            raise ValidationError("resume_mode must be one of ['all', 'remaining']")
+        completed_issuer_ids = self._company_database_build_run_completed_issuer_ids(source_run)
+        if resume_mode == "remaining":
+            retry_issuer_ids = [issuer_id for issuer_id in source_run.target_issuer_ids if issuer_id not in set(completed_issuer_ids)]
+            skipped_issuer_ids = [issuer_id for issuer_id in source_run.target_issuer_ids if issuer_id in set(completed_issuer_ids)]
+        else:
+            retry_issuer_ids = list(source_run.target_issuer_ids)
+            skipped_issuer_ids = []
+        if not retry_issuer_ids:
+            self._audit(
+                actor,
+                "retry_company_database_build_run",
+                "company_database_build_run",
+                source_run.run_id,
+                approval_state=f"nothing_to_retry;resume_mode={resume_mode}",
+            )
+            return {
+                "status": "nothing_to_retry",
+                "source_run_id": source_run.run_id,
+                "resume_mode": resume_mode,
+                "retry_issuer_ids": [],
+                "skipped_issuer_ids": skipped_issuer_ids,
+                "usage_boundary": "company_database_build_retry_uses_local_run_history_no_live_trading",
+            }
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        attempt = self._company_database_batch_attempt(payload.get("attempt", int(source_run.attempt or 1) + 1))
+        replay_payload: dict[str, Any] = dict(source_run.options)
+        replay_payload.update(
+            {
+                "issuer_ids": retry_issuer_ids,
+                "limit": len(retry_issuer_ids),
+                "target_symbols": list(source_run.target_symbols),
+                "execute": execute,
+                "dry_run": dry_run,
+                "record_run": self._truthy(payload.get("record_run", True)),
+                "retry_of": source_run.run_id,
+                "resume_of": source_run.run_id if resume_mode == "remaining" else str(payload.get("resume_of", "")).strip(),
+                "resume_mode": resume_mode,
+                "attempt": attempt,
+                "completed_issuer_ids": [] if resume_mode == "all" else completed_issuer_ids,
+                "skipped_issuer_ids": skipped_issuer_ids,
+            }
+        )
+        override_keys = {
+            "run_id",
+            "idempotency_key",
+            "batch_size",
+            "report_match_limit",
+            "structure_reports",
+            "structure_report_limit",
+            "force_structure",
+            "build_events",
+            "build_relationships",
+            "build_workflow",
+            "include_market_data",
+            "include_research_coverage",
+            "include_disclosures",
+            "include_structured_disclosures",
+            "include_listings",
+            "include_institution_coverage",
+            "include_disclosure_candidates",
+            "event_limit",
+            "relationship_limit",
+            "workflow_link_limit",
+        }
+        for key in override_keys:
+            if key in payload:
+                replay_payload[key] = payload[key]
+        result = self.build_company_database_batch(replay_payload, actor=actor)
+        self._audit(
+            actor,
+            "retry_company_database_build_run",
+            "company_database_build_run",
+            source_run.run_id,
+            approval_state=f"new_run={result.get('run_id')};resume_mode={resume_mode};execute={execute}",
+        )
+        return {
+            "status": result.get("status", "dry_run"),
+            "source_run_id": source_run.run_id,
+            "new_run_id": result.get("run_id", ""),
+            "resume_mode": resume_mode,
+            "attempt": attempt,
+            "retry_issuer_ids": retry_issuer_ids,
+            "skipped_issuer_ids": skipped_issuer_ids,
+            "result": result,
+            "usage_boundary": "company_database_build_retry_uses_local_run_history_no_live_trading",
+        }
+
+    def _record_company_database_build_run(
+        self,
+        *,
+        run_id: str,
+        actor: str,
+        status: str,
+        execute: bool,
+        dry_run: bool,
+        retry_of: str,
+        resume_of: str,
+        resume_mode: str,
+        attempt: int,
+        idempotency_key: str,
+        target_issuer_ids: list[str],
+        target_symbols: list[str],
+        completed_issuer_ids: list[str],
+        skipped_issuer_ids: list[str],
+        batch_size: int,
+        totals: dict[str, Any],
+        coverage_before: dict[str, Any],
+        coverage_after: dict[str, Any],
+        options: dict[str, Any],
+        batches: list[dict[str, Any]],
+        error: str,
+        started_at: Any,
+    ) -> CompanyDatabaseBuildRun:
+        run_record = CompanyDatabaseBuildRun(
+            run_id=run_id,
+            actor=actor,
+            status=status,
+            execute=execute,
+            dry_run=dry_run,
+            retry_of=retry_of,
+            resume_of=resume_of,
+            resume_mode=resume_mode,
+            attempt=attempt,
+            idempotency_key=idempotency_key,
+            target_issuer_ids=list(target_issuer_ids),
+            target_symbols=list(target_symbols),
+            completed_issuer_ids=list(completed_issuer_ids),
+            skipped_issuer_ids=list(skipped_issuer_ids),
+            batch_count=len(batches),
+            batch_size=batch_size,
+            totals=dict(totals),
+            coverage_before=dict(coverage_before),
+            coverage_after=dict(coverage_after),
+            options=dict(options),
+            batches=list(batches),
+            error=error,
+            started_at=started_at,
+            completed_at=utcnow(),
+        )
+        self.store.company_database_build_runs[run_id] = run_record
+        marker = getattr(self.store, "mark_dirty_for_resource", None)
+        if callable(marker):
+            marker("company_database_build_run")
+        self.store.commit()
+        return run_record
+
+    def _company_database_build_run_completed_issuer_ids(self, run: CompanyDatabaseBuildRun) -> list[str]:
+        completed: list[str] = []
+        for issuer_id in run.completed_issuer_ids:
+            if issuer_id not in completed:
+                completed.append(issuer_id)
+        for batch in run.batches:
+            if not isinstance(batch, Mapping):
+                continue
+            for issuer_id in batch.get("issuer_ids", []) or []:
+                issuer_id = str(issuer_id)
+                if issuer_id and issuer_id not in completed:
+                    completed.append(issuer_id)
+        return completed
+
+    def _company_database_batch_attempt(self, value: Any) -> int:
+        try:
+            return max(1, int(value or 1))
+        except (TypeError, ValueError):
+            raise ValidationError("attempt must be an integer") from None
+
     def _company_database_batch_run_id(self, actor: str, issuer_ids: list[str], started_at: Any) -> str:
         raw = f"{actor}:{','.join(issuer_ids)}:{to_plain(started_at)}:{time.time()}"
         return f"cdb_run_{utcnow().strftime('%Y%m%d%H%M%S')}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:10]}"
+
+    def _company_database_batch_idempotency_key(self, actor: str, issuer_ids: list[str], options: Mapping[str, Any], *, retry_of: str = "", resume_of: str = "", attempt: int = 1) -> str:
+        raw = {
+            "actor": actor,
+            "issuer_ids": issuer_ids,
+            "options": options,
+            "retry_of": retry_of,
+            "resume_of": resume_of,
+            "attempt": attempt,
+        }
+        digest = hashlib.sha256(json.dumps(to_plain(raw), ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        return f"cdb_batch_{digest}"
 
     def _company_database_batch_options(self, **kwargs: Any) -> dict[str, Any]:
         return {key: value for key, value in kwargs.items()}
@@ -21043,17 +21317,29 @@ class SystemService:
     def company_database_build_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         limit = self._bounded_limit(filters.get("limit", 20), 200)
+        run_id = str(filters.get("run_id", "")).strip()
         issuer_id = str(filters.get("issuer_id", "")).strip()
         status = str(filters.get("status", "")).strip()
+        include_batches = self._truthy(filters.get("include_batches", False))
         runs = list(self.store.company_database_build_runs.values())
+        if run_id:
+            runs = [run for run in runs if run.run_id == run_id]
         if issuer_id:
             runs = [run for run in runs if issuer_id in run.target_issuer_ids]
         if status:
             runs = [run for run in runs if run.status == status]
         runs.sort(key=lambda item: (str(to_plain(item.completed_at)), item.run_id), reverse=True)
+        rows: list[dict[str, Any]] = []
+        for run in runs[:limit]:
+            row = to_plain(run)
+            if not include_batches:
+                row["batch_details_omitted"] = bool(row.get("batches"))
+                row["batches"] = []
+            rows.append(row)
         return {
             "count": len(runs),
-            "runs": [to_plain(run) for run in runs[:limit]],
+            "include_batches": include_batches,
+            "runs": rows,
             "usage_boundary": "company_database_build_runs_are_local_operations_history_no_live_trading",
         }
 

@@ -2284,6 +2284,7 @@
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
 | `/api/company-database/batch/runs` | `GET` / `POST` | 查询公司数据库批量补齐运行历史，用于审计、复盘和后续断点续跑 |
+| `/api/company-database/batch/runs/{run_id}/retry` | `POST` | 基于已持久化补库 run 本地重放全部或剩余公司，用于失败重试和断点续跑 |
 | `/api/company-database/coverage/trends` | `GET` / `POST` | 从补库运行历史生成覆盖率趋势和可选本地 artifact，用于复盘补库是否改善公司数据库 |
 | `/api/company-database/coverage/audit` | `GET` / `POST` | 按公司审计画像、证券、行情、财务、文档、事件、关系、研报、观察结论和模拟反馈覆盖情况 |
 | `/api/company-database/events/build` | `POST` | 从已入库公开披露、披露正文证据、公开行情和研报覆盖生成公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
@@ -2350,19 +2351,22 @@
 - `include_listings` / `include_institution_coverage` / `include_disclosure_candidates`：默认 `true`，透传给关系构建器。
 - `record_run`：默认随 `execute` 为 `true`；dry-run 需要显式传 `record_run=true` 才持久化运行记录。
 - `run_id`：可选；调用方指定运行记录 ID，否则系统生成 `cdb_run_*`。
+- `resume_run_id`：可选；基于已有 `CompanyDatabaseBuildRun` 重放。默认对 `failed`/`partial` run 使用 `remaining` 模式，只处理未完成公司；可用 `retry_failed=false` 或 `resume_mode=all` 重跑全部目标。
+- `retry_failed`：可选；配合 `resume_run_id` 使用，默认 `true`。
+- `resume_mode`：可选；`remaining` 或 `all`。
 - `execute`：默认 `false`；为 `true` 时才落库。
 - `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划。
 
 返回字段：
 
-- `status`：`dry_run` 或 `executed`。
+- `status`：`dry_run`、`executed`、`failed`、`partial` 或 retry 包装响应中的当前重放状态。
 - `issuer_count` / `batch_count` / `batch_size`：目标公司和批次数。
 - `totals`：画像、研报绑定、事件、关系、观察、结论和反馈的计划/创建汇总。
 - `coverage_before` / `coverage_after`：同一目标范围补库前后的覆盖率审计结果。
 - `run_id` / `run_recorded` / `run`：运行 ID、是否已持久化和运行记录快照。
 - `batches`：每批的 `database_result`、`events_result`、`relationships_result` 和 `workflow_result`。
 
-运行记录写入 `CompanyDatabaseBuildRun`，包含 actor、状态、目标公司、目标代码、批次数、构建选项、totals、覆盖率前后、批次明细和 `usage_boundary=company_database_build_run_is_local_research_operations_history_no_live_trading`。该接口是本机补库编排入口；未来可在此基础上增加断点续跑、失败重试和 artifact 输出。
+运行记录写入 `CompanyDatabaseBuildRun`，包含 actor、状态、目标公司、目标代码、retry/resume 关联、attempt、idempotency key、已完成公司、跳过公司、批次数、构建选项、totals、覆盖率前后、批次明细和 `usage_boundary=company_database_build_run_is_local_research_operations_history_no_live_trading`。该接口是本机补库编排入口；失败时会记录 `failed` 或 `partial` run，便于后续基于本地 run history 重放。
 
 #### `GET|POST /api/company-database/batch/runs`
 
@@ -2371,14 +2375,37 @@
 请求字段：
 
 - `issuer_id`：可选；只返回包含该公司主体的运行。
-- `status`：可选；`dry_run`、`executed` 或 `failed`。
+- `run_id`：可选；只返回指定运行。
+- `status`：可选；`dry_run`、`executed`、`failed` 或 `partial`。
 - `limit`：返回数量上限，默认 20，最大 200。
+- `include_batches`：默认 `false`；为 `true` 时返回完整批次明细。默认瘦身返回会清空 `batches` 并标记 `batch_details_omitted`。
 
 返回字段：
 
 - `count`：过滤后的运行记录总数。
 - `runs`：按 `completed_at` 倒序排列的运行记录。
+- `include_batches`：本次是否返回完整批次明细。
 - `usage_boundary`：固定为本地操作历史，不是交易或生产发布证据。
+
+#### `POST /api/company-database/batch/runs/{run_id}/retry`
+
+从已持久化的 `CompanyDatabaseBuildRun` 重放补库。该接口只读取本地 run history 和本地公司数据库，不自动下载外部资料，不连接真实券商，不触发真实交易。
+
+请求字段：
+
+- `execute` / `dry_run`：默认 dry-run；`execute=true` 才落库。
+- `record_run`：默认 `true`；重放结果默认写入新的 `CompanyDatabaseBuildRun`。
+- `resume_mode`：`all` 或 `remaining`。未传时，`failed`/`partial` 源 run 默认 `remaining`，其他状态默认 `all`。
+- 可覆盖字段：`batch_size`、`report_match_limit`、`structure_reports`、`structure_report_limit`、`build_events`、`build_relationships`、`build_workflow`、`event_limit`、`relationship_limit`、`workflow_link_limit` 等安全构建选项。
+- `run_id` / `idempotency_key`：可选；指定新 run ID 或幂等键。
+
+返回字段：
+
+- `source_run_id` / `new_run_id`：源 run 和本次新 run。
+- `resume_mode` / `attempt`：重放模式和尝试次数。
+- `retry_issuer_ids` / `skipped_issuer_ids`：本次处理与跳过的公司主体。
+- `result`：嵌套的批量补库结果。
+- `usage_boundary`：固定为本地补库重放，不是交易记录或生产发布证据。
 
 #### `GET|POST /api/company-database/coverage/trends`
 
@@ -2387,7 +2414,7 @@
 请求字段：
 
 - `issuer_id`：可选；只统计包含该公司主体的运行。
-- `status`：可选；`dry_run`、`executed` 或 `failed`。
+- `status`：可选；`dry_run`、`executed`、`failed` 或 `partial`。
 - `limit`：运行数量上限，默认 50，最大 500。
 - `write_artifact` / `record_artifact`：默认 `false`；为 `true` 时把趋势报告写入本地 JSON。
 - `artifact_path`：可选；默认 `artifacts/company-database-coverage-trends.json`。该 artifact 固定为 `local-only`，不得作为非本机 production release gate 证据。

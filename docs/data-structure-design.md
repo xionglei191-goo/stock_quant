@@ -3,7 +3,7 @@
 - Status: active
 - Owner group: Data and Evidence
 - Last updated: 2026-06-24
-- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453
+- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454
 - Scope: 公司级数据库、事件、关系、研报观点、观察任务、分析结论和模拟反馈核心模型
 - Non-goals: 真实交易订单模型、券商账户模型、把研报作为事实真相源
 
@@ -699,17 +699,24 @@ Required report fields:
 
 ### 10.4 CompanyDatabaseBuildRun
 
-`CompanyDatabaseBuildRun` 记录公司数据库批量补齐的本地运行历史，用于审计、复盘、覆盖率趋势和后续断点续跑。它不是交易指令，也不是生产发布证据。
+`CompanyDatabaseBuildRun` 记录公司数据库批量补齐的本地运行历史，用于审计、复盘、覆盖率趋势、失败重试和断点续跑。它不是交易指令，也不是生产发布证据。
 
 ```json
 {
   "run_id": "string",
   "actor": "string",
-  "status": "dry_run|executed|failed",
+  "status": "dry_run|executed|failed|partial",
   "execute": false,
   "dry_run": true,
+  "retry_of": "source_run_id",
+  "resume_of": "source_run_id",
+  "resume_mode": "all|remaining",
+  "attempt": 1,
+  "idempotency_key": "string",
   "target_issuer_ids": ["issuer_id"],
   "target_symbols": ["string"],
+  "completed_issuer_ids": ["issuer_id"],
+  "skipped_issuer_ids": ["issuer_id"],
   "batch_count": 0,
   "batch_size": 0,
   "totals": {
@@ -732,6 +739,7 @@ Required report fields:
   "coverage_after": {},
   "options": {},
   "batches": [],
+  "error": "",
   "usage_boundary": "company_database_build_run_is_local_research_operations_history_no_live_trading",
   "started_at": "datetime",
   "completed_at": "datetime",
@@ -739,12 +747,21 @@ Required report fields:
 }
 ```
 
+Retry/resume 语义：
+
+- `retry_of` 指向被重放的源 run。
+- `resume_of` 指向断点续跑的源 run；`resume_mode=remaining` 时只处理未完成公司。
+- `completed_issuer_ids` 记录源 run 或本次 run 已完成的公司主体。
+- `skipped_issuer_ids` 记录本次续跑因已完成而跳过的公司主体。
+- `status=partial` 表示至少有一个批次完成后发生失败，后续可从本地 run history 续跑剩余公司。
+- run history 默认返回瘦身摘要；只有显式 `include_batches=true` 才返回完整 `batches`。
+
 覆盖率趋势报告由 `CompanyDatabaseBuildRun.coverage_before` / `coverage_after` 派生，不新增事实源。核心行字段包括：
 
 ```json
 {
   "run_id": "string",
-  "status": "dry_run|executed|failed",
+  "status": "dry_run|executed|failed|partial",
   "target_issuer_ids": ["issuer_id"],
   "coverage_before_score": 0.0,
   "coverage_after_score": 0.0,

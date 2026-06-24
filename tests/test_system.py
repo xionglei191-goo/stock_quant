@@ -24,7 +24,7 @@ from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, DecisionPack, DisclosureEvent, Evidence, ResearchReportAsset, RightsTag, SystemAlert
+from app.models import AlertNotification, CompanyDatabaseBuildRun, DecisionPack, DisclosureEvent, Evidence, ResearchReportAsset, RightsTag, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
 from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
@@ -840,6 +840,19 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(listed.data["count"], 1)
         self.assertEqual(listed.data["runs"][0]["run_id"], run_id)
         self.assertEqual(listed.data["runs"][0]["usage_boundary"], "company_database_build_run_is_local_research_operations_history_no_live_trading")
+        self.assertEqual(listed.data["runs"][0]["batches"], [])
+        self.assertTrue(listed.data["runs"][0]["batch_details_omitted"])
+
+        listed_with_batches = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/runs",
+            {"run_id": run_id, "include_batches": True},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(listed_with_batches.success, listed_with_batches.error)
+        self.assertTrue(listed_with_batches.data["include_batches"])
+        self.assertEqual(len(listed_with_batches.data["runs"][0]["batches"]), 1)
 
     def test_company_database_batch_build_dry_run_history_is_explicit(self) -> None:
         preview = self.router.dispatch(
@@ -882,6 +895,176 @@ class SystemServiceTests(unittest.TestCase):
         self.assertFalse(run.execute)
         self.assertTrue(run.dry_run)
         self.assertEqual(run.totals["profiles_planned"], 1)
+
+    def test_company_database_batch_retry_replays_source_run(self) -> None:
+        source = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/build",
+            {
+                "symbols": ["DEMO"],
+                "limit": 1,
+                "batch_size": 1,
+                "build_events": False,
+                "build_relationships": False,
+                "build_workflow": False,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(source.success, source.error)
+        retry = self.router.dispatch(
+            "POST",
+            f"/api/company-database/batch/runs/{source.data['run_id']}/retry",
+            {"record_run": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(retry.success, retry.error)
+        self.assertEqual(retry.data["source_run_id"], source.data["run_id"])
+        self.assertEqual(retry.data["resume_mode"], "all")
+        self.assertEqual(retry.data["attempt"], 2)
+        self.assertEqual(retry.data["retry_issuer_ids"], ["issuer_001"])
+        retried_run = self.service.store.company_database_build_runs[retry.data["new_run_id"]]
+        self.assertEqual(retried_run.retry_of, source.data["run_id"])
+        self.assertEqual(retried_run.resume_mode, "all")
+        self.assertEqual(retried_run.attempt, 2)
+        self.assertEqual(retried_run.target_issuer_ids, ["issuer_001"])
+        self.assertFalse(retried_run.options["build_events"])
+        self.assertTrue(retried_run.idempotency_key)
+        self.assertIn("no_live_trading", retry.data["usage_boundary"])
+
+    def test_company_database_batch_resume_run_id_retries_remaining_issuers(self) -> None:
+        self.service.register_issuer(
+            {
+                "issuer_id": "issuer_002",
+                "legal_name": "Other Corp",
+                "market": ["U"],
+                "country": "US",
+            },
+            actor="platform",
+        )
+        self.service.register_security(
+            {
+                "security_id": "sec_002",
+                "issuer_id": "issuer_002",
+                "ticker": "OTHER",
+                "exchange": "NYSE",
+                "currency": "USD",
+                "market": "U",
+            },
+            actor="platform",
+        )
+        failed_run = CompanyDatabaseBuildRun(
+            run_id="cdb_failed_resume",
+            actor="data",
+            status="partial",
+            execute=True,
+            dry_run=False,
+            target_issuer_ids=["issuer_001", "issuer_002"],
+            target_symbols=["DEMO", "OTHER"],
+            completed_issuer_ids=["issuer_001"],
+            batch_count=1,
+            batch_size=1,
+            options={
+                "batch_size": 1,
+                "report_match_limit": 100,
+                "structure_reports": False,
+                "structure_report_limit": 20,
+                "build_events": False,
+                "build_relationships": False,
+                "build_workflow": False,
+                "include_market_data": True,
+                "include_research_coverage": True,
+                "include_disclosures": True,
+                "include_structured_disclosures": True,
+                "include_listings": True,
+                "include_institution_coverage": True,
+                "include_disclosure_candidates": True,
+                "event_limit": 100,
+                "relationship_limit": 100,
+                "workflow_link_limit": 5,
+            },
+            batches=[{"batch_index": 1, "issuer_ids": ["issuer_001"]}],
+            error="simulated failure",
+        )
+        self.service.store.company_database_build_runs[failed_run.run_id] = failed_run
+        resumed = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/build",
+            {"resume_run_id": failed_run.run_id, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(resumed.success, resumed.error)
+        self.assertEqual(resumed.data["source_run_id"], failed_run.run_id)
+        self.assertEqual(resumed.data["resume_mode"], "remaining")
+        self.assertEqual(resumed.data["retry_issuer_ids"], ["issuer_002"])
+        self.assertEqual(resumed.data["skipped_issuer_ids"], ["issuer_001"])
+        new_run = self.service.store.company_database_build_runs[resumed.data["new_run_id"]]
+        self.assertEqual(new_run.retry_of, failed_run.run_id)
+        self.assertEqual(new_run.resume_of, failed_run.run_id)
+        self.assertEqual(new_run.target_issuer_ids, ["issuer_002"])
+        self.assertEqual(new_run.skipped_issuer_ids, ["issuer_001"])
+        self.assertEqual(new_run.completed_issuer_ids, ["issuer_001", "issuer_002"])
+
+    def test_company_database_batch_records_partial_run_on_failure(self) -> None:
+        self.service.register_issuer(
+            {
+                "issuer_id": "issuer_002",
+                "legal_name": "Other Corp",
+                "market": ["U"],
+                "country": "US",
+            },
+            actor="platform",
+        )
+        self.service.register_security(
+            {
+                "security_id": "sec_002",
+                "issuer_id": "issuer_002",
+                "ticker": "OTHER",
+                "exchange": "NYSE",
+                "currency": "USD",
+                "market": "U",
+            },
+            actor="platform",
+        )
+        original_build_company_events = self.service.build_company_events
+
+        def flaky_build_company_events(payload: dict[str, object], *, actor: str = "system") -> dict[str, object]:
+            if payload.get("issuer_ids") == ["issuer_002"]:
+                raise RuntimeError("simulated event failure")
+            return original_build_company_events(payload, actor=actor)
+
+        self.service.build_company_events = flaky_build_company_events  # type: ignore[method-assign]
+        try:
+            result = self.router.dispatch(
+                "POST",
+                "/api/company-database/batch/build",
+                {
+                    "issuer_ids": ["issuer_001", "issuer_002"],
+                    "limit": 2,
+                    "batch_size": 1,
+                    "build_events": True,
+                    "build_relationships": False,
+                    "build_workflow": False,
+                    "execute": True,
+                },
+                actor="data",
+                role="data_engineer",
+            )
+        finally:
+            self.service.build_company_events = original_build_company_events  # type: ignore[method-assign]
+        self.assertFalse(result.success)
+        self.assertEqual(result.error["type"], "internal_error")
+        partial_runs = [run for run in self.service.store.company_database_build_runs.values() if run.status == "partial"]
+        self.assertEqual(len(partial_runs), 1)
+        partial_run = partial_runs[0]
+        self.assertEqual(partial_run.completed_issuer_ids, ["issuer_001"])
+        self.assertEqual(partial_run.target_issuer_ids, ["issuer_001", "issuer_002"])
+        self.assertEqual(partial_run.batch_count, 1)
+        self.assertIn("simulated event failure", partial_run.error)
+        self.assertIn("no_live_trading", partial_run.usage_boundary)
 
     def test_company_database_coverage_trends_report_and_artifact(self) -> None:
         first = self.router.dispatch(

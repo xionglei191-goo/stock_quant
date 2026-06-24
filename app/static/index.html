@@ -1526,6 +1526,7 @@
               <button id="previewCompanyBatchBuild">预览补齐</button>
               <button id="runCompanyBatchBuild" class="primary">执行补齐</button>
               <button id="loadCompanyBuildRuns">查看运行历史</button>
+              <button id="loadCompanyCoverageTrends">查看覆盖趋势</button>
               <button id="previewCompanyReportRealization">预览兑现</button>
               <button id="runCompanyReportRealization" class="primary">更新兑现</button>
             </div>
@@ -1536,10 +1537,14 @@
               <div class="system-box"><strong>最近运行</strong><span id="companyIntelRunHistoryStatus">待载入</span></div>
               <div class="system-box"><strong>运行数</strong><span id="companyIntelRunHistoryCount">0</span></div>
               <div class="system-box"><strong>覆盖变化</strong><span id="companyIntelRunHistoryDelta">0%</span></div>
+              <div class="system-box"><strong>趋势状态</strong><span id="companyIntelTrendStatus">待载入</span></div>
+              <div class="system-box"><strong>累计变化</strong><span id="companyIntelTrendDelta">0%</span></div>
+              <div class="system-box"><strong>缺失变化</strong><span id="companyIntelTrendMissingDelta">0</span></div>
               <div class="system-box"><strong>兑现状态</strong><span id="companyIntelRealizationStatus">待检查</span></div>
               <div class="system-box"><strong>兑现更新</strong><span id="companyIntelRealizationUpdated">0/0</span></div>
             </div>
             <table><thead><tr><th>运行</th><th>目标/批次</th><th>覆盖变化</th><th>汇总</th></tr></thead><tbody id="companyIntelRunRows"></tbody></table>
+            <table><thead><tr><th>运行</th><th>覆盖趋势</th><th>缺失变化</th><th>状态/边界</th></tr></thead><tbody id="companyIntelTrendRows"></tbody></table>
             <table><thead><tr><th>公司</th><th>覆盖率</th><th>缺失层</th><th>计数</th></tr></thead><tbody id="companyIntelCoverageRows"></tbody></table>
             <pre id="companyIntelOperationBox">载入公司后可审计覆盖率、预览补齐和更新研报兑现。</pre>
           </div>
@@ -3706,6 +3711,8 @@
         rejected: "已驳回",
         pending: "待处理",
         planned: "预览计划",
+        dry_run: "预览",
+        executed: "已执行",
         structured: "已结构化",
         skipped_existing: "已存在",
         metadata_only: "仅元数据",
@@ -3945,7 +3952,10 @@
         "manual_reference_or_supplemental_research_only": "人工参考/补充研究",
         "research only · no trade signal": "仅研究，不生成交易信号",
         "research only · not trade signal": "仅研究，不作为交易信号",
-        "simulated only · no broker execution": "仅模拟，不连接券商"
+        "simulated only · no broker execution": "仅模拟，不连接券商",
+        "company_database_build_run_is_local_research_operations_history_no_live_trading": "本地补库历史",
+        "company_database_build_runs_are_local_operations_history_no_live_trading": "本地补库历史",
+        "company_database_coverage_trends_are_local_research_operations_history_no_live_trading": "本地覆盖趋势"
       };
       return labels[value] || value || "-";
     }
@@ -4962,13 +4972,18 @@
           `${run.batch_count || 0} 批`,
           `批量 ${run.batch_size || 0}`
         ].join(" · ");
+        const completedCount = (run.completed_issuer_ids || []).length;
+        const skippedCount = (run.skipped_issuer_ids || []).length;
+        const retryLine = run.retry_of ? metaLine("重试源", compactId(run.retry_of)) : "";
+        const resumeLine = run.resume_mode ? metaLine("续跑", statusLabel(run.resume_mode)) : "";
+        const progressLine = completedCount || skippedCount ? metaLine("进度", `完成 ${completedCount} · 跳过 ${skippedCount}`) : "";
         const totalLine = [
           `画像 ${Number(totals.profiles_saved || totals.profiles_planned || 0)}`,
           `事件 ${Number(totals.events_created || totals.events_planned || 0)}`,
           `关系 ${Number(totals.relationships_created || totals.relationships_planned || 0)}`,
           `反馈 ${Number(totals.feedback_created || totals.feedback_planned || 0)}`
         ].join(" · ");
-        return `<tr><td>${compactId(run.run_id)}${metaLine("状态", statusLabel(run.status || ""))}${metaLine("时间", String(run.completed_at || run.created_at || "").slice(0, 19))}</td><td>${targetLine}${metaLine("代码", (run.target_symbols || []).slice(0, 4).join(", ") || "-")}</td><td>${pct(before)} -> ${pct(after)}${metaLine("变化", `${delta >= 0 ? "+" : ""}${pct(delta)}`)}</td><td>${totalLine}${metaLine("边界", boundaryLabel(run.usage_boundary || ""))}</td></tr>`;
+        return `<tr><td>${compactId(run.run_id)}${metaLine("状态", statusLabel(run.status || ""))}${metaLine("时间", String(run.completed_at || run.created_at || "").slice(0, 19))}${retryLine}</td><td>${targetLine}${metaLine("代码", (run.target_symbols || []).slice(0, 4).join(", ") || "-")}${resumeLine}${progressLine}</td><td>${pct(before)} -> ${pct(after)}${metaLine("变化", `${delta >= 0 ? "+" : ""}${pct(delta)}`)}</td><td>${totalLine}${metaLine("边界", boundaryLabel(run.usage_boundary || ""))}</td></tr>`;
       });
       if (showDetails) {
         $("companyIntelOperationBox").textContent = userPretty({
@@ -4998,6 +5013,61 @@
       }
     }
 
+    function renderCompanyCoverageTrends(data, showDetails = false) {
+      const trendRows = data.trend_rows || [];
+      const summary = data.summary || {};
+      const cumulativeDelta = Number(summary.cumulative_coverage_delta || 0);
+      const missingDelta = Number(summary.cumulative_missing_delta || 0);
+      $("companyIntelTrendStatus").textContent = trendRows.length ? "已载入" : "无记录";
+      $("companyIntelTrendDelta").textContent = trendRows.length ? `${cumulativeDelta >= 0 ? "+" : ""}${pct(cumulativeDelta)}` : "0%";
+      $("companyIntelTrendMissingDelta").textContent = trendRows.length ? `${missingDelta >= 0 ? "+" : ""}${missingDelta}` : "0";
+      $("companyIntelTrendRows").innerHTML = rows(trendRows, "暂无覆盖率趋势。执行或记录补库 run 后会生成趋势。", (row) => {
+        const coverageDelta = Number(row.coverage_delta || 0);
+        const rowMissingDelta = Number(row.missing_delta || 0);
+        const missingSections = Object.entries(row.missing_delta_by_section || {})
+          .filter(([, value]) => Number(value || 0) !== 0)
+          .slice(0, 4)
+          .map(([section, value]) => `${statusLabel(section)} ${Number(value) >= 0 ? "+" : ""}${value}`)
+          .join(" · ");
+        const targetLine = [
+          `${(row.target_issuer_ids || []).length} 家公司`,
+          `${row.batch_count || 0} 批`,
+          `批量 ${row.batch_size || 0}`
+        ].join(" · ");
+        return `<tr><td>${compactId(row.run_id)}${metaLine("状态", statusLabel(row.status || ""))}${metaLine("时间", String(row.completed_at || "").slice(0, 19))}</td><td>${pct(row.coverage_before_score)} -> ${pct(row.coverage_after_score)}${metaLine("变化", `${coverageDelta >= 0 ? "+" : ""}${pct(coverageDelta)}`)}${metaLine("目标", targetLine)}</td><td>${row.missing_before_count || 0} -> ${row.missing_after_count || 0}${metaLine("变化", `${rowMissingDelta >= 0 ? "+" : ""}${rowMissingDelta}`)}${metaLine("分项", missingSections || "-")}</td><td>${metaLine("改善", (row.improved_sections || []).map(statusLabel).slice(0, 4).join(", ") || "-")}${metaLine("恶化", (row.worsened_sections || []).map(statusLabel).slice(0, 4).join(", ") || "-")}${metaLine("边界", boundaryLabel(row.usage_boundary || ""))}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          run_count: data.run_count,
+          summary,
+          usage_boundary: data.usage_boundary
+        });
+      }
+    }
+
+    function companyIntelCoverageTrendPayload(limit = 10) {
+      const payload = { limit };
+      const issuerId = currentCompanyIntelIssuerId();
+      if (issuerId) payload.issuer_id = issuerId;
+      return payload;
+    }
+
+    async function loadCompanyCoverageTrends(showDetails = false) {
+      try {
+        $("companyIntelTrendStatus").textContent = "载入中";
+        const { data, trace_id } = await api("/api/company-database/coverage/trends", {
+          method: "POST",
+          role: "analyst",
+          body: companyIntelCoverageTrendPayload(10)
+        });
+        renderCompanyCoverageTrends(data, showDetails);
+        if (showDetails) setStatus(`覆盖率趋势已载入 · ${data.run_count || 0} 条 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelTrendStatus").textContent = "错误";
+        if (showDetails) setStatus(error.message, true);
+      }
+    }
+
     async function buildCompanyDatabaseBatch(execute = false) {
       try {
         $("companyIntelBatchBuildStatus").textContent = execute ? "执行中" : "预览中";
@@ -5007,7 +5077,10 @@
           body: companyIntelBuildPayload(execute)
         });
         renderCompanyBatchBuild(data);
-        if (execute || data.run_recorded) await loadCompanyBuildRuns(false);
+        if (execute || data.run_recorded) {
+          await loadCompanyBuildRuns(false);
+          await loadCompanyCoverageTrends(false);
+        }
         if (execute) await loadCompanyIntelligence(false);
         setStatus(`${execute ? "公司数据库补齐已执行" : "公司数据库补齐预览完成"} · ${data.issuer_count || 0} 家 · ${trace_id}`);
       } catch (error) {
@@ -5146,6 +5219,7 @@
       $("companyIntelActionRows").innerHTML = rows(actionRows, "暂无模拟反馈或后续动作。", (item) => `<tr><td>${item.type}</td><td>${compactId(item.id)}</td><td>${statusLabel(item.status)}</td><td>${String(item.detail || "").slice(0, 180)}</td></tr>`);
       renderCompanyRelationshipReview(data);
       loadCompanyBuildRuns(false);
+      loadCompanyCoverageTrends(false);
       $("companyIntelRawBox").textContent = userPretty({
         symbol: data.symbol,
         resolution: data.resolution,
@@ -5866,6 +5940,7 @@
     $("previewCompanyBatchBuild").addEventListener("click", () => buildCompanyDatabaseBatch(false));
     $("runCompanyBatchBuild").addEventListener("click", () => buildCompanyDatabaseBatch(true));
     $("loadCompanyBuildRuns").addEventListener("click", () => loadCompanyBuildRuns(true));
+    $("loadCompanyCoverageTrends").addEventListener("click", () => loadCompanyCoverageTrends(true));
     $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));
     $("runCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(true));
     $("previewCompanyReportStructure").addEventListener("click", () => structureCompanyReports(false));

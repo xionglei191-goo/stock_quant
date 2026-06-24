@@ -246,6 +246,28 @@
   - 验收：单测覆盖趋势汇总、issuer/status 过滤和本地 artifact 输出；API 文档明确只读本地 run 快照，不触发补库、外部抓取、真实券商或生产发布证据。
   - 后续增强：T-454 断点续跑、失败重试和大批量运行摘要瘦身；T-455 可把趋势图接入 UI。
 
+- `DONE` T-454 公司数据库补库断点续跑、失败重试和运行历史瘦身
+  - 对应：E3-US4, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-451 至 T-453 已有 run history、UI 摘要和覆盖率趋势，但失败时原接口不会保留 partial/failed run，历史列表也默认返回完整 batch 明细，不利于大批量公司数据库长期补库。
+  - **已完成（本轮）**：`CompanyDatabaseBuildRun` 新增 `retry_of`、`resume_of`、`resume_mode`、`attempt`、`idempotency_key`、`completed_issuer_ids`、`skipped_issuer_ids`，并支持 `partial` 状态。
+  - **已完成（本轮）**：`POST /api/company-database/batch/build` 支持 `resume_run_id`，可按 `remaining` 或 `all` 从本地 run history 重放；失败/partial run 默认只处理未完成公司。
+  - **已完成（本轮）**：新增 `POST /api/company-database/batch/runs/{run_id}/retry`，基于已持久化 run 生成新的本地补库 run，保留源 run、attempt、跳过公司和本地 no-live-trading 边界。
+  - **已完成（本轮）**：批量补库失败时会持久化 `failed` 或 `partial` run，记录已完成公司、已完成 batch、错误信息和覆盖率快照，避免失败后完全无迹可循。
+  - **已完成（本轮）**：`GET|POST /api/company-database/batch/runs` 支持 `run_id` 过滤，并默认省略完整 `batches`；显式 `include_batches=true` 才返回批次明细。
+  - 验收：单测覆盖运行历史瘦身/完整批次切换、retry route 重放源 run、`resume_run_id` 只续跑剩余公司、补库中途失败记录 `partial` run。
+  - 后续增强：T-455 覆盖率趋势 UI 接入；T-456 公司基础画像深字段覆盖审计与来源计划；T-457 官方披露/公司 IR 画像字段抽取。
+
+- `DONE` T-455 公司数据库覆盖率趋势 UI 接入
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-453 已有覆盖率趋势 API，T-454 已有 retry/partial run 语义，但公司情报工作台仍需要用户查看 raw JSON 才知道长期补库是否改善覆盖、缺失项是否减少、运行是否 partial/retry。
+  - **已完成（本轮）**：公司数据库补齐面板新增“查看覆盖趋势”、趋势状态、累计覆盖变化、缺失变化和趋势表。
+  - **已完成（本轮）**：趋势表读取 `POST /api/company-database/coverage/trends`，按当前公司主体过滤；只读本地 run history，不触发补库、外部下载或真实交易。
+  - **已完成（本轮）**：运行历史表展示 retry 源、续跑模式、完成/跳过公司数量，`partial` 状态可见。
+  - **已完成（本轮）**：内部 usage boundary 在 UI 中显示为“本地补库历史/本地覆盖趋势”，不再把内部常量直接暴露给用户。
+  - **已完成（本轮）**：执行补齐和载入公司情报后会刷新运行历史与覆盖趋势；新增 UI 静态契约和交互验收路径。
+  - 验收：UI 静态检查覆盖新增 DOM/JS；浏览器交互验收覆盖执行补齐后加载趋势表、累计变化和本地边界标签。
+  - 后续增强：T-456 公司基础画像深字段覆盖审计与来源计划；T-457 官方披露/公司 IR 画像字段抽取；T-458 事件/关系去重、实体归并和来源质量评分。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

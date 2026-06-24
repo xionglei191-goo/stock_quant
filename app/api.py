@@ -638,6 +638,7 @@ class ApiRouter:
             ("GET", r"^/api/company-profiles/schema$", self._company_profile_schema),
             ("POST", r"^/api/company-database/build$", self._build_company_database),
             ("POST", r"^/api/company-database/batch/build$", self._build_company_database_batch),
+            ("POST", r"^/api/company-database/batch/runs/(?P<run_id>[^/]+)/retry$", self._retry_company_database_build_run),
             ("GET", r"^/api/company-database/batch/runs$", self._company_database_build_runs),
             ("POST", r"^/api/company-database/batch/runs$", self._company_database_build_runs),
             ("GET", r"^/api/company-database/coverage/trends$", self._company_database_coverage_trends),
@@ -1857,6 +1858,10 @@ class ApiRouter:
 
     def _build_company_database_batch(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.build_company_database_batch(body, actor=actor)
+
+    def _retry_company_database_build_run(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/company-database/batch/runs/(?P<run_id>[^/]+)/retry$", path)
+        return self.service.retry_company_database_build_run(match["run_id"], body, actor=actor)
 
     def _company_database_build_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_database_build_runs_payload(body)
