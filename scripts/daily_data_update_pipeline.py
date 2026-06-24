@@ -815,7 +815,8 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         else:
             command.extend(["--tickers", args.us_tickers])
         steps.append(_run_command("us_yahoo_incremental", command, timeout=args.import_timeout_seconds, allow_failure=args.allow_import_failure))
-        if args.run_us_scope_refresh and args.us_tickers_from_db:
+        us_full_universe_refresh = args.us_tickers_from_db and not args.us_ticker_filter and not args.us_offset and not args.max_us_tickers and not args.us_batch_size
+        if args.run_us_scope_refresh and us_full_universe_refresh:
             us_scope_post_output = artifact("us-current-yahoo-universe-scope-post-import")
             command = [
                 sys.executable,

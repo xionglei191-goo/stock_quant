@@ -64,6 +64,29 @@ def _security_type(symbol: str) -> str:
     return "reference_security"
 
 
+def _seed_row_from_active_symbol(symbol: str, item: dict[str, str]) -> tuple[str, dict[str, Any], str, dict[str, Any]]:
+    security_id = f"sec_{symbol}"
+    issuer_id = f"issuer_{symbol}"
+    security = {
+        "security_id": security_id,
+        "issuer_id": issuer_id,
+        "ticker": symbol,
+        "market": "A",
+        "exchange": item.get("baostock_code", "").split(".", 1)[0].upper() or ("SSE" if symbol.startswith(("6", "9")) else "SZSE"),
+        "currency": "CNY",
+        "status": "active",
+    }
+    issuer = {
+        "issuer_id": issuer_id,
+        "legal_name": item.get("name") or symbol,
+        "aliases": [symbol],
+        "market": ["A"],
+        "country": "CN",
+        "status": "active",
+    }
+    return security_id, security, issuer_id, issuer
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     try:
         import psycopg  # type: ignore[import-not-found]
@@ -92,6 +115,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 """
             )
             rows = cursor.fetchall()
+            existing_symbols = {_normalize_symbol(str((payload or {}).get("ticker") or item_id)) for item_id, payload, _issuer_item_id, _issuer_payload in rows}
+            missing_symbols = sorted(symbol for symbol in active if symbol not in existing_symbols)
+            rows = list(rows)
+            rows.extend(_seed_row_from_active_symbol(symbol, active[symbol]) for symbol in missing_symbols)
             for security_item_id, security_payload, issuer_item_id, issuer_payload in rows:
                 security = dict(security_payload)
                 issuer = dict(issuer_payload or {})

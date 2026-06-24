@@ -44,6 +44,7 @@ import scripts.import_ashare_eod_baostock as import_ashare_eod_baostock_script
 import scripts.import_us_eod_yahoo_chart as import_us_eod_yahoo_chart_script
 import scripts.latest_analysis_run as latest_analysis_run_script
 import scripts.latency_audit as latency_audit_script
+import scripts.scope_ashare_current_baostock_universe as scope_ashare_current_baostock_universe_script
 import scripts.scope_us_current_yahoo_universe as scope_us_current_yahoo_universe_script
 from scripts.import_tdx_market_data import run_tdx_incremental_import
 from scripts.import_tdx_vipdoc_postgres import read_day_rows
@@ -12514,6 +12515,17 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("AI_QUANT_DAILY_RUN_ASHARE_SCOPE_REFRESH=true", runbook)
         self.assertIn("baostock active common-stock universe", runbook)
 
+    def test_ashare_scope_can_seed_missing_active_security_records(self) -> None:
+        security_id, security, issuer_id, issuer = scope_ashare_current_baostock_universe_script._seed_row_from_active_symbol(
+            "600519",
+            {"symbol": "600519", "name": "贵州茅台", "baostock_code": "sh.600519"},
+        )
+        self.assertEqual(security_id, "sec_600519")
+        self.assertEqual(issuer_id, "issuer_600519")
+        self.assertEqual(security["ticker"], "600519")
+        self.assertEqual(security["market"], "A")
+        self.assertEqual(issuer["legal_name"], "贵州茅台")
+
     def test_us_yahoo_import_can_batch_registered_universe_without_duplicate_ids(self) -> None:
         class FakeCursor:
             def __init__(self):
@@ -12570,6 +12582,33 @@ class SystemServiceTests(unittest.TestCase):
         script = Path("scripts/scope_us_current_yahoo_universe.py").read_text(encoding="utf-8")
         self.assertIn("market_data_refresh_scope", script)
         self.assertIn("duplicate_ticker_refresh_record", script)
+
+    def test_us_yahoo_scope_can_seed_missing_records_from_existing_bars(self) -> None:
+        class FakeCursor:
+            def __init__(self):
+                self.rows = []
+
+            def execute(self, sql, params=None):
+                normalized = " ".join(sql.split()).lower()
+                if "from ai_quant.market_data_bars" in normalized:
+                    self.rows = [
+                        ("security_aapl_us", "2026-05-22"),
+                        ("security_us_msft", "2026-05-22"),
+                        ("bad id", "2026-05-22"),
+                    ]
+                else:
+                    self.rows = []
+
+            def fetchall(self):
+                return list(self.rows)
+
+        rows = scope_us_current_yahoo_universe_script._seed_rows_from_existing_yahoo_bars(FakeCursor(), set())
+        self.assertEqual([row["ticker"] for row in rows], ["AAPL", "MSFT"])
+        self.assertEqual(rows[0]["security_id"], "security_aapl_us")
+        self.assertEqual(rows[0]["security"]["market"], "U")
+        self.assertEqual(rows[0]["classification"]["scope"], "in_scope")
+        filtered = scope_us_current_yahoo_universe_script._seed_rows_from_existing_yahoo_bars(FakeCursor(), {"MSFT"})
+        self.assertEqual([row["ticker"] for row in filtered], ["MSFT"])
 
     def test_us_yahoo_import_status_fails_when_every_ticker_fails(self) -> None:
         class FakeCursor:

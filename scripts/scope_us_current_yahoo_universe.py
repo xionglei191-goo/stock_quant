@@ -79,6 +79,81 @@ def _preference_score(record: dict[str, Any]) -> int:
     return score
 
 
+def _ticker_from_security_id(security_id: str) -> str:
+    value = str(security_id or "").strip().lower()
+    for prefix in ("security_us_", "security_"):
+        if value.startswith(prefix):
+            value = value[len(prefix) :]
+            break
+    if value.endswith("_us"):
+        value = value[:-3]
+    ticker = value.upper().replace("_", ".")
+    return ticker if re.fullmatch(r"[A-Z][A-Z0-9.:-]{0,14}", ticker) else ""
+
+
+def _seed_rows_from_existing_yahoo_bars(cursor: Any, ticker_filter: set[str]) -> list[dict[str, Any]]:
+    clauses = [
+        "market = 'U'",
+        "source_id = 'yahoo_chart_us_eod'",
+        "data_type = 'eod'",
+    ]
+    params: list[Any] = []
+    cursor.execute(
+        f"""
+        SELECT security_id, MAX(as_of_date)::text AS latest_date
+        FROM ai_quant.market_data_bars
+        WHERE {' AND '.join(clauses)}
+        GROUP BY security_id
+        ORDER BY security_id
+        """,
+        tuple(params),
+    )
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for security_id, latest_date in cursor.fetchall():
+        ticker = _ticker_from_security_id(str(security_id or ""))
+        if not ticker or ticker in seen:
+            continue
+        if ticker_filter and ticker not in ticker_filter:
+            continue
+        seen.add(ticker)
+        safe = _safe_identifier(ticker.lower())
+        issuer_id = f"issuer_{safe}"
+        security = {
+            "security_id": str(security_id),
+            "issuer_id": issuer_id,
+            "ticker": ticker,
+            "market": "U",
+            "exchange": "US",
+            "currency": "USD",
+            "status": "active",
+        }
+        issuer = {
+            "issuer_id": issuer_id,
+            "legal_name": ticker,
+            "aliases": [ticker],
+            "market": ["U"],
+            "country": "US",
+            "status": "active",
+        }
+        classification = _classify_security(ticker, ticker, "US")
+        rows.append(
+            {
+                "security_item_id": str(security_id),
+                "security": security,
+                "issuer_item_id": issuer_id,
+                "issuer": issuer,
+                "ticker": ticker,
+                "security_id": str(security_id),
+                "issuer_id": issuer_id,
+                "legal_name": ticker,
+                "latest_date": str(latest_date or ""),
+                "classification": classification,
+            }
+        )
+    return rows
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     try:
         import psycopg  # type: ignore[import-not-found]
@@ -146,6 +221,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "classification": classification,
                     }
                 )
+            seeded_rows = _seed_rows_from_existing_yahoo_bars(cursor, ticker_filter)
+            existing_security_ids = {str(row["security_id"]) for row in rows}
+            existing_tickers = {str(row["ticker"]) for row in rows}
+            rows.extend(
+                row
+                for row in seeded_rows
+                if str(row["security_id"]) not in existing_security_ids and str(row["ticker"]) not in existing_tickers
+            )
 
             best_by_ticker: dict[str, str] = {}
             for row in rows:
