@@ -2281,14 +2281,17 @@
 |---|---|---|
 | `/api/company-profiles` | `GET` / `POST` | 查询或登记 `CompanyProfile`，可由 `Issuer`、`Security`、行情、事件、关系和研报覆盖计算画像质量 |
 | `/api/company-profiles/schema` | `GET` | 返回公司画像核心字段、来源优先级和质量指标 |
+| `/api/company-profiles/fields/extract` | `POST` | 从已入库官方披露、公司 IR、公司官网或监管/交易所文档抽取公司画像字段；默认 dry-run，显式 `execute=true` 才写入 |
 | `/api/company-profiles/coverage/audit` | `GET` / `POST` | 按公司输出画像深字段覆盖率、缺失字段、来源记录、证据回链和推荐补齐来源 |
 | `/api/company-database/profile-field-coverage/audit` | `GET` / `POST` | `company-profiles/coverage/audit` 的兼容别名，用于公司数据库补齐任务按深字段审计 |
+| `/api/company-database/profile-fields/extract` | `POST` | `company-profiles/fields/extract` 的公司数据库兼容入口，用于补库流程先抽取画像字段再审计覆盖 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
 | `/api/company-database/batch/runs` | `GET` / `POST` | 查询公司数据库批量补齐运行历史，用于审计、复盘和后续断点续跑 |
 | `/api/company-database/batch/runs/{run_id}/retry` | `POST` | 基于已持久化补库 run 本地重放全部或剩余公司，用于失败重试和断点续跑 |
 | `/api/company-database/coverage/trends` | `GET` / `POST` | 从补库运行历史生成覆盖率趋势和可选本地 artifact，用于复盘补库是否改善公司数据库 |
 | `/api/company-database/coverage/audit` | `GET` / `POST` | 按公司审计画像、证券、行情、财务、文档、事件、关系、研报、观察结论和模拟反馈覆盖情况 |
+| `/api/company-database/quality/reconcile` | `POST` | 对公司事件和关系做本地去重、实体别名归并候选和来源质量评分；默认 dry-run，显式 `execute=true` 才标记 merge 或写入 source quality |
 | `/api/company-database/events/build` | `POST` | 从已入库公开披露、披露正文证据、公开行情和研报覆盖生成公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
 | `/api/company-database/relationships/build` | `POST` | 从证券上市关系、研报覆盖记录和公开披露文本生成最小公司关系层；研报覆盖关系固定为观点/关注度关系，公开披露抽取关系默认待复核 |
 | `/api/company-database/workflow/build` | `POST` | 从事件、关系和研报观点生成观察任务、公司情报基线结论和 paper-only 模拟反馈；默认 dry-run |
@@ -2308,6 +2311,36 @@
 | `/api/simulation-feedback/performance/update` | `POST` | 使用本地最新行情更新 paper-only 模拟反馈表现，不连接券商 |
 
 过滤字段通用支持 `issuer_id`、`security_id`、`limit`；各接口还支持与对象对应的状态、类型、分析师、研报或结论 ID 过滤。`/api/simulation-feedback` 会拒绝任何 `paper_only=false`、`live_execution_allowed=true` 或 `broker_connected=true` 的请求。
+
+#### `POST /api/company-profiles/fields/extract`
+
+从已入库并通过来源边界的 `Document` / `Evidence` 中抽取公司画像字段候选。该接口不访问外网、不下载文件、不调用真实券商；默认只返回候选，只有显式 `execute=true` 才更新 `Issuer.company_details`、`Issuer.fundamentals`、`Issuer.data_sources` 并物化 `CompanyProfile`。
+
+兼容别名：`POST /api/company-database/profile-fields/extract`。
+
+请求字段：
+
+- `issuer_ids` / `symbols` / `symbol` / `ticker` / `q`：目标公司解析字段，复用公司数据库目标解析规则。
+- `fields` / `required_fields`：可选；默认抽取 `business_summary`、`products`、`country`、`region`、`sector`、`industry`、`period`、`revenue`、`net_income`、`gross_margin`、`cash`、`debt`。
+- `document_ids`：可选；只从指定文档抽取。
+- `limit`：目标公司数量上限，默认 100。
+- `document_limit` / `max_documents`：每家公司扫描的合规文档数量上限，默认 20。
+- `evidence_limit`：每家公司扫描的官方证据数量上限，默认 500。
+- `min_confidence`：可选；低于该置信度的候选不返回。
+- `require_evidence`：可选；为 `true` 时仅使用带 `Evidence` 回链的文本，不使用整篇文档正文。
+- `refresh_existing` / `overwrite`：默认 `false`；已有字段不被覆盖，为 `true` 时可用更高优先级官方/IR 记录刷新。
+- `execute` / `dry_run`：默认 dry-run；`execute=true` 且 `dry_run` 非真时才写入。
+
+返回字段：
+
+- `schema_id`：当前为 `company-profile-field-extraction-v1`。
+- `status`：`dry_run` 或 `executed`。
+- `totals.documents_scanned` / `evidence_scanned` / `candidates_found` / `fields_planned` / `fields_updated` / `profiles_saved`。
+- `companies[].candidates[]`：字段候选，包含 `field`、`value`、`confidence`、`document_id`、`source_id`、`evidence_ids`、`section`、`extraction_method`、`source_policy` 和 `status`。
+- `companies[].applied`：执行时返回写入字段、是否保存 `CompanyProfile` 和保存后的 profile 摘要。
+- `source_rules.research_reports`：固定为 `ignored_for_fact_fields_opinion_only`。
+
+边界：抽取只接受 `_company_profile_document_is_fact_source` 和 `_evidence_is_official_public` 认可的官方披露、公司 IR、公司官网、交易所/监管披露或公开公司披露记录。`research_report`、`broker_research`、`local_reference`、`manual_reference`、`news` 和 `curated_public_profile` 不会写入事实字段。
 
 #### `GET|POST /api/company-profiles/coverage/audit`
 
@@ -2487,6 +2520,40 @@
 - `companies`：逐公司 `coverage_score`、`coverage_level`、`missing_sections`、`section_available` 和对象计数。
 
 覆盖率分数只表示本地数据库完整度，不代表投资价值或事实质量；事实质量仍依赖来源、证据回链和人工复核。
+
+#### `POST /api/company-database/quality/reconcile`
+
+对公司数据库中的 `CompanyEvent` 和 `CompanyRelationship` 做本地质量归并：识别重复事件、重复关系、实体别名归并候选，并计算来源质量评分。该接口只使用本地记录，不下载外部资料，不删除源记录，不生成投资建议。
+
+请求字段：
+
+- `symbols` / `symbol` / `ticker`：可选；目标股票代码列表或单个代码。
+- `issuer_ids`：可选；直接指定公司主体。
+- `limit`：目标公司数量上限，默认 100。
+- `include_events`：默认 `true`，识别并可合并重复公司事件。
+- `include_relationships`：默认 `true`，识别并可合并重复公司关系。
+- `merge_duplicates`：默认 `true`，启用重复归并计划；`execute=false` 时只返回计划。
+- `score_sources`：默认 `true`，对事件/关系写入或返回 `metadata.source_quality`。
+- `execute`：默认 `false`；为 `true` 时才把重复项标记为 `merged`、把关系重复项置为 `inactive`、并写入 source quality。
+- `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划，不落库。
+
+返回字段：
+
+- `schema_id`：当前为 `company-database-quality-reconciliation-v1`。
+- `totals.event_duplicate_groups` / `event_duplicates` / `events_merged`。
+- `totals.relationship_duplicate_groups` / `relationship_duplicates` / `relationships_merged`。
+- `totals.entity_merge_candidates`：关系对象名称或 ID 可归并的候选数量。
+- `totals.source_quality_scored`：本次计算 source quality 的事件/关系记录数。
+- `companies[].event_duplicate_groups[]`：包含 `dedup_key`、`canonical_id`、`duplicate_ids`、`event_ids`、`reason` 和 canonical source quality。
+- `companies[].relationship_duplicate_groups[]`：包含 `dedup_key`、`canonical_id`、`duplicate_ids`、`relationship_ids`、`entity_canonical_key`、`entity_names`、`entity_merge_candidate` 和 canonical source quality。
+- `companies[].source_quality[]`：逐事件/关系来源质量，包含 `record_type`、`record_id`、`score`、`level`、`factors` 和 `source_types`。
+
+行为：
+
+- 事件去重 key 以 `issuer_id/security_id/event_type/occurred_date` 为基础，优先使用 `disclosure_event_id`，其次使用 `document_ids`、`evidence_ids` 或归一化摘要。
+- 关系去重 key 以主体、关系类型、方向和归一化对象实体名为基础；`customer_candidate` 与 `supplier_candidate` 不会互相合并。
+- execute 时保留 canonical 记录，重复事件设置 `review_status=merged`；重复关系设置 `review_status=merged`、`relationship_status=inactive`，并在 canonical 记录上合并 `source_ids`、`document_ids`、`evidence_ids`、`metadata.merged_from` 和 `metadata.entity_aliases`。
+- source quality 是本地来源/证据/复核质量分，不是投资评级、买卖建议或公司质量判断。官方/监管/公司 IR 且有 evidence/document 回链的记录得分较高；研报、manual/local reference、news 或 opinion signal 得分较低，且不会被升级为事实源。
 
 #### `POST /api/company-database/events/build`
 

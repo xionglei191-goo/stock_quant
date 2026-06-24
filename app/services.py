@@ -20746,6 +20746,375 @@ class SystemService:
             "usage_boundary": "company_profile_deep_field_coverage_uses_public_local_authorized_records_only_research_reports_opinion_only_no_live_trading",
         }
 
+    def extract_company_profile_fields(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        limit = self._bounded_limit(payload.get("limit", 100), 5000)
+        issuers = self._company_database_target_issuers(payload, limit=limit)
+        supported_fields = self._company_profile_extractable_fields()
+        requested_fields = self._string_list(payload.get("fields", payload.get("required_fields", [])))
+        fields = [field for field in requested_fields if field in supported_fields] if requested_fields else supported_fields
+        if requested_fields and not fields:
+            raise ValidationError("fields did not match any supported company profile extraction fields")
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        overwrite = self._truthy(payload.get("overwrite", payload.get("refresh_existing", False)))
+        require_evidence = self._truthy(payload.get("require_evidence", False))
+        max_documents = self._bounded_limit(payload.get("max_documents", payload.get("document_limit", 20)), 200)
+        evidence_limit = self._bounded_limit(payload.get("evidence_limit", 500), 5000)
+        min_confidence = float(payload.get("min_confidence", 0.0) or 0.0)
+        document_ids = set(self._string_list(payload.get("document_ids", [])))
+        companies: list[dict[str, Any]] = []
+        totals = {
+            "documents_scanned": 0,
+            "evidence_scanned": 0,
+            "candidates_found": 0,
+            "fields_planned": 0,
+            "fields_updated": 0,
+            "profiles_saved": 0,
+            "skipped_research_or_reference_documents": 0,
+        }
+        for issuer in issuers:
+            row = self._company_profile_field_extraction_row(
+                issuer,
+                fields=fields,
+                overwrite=overwrite,
+                require_evidence=require_evidence,
+                max_documents=max_documents,
+                evidence_limit=evidence_limit,
+                min_confidence=min_confidence,
+                document_ids=document_ids,
+            )
+            totals["documents_scanned"] += int(row["documents_scanned"])
+            totals["evidence_scanned"] += int(row["evidence_scanned"])
+            totals["candidates_found"] += len(row["candidates"])
+            totals["fields_planned"] += sum(1 for item in row["candidates"] if item["status"] == "planned")
+            totals["skipped_research_or_reference_documents"] += int(row["skipped_research_or_reference_documents"])
+            if execute and row["candidates"]:
+                applied = self._apply_company_profile_field_candidates(issuer, row["candidates"], overwrite=overwrite)
+                row["applied"] = applied
+                totals["fields_updated"] += int(applied["fields_updated"])
+                totals["profiles_saved"] += 1 if applied["profile_saved"] else 0
+            companies.append(row)
+        self._audit(
+            actor,
+            "extract_company_profile_fields",
+            "company_profile",
+            "official_ir_fields",
+            approval_state=f"execute={execute};issuers={len(issuers)};fields_updated={totals['fields_updated']}",
+        )
+        if execute and totals["profiles_saved"]:
+            self._mark_company_database_dirty()
+            self.store.commit()
+        return {
+            "status": "executed" if execute else "dry_run",
+            "execute": execute,
+            "dry_run": not execute,
+            "schema_id": "company-profile-field-extraction-v1",
+            "issuer_count": len(issuers),
+            "fields": fields,
+            "totals": totals,
+            "companies": companies,
+            "source_rules": {
+                "allowed": ["official_disclosure", "company_ir", "company_official", "exchange_disclosure", "issuer_disclosure", "public_company_disclosure"],
+                "research_reports": "ignored_for_fact_fields_opinion_only",
+                "manual_reference": "ignored_until_reviewed_as_governed_fact_source",
+            },
+            "usage_boundary": "company_profile_field_extraction_uses_already_ingested_governed_records_only_no_external_download_no_live_trading",
+        }
+
+    def _company_profile_extractable_fields(self) -> list[str]:
+        return ["business_summary", "products", "country", "region", "sector", "industry", "period", "revenue", "net_income", "gross_margin", "cash", "debt"]
+
+    def _company_profile_field_extraction_row(
+        self,
+        issuer: Issuer,
+        *,
+        fields: list[str],
+        overwrite: bool,
+        require_evidence: bool,
+        max_documents: int,
+        evidence_limit: int,
+        min_confidence: float,
+        document_ids: set[str],
+    ) -> dict[str, Any]:
+        securities = [item for item in self.store.securities.values() if item.issuer_id == issuer.issuer_id]
+        security_ids = {security.security_id for security in securities}
+        profile = self.store.company_profiles.get(issuer.issuer_id) or self._company_profile_from_existing_records(issuer.issuer_id, {})
+        documents = [
+            document
+            for document in self.store.documents.values()
+            if document.issuer_id == issuer.issuer_id or document.security_id in security_ids
+        ]
+        if document_ids:
+            documents = [document for document in documents if document.document_id in document_ids]
+        fact_documents = [document for document in documents if self._company_profile_document_is_fact_source(document)]
+        skipped_documents = [document for document in documents if document not in fact_documents]
+        fact_documents.sort(key=lambda item: (str(to_plain(item.published_at)), item.document_id), reverse=True)
+        selected_documents = fact_documents[:max_documents]
+        document_ids = {document.document_id for document in selected_documents}
+        evidence_rows = [
+            evidence
+            for evidence in self.store.evidence.values()
+            if evidence.document_id in document_ids and self._evidence_is_official_public(evidence.evidence_id)
+        ][:evidence_limit]
+        text_units = self._company_profile_extraction_text_units(selected_documents, evidence_rows)
+        candidates: list[dict[str, Any]] = []
+        for field_name in fields:
+            current_value = self._company_profile_current_field_value(issuer, profile, field_name)
+            if current_value not in (None, "", [], {}):
+                if not overwrite:
+                    continue
+            candidate = self._company_profile_best_field_candidate(field_name, text_units, require_evidence=require_evidence, min_confidence=min_confidence)
+            if candidate is None:
+                continue
+            candidate["previous_value"] = current_value
+            candidate["status"] = "planned"
+            candidates.append(candidate)
+        return {
+            "issuer_id": issuer.issuer_id,
+            "display_name": profile.display_name or issuer.legal_name,
+            "documents_scanned": len(selected_documents),
+            "evidence_scanned": len(evidence_rows),
+            "skipped_research_or_reference_documents": len(skipped_documents),
+            "candidates": candidates,
+            "source_document_ids": [document.document_id for document in selected_documents],
+            "source_evidence_ids": [evidence.evidence_id for evidence in evidence_rows[:20]],
+            "applied": {},
+        }
+
+    def _company_profile_extraction_text_units(self, documents: list[Document], evidence_rows: list[Evidence]) -> list[dict[str, Any]]:
+        documents_by_id = {document.document_id: document for document in documents}
+        units: list[dict[str, Any]] = []
+        for evidence in evidence_rows:
+            document = documents_by_id.get(evidence.document_id)
+            if document is None:
+                continue
+            text = str(evidence.canonical_text or evidence.span_text).strip()
+            if not text:
+                continue
+            units.append(
+                {
+                    "text": text,
+                    "document_id": document.document_id,
+                    "source_id": document.source_id,
+                    "evidence_ids": [evidence.evidence_id],
+                    "confidence": max(0.0, min(1.0, float(evidence.confidence or 0.0))),
+                    "section": evidence.section,
+                    "source_type": document.source_type,
+                }
+            )
+        for document in documents:
+            text = " ".join(part for part in [document.title, document.body] if part).strip()
+            if not text:
+                continue
+            units.append(
+                {
+                    "text": text,
+                    "document_id": document.document_id,
+                    "source_id": document.source_id,
+                    "evidence_ids": [],
+                    "confidence": 0.62,
+                    "section": document.document_type,
+                    "source_type": document.source_type,
+                }
+            )
+        return units
+
+    def _company_profile_current_field_value(self, issuer: Issuer, profile: CompanyProfile, field_name: str) -> Any:
+        if field_name == "business_summary":
+            return profile.business_summary or issuer.company_details.get("business_summary", "")
+        if field_name == "products":
+            return profile.products or issuer.company_details.get("products", [])
+        if field_name in {"country", "region", "sector", "industry"}:
+            return getattr(issuer, field_name)
+        if field_name in {"period", "revenue", "net_income", "gross_margin", "cash", "debt"}:
+            return (issuer.fundamentals or profile.latest_financial_snapshot or {}).get(field_name)
+        return None
+
+    def _company_profile_best_field_candidate(self, field_name: str, text_units: list[dict[str, Any]], *, require_evidence: bool, min_confidence: float) -> dict[str, Any] | None:
+        candidates: list[dict[str, Any]] = []
+        for unit in text_units:
+            if require_evidence and not unit.get("evidence_ids"):
+                continue
+            extracted = self._company_profile_extract_field_value(field_name, str(unit.get("text", "")))
+            if extracted in (None, "", [], {}):
+                continue
+            confidence = round(min(0.99, float(unit.get("confidence", 0.5)) + (0.05 if unit.get("evidence_ids") else 0.0)), 4)
+            if confidence < min_confidence:
+                continue
+            candidates.append(
+                {
+                    "field": field_name,
+                    "value": extracted,
+                    "confidence": confidence,
+                    "document_id": unit.get("document_id", ""),
+                    "source_id": unit.get("source_id", ""),
+                    "evidence_ids": list(unit.get("evidence_ids", [])),
+                    "section": unit.get("section", ""),
+                    "source_type": unit.get("source_type", ""),
+                    "extraction_method": "rule_company_profile_official_ir_v1",
+                    "source_policy": "fact_or_governed_record",
+                }
+            )
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (float(item["confidence"]), len(str(item["value"]))), reverse=True)
+        return candidates[0]
+
+    def _company_profile_extract_field_value(self, field_name: str, text: str) -> Any:
+        normalized = re.sub(r"\s+", " ", text).strip()
+        if not normalized:
+            return None
+        if field_name == "business_summary":
+            return self._extract_company_profile_business_summary(normalized)
+        if field_name == "products":
+            return self._extract_company_profile_products(normalized)
+        if field_name in {"country", "region", "sector", "industry"}:
+            return self._extract_company_profile_labeled_text(field_name, normalized)
+        if field_name == "period":
+            return self._extract_company_profile_period(normalized)
+        if field_name in {"revenue", "net_income", "gross_margin", "cash", "debt"}:
+            return self._extract_company_profile_numeric_field(field_name, normalized)
+        return None
+
+    def _extract_company_profile_business_summary(self, text: str) -> str:
+        patterns = [
+            r"(?:business summary|business overview|company overview)[:：]?\s*([^。.;\n]{20,320})",
+            r"(?:主要从事|主营业务(?:为|是|包括)?|公司主要从事)[:：]?\s*([^。.;\n]{8,260})",
+            r"(?:is engaged in|engages in|focuses on|provides|manufactures|supplies)[:：]?\s*([^。.;\n]{12,260})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return self._clean_company_profile_text(match.group(1), max_chars=280)
+        return ""
+
+    def _extract_company_profile_products(self, text: str) -> list[str]:
+        patterns = [
+            r"(?:products include|products are|product portfolio includes)[:：]?\s*([^。.;\n]{4,180})",
+            r"(?:主要产品(?:包括|为)?|产品包括|产品为)[:：]?\s*([^。.;\n]{3,180})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            raw = self._clean_company_profile_text(match.group(1), max_chars=180)
+            parts = re.split(r"[,，、;/；]|\band\b|\band\s+", raw, flags=re.IGNORECASE)
+            products = [part.strip(" -:：()（）") for part in parts if 1 < len(part.strip(" -:：()（）")) <= 60]
+            return self._unique_strings(products)[:12]
+        return []
+
+    def _extract_company_profile_labeled_text(self, field_name: str, text: str) -> str:
+        labels = {
+            "country": ["country", "所在国家", "注册国家"],
+            "region": ["region", "headquartered in", "总部位于", "所在地"],
+            "sector": ["sector", "板块", "所属板块"],
+            "industry": ["industry", "行业", "所属行业"],
+        }
+        label_expr = "|".join(re.escape(label) for label in labels[field_name])
+        match = re.search(rf"(?:{label_expr})[:：]?\s*([A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\s\-]{1,50})", text, flags=re.IGNORECASE)
+        if not match:
+            return ""
+        return self._clean_company_profile_text(match.group(1), max_chars=60)
+
+    def _extract_company_profile_period(self, text: str) -> str:
+        match = re.search(r"(FY\s?20\d{2}|20\d{2}\s?Q[1-4]|20\d{2}\s?H[12]|20\d{2}年(?:一季报|半年报|三季报|年报|年度|季度))", text, flags=re.IGNORECASE)
+        return match.group(1).replace(" ", "") if match else ""
+
+    def _extract_company_profile_numeric_field(self, field_name: str, text: str) -> float | None:
+        keywords = {
+            "revenue": ["revenue", "sales", "operating revenue", "营业收入", "营收"],
+            "net_income": ["net income", "net profit", "profit attributable", "净利润", "归母净利润"],
+            "gross_margin": ["gross margin", "毛利率"],
+            "cash": ["cash and equivalents", "cash", "现金及现金等价物", "货币资金"],
+            "debt": ["total debt", "debt", "有息负债", "总债务"],
+        }
+        keyword_expr = "|".join(re.escape(item) for item in keywords[field_name])
+        pattern = rf"(?:{keyword_expr})[^\d\-]{{0,30}}([-+]?\d[\d,]*(?:\.\d+)?)\s*(%|percent|percentage points|billion|million|thousand|亿元|亿|万元|万|元|美元|人民币)?"
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        raw_number = match.group(1)
+        unit = str(match.group(2) or "")
+        return self._parse_company_profile_number(raw_number, unit, percentage=field_name == "gross_margin")
+
+    def _parse_company_profile_number(self, raw_number: str, unit: str, *, percentage: bool = False) -> float | None:
+        try:
+            value = float(str(raw_number).replace(",", ""))
+        except ValueError:
+            return None
+        unit_lower = unit.lower()
+        if percentage or unit_lower in {"%", "percent", "percentage points"}:
+            return round(value / 100, 6) if value > 1 else round(value, 6)
+        if "billion" in unit_lower:
+            value *= 1_000_000_000
+        elif "million" in unit_lower:
+            value *= 1_000_000
+        elif "thousand" in unit_lower:
+            value *= 1_000
+        elif "亿" in unit:
+            value *= 100_000_000
+        elif "万" in unit:
+            value *= 10_000
+        return round(value, 4)
+
+    def _clean_company_profile_text(self, value: str, *, max_chars: int) -> str:
+        cleaned = re.sub(r"\s+", " ", str(value)).strip(" \t\r\n-:：,，.;。")
+        return cleaned[:max_chars].rstrip(" ,，.;。")
+
+    def _apply_company_profile_field_candidates(self, issuer: Issuer, candidates: list[dict[str, Any]], *, overwrite: bool) -> dict[str, Any]:
+        planned = [candidate for candidate in candidates if candidate.get("status") == "planned"]
+        if not planned:
+            return {"fields_updated": 0, "profile_saved": False, "updated_fields": []}
+        existing_profile = self.store.company_profiles.get(issuer.issuer_id)
+        overlay = to_plain(existing_profile) if existing_profile is not None else {}
+        source_ids = self._unique_strings([*issuer.data_sources, *overlay.get("source_ids", []), *(candidate.get("source_id", "") for candidate in planned)])
+        evidence_ids = self._unique_strings([*overlay.get("evidence_ids", []), *(evidence_id for candidate in planned for evidence_id in candidate.get("evidence_ids", []))])
+        updated_fields: list[str] = []
+        company_details = dict(issuer.company_details)
+        fundamentals = dict(issuer.fundamentals)
+        financial_snapshot = dict(overlay.get("latest_financial_snapshot", {}))
+        for candidate in planned:
+            field_name = str(candidate["field"])
+            value = candidate["value"]
+            if not overwrite and self._company_profile_current_field_value(issuer, existing_profile or self._company_profile_from_existing_records(issuer.issuer_id, {}), field_name) not in (None, "", [], {}):
+                candidate["status"] = "skipped_existing"
+                continue
+            if field_name == "business_summary":
+                company_details["business_summary"] = str(value)
+                overlay["business_summary"] = str(value)
+            elif field_name == "products":
+                products = [str(item) for item in value]
+                company_details["products"] = products
+                overlay["products"] = products
+            elif field_name in {"country", "region", "sector", "industry"}:
+                setattr(issuer, field_name, str(value))
+                overlay[field_name] = str(value)
+            elif field_name in {"period", "revenue", "net_income", "gross_margin", "cash", "debt"}:
+                fundamentals[field_name] = value
+                financial_snapshot[field_name] = value
+            else:
+                continue
+            candidate["status"] = "applied"
+            updated_fields.append(field_name)
+        issuer.company_details = company_details
+        issuer.fundamentals = fundamentals
+        issuer.data_sources = source_ids
+        issuer.updated_at = utcnow()
+        overlay["latest_financial_snapshot"] = financial_snapshot
+        overlay["source_ids"] = source_ids
+        overlay["evidence_ids"] = evidence_ids
+        profile = self._company_profile_from_existing_records(issuer.issuer_id, overlay)
+        self.store.company_profiles[issuer.issuer_id] = profile
+        return {
+            "fields_updated": len(updated_fields),
+            "profile_saved": bool(updated_fields),
+            "updated_fields": updated_fields,
+            "profile": to_plain(profile),
+        }
+
     def _company_profile_deep_coverage_fields(self, *, include_optional: bool = False) -> list[str]:
         required = [
             "legal_name",
@@ -21766,6 +22135,327 @@ class SystemService:
             "totals": dict(run.totals),
             "usage_boundary": run.usage_boundary,
         }
+
+    def reconcile_company_database_quality(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        limit = self._bounded_limit(payload.get("limit", 100), 5000)
+        include_events = self._truthy(payload.get("include_events", True))
+        include_relationships = self._truthy(payload.get("include_relationships", True))
+        merge_duplicates = self._truthy(payload.get("merge_duplicates", True))
+        score_sources = self._truthy(payload.get("score_sources", True))
+        issuers = self._company_database_target_issuers(payload, limit=limit)
+        rows: list[dict[str, Any]] = []
+        totals = {
+            "event_duplicate_groups": 0,
+            "event_duplicates": 0,
+            "relationship_duplicate_groups": 0,
+            "relationship_duplicates": 0,
+            "entity_merge_candidates": 0,
+            "events_merged": 0,
+            "relationships_merged": 0,
+            "source_quality_scored": 0,
+        }
+        for issuer in issuers:
+            events = [event for event in self.store.company_events.values() if event.issuer_id == issuer.issuer_id]
+            relationships = [
+                relationship
+                for relationship in self.store.company_relationships.values()
+                if relationship.issuer_id == issuer.issuer_id or relationship.subject_id == issuer.issuer_id or relationship.object_id == issuer.issuer_id
+            ]
+            event_groups = self._company_event_duplicate_groups(events) if include_events else []
+            relationship_groups = self._company_relationship_duplicate_groups(relationships) if include_relationships else []
+            entity_candidates = [group for group in relationship_groups if group.get("entity_merge_candidate")]
+            totals["event_duplicate_groups"] += len(event_groups)
+            totals["event_duplicates"] += sum(len(group["duplicate_ids"]) for group in event_groups)
+            totals["relationship_duplicate_groups"] += len(relationship_groups)
+            totals["relationship_duplicates"] += sum(len(group["duplicate_ids"]) for group in relationship_groups)
+            totals["entity_merge_candidates"] += len(entity_candidates)
+            if execute and merge_duplicates:
+                for group in event_groups:
+                    totals["events_merged"] += self._apply_company_event_duplicate_group(group)
+                for group in relationship_groups:
+                    totals["relationships_merged"] += self._apply_company_relationship_duplicate_group(group)
+            scored_records: list[dict[str, Any]] = []
+            if score_sources:
+                for event in events:
+                    score = self._company_record_source_quality(event, record_type="company_event")
+                    scored_records.append({"record_type": "company_event", "record_id": event.event_id, "source_quality": score})
+                    if execute:
+                        event.metadata["source_quality"] = score
+                for relationship in relationships:
+                    score = self._company_record_source_quality(relationship, record_type="company_relationship")
+                    scored_records.append({"record_type": "company_relationship", "record_id": relationship.relationship_id, "source_quality": score})
+                    if execute:
+                        relationship.metadata["source_quality"] = score
+                totals["source_quality_scored"] += len(scored_records)
+            rows.append(
+                {
+                    "issuer_id": issuer.issuer_id,
+                    "display_name": issuer.legal_name,
+                    "event_duplicate_groups": event_groups,
+                    "relationship_duplicate_groups": relationship_groups,
+                    "entity_merge_candidates": entity_candidates,
+                    "source_quality": scored_records[:50],
+                }
+            )
+        self._audit(
+            actor,
+            "reconcile_company_database_quality",
+            "company_database",
+            "quality_reconcile",
+            approval_state=f"execute={execute};event_duplicates={totals['event_duplicates']};relationship_duplicates={totals['relationship_duplicates']}",
+        )
+        if execute and (totals["events_merged"] or totals["relationships_merged"] or totals["source_quality_scored"]):
+            self._mark_company_database_dirty()
+            self.store.commit()
+        return {
+            "status": "executed" if execute else "dry_run",
+            "execute": execute,
+            "dry_run": not execute,
+            "schema_id": "company-database-quality-reconciliation-v1",
+            "issuer_count": len(issuers),
+            "include_events": include_events,
+            "include_relationships": include_relationships,
+            "merge_duplicates": merge_duplicates,
+            "score_sources": score_sources,
+            "totals": totals,
+            "companies": rows,
+            "rules": {
+                "deduplication": "non_destructive_merge_marks_duplicates_inactive_or_merged_and_preserves_evidence_document_source_backlinks",
+                "source_quality": "local_provenance_score_not_investment_rating",
+                "research_reports": "opinion_sources_score_lower_and_do_not_upgrade_to_fact_truth",
+            },
+            "usage_boundary": "company_database_quality_reconciliation_uses_local_records_only_no_external_download_no_live_trading",
+        }
+
+    def _company_event_duplicate_groups(self, events: list[CompanyEvent]) -> list[dict[str, Any]]:
+        buckets: dict[str, list[CompanyEvent]] = {}
+        for event in events:
+            if event.review_status == "merged":
+                continue
+            key = self._company_event_dedup_key(event)
+            buckets.setdefault(key, []).append(event)
+        groups: list[dict[str, Any]] = []
+        for key, bucket in buckets.items():
+            if len(bucket) < 2:
+                continue
+            canonical = self._select_canonical_company_event(bucket)
+            duplicate_ids = [event.event_id for event in bucket if event.event_id != canonical.event_id]
+            groups.append(
+                {
+                    "dedup_key": key,
+                    "canonical_id": canonical.event_id,
+                    "duplicate_ids": duplicate_ids,
+                    "event_ids": [event.event_id for event in bucket],
+                    "reason": "same_issuer_type_date_and_document_or_normalized_summary",
+                    "source_quality": self._company_record_source_quality(canonical, record_type="company_event"),
+                }
+            )
+        return groups
+
+    def _company_event_dedup_key(self, event: CompanyEvent) -> str:
+        occurred_date = str(to_plain(event.occurred_at))[:10]
+        source_key = ""
+        disclosure_id = str(event.metadata.get("disclosure_event_id", "")).strip()
+        if disclosure_id:
+            source_key = f"disclosure:{disclosure_id}"
+        elif event.document_ids:
+            source_key = f"document:{'|'.join(sorted(event.document_ids))}"
+        elif event.evidence_ids:
+            source_key = f"evidence:{'|'.join(sorted(event.evidence_ids))}"
+        else:
+            source_key = f"text:{self._company_quality_normalized_key(event.summary or event.title)[:96]}"
+        return "|".join([event.issuer_id, event.security_id, event.event_type, occurred_date, source_key])
+
+    def _select_canonical_company_event(self, events: list[CompanyEvent]) -> CompanyEvent:
+        def rank(event: CompanyEvent) -> tuple[float, int, int, str]:
+            score = float(self._company_record_source_quality(event, record_type="company_event")["score"])
+            backlink_count = len(event.evidence_ids) + len(event.document_ids) + len(event.source_ids)
+            review_bonus = 2 if event.review_status == "approved" else (1 if event.review_status in {"auto_generated", "needs_review"} else 0)
+            return (score, backlink_count, review_bonus, event.event_id)
+
+        return sorted(events, key=rank, reverse=True)[0]
+
+    def _apply_company_event_duplicate_group(self, group: Mapping[str, Any]) -> int:
+        canonical = self.store.company_events.get(str(group.get("canonical_id", "")))
+        if canonical is None:
+            return 0
+        merged_count = 0
+        for duplicate_id in group.get("duplicate_ids", []) or []:
+            duplicate = self.store.company_events.get(str(duplicate_id))
+            if duplicate is None or duplicate.event_id == canonical.event_id:
+                continue
+            canonical.source_ids = self._unique_strings([*canonical.source_ids, *duplicate.source_ids])
+            canonical.document_ids = self._unique_strings([*canonical.document_ids, *duplicate.document_ids])
+            canonical.evidence_ids = self._unique_strings([*canonical.evidence_ids, *duplicate.evidence_ids])
+            canonical.impact_tags = self._unique_strings([*canonical.impact_tags, *duplicate.impact_tags])
+            canonical.confidence = round(max(float(canonical.confidence), float(duplicate.confidence)), 4)
+            canonical.metadata.setdefault("merged_from", [])
+            if isinstance(canonical.metadata["merged_from"], list) and duplicate.event_id not in canonical.metadata["merged_from"]:
+                canonical.metadata["merged_from"].append(duplicate.event_id)
+            duplicate.review_status = "merged"
+            duplicate.metadata["merged_into"] = canonical.event_id
+            duplicate.metadata["dedup_key"] = group.get("dedup_key", "")
+            merged_count += 1
+        canonical.metadata["source_quality"] = self._company_record_source_quality(canonical, record_type="company_event")
+        return merged_count
+
+    def _company_relationship_duplicate_groups(self, relationships: list[CompanyRelationship]) -> list[dict[str, Any]]:
+        buckets: dict[str, list[CompanyRelationship]] = {}
+        for relationship in relationships:
+            if relationship.review_status == "merged" or relationship.relationship_status == "inactive":
+                continue
+            key = self._company_relationship_dedup_key(relationship)
+            buckets.setdefault(key, []).append(relationship)
+        groups: list[dict[str, Any]] = []
+        for key, bucket in buckets.items():
+            if len(bucket) < 2:
+                continue
+            canonical = self._select_canonical_company_relationship(bucket)
+            duplicate_ids = [relationship.relationship_id for relationship in bucket if relationship.relationship_id != canonical.relationship_id]
+            entity_names = self._unique_strings([self._company_relationship_entity_name(relationship) for relationship in bucket])
+            groups.append(
+                {
+                    "dedup_key": key,
+                    "canonical_id": canonical.relationship_id,
+                    "duplicate_ids": duplicate_ids,
+                    "relationship_ids": [relationship.relationship_id for relationship in bucket],
+                    "entity_merge_candidate": len({relationship.object_id for relationship in bucket}) > 1 or len(entity_names) > 1,
+                    "entity_canonical_key": self._company_quality_entity_key(entity_names[0] if entity_names else canonical.object_id),
+                    "entity_names": entity_names,
+                    "reason": "same_subject_relationship_type_and_normalized_object_entity",
+                    "source_quality": self._company_record_source_quality(canonical, record_type="company_relationship"),
+                }
+            )
+        return groups
+
+    def _company_relationship_dedup_key(self, relationship: CompanyRelationship) -> str:
+        subject_key = self._company_quality_entity_key(relationship.subject_id)
+        object_key = self._company_quality_entity_key(self._company_relationship_entity_name(relationship) or relationship.object_id)
+        relationship_type = str(relationship.relationship_type).removesuffix("_candidate")
+        return "|".join([relationship.issuer_id, relationship.subject_type, subject_key, relationship.object_type, object_key, relationship_type, relationship.direction])
+
+    def _company_relationship_entity_name(self, relationship: CompanyRelationship) -> str:
+        return str(relationship.metadata.get("entity_name") or relationship.metadata.get("object_name") or relationship.object_id).strip()
+
+    def _select_canonical_company_relationship(self, relationships: list[CompanyRelationship]) -> CompanyRelationship:
+        def rank(relationship: CompanyRelationship) -> tuple[float, int, int, str]:
+            score = float(self._company_record_source_quality(relationship, record_type="company_relationship")["score"])
+            backlink_count = len(relationship.evidence_ids) + len(relationship.document_ids) + len(relationship.source_ids)
+            review_bonus = 2 if relationship.review_status == "approved" else (1 if relationship.review_status in {"auto_generated", "needs_review"} else 0)
+            return (score, backlink_count, review_bonus, relationship.relationship_id)
+
+        return sorted(relationships, key=rank, reverse=True)[0]
+
+    def _apply_company_relationship_duplicate_group(self, group: Mapping[str, Any]) -> int:
+        canonical = self.store.company_relationships.get(str(group.get("canonical_id", "")))
+        if canonical is None:
+            return 0
+        merged_count = 0
+        aliases = self._unique_strings([*group.get("entity_names", []), self._company_relationship_entity_name(canonical)])
+        canonical.metadata["entity_canonical_key"] = group.get("entity_canonical_key", self._company_quality_entity_key(canonical.object_id))
+        canonical.metadata["entity_aliases"] = aliases
+        for duplicate_id in group.get("duplicate_ids", []) or []:
+            duplicate = self.store.company_relationships.get(str(duplicate_id))
+            if duplicate is None or duplicate.relationship_id == canonical.relationship_id:
+                continue
+            canonical.source_ids = self._unique_strings([*canonical.source_ids, *duplicate.source_ids])
+            canonical.document_ids = self._unique_strings([*canonical.document_ids, *duplicate.document_ids])
+            canonical.evidence_ids = self._unique_strings([*canonical.evidence_ids, *duplicate.evidence_ids])
+            canonical.confidence = round(max(float(canonical.confidence), float(duplicate.confidence)), 4)
+            canonical.metadata.setdefault("merged_from", [])
+            if isinstance(canonical.metadata["merged_from"], list) and duplicate.relationship_id not in canonical.metadata["merged_from"]:
+                canonical.metadata["merged_from"].append(duplicate.relationship_id)
+            duplicate.review_status = "merged"
+            duplicate.relationship_status = "inactive"
+            duplicate.metadata["candidate_status"] = "merged"
+            duplicate.metadata["merged_into"] = canonical.relationship_id
+            duplicate.metadata["entity_canonical_key"] = canonical.metadata["entity_canonical_key"]
+            duplicate.metadata["dedup_key"] = group.get("dedup_key", "")
+            merged_count += 1
+        canonical.metadata["source_quality"] = self._company_record_source_quality(canonical, record_type="company_relationship")
+        return merged_count
+
+    def _company_record_source_quality(self, record: Any, *, record_type: str) -> dict[str, Any]:
+        score = 0.2
+        factors: list[str] = ["base_local_record"]
+        confidence = float(getattr(record, "confidence", 0.0) or 0.0)
+        score += min(0.2, max(0.0, confidence) * 0.2)
+        if getattr(record, "evidence_ids", []):
+            score += 0.2
+            factors.append("has_evidence_backlink")
+        if getattr(record, "document_ids", []):
+            score += 0.1
+            factors.append("has_document_backlink")
+        source_types = [self._company_source_quality_type(source_id) for source_id in getattr(record, "source_ids", [])]
+        if any(source_type in {"regulatory", "company_ir", "company_official", "official_public", "exchange_disclosure", "issuer_disclosure", "public_company_disclosure"} for source_type in source_types):
+            score += 0.25
+            factors.append("official_or_public_company_source")
+        if any(source_type in {"broker_research", "research", "local_research_reports"} for source_type in source_types):
+            score -= 0.1
+            factors.append("research_opinion_source")
+        if any(source_type in {"local_reference", "manual_reference", "news", "curated_public_profile"} for source_type in source_types):
+            score -= 0.15
+            factors.append("manual_or_reference_source")
+        fact_status = str(getattr(record, "fact_status", "")).strip()
+        if fact_status == "verified":
+            score += 0.15
+            factors.append("verified_fact_status")
+        elif fact_status == "opinion_signal":
+            score -= 0.1
+            factors.append("opinion_signal_not_fact")
+        review_status = str(getattr(record, "review_status", "")).strip()
+        if review_status == "approved":
+            score += 0.2
+            factors.append("approved_review")
+        elif review_status == "auto_generated":
+            score += 0.05
+            factors.append("auto_generated")
+        elif review_status in {"rejected", "merged"}:
+            score -= 0.25
+            factors.append(f"{review_status}_record")
+        score = round(max(0.0, min(1.0, score)), 4)
+        return {
+            "record_type": record_type,
+            "score": score,
+            "level": "high" if score >= 0.75 else ("medium" if score >= 0.5 else "low"),
+            "factors": self._unique_strings(factors),
+            "source_types": self._unique_strings(source_types),
+            "usage_boundary": "source_quality_is_local_provenance_score_not_investment_rating",
+        }
+
+    def _company_source_quality_type(self, source_id: str) -> str:
+        source = self.store.sources.get(str(source_id))
+        if source is not None and source.source_type:
+            return str(source.source_type).strip().lower()
+        value = str(source_id).strip().lower()
+        if "research" in value or "broker" in value:
+            return "broker_research"
+        if "manual" in value:
+            return "manual_reference"
+        if "local" in value:
+            return "local_reference"
+        if "ir" in value:
+            return "company_ir"
+        if "sec" in value or "regulatory" in value or "exchange" in value:
+            return "regulatory"
+        if "official" in value:
+            return "official_public"
+        return "unknown"
+
+    def _company_quality_normalized_key(self, value: str) -> str:
+        return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", str(value).strip().lower()).strip("_")
+
+    def _company_quality_entity_key(self, value: str) -> str:
+        normalized = self._company_quality_normalized_key(value)
+        for suffix in ["_inc", "_corp", "_co", "_ltd", "_limited", "_company", "_集团", "_股份有限公司", "_有限公司"]:
+            if normalized.endswith(suffix):
+                normalized = normalized[: -len(suffix)].strip("_")
+        return normalized or "unknown"
 
     def build_company_database(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
@@ -22864,7 +23554,7 @@ class SystemService:
             sector=str(overlay.get("sector", issuer.sector)),
             industry=str(overlay.get("industry", issuer.industry)),
             business_summary=str(overlay.get("business_summary", issuer.company_details.get("business_summary", ""))),
-            products=[str(item) for item in overlay.get("products", [])],
+            products=[str(item) for item in overlay.get("products", issuer.company_details.get("products", []))],
             identifiers=dict(overlay.get("identifiers", {"lei": issuer.lei, "cik": issuer.cik, "tickers": [item.ticker for item in securities]})),
             latest_market_snapshot=dict(overlay.get("latest_market_snapshot", to_plain(market_rows[0]) if market_rows else {})),
             latest_financial_snapshot=dict(overlay.get("latest_financial_snapshot", issuer.fundamentals)),

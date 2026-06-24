@@ -5,8 +5,8 @@
 - [../README.md](../README.md): 公司情报与市场综合分析平台入口、运行方式和当前能力说明
 - [product-requirements-document.md](./product-requirements-document.md): 公司情报平台 PRD，定义产品定位、目标用户、主流程、研报边界和成功指标
 - [system-architecture.md](./system-architecture.md): 公司情报平台目标架构，主线为数据、实体、事件、关系、观点和反馈
-- [data-structure-design.md](./data-structure-design.md): 公司画像、画像深字段覆盖审计、事件、关系、研报观点、观察任务、分析结论、模拟反馈、补库运行历史、retry/resume 和覆盖率趋势数据结构
-- [../tasks/todo.md](../tasks/todo.md): 执行待办清单；T-431 至 T-456 记录公司情报平台重定位、公司数据库构建、事实事件层、关系候选抽取与审核、覆盖率审计、批量补库、模拟反馈表现更新、研报兑现复盘、工作台操作面板、细粒度披露事件抽取、空状态缺口诊断、补库运行历史、运行历史 UI、覆盖率趋势报告、补库断点续跑/失败重试、覆盖趋势 UI 接入和画像深字段覆盖审计
+- [data-structure-design.md](./data-structure-design.md): 公司画像、画像字段抽取、画像深字段覆盖审计、事件/关系质量归并、研报观点、观察任务、分析结论、模拟反馈、补库运行历史、retry/resume 和覆盖率趋势数据结构
+- [../tasks/todo.md](../tasks/todo.md): 执行待办清单；T-431 至 T-458 记录公司情报平台重定位、公司数据库构建、事实事件层、关系候选抽取与审核、覆盖率审计、批量补库、模拟反馈表现更新、研报兑现复盘、工作台操作面板、细粒度披露事件抽取、空状态缺口诊断、补库运行历史、运行历史 UI、覆盖率趋势报告、补库断点续跑/失败重试、覆盖趋势 UI 接入、画像深字段覆盖审计、官方/IR 画像字段抽取和事件/关系质量归并
 
 ## 研报、观点和数据边界
 
@@ -27,7 +27,7 @@
 
 ## 架构和运维附录
 
-- [api-contracts.md](./api-contracts.md): 接口契约；包含公司画像、画像深字段覆盖审计、事件、关系、研报观点、观察结论和模拟反馈 API
+- [api-contracts.md](./api-contracts.md): 接口契约；包含公司画像、画像字段抽取、画像深字段覆盖审计、事件/关系质量归并、研报观点、观察结论和模拟反馈 API
 - [postgresql-schema.sql](./postgresql-schema.sql): PostgreSQL 状态库基线 schema
 - [postgresql-migrations.md](./postgresql-migrations.md): PostgreSQL schema 迁移、dry-run、迁移记录和回滚策略
 - [systemservice-modularization-adr.md](./systemservice-modularization-adr.md): `SystemService` 模块化拆分 ADR 与迁移顺序

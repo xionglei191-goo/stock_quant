@@ -3,7 +3,7 @@
 - Status: active
 - Owner group: PM / Release Coordination
 - Last updated: 2026-06-24
-- Related tasks: T-406C, T-424, T-425, T-426, T-427, T-428, T-429, T-431, T-432, T-433, T-434, T-435, T-436, T-437, T-438, T-439, T-440, T-441, T-442, T-443, T-444, T-445, T-446, T-447, T-448, T-449, T-450, T-451, T-452, T-453, T-454, T-455, T-456
+- Related tasks: T-406C, T-424, T-425, T-426, T-427, T-428, T-429, T-431, T-432, T-433, T-434, T-435, T-436, T-437, T-438, T-439, T-440, T-441, T-442, T-443, T-444, T-445, T-446, T-447, T-448, T-449, T-450, T-451, T-452, T-453, T-454, T-455, T-456, T-457, T-458
 - Scope: Standard handoff records for multi-agent and cross-group development
 - Non-goals: This folder does not replace `tasks/todo.md` as the roadmap authority
 

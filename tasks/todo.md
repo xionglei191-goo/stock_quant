@@ -266,7 +266,7 @@
   - **已完成（本轮）**：内部 usage boundary 在 UI 中显示为“本地补库历史/本地覆盖趋势”，不再把内部常量直接暴露给用户。
   - **已完成（本轮）**：执行补齐和载入公司情报后会刷新运行历史与覆盖趋势；新增 UI 静态契约和交互验收路径。
   - 验收：UI 静态检查覆盖新增 DOM/JS；浏览器交互验收覆盖执行补齐后加载趋势表、累计变化和本地边界标签。
-  - 后续增强：T-457 官方披露/公司 IR 画像字段抽取；T-458 事件/关系去重、实体归并和来源质量评分。
+  - 后续增强：T-459 深字段 coverage UI。
 
 - `DONE` T-456 公司基础画像深字段覆盖审计与来源计划
   - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
@@ -277,7 +277,28 @@
   - **已完成（本轮）**：`source_plan` 明确官方披露、公司 IR、公司官网、交易所/监管目录、公开行情、已治理本地记录和人工参考的适用边界；研报只满足观点/覆盖槽位，不满足事实字段。
   - **已完成（本轮）**：支持 `issuer_ids`、`symbols`、`symbol`、`ticker`、`q`、`required_fields`、`include_optional`、`require_evidence` 和 `include_research_opinion_slots`。
   - 验收：单测覆盖稀疏画像缺字段、官方/监管文档和 evidence 可计入事实字段、研报只能计入 `research_report_count` 且不能满足 business/source evidence 事实字段。
-  - 后续增强：T-457 官方披露/公司 IR 画像字段抽取；T-458 事件/关系去重、实体归并和来源质量评分；T-459 深字段 coverage UI。
+  - 后续增强：T-459 深字段 coverage UI。
+
+- `DONE` T-457 官方披露/公司 IR 画像字段抽取
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-456 已能审计公司画像深字段缺口和来源计划，但仍无法从已入库官方披露、公司 IR、公司官网或交易所/监管文件中把 `business_summary`、`products`、财务快照等事实字段回填到公司数据库。
+  - **已完成（本轮）**：新增 `POST /api/company-profiles/fields/extract`，默认 dry-run，从已入库合规 `Document` / `Evidence` 生成画像字段候选。
+  - **已完成（本轮）**：新增兼容入口 `POST /api/company-database/profile-fields/extract`，用于公司数据库补库流程在覆盖审计前先执行画像字段抽取。
+  - **已完成（本轮）**：支持 `issuer_ids`、`symbols`、`document_ids`、`fields`、`document_limit`、`evidence_limit`、`min_confidence`、`require_evidence`、`refresh_existing` 和 `execute`。
+  - **已完成（本轮）**：显式 `execute=true` 时写入 `Issuer.company_details`、`Issuer.fundamentals`、`Issuer.data_sources` 并物化 `CompanyProfile.source_ids/evidence_ids`；默认不覆盖已有字段，`refresh_existing=true` 才刷新。
+  - **已完成（本轮）**：研报、券商研究、本地人工参考、新闻和边界不清来源不会写入事实字段，只保留观点/关注度边界。
+  - 验收：单测覆盖官方/IR evidence dry-run 不落库、execute 回填画像和覆盖审计可见；研报不可回填事实字段；默认不覆盖已有字段但 `refresh_existing=true` 可刷新。
+  - 后续增强：T-459 深字段 coverage UI。
+
+- `DONE` T-458 事件/关系去重、实体归并和来源质量评分
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-456/T-457 已能审计并回填公司画像深字段，但事件时间线和公司关系层仍可能因披露、证据、研报覆盖和批量补库重复运行产生重复事件、重复关系或低质量候选；实体别名也需要统一归并候选和保守写入边界。
+  - **已完成（本轮）**：新增 `POST /api/company-database/quality/reconcile`，默认 dry-run，输出事件重复组、关系重复组、实体归并候选和 source quality。
+  - **已完成（本轮）**：事件去重 key 基于主体、证券、事件类型、日期和 disclosure/document/evidence/摘要；execute 时保留 canonical，重复事件标记 `review_status=merged`，并合并 source/document/evidence 回链。
+  - **已完成（本轮）**：关系去重 key 基于主体、关系类型、方向和归一化对象实体名；execute 时重复关系标记 `review_status=merged`、`relationship_status=inactive`，canonical 记录保留 `entity_canonical_key`、`entity_aliases` 和 merge 回链。
+  - **已完成（本轮）**：`metadata.source_quality` 输出本地来源/证据/复核质量评分；官方/监管/公司 IR 和 evidence/document 回链提高分数，研报/manual/local/news/opinion signal 降低分数，且不构成投资评级。
+  - 验收：单测覆盖重复事件识别和合并、关系实体别名归并、官方来源质量高于研报观点来源；默认 dry-run 不落库，`execute=true` 才写入 merge/source quality。
+  - 后续增强：T-459 深字段 coverage UI。
 
 ## 运维/非本机发布附录 / 当前工程治理待办
 

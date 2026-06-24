@@ -3,7 +3,7 @@
 - Status: active
 - Owner group: Data and Evidence
 - Last updated: 2026-06-24
-- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454, T-456
+- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454, T-456, T-457, T-458
 - Scope: 公司级数据库、事件、关系、研报观点、观察任务、分析结论和模拟反馈核心模型
 - Non-goals: 真实交易订单模型、券商账户模型、把研报作为事实真相源
 
@@ -284,6 +284,76 @@
 
 事实字段只接受官方披露、公司 IR、公司官网、交易所/监管披露、公开行情或已治理的结构化本地记录。研报只满足 `coverage_opinion`，不能让 business、financial、identity 等事实字段变为 present。`manual_reference` 与边界不清来源只能进入补齐计划和人工复核。
 
+### 6.1.2 CompanyProfileFieldExtractionResult
+
+`CompanyProfileFieldExtractionResult` 是一次本地抽取运行的 API 返回结构，不新增持久化表。它从已入库并通过治理边界的 `Document` / `Evidence` 中生成画像字段候选；默认 dry-run，显式 `execute=true` 时才把候选写入 `Issuer` 和 `CompanyProfile`。
+
+```json
+{
+  "schema_id": "company-profile-field-extraction-v1",
+  "status": "dry_run|executed",
+  "execute": false,
+  "dry_run": true,
+  "issuer_count": 1,
+  "fields": ["business_summary", "products", "revenue", "net_income"],
+  "totals": {
+    "documents_scanned": 1,
+    "evidence_scanned": 1,
+    "candidates_found": 4,
+    "fields_planned": 4,
+    "fields_updated": 0,
+    "profiles_saved": 0,
+    "skipped_research_or_reference_documents": 0
+  },
+  "companies": [
+    {
+      "issuer_id": "issuer_001",
+      "display_name": "Demo Corp",
+      "documents_scanned": 1,
+      "evidence_scanned": 1,
+      "source_document_ids": ["doc_demo_ir"],
+      "source_evidence_ids": ["evi_demo_ir_business"],
+      "candidates": [
+        {
+          "field": "business_summary",
+          "value": "Demo Corp is engaged in advanced components.",
+          "confidence": 0.95,
+          "document_id": "doc_demo_ir",
+          "source_id": "src_company_ir",
+          "evidence_ids": ["evi_demo_ir_business"],
+          "section": "business_overview",
+          "extraction_method": "rule_company_profile_official_ir_v1",
+          "source_policy": "fact_or_governed_record",
+          "status": "planned|applied|skipped_existing"
+        }
+      ],
+      "applied": {
+        "fields_updated": 0,
+        "profile_saved": false,
+        "updated_fields": []
+      }
+    }
+  ],
+  "source_rules": {
+    "allowed": ["official_disclosure", "company_ir", "company_official", "exchange_disclosure", "issuer_disclosure", "public_company_disclosure"],
+    "research_reports": "ignored_for_fact_fields_opinion_only",
+    "manual_reference": "ignored_until_reviewed_as_governed_fact_source"
+  }
+}
+```
+
+落库映射：
+
+| Extracted field | Persistence target |
+|---|---|
+| `business_summary` | `Issuer.company_details.business_summary`, `CompanyProfile.business_summary` |
+| `products` | `Issuer.company_details.products`, `CompanyProfile.products` |
+| `country`, `region`, `sector`, `industry` | `Issuer` 同名字段；`sector` / `industry` 同步到 `CompanyProfile` |
+| `period`, `revenue`, `net_income`, `gross_margin`, `cash`, `debt` | `Issuer.fundamentals`, `CompanyProfile.latest_financial_snapshot` |
+| `source_id`, `evidence_ids` | `Issuer.data_sources`, `CompanyProfile.source_ids`, `CompanyProfile.evidence_ids` |
+
+抽取结果保持 `review_status` 语义上的“自动候选，需要复核”：当前结构用 `status` 表示 planned/applied，不把规则抽取等同于人工确认。研报、券商研究、本地人工参考和新闻不会写入事实字段。
+
 ### 6.2 Security
 
 ```json
@@ -454,6 +524,72 @@
   "metadata": {}
 }
 ```
+
+### 8.1.1 CompanyGraphQualityReconciliation
+
+`CompanyGraphQualityReconciliation` 是本地质量归并 API 的返回结构，不新增持久化表。它识别事件/关系重复组、实体别名归并候选，并把来源质量评分写入 `CompanyEvent.metadata.source_quality` 或 `CompanyRelationship.metadata.source_quality`。
+
+```json
+{
+  "schema_id": "company-database-quality-reconciliation-v1",
+  "status": "dry_run|executed",
+  "totals": {
+    "event_duplicate_groups": 1,
+    "event_duplicates": 1,
+    "relationship_duplicate_groups": 1,
+    "relationship_duplicates": 1,
+    "entity_merge_candidates": 1,
+    "events_merged": 0,
+    "relationships_merged": 0,
+    "source_quality_scored": 4
+  },
+  "companies": [
+    {
+      "issuer_id": "issuer_001",
+      "event_duplicate_groups": [
+        {
+          "dedup_key": "issuer|security|event_type|date|document",
+          "canonical_id": "ce_001",
+          "duplicate_ids": ["ce_002"],
+          "reason": "same_issuer_type_date_and_document_or_normalized_summary"
+        }
+      ],
+      "relationship_duplicate_groups": [
+        {
+          "dedup_key": "issuer|company|issuer_001|company|mega_cloud|customer|directed",
+          "canonical_id": "rel_001",
+          "duplicate_ids": ["rel_002"],
+          "entity_merge_candidate": true,
+          "entity_canonical_key": "mega_cloud",
+          "entity_names": ["Mega Cloud", "Mega Cloud Inc."]
+        }
+      ],
+      "source_quality": [
+        {
+          "record_type": "company_event",
+          "record_id": "ce_001",
+          "source_quality": {
+            "score": 0.9,
+            "level": "high|medium|low",
+            "factors": ["has_evidence_backlink", "official_or_public_company_source"],
+            "source_types": ["regulatory"],
+            "usage_boundary": "source_quality_is_local_provenance_score_not_investment_rating"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+归并写入规则：
+
+| Object | Canonical record | Duplicate record |
+|---|---|---|
+| `CompanyEvent` | 合并 `source_ids`、`document_ids`、`evidence_ids`、`impact_tags`、`metadata.merged_from`，保留较高 `confidence` | `review_status=merged`，`metadata.merged_into=<canonical_id>` |
+| `CompanyRelationship` | 合并 `source_ids`、`document_ids`、`evidence_ids`、`metadata.merged_from`、`metadata.entity_aliases`、`metadata.entity_canonical_key`，保留较高 `confidence` | `review_status=merged`，`relationship_status=inactive`，`metadata.merged_into=<canonical_id>` |
+
+`source_quality.score` 只衡量本地来源/证据/复核质量：官方披露、公司 IR、监管/交易所来源、document/evidence 回链、verified fact 和 approved review 会提高分数；研报、manual/local reference、news、opinion signal、rejected/merged 记录会降低分数。它不是公司质量、投资评级或买卖建议。
 
 ### 8.2 EntityMapping
 

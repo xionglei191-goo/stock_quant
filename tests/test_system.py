@@ -932,6 +932,191 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(fields["business_summary"]["missing_reason"], "research_report_or_local_reference_is_not_fact_source")
         self.assertEqual(audit.data["rules"]["research_reports"], "opinion_and_attention_slots_only_not_fact_source")
 
+    def test_company_profile_field_extraction_updates_from_official_evidence(self) -> None:
+        document = Document(
+            document_id="doc_demo_ir_profile",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="official_business_overview",
+            source_id="src_company_ir",
+            source_type="company_ir",
+            source_uri="https://example.test/demo-ir-profile",
+            rights_tag=RightsTag("public"),
+            body="",
+            title="Demo company IR profile",
+        )
+        self.service.store.documents[document.document_id] = document
+        self.service.store.evidence["evi_demo_ir_profile"] = Evidence(
+            evidence_id="evi_demo_ir_profile",
+            document_id=document.document_id,
+            section="business_overview",
+            page_no=1,
+            bbox="p1",
+            span_text=(
+                "Business overview: Demo Corp is engaged in cloud AI chips and data center acceleration. "
+                "Products include AI accelerator module, inference card. FY2026 revenue 1200 million "
+                "and net income 180 million with gross margin 42%. Cash 300 million and debt 80 million."
+            ),
+            canonical_text=(
+                "Business overview: Demo Corp is engaged in cloud AI chips and data center acceleration. "
+                "Products include AI accelerator module, inference card. FY2026 revenue 1200 million "
+                "and net income 180 million with gross margin 42%. Cash 300 million and debt 80 million."
+            ),
+            confidence=0.93,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-fields/extract",
+            {
+                "symbols": ["DEMO"],
+                "fields": ["business_summary", "products", "period", "revenue", "net_income", "gross_margin", "cash", "debt"],
+                "require_evidence": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertGreaterEqual(dry_run.data["totals"]["fields_planned"], 8)
+        self.assertNotIn("issuer_001", self.service.store.company_profiles)
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-fields/extract",
+            {
+                "symbols": ["DEMO"],
+                "fields": ["business_summary", "products", "period", "revenue", "net_income", "gross_margin", "cash", "debt"],
+                "require_evidence": True,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["status"], "executed")
+        self.assertEqual(executed.data["totals"]["profiles_saved"], 1)
+        issuer = self.service.store.issuers["issuer_001"]
+        self.assertIn("cloud AI chips", issuer.company_details["business_summary"])
+        self.assertIn("AI accelerator module", issuer.company_details["products"])
+        self.assertEqual(issuer.fundamentals["period"], "FY2026")
+        self.assertEqual(issuer.fundamentals["revenue"], 1200000000.0)
+        self.assertEqual(issuer.fundamentals["net_income"], 180000000.0)
+        self.assertEqual(issuer.fundamentals["gross_margin"], 0.42)
+        profile = self.service.store.company_profiles["issuer_001"]
+        self.assertIn("src_company_ir", profile.source_ids)
+        self.assertIn("evi_demo_ir_profile", profile.evidence_ids)
+
+        audit = self.router.dispatch(
+            "POST",
+            "/api/company-profiles/coverage/audit",
+            {"symbols": ["DEMO"], "required_fields": ["business_summary", "products", "revenue", "net_income", "field_evidence_ids"]},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(audit.success, audit.error)
+        fields = audit.data["companies"][0]["fields"]
+        self.assertTrue(fields["business_summary"]["present"])
+        self.assertTrue(fields["products"]["present"])
+        self.assertTrue(fields["revenue"]["present"])
+        self.assertTrue(fields["net_income"]["present"])
+        self.assertTrue(fields["field_evidence_ids"]["present"])
+
+    def test_company_profile_field_extraction_keeps_research_reports_opinion_only(self) -> None:
+        research_document = Document(
+            document_id="doc_demo_research_profile_extract",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="research_report",
+            source_id="local_research_reports",
+            source_type="broker_research",
+            source_uri="local://demo-research-profile",
+            rights_tag=RightsTag("public"),
+            body="Business overview: Demo Corp is engaged in cloud AI chips. Products include AI module. FY2026 revenue 1200 million.",
+            title="Demo research profile note",
+        )
+        self.service.store.documents[research_document.document_id] = research_document
+        self.service.store.evidence["evi_demo_research_profile_extract"] = Evidence(
+            evidence_id="evi_demo_research_profile_extract",
+            document_id=research_document.document_id,
+            section="research_report_citation",
+            page_no=1,
+            bbox="research",
+            span_text=research_document.body,
+            canonical_text=research_document.body,
+            confidence=0.9,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-profiles/fields/extract",
+            {"symbols": ["DEMO"], "fields": ["business_summary", "products", "revenue"], "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["totals"]["documents_scanned"], 0)
+        self.assertEqual(executed.data["totals"]["fields_updated"], 0)
+        self.assertEqual(executed.data["totals"]["skipped_research_or_reference_documents"], 1)
+        self.assertNotIn("business_summary", self.service.store.issuers["issuer_001"].company_details)
+        self.assertNotIn("issuer_001", self.service.store.company_profiles)
+
+    def test_company_profile_field_extraction_does_not_overwrite_without_refresh(self) -> None:
+        issuer = self.service.store.issuers["issuer_001"]
+        issuer.company_details = {"business_summary": "Existing official summary."}
+        document = Document(
+            document_id="doc_demo_ir_refresh",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="official_business_overview",
+            source_id="src_company_ir",
+            source_type="company_ir",
+            source_uri="https://example.test/demo-ir-refresh",
+            rights_tag=RightsTag("public"),
+            body="Business overview: Updated official business summary for advanced AI modules.",
+            title="Demo company IR refresh",
+        )
+        self.service.store.documents[document.document_id] = document
+        self.service.store.evidence["evi_demo_ir_refresh"] = Evidence(
+            evidence_id="evi_demo_ir_refresh",
+            document_id=document.document_id,
+            section="business_overview",
+            page_no=1,
+            bbox="p1",
+            span_text=document.body,
+            canonical_text=document.body,
+            confidence=0.92,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+
+        skipped = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-fields/extract",
+            {"symbols": ["DEMO"], "fields": ["business_summary"], "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(skipped.success, skipped.error)
+        self.assertEqual(skipped.data["totals"]["fields_updated"], 0)
+        self.assertEqual(self.service.store.issuers["issuer_001"].company_details["business_summary"], "Existing official summary.")
+
+        refreshed = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-fields/extract",
+            {"symbols": ["DEMO"], "fields": ["business_summary"], "refresh_existing": True, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(refreshed.success, refreshed.error)
+        self.assertEqual(refreshed.data["totals"]["fields_updated"], 1)
+        self.assertIn("Updated official business summary", self.service.store.issuers["issuer_001"].company_details["business_summary"])
+        self.assertIn("evi_demo_ir_refresh", self.service.store.company_profiles["issuer_001"].evidence_ids)
+
     def test_company_database_batch_build_aggregates_batches_and_coverage(self) -> None:
         result = self.router.dispatch(
             "POST",
@@ -1734,6 +1919,179 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(merged_response.data["review_status"], "merged")
         self.assertEqual(self.service.store.company_relationships[target.relationship_id].evidence_ids, ["ev_target", "ev_source"])
         self.assertIn(source.relationship_id, self.service.store.company_relationships[target.relationship_id].metadata["merged_from"])
+
+    def test_company_database_quality_reconcile_merges_duplicate_events(self) -> None:
+        for event_id, evidence_id in [("ce_dup_event_a", "ev_event_a"), ("ce_dup_event_b", "ev_event_b")]:
+            created = self.router.dispatch(
+                "POST",
+                "/api/company-events",
+                {
+                    "event_id": event_id,
+                    "issuer_id": "issuer_001",
+                    "security_id": "sec_001",
+                    "event_type": "earnings_result",
+                    "title": "FY2026 earnings result",
+                    "summary": "Revenue increased and net income improved.",
+                    "occurred_at": "2026-06-24T00:00:00+00:00",
+                    "source_ids": ["src_sec"],
+                    "document_ids": ["doc_earnings"],
+                    "evidence_ids": [evidence_id],
+                    "confidence": 0.82,
+                    "fact_status": "verified",
+                    "review_status": "auto_generated",
+                },
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(created.success, created.error)
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/company-database/quality/reconcile",
+            {"symbols": ["DEMO"]},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertEqual(dry_run.data["totals"]["event_duplicates"], 1)
+        self.assertEqual(self.service.store.company_events["ce_dup_event_a"].review_status, "auto_generated")
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/quality/reconcile",
+            {"symbols": ["DEMO"], "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["totals"]["events_merged"], 1)
+        group = executed.data["companies"][0]["event_duplicate_groups"][0]
+        canonical = self.service.store.company_events[group["canonical_id"]]
+        duplicate = self.service.store.company_events[group["duplicate_ids"][0]]
+        self.assertEqual(duplicate.review_status, "merged")
+        self.assertIn(duplicate.event_id, canonical.metadata["merged_from"])
+        self.assertEqual(set(canonical.evidence_ids), {"ev_event_a", "ev_event_b"})
+        self.assertEqual(canonical.metadata["source_quality"]["level"], "high")
+
+    def test_company_database_quality_reconcile_merges_relationship_entity_aliases(self) -> None:
+        self.service.register_company_relationship(
+            {
+                "relationship_id": "rel_customer_mega_cloud",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "company",
+                "object_id": "external_company_mega_cloud",
+                "relationship_type": "customer_candidate",
+                "relationship_status": "unknown",
+                "review_status": "needs_review",
+                "source_ids": ["src_sec"],
+                "document_ids": ["doc_relationship"],
+                "evidence_ids": ["ev_customer_a"],
+                "confidence": 0.61,
+                "metadata": {"entity_name": "Mega Cloud", "candidate_status": "candidate"},
+            },
+            actor="data",
+        )
+        self.service.register_company_relationship(
+            {
+                "relationship_id": "rel_customer_mega_cloud_inc",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "company",
+                "object_id": "external_company_mega_cloud_inc",
+                "relationship_type": "customer_candidate",
+                "relationship_status": "unknown",
+                "review_status": "needs_review",
+                "source_ids": ["src_sec"],
+                "document_ids": ["doc_relationship"],
+                "evidence_ids": ["ev_customer_b"],
+                "confidence": 0.59,
+                "metadata": {"entity_name": "Mega Cloud Inc.", "candidate_status": "candidate"},
+            },
+            actor="data",
+        )
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/quality/reconcile",
+            {"symbols": ["DEMO"], "include_events": False, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["totals"]["relationship_duplicates"], 1)
+        self.assertEqual(executed.data["totals"]["relationships_merged"], 1)
+        group = executed.data["companies"][0]["relationship_duplicate_groups"][0]
+        canonical = self.service.store.company_relationships[group["canonical_id"]]
+        duplicate = self.service.store.company_relationships[group["duplicate_ids"][0]]
+        self.assertEqual(duplicate.review_status, "merged")
+        self.assertEqual(duplicate.relationship_status, "inactive")
+        self.assertEqual(canonical.metadata["entity_canonical_key"], "mega_cloud")
+        self.assertEqual(set(canonical.evidence_ids), {"ev_customer_a", "ev_customer_b"})
+        self.assertIn("Mega Cloud Inc.", canonical.metadata["entity_aliases"])
+
+    def test_company_database_quality_reconcile_scores_source_boundaries(self) -> None:
+        official_event = self.router.dispatch(
+            "POST",
+            "/api/company-events",
+            {
+                "event_id": "ce_quality_official",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "event_type": "official_disclosure",
+                "title": "Official disclosure",
+                "summary": "Official filing disclosed operating update.",
+                "occurred_at": "2026-06-24T00:00:00+00:00",
+                "source_ids": ["src_sec"],
+                "document_ids": ["doc_quality_official"],
+                "evidence_ids": ["ev_quality_official"],
+                "confidence": 0.95,
+                "fact_status": "verified",
+                "review_status": "auto_generated",
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(official_event.success, official_event.error)
+        self.service.register_company_relationship(
+            {
+                "relationship_id": "rel_quality_research",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "institution",
+                "object_id": "local_broker",
+                "relationship_type": "institution_coverage",
+                "source_ids": ["local_research_reports"],
+                "confidence": 0.55,
+                "relationship_status": "active",
+                "review_status": "needs_review",
+                "metadata": {"rights_boundary": "opinion_coverage_relationship_not_company_fact"},
+            },
+            actor="data",
+        )
+
+        scored = self.router.dispatch(
+            "POST",
+            "/api/company-database/quality/reconcile",
+            {"symbols": ["DEMO"], "merge_duplicates": False},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(scored.success, scored.error)
+        scores = {
+            item["record_id"]: item["source_quality"]["score"]
+            for item in scored.data["companies"][0]["source_quality"]
+            if item["record_id"] in {"ce_quality_official", "rel_quality_research"}
+        }
+        self.assertGreater(scores["ce_quality_official"], scores["rel_quality_research"])
+        self.assertEqual(scored.data["rules"]["source_quality"], "local_provenance_score_not_investment_rating")
 
     def test_company_workflow_builder_creates_observation_conclusion_and_paper_feedback(self) -> None:
         self.service.register_market_data_point(
