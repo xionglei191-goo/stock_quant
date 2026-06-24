@@ -1,34 +1,80 @@
-# 数据结构设计
+# 公司情报平台数据结构设计
 
-## 1. 目标
+- Status: active
+- Owner group: Data and Evidence
+- Last updated: 2026-06-24
+- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436
+- Scope: 公司级数据库、事件、关系、研报观点、观察任务、分析结论和模拟反馈核心模型
+- Non-goals: 真实交易订单模型、券商账户模型、把研报作为事实真相源
 
-定义系统的核心实体、对象、关系、事件和日志结构，为研发提供统一的数据模型。
+## 1. Purpose
 
-## 2. 设计原则
+本文档定义公司情报与市场综合分析平台的目标数据结构。模型中心从 `decision_id` / `execution_intent` 调整为公司、证券、事件、关系、观点、观察和模拟反馈。
 
-- 所有结论必须能回链到证据
-- 所有实体必须有稳定主键
-- 所有操作必须可审计
-- 所有版本必须可回放
-- 所有三市场对象必须可映射
+旧 `DecisionPack`、`ExecutionIntent` 和签字链可以继续作为兼容对象存在，但不再是核心主键或主流程。新增实现应优先围绕 `issuer_id`、`security_id`、`event_id`、`relationship_id`、`viewpoint_id`、`observation_id` 和 `simulation_feedback_id` 设计。
 
-## 3. 核心主键
+## 2. Design Principles
 
-| 领域 | 主键 | 说明 |
+- 公司级数据库是核心资产。
+- 事实、事件、关系、观点和反馈必须分层。
+- 所有事实必须可回链来源或证据。
+- 研报属于观点层和关注度信号，不属于事实真相源。
+- 分析结论必须记录假设、证据、反证、有效期和复盘计划。
+- 模拟反馈只用于验证分析有效性，固定 paper-only。
+- 所有对象保留版本、更新时间和审计字段。
+
+## 3. Core Keys
+
+| Domain | Primary Key | Purpose |
 |---|---|---|
-| 公司主体 | `issuer_id` | 内部统一主体 ID |
-| 美股主体 | `cik` | SEC 主体标识 |
-| 全球实体 | `lei` | 法律实体标识 |
-| 证券标识 | `figi` / `isin` / `ticker` | 证券层主键 |
-| 文件 | `document_id` | 原始披露唯一标识 |
-| 证据 | `evidence_id` | 证据片段唯一标识 |
-| 研究结论 | `thesis_id` | Thesis Card 主键 |
-| 决策 | `decision_id` | 投委会决策主键 |
-| 复盘 | `review_id` | 复盘记录主键 |
+| 公司主体 | `issuer_id` | 公司/发行人统一主体 |
+| 证券 | `security_id` | 股票、ADR、港股等证券对象 |
+| 人物 | `person_id` | 高管、董事、分析师等人物 |
+| 机构 | `institution_id` | 券商、基金、供应商、客户、监管/交易所等机构 |
+| 产品 | `product_id` | 公司产品、服务或业务线 |
+| 产业链节点 | `industry_node_id` | 上下游环节、产能、材料、渠道等节点 |
+| 主题 | `theme_id` | 宏观、产业、热点或策略主题 |
+| 文件 | `document_id` | 原始公告、财报、研报、网页或本地文件 |
+| 证据 | `evidence_id` | 原文切片或结构化定位 |
+| 公司事件 | `event_id` | 事件时间线主键 |
+| 关系 | `relationship_id` | 公司/人物/机构/产品/主题关系主键 |
+| 研报 | `research_report_id` | 单份研报资产和元数据 |
+| 研报观点 | `viewpoint_id` | 单个结构化观点、评级、目标价或假设 |
+| 研报预测 | `forecast_id` | 盈利预测、收入预测、目标价路径等 |
+| 分析师 | `analyst_id` | 分析师画像和覆盖记录 |
+| 观察任务 | `observation_id` | 观察池任务 |
+| 分析结论 | `analysis_conclusion_id` | 个人或系统分析结论 |
+| 模拟反馈 | `simulation_feedback_id` | 分析结论有效性反馈 |
 
-## 4. 核心实体模型
+降级主键：
 
-### 4.0 SourceDefinition
+| Legacy Key | New Role |
+|---|---|
+| `decision_id` | 兼容旧决策包，可映射到 `analysis_conclusion_id` 或复盘记录 |
+| `intent_id` / `execution_intent` | 兼容旧纸面执行意图，可映射到 `simulation_feedback_id` 的模拟输入 |
+
+## 4. Common Fields
+
+所有核心对象建议包含：
+
+```json
+{
+  "created_at": "datetime",
+  "updated_at": "datetime",
+  "created_by": "string",
+  "updated_by": "string",
+  "version": "string",
+  "source_ids": ["string"],
+  "evidence_ids": ["string"],
+  "confidence": 0.0,
+  "review_status": "unreviewed|pending|reviewed|rejected",
+  "metadata": {}
+}
+```
+
+## 5. Source and Evidence Foundation
+
+### 5.1 SourceDefinition
 
 ```json
 {
@@ -36,194 +82,32 @@
   "source_type": "regulatory|exchange|company_ir|public_market_data|public_web|local_reference|manual_reference|third_party_connector",
   "risk_level": "green|yellow|red",
   "field_whitelist": ["string"],
+  "training_allowed": false,
+  "redistribution_allowed": false,
+  "automation_allowed": false,
   "retention_policy": "string",
   "cache_ttl_days": 0,
   "provenance_ref": "string",
   "usage_scope": "string",
   "collection_method": "string",
   "robots_policy": "string",
+  "source_tos_uri": "string",
   "last_reviewed_at": "datetime|null",
   "review_cadence": "monthly|quarterly|semiannual|annual",
-  "review_owner": "string",
-  "review_owner_role": "string",
-  "source_tos_uri": "string"
+  "review_owner": "string"
 }
 ```
 
-### 4.0.1 SourceReviewRecord
-
-```json
-{
-  "review_id": "string",
-  "source_id": "string",
-  "reviewer": "string",
-  "reviewed_at": "datetime",
-  "review_period": "YYYYQn",
-  "status": "approved|conditional|rejected",
-  "publicness_status": "confirmed_public_or_local|manual_reference_only|unclear",
-  "tos_status": "reviewed|not_applicable|needs_review",
-  "robots_status": "reviewed_or_not_applicable|blocked|needs_review",
-  "usage_scope_status": "within_boundary|manual_reference_only|blocked",
-  "findings": ["string"],
-  "next_review_due_at": "datetime|null"
-}
-```
-
-### 4.1 Issuer
-
-```json
-{
-  "issuer_id": "string",
-  "legal_name": "string",
-  "aliases": ["string"],
-  "market": ["A", "H", "U"],
-  "lei": "string",
-  "cik": "string",
-  "country": "string",
-  "status": "active|inactive",
-  "created_at": "datetime",
-  "updated_at": "datetime"
-}
-```
-
-### 4.1.1 IngestionJob
-
-```json
-{
-  "job_id": "string",
-  "status": "running|completed|partial|failed",
-  "total": 0,
-  "created": 0,
-  "skipped": 0,
-  "failed": 0,
-  "created_document_ids": ["string"],
-  "errors": [
-    {
-      "index": 0,
-      "error": "string"
-    }
-  ],
-  "started_at": "datetime",
-  "completed_at": "datetime"
-}
-```
-
-### 4.1.2 IngestionSchedule
-
-```json
-{
-  "schedule_id": "string",
-  "name": "string",
-  "payload": {},
-  "cadence": "manual|hourly|daily|weekly",
-  "status": "active|retrying|failed|paused",
-  "retry_limit": 2,
-  "retry_count": 0,
-  "last_job_id": "string",
-  "last_status": "string",
-  "last_error": "string",
-  "next_run_at": "datetime",
-  "created_at": "datetime",
-  "updated_at": "datetime"
-}
-```
-
-### 4.2 Security
-
-```json
-{
-  "security_id": "string",
-  "issuer_id": "string",
-  "ticker": "string",
-  "figi": "string",
-  "isin": "string",
-  "exchange": "string",
-  "currency": "string",
-  "market": "A|H|U",
-  "status": "active|inactive"
-}
-```
-
-### 4.2.1 MarketDataPoint
-
-```json
-{
-  "data_id": "string",
-  "security_id": "string",
-  "source_id": "string",
-  "market": "A|H|U",
-  "as_of_date": "YYYY-MM-DD",
-  "data_type": "eod|delayed",
-  "currency": "string",
-  "open": 0.0,
-  "high": 0.0,
-  "low": 0.0,
-  "close": 0.0,
-  "adjusted_close": 0.0,
-  "volume": 0.0,
-  "rights_tag": {
-    "license_class": "string",
-    "training_allowed": false,
-    "redistribution_allowed": false,
-    "display_use": "allowed|restricted",
-    "non_display_use": "allowed|restricted",
-    "derived_data_use": "allowed|restricted"
-  },
-  "created_at": "datetime"
-}
-```
-
-### 4.2.2 CorporateAction
-
-```json
-{
-  "action_id": "string",
-  "security_id": "string",
-  "source_id": "string",
-  "action_type": "split|reverse_split|cash_dividend|stock_dividend|symbol_change",
-  "ex_date": "YYYY-MM-DD",
-  "ratio": 1.0,
-  "cash_amount": 0.0,
-  "currency": "string",
-  "description": "string",
-  "created_at": "datetime"
-}
-```
-
-### 4.2.3 AdjustedMarketDataView
-
-`AdjustedMarketDataView` 是 `/api/market-data/adjusted` 的计算视图，不覆盖原始行情点。`raw` 保留入库价格；`backward` 将未来拆股、反向拆股和送股作用到更早价格；`forward` 将已发生公司行动作用到更新价格。现金分红作为 ex-date 现金流返回，不进入价格因子；`/api/market-data/returns` 在 `total_return_method=cash_dividend_reinvested` 时才计入收益。
-
-```json
-{
-  "security_id": "string",
-  "source_id": "string",
-  "data_type": "eod|delayed",
-  "adjustment_mode": "raw|backward|forward",
-  "adjustment_policy": {},
-  "corporate_actions": [],
-  "market_data": [
-    {
-      "data_id": "string",
-      "as_of_date": "YYYY-MM-DD",
-      "raw_close": 0.0,
-      "adjustment_factor": 1.0,
-      "computed_adjusted_close": 0.0,
-      "corporate_action_ids": ["string"]
-    }
-  ]
-}
-```
-
-### 4.3 Document
+### 5.2 Document
 
 ```json
 {
   "document_id": "string",
-  "issuer_id": "string",
-  "security_id": "string",
-  "document_type": "announcement|annual_report|10-K|10-Q|8-K|20-F|6-K|research|transcript",
-  "source_type": "regulatory|exchange|company_ir|public_market_data|local_reference|manual_reference|third_party_connector",
+  "issuer_id": "string|null",
+  "security_id": "string|null",
+  "document_type": "announcement|annual_report|financial_report|10-K|10-Q|8-K|20-F|6-K|research_report|news|policy|web_page|manual_note",
+  "title": "string",
+  "source_id": "string",
   "source_uri": "string",
   "object_uri": "string",
   "content_sha256": "string",
@@ -234,596 +118,675 @@
     "display_use": "allowed|restricted",
     "non_display_use": "allowed|restricted"
   },
-  "published_at": "datetime",
+  "published_at": "datetime|null",
   "ingested_at": "datetime",
-  "language": "zh|en|mixed",
+  "language": "zh|en|mixed|unknown",
+  "parser_status": "pending|parsed|needs_review|failed",
   "version": "string"
 }
 ```
 
-### 4.4 Evidence
+### 5.3 Evidence
 
 ```json
 {
   "evidence_id": "string",
   "document_id": "string",
+  "source_id": "string",
   "section": "string",
-  "page_no": "number",
-  "bbox": "string",
+  "page_no": 1,
   "span_text": "string",
   "canonical_text": "string",
-  "confidence": 0.0,
   "locator": {
-    "scheme": "page_chunk_v1|ocr_bbox_span_v1",
+    "scheme": "page_chunk_v1|ocr_bbox_span_v1|html_selector_v1|table_cell_v1",
     "page_no": 1,
     "chunk_index": 1,
-    "span": {
-      "start": 0,
-      "end": 120,
-      "length": 120,
-      "matched": true,
-      "text_sha256": "string"
-    },
-    "bbox": {
-      "x": 0.0,
-      "y": 0.0,
-      "width": 0.0,
-      "height": 0.0
-    },
-    "tables": [
-      {
-        "table_index": 1,
-        "bbox": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0},
-        "cells": [
-          {"row": 1, "col": 1, "text": "string", "bbox": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0}}
-        ]
-      }
-    ],
-    "legacy_bbox": "page=1;chunk=1"
+    "bbox": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0},
+    "selector": "string",
+    "text_sha256": "string"
   },
-  "assets": [
-    {"asset_type": "image", "source": "markdown|output", "name": "string", "uri": "string"}
-  ]
-}
-```
-
-### 4.5 ManualReviewItem
-
-```json
-{
-  "review_id": "string",
-  "document_id": "string",
-  "issue_type": "empty_or_scanned_document|parser_error|low_locator_confidence",
-  "severity": "low|medium|high",
-  "status": "open|closed",
-  "parser_version": "string",
-  "message": "string",
-  "suggested_action": "string",
-  "created_at": "datetime",
-  "updated_at": "datetime"
-}
-```
-
-### 4.6 ResearchAnswer
-
-```json
-{
-  "answer_id": "string",
-  "question": "string",
-  "issuer_id": "string",
-  "evidence_ids": ["string"],
-  "source_document_ids": ["string"],
-  "english_source_text": "string",
-  "chinese_summary": "string",
-  "summary_version": "string",
-  "prompt_version": "string",
-  "model_version": "string",
-  "source_publicness": "public|restricted|unknown",
-  "human_review_status": "pending|approved|rejected",
-  "reviewer": "string",
-  "created_at": "datetime",
-  "updated_at": "datetime"
-}
-```
-
-### 4.7 ThesisCard
-
-```json
-{
-  "thesis_id": "string",
-  "issuer_id": "string",
-  "horizon": "short|mid|long",
-  "hypothesis": "string",
-  "catalyst": ["string"],
-  "evidence_ids": ["string"],
-  "falsifiers": ["string"],
-  "risk_factors": ["string"],
   "confidence": 0.0,
-  "owner": "string",
-  "status": "draft|review|approved|rejected|expired",
-  "valid_from": "date",
-  "valid_to": "date"
-}
-```
-
-### 4.8 ResearchSignal
-
-```json
-{
-  "signal_id": "string",
-  "thesis_id": "string",
-  "signal_type": "value|industry|event|momentum|sentiment|crowding",
-  "direction": "long|short|neutral",
-  "score": 0.0,
-  "source_model": "string",
-  "model_version": "string",
-  "generated_at": "datetime"
-}
-```
-
-### 4.8.1 InstitutionalHolding
-
-```json
-{
-  "holding_id": "string",
-  "issuer_id": "string",
-  "security_id": "string",
-  "source_id": "sec_edgar",
-  "filer_cik": "string",
-  "filer_name": "string",
-  "report_period": "YYYY-MM-DD",
-  "shares": 0.0,
-  "value_usd": 0.0,
-  "voting_authority": "string",
   "created_at": "datetime"
 }
 ```
 
-### 4.8.2 DisclosureEvent
+## 6. Entity Layer
+
+### 6.1 CompanyProfile
+
+`CompanyProfile` 是公司页的聚合视图，可以物化存储，也可以由 `Issuer`、`Security`、财务、行情、事件和关系记录计算生成。
+
+```json
+{
+  "issuer_id": "string",
+  "legal_name": "string",
+  "display_name": "string",
+  "aliases": ["string"],
+  "markets": ["A", "H", "U"],
+  "country": "string",
+  "region": "string",
+  "industry": "string",
+  "sector": "string",
+  "business_summary": "string",
+  "products": ["product_id"],
+  "main_securities": ["security_id"],
+  "identifiers": {
+    "lei": "string",
+    "cik": "string",
+    "ticker": "string",
+    "figi": "string",
+    "isin": "string"
+  },
+  "latest_market_snapshot": {
+    "as_of_date": "YYYY-MM-DD",
+    "market_cap": 0.0,
+    "currency": "string",
+    "close": 0.0,
+    "valuation": {}
+  },
+  "latest_financial_snapshot": {
+    "period": "YYYYQn|YYYY",
+    "revenue": 0.0,
+    "net_income": 0.0,
+    "gross_margin": 0.0,
+    "cash": 0.0,
+    "debt": 0.0
+  },
+  "coverage_summary": {
+    "research_report_count": 0,
+    "institution_count": 0,
+    "analyst_count": 0,
+    "latest_report_at": "datetime|null"
+  },
+  "event_summary": {
+    "latest_event_at": "datetime|null",
+    "high_impact_event_count": 0,
+    "open_observation_count": 0
+  },
+  "data_quality": {
+    "profile_coverage": 0.0,
+    "event_backlink_rate": 0.0,
+    "relationship_backlink_rate": 0.0,
+    "missing_fields": ["string"]
+  },
+  "source_ids": ["string"],
+  "evidence_ids": ["string"],
+  "updated_at": "datetime"
+}
+```
+
+### 6.2 Security
+
+```json
+{
+  "security_id": "string",
+  "issuer_id": "string",
+  "ticker": "string",
+  "exchange": "string",
+  "market": "A|H|U",
+  "currency": "string",
+  "figi": "string",
+  "isin": "string",
+  "security_type": "stock|adr|etf|other",
+  "status": "active|inactive|delisted",
+  "listed_at": "date|null"
+}
+```
+
+### 6.3 Person
+
+```json
+{
+  "person_id": "string",
+  "name": "string",
+  "aliases": ["string"],
+  "person_type": "executive|director|analyst|founder|other",
+  "current_institution_id": "string|null",
+  "roles": [
+    {
+      "issuer_id": "string|null",
+      "institution_id": "string|null",
+      "title": "string",
+      "start_date": "date|null",
+      "end_date": "date|null"
+    }
+  ],
+  "source_ids": ["string"],
+  "evidence_ids": ["string"]
+}
+```
+
+### 6.4 Institution
+
+```json
+{
+  "institution_id": "string",
+  "name": "string",
+  "institution_type": "broker|fund|bank|customer|supplier|regulator|exchange|company|media|other",
+  "country": "string",
+  "aliases": ["string"],
+  "source_ids": ["string"],
+  "evidence_ids": ["string"]
+}
+```
+
+## 7. Fact and Event Layer
+
+### 7.1 MarketDataPoint
+
+```json
+{
+  "data_id": "string",
+  "security_id": "string",
+  "source_id": "string",
+  "as_of_date": "YYYY-MM-DD",
+  "data_type": "eod|delayed",
+  "open": 0.0,
+  "high": 0.0,
+  "low": 0.0,
+  "close": 0.0,
+  "adjusted_close": 0.0,
+  "volume": 0.0,
+  "amount": 0.0,
+  "currency": "string",
+  "created_at": "datetime"
+}
+```
+
+### 7.2 FinancialMetric
+
+```json
+{
+  "metric_id": "string",
+  "issuer_id": "string",
+  "security_id": "string|null",
+  "source_id": "string",
+  "document_id": "string|null",
+  "period": "YYYY|YYYYQn",
+  "period_end": "date",
+  "metric_name": "revenue|net_income|gross_margin|operating_cash_flow|capex|cash|debt|custom",
+  "value": 0.0,
+  "unit": "string",
+  "currency": "string|null",
+  "evidence_ids": ["string"],
+  "created_at": "datetime"
+}
+```
+
+### 7.3 CompanyEvent
 
 ```json
 {
   "event_id": "string",
-  "document_id": "string",
   "issuer_id": "string",
-  "security_id": "string",
-  "event_type": "current_report|management_change|guidance_update|material_agreement|capital_allocation|annual_foreign_private_issuer_report|filing_update",
-  "severity": "low|medium|high",
+  "security_id": "string|null",
+  "event_type": "financial_report|announcement|news|policy|order_contract|litigation|management_change|supply_demand|price_move|capital_action|relationship_change|research_coverage_change|other",
+  "title": "string",
   "summary": "string",
-  "evidence_ids": ["string"],
-  "source_id": "string",
   "occurred_at": "datetime",
-  "created_at": "datetime"
+  "detected_at": "datetime",
+  "source_ids": ["string"],
+  "document_ids": ["string"],
+  "evidence_ids": ["string"],
+  "impact_tags": ["positive|negative|neutral|uncertain|high_impact|watchlist"],
+  "affected_entities": [
+    {
+      "entity_type": "issuer|security|institution|person|product|industry_node|theme",
+      "entity_id": "string",
+      "role": "subject|counterparty|related"
+    }
+  ],
+  "confidence": 0.0,
+  "fact_status": "confirmed|inferred|speculative|unknown",
+  "review_status": "unreviewed|pending|reviewed|rejected"
 }
 ```
 
-### 4.9 ExtractionResult
+### 7.4 CorporateAction
 
 ```json
 {
-  "extraction_id": "string",
-  "evidence_id": "string",
-  "document_id": "string",
-  "language": "zh|en|mixed",
-  "task_type": "term_extraction|evidence_linking|table_reading",
-  "terms": [
-    {
-      "term": "string",
-      "canonical": "string",
-      "page_no": 1,
-      "bbox": "string",
-      "confidence": 0.0
-    }
-  ],
-  "numbers": [
-    {
-      "raw": "string",
-      "value": 0.0,
-      "unit": "string",
-      "page_no": 1,
-      "bbox": "string"
-    }
-  ],
-  "periods": [
-    {
-      "raw": "string",
-      "page_no": 1,
-      "bbox": "string"
-    }
-  ],
-  "tables": [
-    {
-      "headers": ["string"],
-      "rows": [["string"]],
-      "cells": [
-        {
-          "row": 1,
-          "column": "string",
-          "value": "string",
-          "page_no": 1,
-          "bbox": "string"
-        }
-      ],
-      "row_count": 0,
-      "column_count": 0,
-      "page_no": 1,
-      "bbox": "string"
-    }
-  ],
-  "metrics": {},
-  "benchmark_id": "string",
-  "passed": false,
-  "parser_version": "string"
-}
-```
-
-### 4.10 DecisionPack
-
-```json
-{
-  "decision_id": "string",
-  "signal_ids": ["string"],
-  "risk_checks": ["string"],
-  "red_team_note": "string",
-  "approval_state": "pending|approved|rejected|exception",
-  "signatures": [
-    {
-      "role": "string",
-      "user": "string",
-      "signed_at": "datetime"
-    }
-  ]
-}
-```
-
-### 4.11 ReviewRecord
-
-```json
-{
-  "review_id": "string",
-  "decision_id": "string",
-  "realized_outcome": "string",
-  "attribution": "string",
-  "lesson": "string",
-  "next_action": "string",
-  "created_at": "datetime"
-}
-```
-
-### 4.12 ExecutionIntent
-
-纸面/模拟执行意图，仅用于把已审批研究决策转成模拟持仓和复盘反馈输入；不代表真实订单、券商委托或自动调仓。
-
-```json
-{
-  "intent_id": "string",
-  "decision_id": "string",
-  "action": "buy|sell|hold|trim|add",
+  "action_id": "string",
+  "event_id": "string|null",
   "security_id": "string",
-  "target_weight": 0.0,
-  "rationale": "string",
-  "status": "draft|cancelled|submitted",
-  "created_by": "string",
-  "created_at": "datetime"
-}
-```
-
-### 4.13 OperatingReport
-
-```json
-{
-  "report_id": "string",
-  "period": "YYYY-MM",
-  "metrics": {
-    "twr": 0.0,
-    "total_return": 0.0,
-    "max_drawdown": 0.0,
-    "turnover": 0.0,
-    "information_ratio": 0.0,
-    "attribution": {}
-  },
-  "red_flags": [
-    {
-      "type": "string",
-      "owner": "string",
-      "due": "string"
-    }
-  ],
-  "owner": "string",
-  "status": "draft|published",
-  "approvals": [
-    {
-      "role": "CEO|CIO|风险/合规",
-      "user": "string",
-      "comment": "string",
-      "signed_at": "datetime"
-    }
-  ],
-  "created_at": "datetime",
-  "published_at": "datetime|null"
-}
-```
-
-### 4.14 StrategyReplay
-
-```json
-{
-  "replay_id": "string",
-  "decision_id": "string",
-  "expected_outcome": "string",
-  "actual_outcome": "string",
-  "variance_reason": "string",
-  "next_action": "string",
-  "version": "string",
-  "created_at": "datetime"
-}
-```
-
-### 4.15 PortfolioProposal
-
-```json
-{
-  "proposal_id": "string",
-  "universe": ["security_id"],
-  "prior_returns": {"security_id": 0.0},
-  "posterior_returns": {"security_id": 0.0},
-  "candidate_weights": {"security_id": 0.0},
-  "constraints": {
-    "paper_only": true,
-    "max_weight": 0.0,
-    "restricted_securities": ["security_id"],
-    "market_budget": {"A": 0.0, "H": 0.0, "U": 0.0},
-    "industry_budget": {"industry": 0.0}
-  },
-  "risk_budget": {},
-  "diagnostics": {
-    "method": "diagonal_black_litterman",
-    "view_diagnostics": [
-      {"security_id": "string", "confidence": 0.0, "omega": 0.0}
-    ],
-    "market_exposure": {},
-    "industry_exposure": {},
-    "theme_exposure": {},
-    "currency_exposure": {},
-    "risk_contribution": {},
-    "turnover": 0.0,
-    "stress_report": [],
-    "walk_forward": {}
-  },
-  "status": "candidate|archived|committee_input",
-  "created_by": "string",
-  "created_at": "datetime"
-}
-```
-
-### 4.16 AlertRule
-
-```json
-{
-  "rule_id": "string",
-  "metric": "counts.open_manual_reviews|counts.open_exceptions|pending_prompt_changes",
-  "operator": ">|>=|<|<=|==|!=",
-  "threshold": 0.0,
-  "severity": "low|medium|high|critical",
-  "owner": "string",
+  "source_id": "string",
+  "action_type": "split|reverse_split|cash_dividend|stock_dividend|symbol_change",
+  "ex_date": "YYYY-MM-DD",
+  "ratio": 1.0,
+  "cash_amount": 0.0,
+  "currency": "string",
   "description": "string",
-  "enabled": true,
-  "playbook_id": "string",
-  "created_at": "datetime",
-  "updated_at": "datetime"
+  "evidence_ids": ["string"]
 }
 ```
 
-### 4.17 SystemAlert
+## 8. Relationship Layer
+
+### 8.1 CompanyRelationship
 
 ```json
 {
-  "alert_id": "string",
-  "rule_id": "string",
-  "metric": "string",
-  "value": 0.0,
-  "threshold": 0.0,
-  "severity": "low|medium|high|critical",
-  "status": "open|resolved",
-  "message": "string",
-  "owner": "string",
-  "playbook_id": "string",
-  "incident_report_id": "string",
-  "created_at": "datetime",
-  "updated_at": "datetime"
+  "relationship_id": "string",
+  "subject_type": "issuer|security|person|institution|product|industry_node|theme",
+  "subject_id": "string",
+  "object_type": "issuer|security|person|institution|product|industry_node|theme",
+  "object_id": "string",
+  "relationship_type": "customer_of|supplier_of|competitor_of|owns_equity|covered_by_institution|covered_by_analyst|upstream_of|downstream_of|related_to_theme|employs|produces|other",
+  "direction": "directed|undirected",
+  "weight": 0.0,
+  "valid_from": "date|null",
+  "valid_to": "date|null",
+  "source_ids": ["string"],
+  "document_ids": ["string"],
+  "evidence_ids": ["string"],
+  "confidence": 0.0,
+  "relationship_status": "active|inactive|historical|unknown",
+  "review_status": "unreviewed|pending|reviewed|rejected",
+  "metadata": {}
 }
 ```
 
-### 4.18 AlertNotification
+### 8.2 EntityMapping
 
 ```json
 {
-  "notification_id": "string",
-  "alert_id": "string",
-  "channel": "webhook|email|slack|internal",
-  "target": "string",
-  "status": "pending|sent|failed",
-  "payload": {},
-  "created_at": "datetime"
+  "mapping_id": "string",
+  "issuer_id": "string",
+  "security_id": "string|null",
+  "identifier_type": "ticker|cik|lei|figi|isin|cusip|exchange_code|local_code",
+  "identifier_value": "string",
+  "market": "A|H|U|global",
+  "confidence": 0.0,
+  "source_ids": ["string"],
+  "valid_from": "date|null",
+  "valid_to": "date|null"
 }
 ```
 
-## 5. 关系模型
-
-| 关系 | 起点 | 终点 | 说明 |
-|---|---|---|---|
-| `ISSUES` | Issuer | Security | 主体发行证券 |
-| `HAS_MAPPING` | Issuer | EntityMapping | LEI/FIGI/CIK/ISIN/ticker 跨市场映射 |
-| `DISCLOSES` | Issuer | Document | 主体发布或关联文件 |
-| `DISCLOSURE_FOR` | Document | Security | 文件关联具体证券 |
-| `HAS_EVIDENCE` | Document | Evidence | 文件切片形成证据 |
-| `NEEDS_REVIEW` | Document | ManualReviewItem | 空文本、扫描件或低置信度解析进入人工复核 |
-| `ANSWERS_WITH` | ResearchAnswer | Evidence | 英文原文证据支持研究问答/摘要 |
-| `SUPPORTS` | Evidence | ThesisCard | 证据支持研究结论 |
-| `HAS_THESIS` | Issuer | ThesisCard | 主体关联研究观点 |
-| `GENERATES_SIGNAL` | ThesisCard | ResearchSignal | 研究结论转成信号 |
-| `INCLUDED_IN_DECISION` | ResearchSignal | DecisionPack | 信号进入决策包 |
-| `APPROVES` | User | DecisionPack | 人工签字 |
-| `CREATES_INTENT` | DecisionPack | ExecutionIntent | 已审批决策形成纸面/模拟执行意图 |
-| `INTENT_ON` | ExecutionIntent | Security | 纸面执行意图关联证券和目标权重 |
-| `REVIEW_OF` | ReviewRecord | DecisionPack | 决策形成复盘 |
-| `REPLAY_OF` | StrategyReplay | DecisionPack | 决策形成策略回放 |
-| `HAS_PORTFOLIO_PROPOSAL` | Issuer | PortfolioProposal | 主体关联纸面组合候选方案 |
-| `PROPOSES_WEIGHT` | PortfolioProposal | Security | 纸面组合候选方案给出证券候选权重 |
-| `HAS_MARKET_DATA` | Security | MarketDataPoint | 证券关联公开/已提供 EOD/延时行情 |
-| `HAS_CORPORATE_ACTION` | Security | CorporateAction | 公司行动用于复权、估值和回测链路 |
-| `HAS_13F_HOLDING` | Issuer | InstitutionalHolding | 主体关联 13F 机构持仓 |
-| `HOLDS_SECURITY` | InstitutionalHolding | Security | 13F 持仓关联证券 |
-| `HAS_DISCLOSURE_EVENT` | Issuer | DisclosureEvent | 主体关联披露事件墙 |
-| `EVENT_FROM_DOCUMENT` | DisclosureEvent | Document | 披露事件来自原始文件 |
-| `EVENT_ON_SECURITY` | DisclosureEvent | Security | 披露事件关联证券 |
-| `EVENT_EVIDENCE` | DisclosureEvent | Evidence | 披露事件引用证据切片 |
-| `HAS_CROWDING` | Issuer | CrowdingSnapshot | 主体关联拥挤度快照 |
-| `CONTRIBUTES_TO_CROWDING` | InstitutionalHolding | CrowdingSnapshot | 13F 持仓参与生成拥挤度 |
-| `SUMMARIZED_BY` | ThesisCard | ResearchCard | 观点形成研究卡 |
-| `CHALLENGES` | ChallengerResult | ThesisCard | 反证或挑战者结果挑战结论 |
-| `HAS_EXCEPTION` | DecisionPack | ExceptionItem | 决策关联例外事项 |
-| `TRIGGERS_ALERT` | AlertRule | SystemAlert | 指标规则触发系统告警 |
-
-## 6. 配置对象
-
-### 6.1 公开来源治理矩阵
+### 8.3 AnalystCoverage
 
 ```json
 {
-  "source_id": "string",
-  "source_type": "regulatory|exchange|company_ir|public_market_data|local_reference|manual_reference|third_party_connector",
-  "license_class": "string",
-  "training_allowed": false,
-  "redistribution_allowed": false,
-  "retention_policy": "string",
-  "provenance_ref": "string",
-  "source_tos_uri": "string",
-  "collection_method": "string",
-  "robots_policy": "string",
-  "usage_scope": "string",
-  "last_reviewed_at": "datetime",
-  "display_use": "allowed|restricted",
-  "non_display_use": "allowed|restricted",
-  "derived_data_use": "allowed|restricted"
+  "coverage_id": "string",
+  "issuer_id": "string",
+  "security_id": "string|null",
+  "analyst_id": "string",
+  "institution_id": "string",
+  "started_at": "date|null",
+  "ended_at": "date|null",
+  "coverage_status": "active|inactive|unknown",
+  "latest_report_id": "research_report_id|null",
+  "source_ids": ["string"]
 }
 ```
 
-### 6.1.1 来源复核记录
+## 9. Research Report and Viewpoint Layer
+
+### 9.1 ResearchReport
+
+研报资产和元数据。研报是观点层对象，不能直接写入事实层。
 
 ```json
 {
-  "review_id": "string",
-  "source_id": "string",
-  "reviewer": "string",
-  "reviewed_at": "datetime",
-  "review_period": "2026Q2",
-  "status": "approved|conditional|rejected",
-  "publicness_status": "confirmed_public_or_local|manual_reference_only|unclear",
-  "tos_status": "reviewed|not_applicable|needs_review",
-  "robots_status": "reviewed_or_not_applicable|blocked|needs_review",
-  "usage_scope_status": "within_boundary|manual_reference_only|blocked",
-  "findings": ["string"],
-  "next_review_due_at": "datetime"
-}
-```
-
-### 6.2 Benchmark
-
-```json
-{
-  "benchmark_id": "string",
-  "language": "zh|en|mixed",
-  "task_type": "term_extraction|evidence_linking|table_reading",
-  "sample_size": 0,
-  "metrics": {
-    "f1": 0.0,
-    "em": 0.0,
-    "anls": 0.0
-  },
-  "threshold": {
-    "f1": 0.0,
-    "em": 0.0,
-    "anls": 0.0
-  }
-}
-```
-
-### 6.3 BenchmarkSample
-
-```json
-{
-  "sample_id": "string",
-  "benchmark_id": "string",
+  "research_report_id": "string",
   "document_id": "string",
-  "language": "zh|en|mixed",
-  "expected_terms": ["revenue"],
-  "expected_numbers": 0,
-  "expected_periods": 0,
-  "expected_tables": 0,
-  "expected_pages": [1],
-  "notes": "string",
-  "status": "active|disabled",
-  "created_at": "datetime"
+  "title": "string",
+  "institution_id": "string",
+  "institution_name": "string",
+  "analyst_ids": ["analyst_id"],
+  "analyst_names": ["string"],
+  "published_at": "datetime",
+  "issuer_id": "string|null",
+  "security_id": "string|null",
+  "covered_entities": [
+    {"entity_type": "issuer|security|industry_node|theme", "entity_id": "string"}
+  ],
+  "report_type": "initiation|update|earnings_review|industry|strategy|event_comment|rating_change|target_price_change|other",
+  "language": "zh|en|mixed|unknown",
+  "source_id": "string",
+  "source_uri": "string",
+  "rights_tag": {
+    "local_reference_only": true,
+    "training_allowed": false,
+    "fact_source_allowed": false,
+    "redistribution_allowed": false
+  },
+  "current_price_at_publication": 0.0,
+  "rating": "buy|outperform|hold|neutral|underperform|sell|not_rated|other",
+  "target_price": 0.0,
+  "target_price_currency": "string",
+  "target_price_horizon": "3m|6m|12m|long_term|unknown",
+  "summary": "string",
+  "parser_status": "pending|parsed|needs_review|failed",
+  "viewpoint_ids": ["viewpoint_id"],
+  "forecast_ids": ["forecast_id"],
+  "created_at": "datetime",
+  "updated_at": "datetime"
 }
 ```
 
-### 6.4 BenchmarkRun
+Required report fields:
+
+- 机构
+- 分析师
+- 发布时间
+- 标的
+- 报告类型
+- 评级
+- 目标价
+- 当前价
+- 核心假设
+- 盈利预测
+- 估值方法
+- 催化剂
+- 风险
+- 后续兑现状态
+
+### 9.2 ReportViewpoint
 
 ```json
 {
-  "run_id": "string",
-  "benchmark_id": "string",
-  "sample_ids": ["sample_id"],
-  "passed": false,
-  "metrics": {
-    "term_f1": 0.0,
-    "page_hit_rate": 0.0,
-    "table_recall": 0.0,
-    "evidence_locator_rate": 0.0,
-    "low_confidence_intercept_rate": 0.0,
-    "language_metrics": {}
-  },
-  "threshold": {},
-  "failed_samples": [],
-  "regression_examples": ["sample_id"],
-  "created_at": "datetime"
+  "viewpoint_id": "string",
+  "research_report_id": "string",
+  "issuer_id": "string|null",
+  "security_id": "string|null",
+  "viewpoint_type": "rating|target_price|core_assumption|valuation|catalyst|risk|industry_view|event_view|other",
+  "stance": "positive|negative|neutral|mixed|uncertain",
+  "statement": "string",
+  "rating": "buy|outperform|hold|neutral|underperform|sell|not_rated|other|null",
+  "target_price": 0.0,
+  "current_price": 0.0,
+  "upside_downside_pct": 0.0,
+  "valuation_method": "pe|pb|ps|dcf|ev_ebitda|sum_of_parts|asset_value|other|null",
+  "core_assumptions": ["string"],
+  "catalysts": ["string"],
+  "risks": ["string"],
+  "evidence_ids": ["string"],
+  "source_quote_locator": "string",
+  "view_status": "active|superseded|invalidated|expired|unknown",
+  "realization_status": "pending|partially_realized|realized|missed|not_measurable",
+  "realization_checked_at": "datetime|null",
+  "notes": "string"
 }
 ```
 
-## 7. 事件模型
+### 9.3 ReportForecast
 
-| 事件 | 触发 | 输出 |
+```json
+{
+  "forecast_id": "string",
+  "research_report_id": "string",
+  "viewpoint_id": "string|null",
+  "issuer_id": "string",
+  "security_id": "string|null",
+  "forecast_type": "revenue|net_income|eps|gross_margin|target_price|market_share|volume|price|other",
+  "period": "YYYY|YYYYQn|date_range",
+  "forecast_value": 0.0,
+  "unit": "string",
+  "currency": "string|null",
+  "base_value": 0.0,
+  "actual_value": 0.0,
+  "actual_source_id": "string|null",
+  "actual_evidence_ids": ["string"],
+  "error_abs": 0.0,
+  "error_pct": 0.0,
+  "realization_status": "pending|realized|missed|not_available|not_measurable",
+  "checked_at": "datetime|null"
+}
+```
+
+### 9.4 AnalystProfile
+
+```json
+{
+  "analyst_id": "string",
+  "person_id": "string|null",
+  "name": "string",
+  "institution_id": "string",
+  "coverage_markets": ["A", "H", "U"],
+  "coverage_industries": ["string"],
+  "covered_issuer_ids": ["issuer_id"],
+  "first_seen_at": "datetime",
+  "last_seen_at": "datetime",
+  "report_count": 0,
+  "active": true,
+  "source_ids": ["string"]
+}
+```
+
+### 9.5 AnalystReliabilityScore
+
+```json
+{
+  "score_id": "string",
+  "analyst_id": "string",
+  "institution_id": "string",
+  "issuer_id": "string|null",
+  "period": "YYYYQn|YYYY",
+  "sample_count": 0,
+  "target_price_hit_rate": 0.0,
+  "rating_direction_accuracy": 0.0,
+  "earnings_forecast_mape": 0.0,
+  "forecast_review_coverage": 0.0,
+  "timeliness_score": 0.0,
+  "revision_quality_score": 0.0,
+  "overall_score": 0.0,
+  "methodology_version": "string",
+  "input_forecast_ids": ["forecast_id"],
+  "notes": "string",
+  "computed_at": "datetime"
+}
+```
+
+## 10. Observation, Conclusion and Feedback Layer
+
+### 10.1 ObservationItem
+
+```json
+{
+  "observation_id": "string",
+  "issuer_id": "string",
+  "security_id": "string|null",
+  "title": "string",
+  "question": "string",
+  "observation_type": "company_profile_gap|event_followup|relationship_watch|report_viewpoint_watch|price_volume_watch|financial_watch|policy_watch|custom",
+  "trigger_conditions": [
+    {
+      "condition_type": "date|price|event|report|metric|manual",
+      "description": "string",
+      "threshold": {}
+    }
+  ],
+  "related_event_ids": ["event_id"],
+  "related_relationship_ids": ["relationship_id"],
+  "related_viewpoint_ids": ["viewpoint_id"],
+  "evidence_gap": ["string"],
+  "priority": "low|medium|high|critical",
+  "status": "open|in_progress|waiting|closed|cancelled",
+  "owner": "string",
+  "due_at": "datetime|null",
+  "created_at": "datetime",
+  "closed_at": "datetime|null"
+}
+```
+
+### 10.2 AnalysisConclusion
+
+```json
+{
+  "analysis_conclusion_id": "string",
+  "issuer_id": "string",
+  "security_id": "string|null",
+  "title": "string",
+  "conclusion": "string",
+  "conclusion_type": "watch|positive|negative|neutral|avoid|needs_more_evidence|custom",
+  "horizon": "short|medium|long|unknown",
+  "hypothesis": "string",
+  "facts": ["string"],
+  "inferences": ["string"],
+  "forecasts": ["string"],
+  "subjective_judgments": ["string"],
+  "supporting_evidence_ids": ["evidence_id"],
+  "counter_evidence_ids": ["evidence_id"],
+  "related_event_ids": ["event_id"],
+  "related_relationship_ids": ["relationship_id"],
+  "related_viewpoint_ids": ["viewpoint_id"],
+  "related_observation_ids": ["observation_id"],
+  "confidence": 0.0,
+  "valid_from": "date",
+  "valid_to": "date|null",
+  "review_plan": {
+    "review_at": "datetime|null",
+    "review_questions": ["string"],
+    "success_criteria": ["string"],
+    "failure_criteria": ["string"]
+  },
+  "status": "draft|active|superseded|expired|reviewed|rejected",
+  "created_by": "string",
+  "created_at": "datetime",
+  "updated_at": "datetime"
+}
+```
+
+### 10.3 SimulationFeedback
+
+```json
+{
+  "simulation_feedback_id": "string",
+  "analysis_conclusion_id": "string",
+  "observation_id": "string|null",
+  "issuer_id": "string",
+  "security_id": "string|null",
+  "feedback_type": "paper_trade|watch_only|portfolio_shadow|event_validation|forecast_validation",
+  "paper_only": true,
+  "live_execution_allowed": false,
+  "broker_connected": false,
+  "simulated_action": "buy|sell|hold|trim|add|watch|none",
+  "simulated_size": {
+    "quantity": 0.0,
+    "weight": 0.0,
+    "notional": 0.0,
+    "currency": "string"
+  },
+  "start_at": "datetime",
+  "end_at": "datetime|null",
+  "entry_price": 0.0,
+  "exit_price": 0.0,
+  "benchmark_security_id": "string|null",
+  "performance": {
+    "absolute_return": 0.0,
+    "benchmark_return": 0.0,
+    "excess_return": 0.0,
+    "max_drawdown": 0.0,
+    "volatility": 0.0
+  },
+  "validation": {
+    "hypothesis_status": "pending|supported|partially_supported|rejected|inconclusive",
+    "event_ids": ["event_id"],
+    "forecast_ids": ["forecast_id"],
+    "notes": "string"
+  },
+  "review_result": {
+    "reviewed_at": "datetime|null",
+    "lesson": "string",
+    "next_action": "continue_watch|revise_conclusion|close|create_observation|other"
+  },
+  "created_at": "datetime",
+  "updated_at": "datetime"
+}
+```
+
+## 11. Relationship Model
+
+| Relationship | From | To | Purpose |
+|---|---|---|---|
+| `ISSUES` | CompanyProfile | Security | 公司发行证券 |
+| `HAS_DOCUMENT` | CompanyProfile | Document | 公司相关文件 |
+| `HAS_EVIDENCE` | Document | Evidence | 文件切片 |
+| `HAS_EVENT` | CompanyProfile | CompanyEvent | 公司事件时间线 |
+| `EVENT_EVIDENCE` | CompanyEvent | Evidence | 事件证据 |
+| `HAS_RELATIONSHIP` | CompanyProfile | CompanyRelationship | 公司关系 |
+| `RELATIONSHIP_EVIDENCE` | CompanyRelationship | Evidence | 关系证据 |
+| `COVERED_BY_REPORT` | CompanyProfile | ResearchReport | 研报覆盖 |
+| `REPORT_HAS_VIEWPOINT` | ResearchReport | ReportViewpoint | 研报观点 |
+| `VIEWPOINT_HAS_FORECAST` | ReportViewpoint | ReportForecast | 预测 |
+| `ANALYST_AUTHORED_REPORT` | AnalystProfile | ResearchReport | 分析师报告 |
+| `ANALYST_COVERS` | AnalystProfile | CompanyProfile | 分析师覆盖 |
+| `SCORES_ANALYST` | AnalystReliabilityScore | AnalystProfile | 分析师可靠性 |
+| `OBSERVES_COMPANY` | ObservationItem | CompanyProfile | 观察池 |
+| `OBSERVES_EVENT` | ObservationItem | CompanyEvent | 观察事件 |
+| `OBSERVES_VIEWPOINT` | ObservationItem | ReportViewpoint | 观察观点 |
+| `CONCLUSION_ON_COMPANY` | AnalysisConclusion | CompanyProfile | 分析结论 |
+| `CONCLUSION_USES_EVIDENCE` | AnalysisConclusion | Evidence | 结论证据 |
+| `CONCLUSION_REFERENCES_VIEWPOINT` | AnalysisConclusion | ReportViewpoint | 引用观点 |
+| `FEEDBACK_FOR_CONCLUSION` | SimulationFeedback | AnalysisConclusion | 反馈验证 |
+| `FEEDBACK_REFERENCES_EVENT` | SimulationFeedback | CompanyEvent | 事件验证 |
+
+## 12. Event Model
+
+| Event | Trigger | Output |
 |---|---|---|
-| `document_ingested` | 文件入湖 | 元数据、版本、权限标签 |
-| `evidence_extracted` | 文档切片完成 | evidence_id、页码、片段 |
-| `thesis_created` | 研究结论生成 | thesis_id、owner、状态 |
-| `signal_scored` | 评分完成 | signal_id、score、方向 |
-| `decision_approved` | 人工签字 | approval_state、签字链 |
-| `review_completed` | 复盘完成 | 归因、教训、后续动作 |
-| `prompt_changed` | prompt 变更 | 版本、审批、回滚信息 |
-| `exception_raised` | 触发例外 | 例外原因、处理人、状态 |
+| `document_ingested` | 文件入湖 | `document_id`, source, rights, object URI |
+| `evidence_extracted` | 文档解析完成 | `evidence_id`, locator, confidence |
+| `company_profile_updated` | 主体或画像字段更新 | `issuer_id`, changed fields |
+| `company_event_created` | 新事实或事件识别 | `event_id`, evidence links |
+| `relationship_created` | 新关系识别或人工确认 | `relationship_id`, evidence links |
+| `research_report_registered` | 研报资产登记 | `research_report_id`, rights boundary |
+| `report_viewpoint_extracted` | 观点结构化 | `viewpoint_id`, report fields |
+| `forecast_reviewed` | 预测兑现复盘 | `forecast_id`, error metrics |
+| `analyst_score_computed` | 分析师可靠性计算 | `score_id`, methodology version |
+| `observation_created` | 新观察任务 | `observation_id`, trigger conditions |
+| `analysis_conclusion_created` | 分析结论创建 | `analysis_conclusion_id`, evidence links |
+| `simulation_feedback_recorded` | 模拟反馈记录 | `simulation_feedback_id`, paper-only flags |
+| `review_completed` | 结论或反馈复盘 | lesson, next action |
 
-## 8. 审计日志字段
+## 13. Audit Log Fields
 
-| 字段 | 说明 |
+| Field | Description |
 |---|---|
-| `event_id` | 事件唯一 ID |
-| `actor` | 执行动作者 |
+| `audit_id` | 审计事件 ID |
+| `actor` | 操作者或系统任务 |
 | `action` | 动作类型 |
-| `resource_type` | 资源类型 |
-| `resource_id` | 资源 ID |
-| `source` | 数据或系统来源 |
-| `version` | 版本号 |
+| `resource_type` | 对象类型 |
+| `resource_id` | 对象 ID |
+| `source` | 数据或调用来源 |
+| `trace_id` | 链路 ID |
 | `model_version` | 模型版本 |
 | `prompt_version` | prompt 版本 |
-| `approval_state` | 审批状态 |
+| `parser_version` | 解析器版本 |
+| `rights_boundary` | 数据边界快照 |
+| `paper_only` | 是否仅模拟 |
+| `live_execution_allowed` | 是否允许真实执行，默认 false |
 | `timestamp` | 时间戳 |
-| `trace_id` | 链路追踪 ID |
 
-## 9. 版本策略
+## 14. Versioning Strategy
 
-- 事实数据使用 `valid_time` 和 `system_time`
-- 研究结论使用 `status` 和 `valid_to`
-- 决策使用审批版本和签字链版本
-- 提示词使用单独的版本号与审批记录
+- 事实和事件使用 `valid_time` 与 `system_time`。
+- 公司画像记录字段更新时间和来源覆盖。
+- 关系记录 `valid_from` / `valid_to` 和状态。
+- 观点记录 `view_status`、`realization_status` 和后续复盘时间。
+- 分析结论记录 `valid_from` / `valid_to`、状态和复盘计划。
+- 模拟反馈记录起止时间、行情来源和复盘状态。
+- prompt、parser、model 和 scoring methodology 使用独立版本。
+
+## 15. Data Boundary Rules
+
+- 研报是观点层和关注度信号，不是事实真相源。
+- 事实字段必须来自公告、财报、监管披露、公司 IR、公开行情或其他可信来源。
+- 研报中的事实描述若要进入事实层，必须创建独立 evidence 回链到可信事实来源。
+- 边界不清数据只能 metadata-only 或 manual reference。
+- 受限内容不得进入训练、再分发或自动事实抽取层。
+- 模拟反馈不得产生真实券商订单或自动交易动作。
+
+## 16. Migration Notes
+
+| Existing Object | Target Meaning |
+|---|---|
+| `Issuer` | `CompanyProfile` 基础主体 |
+| `DisclosureEvent` | `CompanyEvent` 的披露事件子类 |
+| `ThesisCard` | 可迁移为 `AnalysisConclusion` |
+| `ResearchAnswer` | 可作为观点/摘要材料并回链 evidence |
+| `DecisionPack` | 兼容旧决策对象，不作为新核心对象 |
+| `ExecutionIntent` | 兼容旧纸面模拟输入，不作为真实执行对象 |
+| `PortfolioTransaction` | 模拟 ledger，可被 `SimulationFeedback` 引用 |
+| `OperatingReport` | 复盘摘要，可从反馈和结论聚合 |

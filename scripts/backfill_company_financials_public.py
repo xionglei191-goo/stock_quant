@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 
 DEFAULT_DSN = os.getenv("AI_QUANT_POSTGRES_DSN", "postgresql://ai_quant:ai_quant_dev_password@127.0.0.1:15432/ai_quant")
 DEFAULT_ARTIFACT = Path("artifacts/company-financials-public-backfill.json")
-USER_AGENT = "ai-native-quant-org/0.1 local-research"
+USER_AGENT = "company-intelligence-platform/0.1 local-research"
 
 
 def utc_iso() -> str:

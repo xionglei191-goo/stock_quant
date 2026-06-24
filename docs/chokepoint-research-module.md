@@ -1,5 +1,12 @@
 # 瓶颈研究模块方向文档
 
+- Status: active
+- Owner group: Research and AI Workflows
+- Last updated: 2026-05-28
+- Related tasks: T-406B, T-406C, T-406D, T-406E
+- Scope: 瓶颈研究模块的方法论、边界、自动化流水线和本地质量基线
+- Non-goals: 不定义真实交易策略，不替代人工研究复核
+
 ## 1. 模块定位
 
 「瓶颈研究」模块面向没有系统分析训练的普通投资者。它的目标不是替用户直接荐股、承诺收益或自动下单，而是用 AI 把专业研究流程拆成可执行步骤，帮助用户从“听概念、追热点”升级为“画价值链、找瓶颈、验事实、等催化、控风险”。
@@ -92,6 +99,75 @@ AI 在本模块中的角色是研究脚手架，而不是最终裁判。流水�
 - 每个 thesis 必须包含反方论点、证伪条件和需要手动验证的关键事实。
 
 ## 7. 后续建设方向
+
+### 7.1 本地质量包基线
+
+`T-406C` 当前已提供本地可重复执行的质量包脚本：
+
+- 脚本：`scripts/local_chokepoint_quality_package.py`
+- 默认产物目录：`artifacts/chokepoint-quality-package/`
+- 本地 smoke 命令：`python3 scripts/local_chokepoint_quality_package.py --output-dir /tmp/chokepoint-quality-package-smoke`
+
+当前脚本会使用 5 个真实主题模板样本，批量创建并执行现有 7 步 chokepoint 流水线，并导出以下本地 `local-only` 产物：
+
+- `sample-manifest.json`：样本清单、主题、ticker、playbook 和 run 状态
+- `run-results.json`：每个 run 的 step 摘要、结论状态、verification task 统计和边界检查
+- `manual-review-seed.json`：人工标注骨架，供后续补充 `confirmed` / `inferred` / `speculative` / `unknown` 复核结果
+- `quality-summary.json`：本机基线指标汇总
+- `quality-package.json`：质量包入口清单
+
+当前本地基线只解决“可重跑、可归档、可对比”的第一步，不等同于 `T-406C` 最终完成。仍需后续补齐：
+
+- 人工标注闭环和 review 关闭率
+- 样本级错分、无 URL、无日期、边界违规和 fallback 的人工判定
+- 与 `T-406D/T-406E` 新结构化结论/回写闭环保持口径一致
+
+`T-406C` 当前已实现最窄人工复核导入 contract，继续沿用 `manual-review-seed.json` 的样本和 label 粒度，不提前发明 `T-406D/T-406E` 的新 schema。
+
+当前脚本支持三种输入：
+
+- `manual_review_input=<python dict>`
+- `--manual-review-input /path/to/manual-review.json`
+- `--manual-review-input /path/to/manual-review.jsonl`
+
+当前已实现 contract：
+
+- 顶层或每行都必须能提供 `sample_id`
+- `.json` 可使用：
+  - 顶层 `{"rows": [...]}`
+  - 或直接传 `[{...}, {...}]`
+- `.jsonl` 每行一个 review row
+- 每个 review row 当前支持：
+  - `sample_id`: 必填；必须能匹配 `sample-manifest.json`
+  - `review_status`: 可选；常见值为 `completed_manual_review`、`partial_manual_review`
+  - `reviewer`: 可选
+  - `reviewed_at`: 可选
+  - `review_notes`: 可选
+  - `expected_labels` 或 `labels`: 可选；按 `label_id` 覆盖 seed 中对应 label
+  - `manual_issues`: 可选；问题数组，按 `issue_type` 聚合
+- 每个 label override 当前支持：
+  - `label_id`: 必填；必须匹配 seed 中的 `label_id`
+  - `manual_status`: 当前脚本接受 `pending_manual_review`、`confirmed`、`dismissed`
+  - `notes`: 可选
+
+当前聚合输出：
+
+- `manual_review_close_rate`
+- `manual_review_sample_coverage_rate`
+- `manual_review_issue_count`
+- `manual_review_summary.review_row_count`
+- `manual_review_summary.sample_coverage_count`
+- `manual_review_summary.label_count`
+- `manual_review_summary.closed_label_count`
+- `manual_review_summary.review_status_counts`
+- `manual_review_summary.issue_counts`
+
+明确 out of scope：
+
+- 不新增 `core_facts`、`market_pricing_context`、`falsification_status` 等 `T-406D/T-406E` 字段
+- 不把人工复核结果直接回写 chokepoint run、`ResearchTask` 或 `conclusion`
+- 不引入新的 7 维 scorecard 或 verification task 生命周期状态机
+- 不要求逐证据对象 schema；本轮只复核样本级 label 和问题标记
 
 短期方向：
 

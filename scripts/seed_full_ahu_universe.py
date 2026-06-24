@@ -30,7 +30,7 @@ EASTMONEY_SOURCE_ID = "eastmoney_ashare_company_list"
 NASDAQ_SOURCE_ID = "nasdaq_trader_symbol_directory"
 TDX_DIRECTORY_SOURCE_ID = "tdx_vipdoc_symbol_directory"
 TAXONOMY_VERSION = "full-ahu-industry-chain-v1"
-USER_AGENT = "ai-native-quant-org/0.1 local-research"
+USER_AGENT = "company-intelligence-platform/0.1 local-research"
 
 
 RIGHTS = RightsTag(

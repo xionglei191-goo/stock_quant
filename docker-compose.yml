@@ -44,7 +44,7 @@ services:
       AI_QUANT_OPENLINEAGE_TARGET: ${AI_QUANT_OPENLINEAGE_TARGET:-http://openlineage:5000}
       AI_QUANT_MLFLOW_TRACKING_URI: ${AI_QUANT_MLFLOW_TRACKING_URI:-http://mlflow:5000}
       AI_QUANT_SECRET_MANAGER_PROVIDER: ${AI_QUANT_SECRET_MANAGER_PROVIDER:-local-development-metadata-only}
-      AI_QUANT_SEC_USER_AGENT: ai-native-quant-org/0.1 contact@example.com
+      AI_QUANT_SEC_USER_AGENT: company-intelligence-platform/0.1 contact@example.com
       AI_QUANT_LLM_BASE_URL: ${AI_QUANT_LLM_BASE_URL:-https://llm.nananobanana.cn}
       AI_QUANT_LLM_API_KEY: ${AI_QUANT_LLM_API_KEY:-}
       AI_QUANT_LLM_DEFAULT_MODEL: ${AI_QUANT_LLM_DEFAULT_MODEL:-qwen3.6-plus}
@@ -58,7 +58,7 @@ services:
       AI_QUANT_PADDLEOCR_MAX_POLLS: ${AI_QUANT_PADDLEOCR_MAX_POLLS:-120}
       STOOQ_APIKEY: ${STOOQ_APIKEY:-}
       AI_QUANT_TDX_VIPDOC_PATH: ${AI_QUANT_TDX_VIPDOC_PATH:-/data/local/tdx/vipdoc}
-      AI_QUANT_RESEARCH_REPORT_ROOT: ${AI_QUANT_RESEARCH_REPORT_ROOT:-/data/local/research_reports}
+      AI_QUANT_RESEARCH_REPORT_ROOT: ${AI_QUANT_APP_RESEARCH_REPORT_ROOT:-/data/local/research_reports}
     volumes:
       - ./app:/app/app:ro
       - ./docs:/app/docs:ro

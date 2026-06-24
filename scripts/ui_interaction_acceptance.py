@@ -168,11 +168,18 @@ def _wait_for(client: DevToolsClient, expression: str, *, timeout: float = 10.0)
     raise TimeoutError(f"condition did not become true: {expression}; last={last_value!r}")
 
 
-def _run_check(client: DevToolsClient, name: str, click_expression: str, assert_expression: str) -> dict[str, Any]:
+def _run_check(
+    client: DevToolsClient,
+    name: str,
+    click_expression: str,
+    assert_expression: str,
+    *,
+    wait_timeout: float = 12.0,
+) -> dict[str, Any]:
     started = time.time()
     try:
         client.evaluate(click_expression)
-        value = _wait_for(client, assert_expression, timeout=12.0)
+        value = _wait_for(client, assert_expression, timeout=wait_timeout)
         return {"name": name, "status": "passed", "value": value, "duration_ms": round((time.time() - started) * 1000)}
     except Exception as exc:  # noqa: BLE001 - acceptance diagnostics
         return {"name": name, "status": "failed", "error": str(exc), "duration_ms": round((time.time() - started) * 1000)}
@@ -265,6 +272,20 @@ def run_ui_interaction_acceptance(
                 "chain_click_runs_hotspot",
                 "document.querySelector('[data-action=\"open-hotspot\"]').click(); true",
                 "document.querySelector('[data-tab=\"search\"]').classList.contains('active') && document.querySelector('#hotspotBoundary').textContent.trim().length > 0",
+            ),
+            _run_check(
+                client,
+                "company_intelligence_spcx_research_flow",
+                "document.querySelector('[data-open=\"search\"]').click(); document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#secSingleTicker').value = 'SPCX'; document.querySelector('#runSecSingleName').click(); true",
+                "document.querySelector('[data-tab=\"search\"]').classList.contains('active') && document.querySelector('#companyIntelStatus').textContent.trim().length > 0 && document.querySelector('#companyIntelProfileCount').textContent !== '0' && !document.querySelector('#companyIntelResearchRows').textContent.includes('暂无研究结果') && !document.querySelector('#companyIntelActionRows').textContent.includes('暂无模拟反馈') && document.querySelector('#companyIntelRawBox').textContent.includes('SPCX') && document.querySelector('#companyIntelRawBox').textContent.includes('research_results')",
+                wait_timeout=max(timeout, 45.0),
+            ),
+            _run_check(
+                client,
+                "company_report_structure_preview_dry_run",
+                "document.querySelector('[data-open=\"search\"]').click(); document.querySelector('#companyIntelReportLimit').value = '2'; document.querySelector('#companyIntelReportQuery').value = 'SPCX'; document.querySelector('#previewCompanyReportStructure').click(); true",
+                "document.querySelector('#companyIntelReportStructureStatus').textContent.includes('预览') && document.querySelector('#companyIntelReportStructureBox').textContent.includes('dry_run') && document.querySelector('#companyIntelReportStructureBox').textContent.includes('research_reports_are_viewpoint_signal')",
+                wait_timeout=max(timeout, 20.0),
             ),
             _run_check(
                 client,

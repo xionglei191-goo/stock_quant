@@ -57,7 +57,7 @@ def _common_resource(service_name: str, environment: str) -> dict[str, Any]:
     return {
         "attributes": [
             {"key": "service.name", "value": {"stringValue": service_name}},
-            {"key": "service.namespace", "value": {"stringValue": "ai-native-quant-org"}},
+            {"key": "service.namespace", "value": {"stringValue": "company-intelligence-platform"}},
             {"key": "deployment.environment", "value": {"stringValue": environment}},
         ]
     }

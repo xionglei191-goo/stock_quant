@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI 原生量化投研系统</title>
+  <title>公司情报与市场综合分析平台</title>
   <style>
     :root {
       color-scheme: light;
@@ -843,7 +843,7 @@
 <body>
   <header>
     <div class="brand">
-      <h1>AI 原生虚拟量化基金组织</h1>
+      <h1>公司情报与市场综合分析平台</h1>
       <div class="top-status" aria-label="market status">
         <span class="chip" id="chipService">服务检查中</span>
         <span class="chip" id="chipAshare">A股待载入</span>
@@ -860,9 +860,9 @@
       <div class="field compact">
         <label for="role">当前身份</label>
         <select id="role" aria-label="当前身份">
-          <option value="ceo">首席执行官</option>
-          <option value="cio">投资负责人</option>
-          <option value="pm">组合经理</option>
+          <option value="ceo">总览管理</option>
+          <option value="cio">研究负责人</option>
+          <option value="pm">模拟反馈负责人</option>
           <option value="risk_compliance">风控合规</option>
           <option value="platform">平台负责人</option>
           <option value="analyst">研究员</option>
@@ -877,11 +877,11 @@
     <nav>
       <button class="active" data-open="dashboard">总览</button>
       <button data-open="ingestion">数据中台</button>
-      <button data-open="search">研究工作台</button>
+      <button data-open="search">公司情报</button>
       <button data-open="chokepoint">瓶颈研究</button>
       <button data-open="agents">智能体协作</button>
-      <button data-open="review">策略实验室</button>
-      <button data-open="committee">投委会</button>
+      <button data-open="review">复盘反馈</button>
+      <button data-open="committee">兼容审批</button>
       <button data-open="entity">知识图谱</button>
       <button data-open="incidents">风控合规</button>
       <div class="nav-footer">
@@ -895,23 +895,23 @@
       <section data-tab="dashboard" class="active">
         <div class="quick-start" aria-label="常用运行路径">
           <div class="quick-step">
-            <strong>1. 初始化样例</strong>
-            <span>生成可演示的公司、公告、证据、决策和组合数据。</span>
+            <strong>1. 建立公司档案</strong>
+            <span>生成可演示的公司、公告、证据、事件和关系数据。</span>
             <button data-action="seed-demo">初始化</button>
           </div>
           <div class="quick-step">
-            <strong>2. 跑单标的研究</strong>
-            <span>从 SEC 披露开始，生成证据、摘要、信号和模拟结果。</span>
-            <button data-open="search">进入研究</button>
+            <strong>2. 打开公司情报</strong>
+            <span>按股票代码汇总画像、事件、关系、研报观点和观察任务。</span>
+            <button data-open="search">进入公司情报</button>
           </div>
           <div class="quick-step">
-            <strong>3. 人工审批</strong>
-            <span>查看投委会材料包，签批或创建需要跟进的例外。</span>
-            <button data-open="committee">进入投委会</button>
+            <strong>3. 记录分析结论</strong>
+            <span>把事实、推断、观点和证据缺口沉淀为可复盘结论。</span>
+            <button data-open="search">进入观点库</button>
           </div>
           <div class="quick-step">
-            <strong>4. 回放复盘</strong>
-            <span>对比历史决策结果，判断策略应继续、修订或停止。</span>
+            <strong>4. 模拟反馈复盘</strong>
+            <span>用 paper-only 模拟和后续事件验证分析是否有效。</span>
             <button data-open="review">进入复盘</button>
           </div>
         </div>
@@ -919,7 +919,7 @@
           <div class="panel">
             <div class="analysis-header">
               <div class="analysis-title">
-                <strong>最新投研分析</strong>
+                <strong>最新公司情报分析</strong>
                 <span id="analysisMeta">等待最新分析产物</span>
               </div>
               <span class="badge ok" id="analysisStatus">载入中</span>
@@ -934,8 +934,8 @@
           <div class="panel">
             <div class="analysis-header">
               <div class="analysis-title">
-                <strong>模拟组合建议</strong>
-                <span>研究用途，不连接券商，不自动下单</span>
+                <strong>模拟反馈摘要</strong>
+                <span>验证分析有效性，不连接券商，不自动下单</span>
               </div>
               <span class="badge warn" id="portfolioBoundary">仅模拟</span>
             </div>
@@ -1017,27 +1017,27 @@
         <div class="dashboard-grid" id="metrics"></div>
         <div class="dashboard-grid" style="margin-top:12px">
           <div class="panel span-6">
-            <h2>证券分析流程</h2>
+            <h2>公司情报主流程</h2>
             <div class="flow">
-              <div class="flow-step"><strong>数据采集</strong><span id="flowSources">待同步</span></div>
-              <div class="flow-step"><strong>公告解析</strong><span id="flowDocuments">待解析</span></div>
-              <div class="flow-step"><strong>产业链分析</strong><span id="flowEvidence">待抽取</span></div>
-              <div class="flow-step"><strong>宏观分析</strong><span>规则基线</span></div>
-              <div class="flow-step"><strong>策略生成</strong><span id="flowSignals">待评分</span></div>
-              <div class="flow-step"><strong>投委会决策</strong><span id="flowDecisions">待签字</span></div>
+              <div class="flow-step"><strong>数据入湖</strong><span id="flowSources">待同步</span></div>
+              <div class="flow-step"><strong>公司画像</strong><span id="flowDocuments">待建档</span></div>
+              <div class="flow-step"><strong>事件时间线</strong><span id="flowEvidence">待抽取</span></div>
+              <div class="flow-step"><strong>关系图谱</strong><span>规则基线</span></div>
+              <div class="flow-step"><strong>多源观点</strong><span id="flowSignals">待结构化</span></div>
+              <div class="flow-step"><strong>模拟反馈</strong><span id="flowDecisions">待复盘</span></div>
             </div>
           </div>
           <div class="panel span-6">
-            <h2>智能体组织</h2>
+            <h2>分析协作分工</h2>
             <div class="agent-grid">
-              <div class="agent core"><strong>决策智能体</strong><span>决策中枢与绩效统筹</span></div>
+              <div class="agent core"><strong>情报智能体</strong><span>公司画像与事件统筹</span></div>
               <div class="agent core"><strong>研究智能体</strong><span>研究编排与观点整合</span></div>
               <div class="agent"><strong>挑战智能体</strong><span>反事实与挑战路径</span></div>
               <div class="agent"><strong>数据智能体</strong><span>数据采集与治理</span></div>
               <div class="agent"><strong>基本面智能体</strong><span>基本面分析</span></div>
               <div class="agent"><strong>风险智能体</strong><span>风险监控与计量</span></div>
               <div class="agent"><strong>宏观智能体</strong><span>宏观研究与预测</span></div>
-              <div class="agent"><strong>组合智能体</strong><span>组合构建与再平衡</span></div>
+              <div class="agent"><strong>复盘智能体</strong><span>模拟反馈与结论复验</span></div>
               <div class="agent"><strong>合规智能体</strong><span>合规审查与监控</span></div>
             </div>
           </div>
@@ -1070,7 +1070,7 @@
               <span class="graph-edge">-></span>
               <div class="graph-node">观点</div>
               <span class="graph-edge">-></span>
-              <div class="graph-node">决策</div>
+              <div class="graph-node">分析结论</div>
               <span class="graph-edge">-></span>
               <div class="graph-node">复盘</div>
             </div>
@@ -1373,7 +1373,7 @@
           <div class="field">
             <label for="issuerId">公司或主体</label>
             <input id="issuerId" value="" aria-label="公司或主体" placeholder="留空使用样例公司">
-            <span class="hint">也可在总览点击公司自动填入</span>
+            <span class="hint">可输入股票代码如 SPCX，或主体 ID 如 issuer_spcx</span>
           </div>
           <button id="loadEntity" class="primary">查看公司图谱</button>
         </div>
@@ -1418,7 +1418,7 @@
             <table><thead><tr><th>类型</th><th>对象</th><th>来源/日期</th><th>说明</th></tr></thead><tbody id="graphFactRows"></tbody></table>
           </div>
           <div class="panel span-12">
-            <h2>决策、执行与复盘</h2>
+            <h2>分析结论、模拟反馈与复盘</h2>
             <table><thead><tr><th>类型</th><th>对象</th><th>状态/动作</th><th>说明</th></tr></thead><tbody id="graphDecisionRows"></tbody></table>
           </div>
           <div class="panel span-12">
@@ -1472,12 +1472,77 @@
       <section data-tab="search">
         <div class="grid">
           <div class="panel span-12">
+            <h2>公司情报总览</h2>
+            <div class="row">
+              <div class="field compact">
+                <label for="companyIntelSymbol">股票代码</label>
+                <input id="companyIntelSymbol" value="SPCX" aria-label="公司情报股票代码">
+                <span class="hint">输入后汇总本地画像、事件、研报和模拟反馈</span>
+              </div>
+              <button id="loadCompanyIntelligence" class="primary">载入情报</button>
+            </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>状态</strong><span id="companyIntelStatus">待载入</span></div>
+              <div class="system-box"><strong>画像</strong><span id="companyIntelProfileCount">0</span></div>
+              <div class="system-box"><strong>证据/事件</strong><span id="companyIntelEvidenceCount">0</span></div>
+              <div class="system-box"><strong>研究结果</strong><span id="companyIntelResearchCount">0</span></div>
+              <div class="system-box"><strong>模拟反馈</strong><span id="companyIntelSimulationCount">0</span></div>
+            </div>
+          </div>
+          <div class="panel span-6">
+            <h2>公司画像与事实</h2>
+            <table><thead><tr><th>类型</th><th>对象</th><th>状态</th><th>摘要</th></tr></thead><tbody id="companyIntelFactRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>研究结果</h2>
+            <table><thead><tr><th>类型</th><th>对象</th><th>状态</th><th>摘要</th></tr></thead><tbody id="companyIntelResearchRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
+            <h2>研报结构化</h2>
+            <div class="row">
+              <div class="field compact">
+                <label for="companyIntelReportLimit">批次上限</label>
+                <input id="companyIntelReportLimit" value="20" aria-label="研报结构化批次上限">
+                <span class="hint">先小批量预览</span>
+              </div>
+              <div class="field">
+                <label for="companyIntelReportQuery">关键词</label>
+                <input id="companyIntelReportQuery" value="" aria-label="研报结构化关键词">
+                <span class="hint">空白时优先使用当前主体；无主体时使用股票代码</span>
+              </div>
+              <label class="field compact">
+                <span>重建</span>
+                <input id="companyIntelReportForce" type="checkbox" aria-label="重建已结构化研报">
+                <span class="hint">仅必要时启用</span>
+              </label>
+              <button id="previewCompanyReportStructure">预览结构化</button>
+              <button id="runCompanyReportStructure" class="primary">执行结构化</button>
+            </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>处理状态</strong><span id="companyIntelReportStructureStatus">待预览</span></div>
+              <div class="system-box"><strong>结构化</strong><span id="companyIntelReportStructuredCount">0</span></div>
+              <div class="system-box"><strong>观点/预测</strong><span id="companyIntelReportViewpointCount">0/0</span></div>
+              <div class="system-box"><strong>跳过</strong><span id="companyIntelReportSkippedCount">0</span></div>
+              <div class="system-box"><strong>仅元数据</strong><span id="companyIntelReportMetadataOnlyCount">0</span></div>
+            </div>
+            <table><thead><tr><th>研报</th><th>动作</th><th>分类</th><th>说明</th></tr></thead><tbody id="companyIntelReportStructureRows"></tbody></table>
+            <pre id="companyIntelReportStructureBox">先预览当前公司相关研报，再执行结构化。</pre>
+          </div>
+          <div class="panel span-6">
+            <h2>模拟反馈与下一步</h2>
+            <table><thead><tr><th>类型</th><th>对象</th><th>状态</th><th>说明</th></tr></thead><tbody id="companyIntelActionRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
+            <h2>完整聚合 JSON</h2>
+            <pre id="companyIntelRawBox">输入股票代码后载入。</pre>
+          </div>
+          <div class="panel span-12">
             <h2>单只美股研究流程</h2>
             <div class="row">
               <div class="field compact">
                 <label for="secSingleTicker">股票代码</label>
-                <input id="secSingleTicker" value="AAPL" aria-label="股票代码">
-                <span class="hint">例如 AAPL</span>
+                <input id="secSingleTicker" value="SPCX" aria-label="股票代码">
+                <span class="hint">例如 SPCX</span>
               </div>
               <div class="field">
                 <label for="secSingleCik">SEC 公司编号</label>
@@ -1602,7 +1667,7 @@
             <table><thead><tr><th>任务</th><th>类型</th><th>公司</th><th>原因</th></tr></thead><tbody id="hotspotTaskRows"></tbody></table>
           </div>
           <div class="panel span-6">
-            <h2>投委会材料包</h2>
+            <h2>分析记录与模拟输入</h2>
             <pre id="secSingleDecisionBox"></pre>
           </div>
           <div class="panel span-6">
@@ -1679,13 +1744,13 @@
                 <label for="permissionRole">查看哪个角色</label>
                 <select id="permissionRole" aria-label="查看哪个角色">
                   <option value="analyst">研究员</option>
-                  <option value="cio">投资负责人</option>
+                  <option value="cio">研究负责人</option>
                   <option value="pm">组合经理</option>
                   <option value="risk_compliance">风控合规</option>
                   <option value="platform">平台负责人</option>
                   <option value="data_engineer">数据工程</option>
                   <option value="nlp_ml">模型负责人</option>
-                  <option value="ceo">首席执行官</option>
+                  <option value="ceo">总览管理</option>
                 </select>
               </div>
               <div class="field">
@@ -1697,7 +1762,7 @@
                   <option value="ingestion">数据接入</option>
                   <option value="source_governance">来源治理</option>
                   <option value="investment_decisions">投资决策</option>
-                  <option value="execution_intent">执行意图</option>
+                  <option value="execution_intent">模拟反馈输入</option>
                 </select>
               </div>
               <div class="field compact">
@@ -1733,15 +1798,15 @@
           </div>
           <button id="loadDecision" class="primary">查看材料</button>
           <div class="field">
-            <label for="intentId">模拟执行单</label>
-            <input id="intentId" value="" aria-label="模拟执行单" placeholder="留空使用样例执行单">
+            <label for="intentId">模拟反馈输入单</label>
+            <input id="intentId" value="" aria-label="模拟反馈输入单" placeholder="留空使用样例输入单">
             <span class="hint">只用于纸面跟踪</span>
           </div>
           <button id="loadIntent">查看执行单</button>
         </div>
         <div class="grid">
           <div class="panel span-6"><h2>决策材料包</h2><pre id="decisionBox"></pre></div>
-          <div class="panel span-6"><h2>执行意图</h2><pre id="intentBox"></pre></div>
+          <div class="panel span-6"><h2>模拟反馈输入单</h2><pre id="intentBox"></pre></div>
           <div class="panel span-12">
             <h2>异常审批面板</h2>
             <div class="row">
@@ -1749,8 +1814,8 @@
                 <label for="decisionSignerRole">签批角色</label>
                 <select id="decisionSignerRole" aria-label="签批角色">
                   <option value="风险/合规">风控合规</option>
-                  <option value="CEO">首席执行官</option>
-                  <option value="CIO">投资负责人</option>
+                  <option value="CEO">总览管理</option>
+                  <option value="CIO">研究负责人</option>
                 </select>
               </div>
               <div class="field">
@@ -1759,7 +1824,7 @@
               </div>
               <div class="field wide">
                 <label for="decisionSignComment">签批意见</label>
-                <input id="decisionSignComment" value="投委会界面复核通过" aria-label="签批意见">
+                <input id="decisionSignComment" value="兼容审批页复核通过" aria-label="签批意见">
               </div>
               <button id="signDecision" class="primary">签批决策</button>
               <div class="field compact">
@@ -1772,7 +1837,7 @@
               </div>
               <div class="field wide">
                 <label for="exceptionReason">例外原因</label>
-                <input id="exceptionReason" value="需要投委会人工跟进" aria-label="例外原因">
+                <input id="exceptionReason" value="需要人工复核跟进" aria-label="例外原因">
               </div>
               <button id="createException">创建例外</button>
               <button id="loadCommitteeRisk">刷新风险队列</button>
@@ -1811,8 +1876,8 @@
                 </select>
               </div>
               <div class="field">
-                <label for="portfolioCommitteeMember">投委会成员</label>
-                <input id="portfolioCommitteeMember" value="" aria-label="投委会成员" placeholder="默认当前操作人">
+                <label for="portfolioCommitteeMember">复盘负责人</label>
+                <input id="portfolioCommitteeMember" value="" aria-label="复盘负责人" placeholder="默认当前操作人">
               </div>
               <div class="field compact">
                 <label for="portfolioFeedbackStart">回放开始</label>
@@ -2143,6 +2208,7 @@
     const status = $("status");
     let activeEntitySecurityId = "";
     let activeEntityIssuerId = "";
+    let latestCompanyIntelligence = null;
     const chokepointPlaybooks = {
       generic: {
         scores: [80, 78, 82, 76, 84],
@@ -2581,7 +2647,7 @@
     }
 
     function defaultUserAgent() {
-      return "ai-native-quant-org/0.1 contact@example.com";
+      return "company-intelligence-platform/0.1 contact@example.com";
     }
 
     function pretty(value) {
@@ -2591,7 +2657,7 @@
     function userPretty(value) {
       const keyLabels = {
         decision: "审批结论",
-        committee_member: "投委会成员",
+        committee_member: "复盘负责人",
         candidate_weights: "组合权重",
         simulated_valuation: "模拟估值",
         returns_feedback: "回放收益",
@@ -2608,9 +2674,9 @@
         thesis: "研究观点",
         challenger: "反方挑战",
         conflict_score: "冲突分数",
-        approval_state: "审批状态",
-        intent_id: "模拟执行单",
-        decision_id: "决策材料",
+        approval_state: "复核状态",
+        intent_id: "模拟反馈输入单",
+        decision_id: "分析记录",
         evidence_id: "证据",
         document_id: "资料",
         issuer_id: "公司",
@@ -3449,7 +3515,7 @@
           note: graphList(item.signal_ids),
         })),
         ...(data.execution_intents || []).map((item) => ({
-          type: "模拟执行",
+          type: "模拟反馈输入",
           object: graphRef(item.intent_id),
           status: `${statusLabel(item.action)} · ${pct(item.target_weight || 0)}`,
           note: graphRef(item.security_id),
@@ -3496,7 +3562,7 @@
           object: graphRef(item.security_id),
           action: `${statusLabel(item.action)} · ${pct(item.target_weight || 0)}`,
           source: graphRef(item.decision_id),
-          note: `${statusLabel(item.approval_state)}${metaLine("模拟执行", graphRef(item.intent_id, ""))}`,
+          note: `${statusLabel(item.approval_state)}${metaLine("模拟反馈输入", graphRef(item.intent_id, ""))}`,
         })),
         ...proposals.flatMap((proposal) => Object.entries(proposal.candidate_weights || {}).map(([securityId, weight]) => ({
           object: graphRef(securityId),
@@ -3519,7 +3585,7 @@
       ];
       $("graphPortfolioRows").innerHTML = rows(graphPortfolioRows, "暂无组合、持仓或拥挤度数据", (item) => `<tr><td>${item.object}</td><td>${item.action}</td><td>${item.source}</td><td>${item.note}</td></tr>`);
       $("graphFactRows").innerHTML = rows(factRows, "暂无证据、事件或行情数据", (item) => `<tr><td>${item.type}</td><td>${item.object}</td><td>${item.source}</td><td>${String(item.note || "-").slice(0, 220)}</td></tr>`);
-      $("graphDecisionRows").innerHTML = rows(decisionRows, "暂无决策、执行或复盘数据", (item) => `<tr><td>${item.type}</td><td>${item.object}</td><td>${item.status}</td><td>${String(item.note || "-").slice(0, 220)}</td></tr>`);
+      $("graphDecisionRows").innerHTML = rows(decisionRows, "暂无分析结论、模拟反馈或复盘数据", (item) => `<tr><td>${item.type}</td><td>${item.object}</td><td>${item.status}</td><td>${String(item.note || "-").slice(0, 220)}</td></tr>`);
       $("graphEdgeRows").innerHTML = rows(edges, "暂无图谱关系", (item) => `<tr><td>${statusLabel(item.type)}</td><td>${graphRef(item.from)}</td><td>${graphRef(item.to)}</td><td>${sourceLabel(item.source_id || item.source)}${metaLine("置信", formatScore(item.confidence))}</td></tr>`);
     }
 
@@ -3582,6 +3648,11 @@
         approved: "已批准",
         rejected: "已驳回",
         pending: "待处理",
+        planned: "预览计划",
+        structured: "已结构化",
+        skipped_existing: "已存在",
+        metadata_only: "仅元数据",
+        parsed: "已解析",
         idle: "空闲",
         running: "运行中",
         completed: "已完成",
@@ -3620,8 +3691,8 @@
         risk_compliance: "风控合规",
         data_engineer: "数据工程",
         nlp_ml: "模型团队",
-        cio: "投委会",
-        ceo: "管理层",
+        cio: "研究负责人",
+        ceo: "总览管理",
         low_confidence: "置信度偏低",
         temporal_overlap: "有效期重叠",
         label_mismatch: "标签不一致",
@@ -3696,8 +3767,8 @@
         SUMMARIZED_BY: "研究卡片摘要",
         CHALLENGES: "反方挑战",
         INCLUDED_IN_DECISION: "纳入决策",
-        CREATES_INTENT: "生成模拟执行",
-        INTENT_ON: "模拟执行标的",
+        CREATES_INTENT: "生成模拟反馈输入",
+        INTENT_ON: "模拟反馈标的",
         REVIEW_OF: "复盘决策",
         REPLAY_OF: "策略回放",
         HAS_EXCEPTION: "决策例外",
@@ -3710,6 +3781,11 @@
         buy: "买入倾向",
         sell: "卖出倾向",
         hold: "保持观察",
+        target_price: "目标价",
+        update: "公司更新",
+        earnings_review: "业绩点评",
+        industry: "行业研究",
+        strategy: "策略研究",
         bullish: "偏积极",
         bearish: "偏谨慎",
         neutral: "中性",
@@ -3769,8 +3845,8 @@
         research: "研究",
         ingestion: "数据接入",
         source_governance: "来源治理",
-        investment_decisions: "投资决策",
-        execution_intent: "执行意图",
+        investment_decisions: "分析结论",
+        execution_intent: "模拟反馈输入",
         public: "公开"
       };
       return labels[value] || value || "-";
@@ -3785,8 +3861,8 @@
         thesis_generation: "形成研究观点",
         signal_generation: "生成研究结论",
         challenger_review: "反方挑战",
-        decision_pack: "生成投委会材料",
-        simulated_execution: "纸面模拟"
+        decision_pack: "生成分析记录",
+        simulated_execution: "模拟反馈"
       };
       return labels[value] || statusLabel(value);
     }
@@ -4064,7 +4140,7 @@
         $("metrics").innerHTML = [
           { label: "组合收益 (YTD)", value: "+18.62%", sub: `研究观点 ${dashboardCounts.theses || 0}`, tone: "green", bars: [18, 22, 30, 28, 42, 38, 50, 46, 64] },
           { label: "最大回撤", value: "-8.37%", sub: `开放例外 ${dashboardCounts.open_exceptions || 0}`, tone: "red", bars: [42, 30, 36, 28, 24, 34, 26, 22, 29] },
-          { label: "风险预算使用率", value: "72.4%", sub: `执行意图 ${dashboardCounts.execution_intents || 0}`, tone: "", bars: [28, 36, 44, 52, 60, 56, 64, 70, 72] },
+          { label: "反馈验证覆盖", value: "72.4%", sub: `模拟反馈 ${dashboardCounts.simulated_executions || 0}`, tone: "", bars: [28, 36, 44, 52, 60, 56, 64, 70, 72] },
           { label: "研究质量评分", value: `${extractionQuality}/100`, sub: `抽取结果 ${dashboardCounts.extraction_results || 0}`, tone: "", bars: [42, 55, 48, 64, 58, 72, 68, 76, 82] },
           { label: "治理健康度", value: `${governanceHealth}/100`, sub: `审计 ${metrics.data.audit_events || 0}`, tone: "green", bars: [52, 60, 58, 72, 66, 76, 70, 82, 78] },
           { label: "本月新增观点", value: `${dashboardCounts.theses || 0}`, sub: `信号 ${dashboardCounts.signals || 0}`, tone: "purple", bars: [12, 18, 32, 20, 40, 28, 54, 38, 62] }
@@ -4156,14 +4232,84 @@
       }
     }
 
+    async function resolveEntityLookupInput(rawValue) {
+      const raw = String(rawValue || "").trim() || "issuer_demo";
+      const normalized = raw.toUpperCase();
+      if (raw.startsWith("issuer_")) return { issuerId: raw, securityId: "", label: raw, matched: true, source: "issuer_id" };
+      if (raw.startsWith("security_") || raw.startsWith("sec_")) return { issuerId: "", securityId: raw, label: raw, matched: true, source: "security_id" };
+      try {
+        const { data } = await api(`/api/company-intelligence/${encodeURIComponent(normalized)}?limit=1`, { role: "analyst" });
+        const issuerId = data.resolution?.issuer_ids?.[0] || data.company_profile?.issuer?.issuer_id || "";
+        const securityId = data.resolution?.security_ids?.[0] || data.company_profile?.primary_security?.security_id || "";
+        if (issuerId || securityId) {
+          return { issuerId, securityId, label: data.symbol || normalized, matched: true, source: "symbol" };
+        }
+        return {
+          issuerId: "",
+          securityId: "",
+          label: normalized,
+          matched: false,
+          source: "symbol",
+          reason: data.next_actions?.[0]?.reason || "本地还没有匹配的公司主体或证券。"
+        };
+      } catch (error) {
+        return { issuerId: raw, securityId: "", label: raw, matched: true, source: "fallback", reason: error.message };
+      }
+    }
+
+    function renderEmptyEntity(message) {
+      renderIssuerSummary({});
+      $("securityRows").innerHTML = rows([], "暂无证券", () => "");
+      $("researchRows").innerHTML = rows([], "暂无研究记录", () => "");
+      $("documentRows").innerHTML = rows([], "暂无文档", () => "");
+      renderKnowledgeGraph({
+        industry_chains: [],
+        chain_nodes: [],
+        company_positions: [],
+        research_tasks: [],
+        edges: [],
+        portfolio_proposals: [],
+        portfolio_positions: [],
+        institutional_holdings: [],
+        crowding: [],
+        evidence: [],
+        manual_reviews: [],
+        disclosure_events: [],
+        market_data: [],
+        corporate_actions: [],
+        signals: [],
+        decisions: [],
+        execution_intents: [],
+        reviews: [],
+        strategy_replays: [],
+        exceptions: [],
+      });
+      renderEntityMappings({ mappings: [], total: 0 });
+      $("entityMappingIssueRows").innerHTML = rows([], "暂无映射问题", () => "");
+      $("issuerBox").textContent = userPretty({ 状态: "未找到", 说明: message });
+    }
+
     async function loadEntity() {
       try {
-        const issuerId = $("issuerId").value || "issuer_demo";
-        const params = new URLSearchParams({ issuer_id: issuerId });
+        const lookup = await resolveEntityLookupInput($("issuerId").value);
+        if (!lookup.matched) {
+          renderEmptyEntity(`${lookup.label}: ${lookup.reason}`);
+          setStatus(`未找到本地主体 · ${lookup.label} · ${lookup.reason}`, true);
+          return;
+        }
+        const issuerId = lookup.issuerId || "";
+        const params = new URLSearchParams();
+        if (issuerId) params.set("issuer_id", issuerId);
         const scopedSecurityId = activeEntityIssuerId === issuerId ? activeEntitySecurityId : "";
-        if (scopedSecurityId) params.set("security_id", scopedSecurityId);
+        const securityId = lookup.securityId || scopedSecurityId;
+        if (securityId) params.set("security_id", securityId);
         params.set("market_data_limit", "20");
         const { data, trace_id } = await api(`/api/graph/query?${params.toString()}`);
+        if (lookup.source === "symbol" && issuerId) {
+          setValue("issuerId", issuerId);
+          activeEntityIssuerId = issuerId;
+          activeEntitySecurityId = securityId;
+        }
         renderIssuerSummary(data.issuers[0] || {});
         $("securityRows").innerHTML = rows(data.securities, "暂无证券", (item) => `<tr><td>${item.ticker || compactId(item.security_id)}</td><td>${item.market || "-"}</td><td>${compactId(item.security_id)}</td></tr>`);
         $("researchRows").innerHTML = rows([...(data.theses || []), ...(data.research_cards || []), ...(data.challengers || [])], "暂无研究记录", (item) => `<tr><td>${item.hypothesis || item.title || compactId(item.thesis_id || item.card_id || item.challenger_id)}</td><td>${statusLabel(item.status || item.verdict || item.template_type || "")}</td></tr>`);
@@ -4171,7 +4317,7 @@
         renderKnowledgeGraph(data);
         renderEntityMappings({ mappings: data.entity_mappings || [], total: (data.entity_mappings || []).length });
         await loadEntityMappingQuality();
-        setStatus(`主体已载入 · ${trace_id}`);
+        setStatus(`主体已载入 · ${lookup.label}${lookup.source === "symbol" ? ` -> ${issuerId || securityId}` : ""} · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -4265,7 +4411,7 @@
       try {
         const { data, trace_id } = await api("/api/dashboard/risk", { role: "risk_compliance" });
         renderCommitteeRisk(data);
-        setStatus(`投委会风险队列已载入 · ${trace_id}`);
+        setStatus(`兼容审批风险队列已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -4425,8 +4571,8 @@
         研究观点: data.thesis?.hypothesis,
         研究结论: { 方向: statusLabel(data.signal?.direction), 分数: data.signal?.score },
         反方挑战: { 结论: statusLabel(data.challenger?.verdict), 冲突分数: data.challenger?.conflict_score },
-        投委会材料: { 编号: compactId(data.decision?.decision_id), 审批状态: statusLabel(data.decision?.approval_state) },
-        模拟执行: { 编号: compactId(data.intent?.intent_id), 动作: statusLabel(data.intent?.action), 目标权重: data.intent?.target_weight }
+        分析记录: { 编号: compactId(data.decision?.decision_id), 复核状态: statusLabel(data.decision?.approval_state) },
+        模拟反馈输入: { 编号: compactId(data.intent?.intent_id), 动作: statusLabel(data.intent?.action), 目标权重: data.intent?.target_weight }
       });
       $("secSingleSimulationBox").textContent = userPretty(data.simulated_execution || {});
       if (ids.issuer_id) $("issuerId").value = ids.issuer_id;
@@ -4460,6 +4606,178 @@
       ];
       $("filingQaAuditRows").innerHTML = rows(auditRows, "暂无问答审计", (item) => `<tr><td>${statusLabel(item.check)}</td><td><span class="badge ${item.status === "passed" ? "ok" : "warn"}">${statusLabel(item.status)}</span></td><td>${statusLabel(item.issue)}</td><td>${statusLabel(item.detail)}</td></tr>`);
       if (answer.answer_id) $("query").value = answer.question || "收入 服务韧性 风险";
+    }
+
+    function companyReportStructurePayload(execute) {
+      const symbol = formValue("companyIntelSymbol", "SPCX").trim();
+      const query = formValue("companyIntelReportQuery", "").trim();
+      const profile = latestCompanyIntelligence?.company_profile || {};
+      const issuerId = activeEntityIssuerId || profile.issuer?.issuer_id || "";
+      const securityId = activeEntitySecurityId || profile.primary_security?.security_id || "";
+      const limit = Math.max(1, Math.min(100, Number(formValue("companyIntelReportLimit", "20")) || 20));
+      const payload = {
+        limit,
+        execute,
+        dry_run: !execute,
+        force: Boolean($("companyIntelReportForce")?.checked)
+      };
+      if (issuerId) payload.issuer_id = issuerId;
+      if (securityId) payload.security_id = securityId;
+      if (query) {
+        payload.q = query;
+      } else if (!issuerId && !securityId && symbol) {
+        payload.q = symbol;
+      }
+      return payload;
+    }
+
+    function renderCompanyReportStructure(data) {
+      const reports = data.reports || [];
+      $("companyIntelReportStructureStatus").textContent = data.execute ? "已执行" : "预览";
+      $("companyIntelReportStructuredCount").textContent = `${data.structured_count || 0}`;
+      $("companyIntelReportViewpointCount").textContent = `${data.viewpoint_count || 0}/${data.forecast_count || 0}`;
+      $("companyIntelReportSkippedCount").textContent = `${data.skipped_count || 0}`;
+      $("companyIntelReportMetadataOnlyCount").textContent = `${data.metadata_only_count || 0}`;
+      $("companyIntelReportStructureRows").innerHTML = rows(reports, "暂无可结构化研报。请先扫描/入库研报，或调整关键词。", (item) => {
+        const classification = [
+          statusLabel(item.report_type || ""),
+          item.rating && item.rating !== "not_rated" ? statusLabel(item.rating) : "",
+          item.target_price ? `目标价 ${item.target_price} ${item.target_price_currency || ""}` : ""
+        ].filter(Boolean).join(" · ");
+        const detail = [
+          item.broker || "",
+          item.analyst_names?.length ? `分析师 ${item.analyst_names.join(", ")}` : "",
+          item.forecast_count ? `预测 ${item.forecast_count}` : "",
+          item.usage_boundary ? boundaryLabel(item.usage_boundary) : ""
+        ].filter(Boolean).join(" · ");
+        return `<tr><td>${compactId(item.report_id)}</td><td>${statusLabel(item.status)}</td><td>${classification || "-"}</td><td>${String(detail || item.title || "").slice(0, 180)}</td></tr>`;
+      });
+      $("companyIntelReportStructureBox").textContent = userPretty({
+        execute: data.execute,
+        dry_run: data.dry_run,
+        force: data.force,
+        count: data.count,
+        structured_count: data.structured_count,
+        viewpoint_count: data.viewpoint_count,
+        forecast_count: data.forecast_count,
+        skipped_count: data.skipped_count,
+        metadata_only_count: data.metadata_only_count,
+        usage_boundary: data.usage_boundary,
+        reports: reports.slice(0, 10)
+      });
+    }
+
+    async function structureCompanyReports(execute = false) {
+      try {
+        const payload = companyReportStructurePayload(execute);
+        if (execute && !payload.issuer_id && !payload.security_id && !payload.q) {
+          setStatus("请先载入公司情报或填写关键词，再执行研报结构化。", true);
+          return;
+        }
+        $("companyIntelReportStructureStatus").textContent = execute ? "执行中" : "预览中";
+        const { data, trace_id } = await api("/api/research-reports/structure", {
+          method: "POST",
+          role: "analyst",
+          body: payload
+        });
+        renderCompanyReportStructure(data);
+        if (execute) await loadCompanyIntelligence(false);
+        setStatus(`${execute ? "研报结构化已执行" : "研报结构化预览完成"} · ${data.count || 0} 条 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelReportStructureStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    function renderCompanyIntelligence(data) {
+      latestCompanyIntelligence = data;
+      const counts = data.section_counts || {};
+      const profile = data.company_profile || {};
+      const facts = data.facts_and_events || {};
+      const relationships = data.relationships || {};
+      const research = data.research_results || {};
+      const workflow = data.analysis_workflow || {};
+      const simulation = data.simulation_feedback || {};
+      const quality = data.data_quality || {};
+      $("companyIntelStatus").textContent = statusLabel(data.status || "unknown");
+      $("companyIntelProfileCount").textContent = `${counts.company_profiles || 0}/${counts.securities || 0}`;
+      $("companyIntelEvidenceCount").textContent = `${counts.evidence || 0} 证据 / ${(counts.company_events || 0) + (counts.disclosure_events || 0)} 事件`;
+      $("companyIntelResearchCount").textContent = `${(counts.structured_research_reports || 0) + (counts.report_viewpoints || 0) + (counts.research_reports || 0) + (counts.research_answers || 0) + (counts.analysis_conclusions || 0)}`;
+      $("companyIntelSimulationCount").textContent = `${(counts.simulation_feedback_records || 0) + (counts.simulated_executions || 0) + (counts.portfolio_transactions || 0)}`;
+      const factRows = [
+        ...((profile.profiles || []).slice(0, 5).map((item) => ({ type: "画像", id: item.issuer_id, status: `${Math.round((item.data_quality?.profile_coverage || 0) * 100)}%`, detail: `${item.display_name || item.legal_name || ""} ${item.industry || ""}` }))),
+        ...(profile.issuers || []).map((item) => ({ type: "公司", id: item.issuer_id, status: item.status || "active", detail: `${item.legal_name || ""} ${item.country || ""}` })),
+        ...(profile.securities || []).map((item) => ({ type: "证券", id: item.security_id, status: item.status || "active", detail: `${item.ticker || ""} ${item.exchange || ""} ${item.market || ""}` })),
+        ...(facts.market_data || []).slice(0, 5).map((item) => ({ type: "行情", id: item.data_id, status: item.as_of_date || "", detail: `close=${item.close ?? "-"} volume=${item.volume ?? "-"}` })),
+        ...(facts.company_events || []).slice(0, 5).map((item) => ({ type: "公司事件", id: item.event_id, status: item.fact_status || item.event_type || "", detail: `${item.title || ""} ${item.summary || ""}` })),
+        ...(facts.disclosure_events || []).slice(0, 5).map((item) => ({ type: "事件", id: item.event_id, status: item.severity || "", detail: `${statusLabel(item.event_type || "")} ${item.summary || ""}` })),
+        ...(facts.documents || []).slice(0, 5).map((item) => ({ type: "资料", id: item.document_id, status: item.document_type || "", detail: item.title || item.source_uri || "" })),
+        ...(relationships.company_relationships || []).slice(0, 5).map((item) => ({ type: "关系", id: item.relationship_id, status: item.relationship_type || "", detail: `${item.subject_id || ""} -> ${item.object_id || ""}` })),
+        ...(relationships.company_positions || []).slice(0, 5).map((item) => ({ type: "关系", id: item.position_id, status: item.role || "", detail: `${item.chain_id || ""} ${(item.node_ids || []).join(", ")}` }))
+      ];
+      $("companyIntelFactRows").innerHTML = rows(factRows, "暂无公司画像、事实或关系。可先运行单标的研究建立最小档案。", (item) => `<tr><td>${item.type}</td><td>${compactId(item.id)}</td><td>${statusLabel(item.status)}</td><td>${String(item.detail || "").slice(0, 160)}</td></tr>`);
+      const researchRows = [
+        ...(research.structured_research_reports || []).slice(0, 5).map((item) => ({ type: "结构化研报", id: item.research_report_id, status: item.rating || item.parser_status || "", detail: `${item.institution_name || ""} ${item.title || ""}` })),
+        ...(research.report_viewpoints || []).slice(0, 5).map((item) => ({ type: "研报观点", id: item.viewpoint_id, status: item.realization_status || item.stance || "", detail: `${item.statement || ""} target=${item.target_price || "-"}` })),
+        ...(research.report_forecasts || []).slice(0, 5).map((item) => ({ type: "预测", id: item.forecast_id, status: item.realization_status || item.forecast_type || "", detail: `${item.period || ""} ${item.forecast_value || "-"} ${item.unit || ""}` })),
+        ...(workflow.analysis_conclusions || []).slice(0, 5).map((item) => ({ type: "分析结论", id: item.analysis_conclusion_id, status: item.status || "", detail: item.conclusion || item.title || "" })),
+        ...(research.research_reports || []).slice(0, 5).map((item) => ({ type: "研报", id: item.report_id, status: item.status || "indexed", detail: `${item.broker || ""} ${item.title || item.file_name || ""}` })),
+        ...(research.research_answers || []).slice(0, 5).map((item) => ({ type: "研究答案", id: item.answer_id, status: item.human_review_status || "", detail: item.chinese_summary || item.question || "" })),
+        ...(research.theses || []).slice(0, 5).map((item) => ({ type: "观点", id: item.thesis_id, status: item.status || "", detail: item.hypothesis || "" })),
+        ...(research.signals || []).slice(0, 5).map((item) => ({ type: "信号", id: item.signal_id, status: item.direction || "", detail: `${formatScore(item.score)} ${item.rationale || ""}` })),
+        ...(research.challengers || []).slice(0, 5).map((item) => ({ type: "反方", id: item.challenger_id, status: item.verdict || "", detail: item.note || "" })),
+        ...(research.research_tasks || []).slice(0, 5).map((item) => ({ type: "任务", id: item.task_id, status: item.status || "", detail: item.reason || "" }))
+      ];
+      $("companyIntelResearchRows").innerHTML = rows(researchRows, "暂无研究结果。点击下方“开始研究”可为该代码生成本机研究闭环。", (item) => `<tr><td>${item.type}</td><td>${compactId(item.id)}</td><td>${statusLabel(item.status)}</td><td>${String(item.detail || "").slice(0, 180)}</td></tr>`);
+      const actionRows = [
+        ...(workflow.observation_items || []).slice(0, 5).map((item) => ({ type: "观察任务", id: item.observation_id, status: item.status || "", detail: item.question || item.title || "" })),
+        ...(simulation.feedback_records || []).slice(0, 5).map((item) => ({ type: "模拟反馈", id: item.simulation_feedback_id, status: item.feedback_type || "", detail: `${item.simulated_action || ""} live=${item.live_execution_allowed}` })),
+        ...(simulation.execution_intents || []).slice(0, 5).map((item) => ({ type: "模拟意图", id: item.intent_id, status: item.status || "", detail: `${statusLabel(item.action || "")} target=${item.target_weight ?? "-"}` })),
+        ...(simulation.simulated_executions || []).slice(0, 5).map((item) => ({ type: "模拟成交", id: item.execution_id, status: item.status || "", detail: `qty=${item.quantity ?? "-"} price=${item.fill_price ?? "-"} live=${item.live_execution_allowed}` })),
+        ...(simulation.portfolio_transactions || []).slice(0, 5).map((item) => ({ type: "模拟流水", id: item.transaction_id, status: item.side || "", detail: `${item.trade_date || ""} qty=${item.quantity ?? "-"} price=${item.price ?? "-"}` })),
+        ...(data.next_actions || []).map((item) => ({ type: "下一步", id: item.action, status: "todo", detail: `${item.label || ""} · ${item.reason || ""}` }))
+      ];
+      $("companyIntelActionRows").innerHTML = rows(actionRows, "暂无模拟反馈或后续动作。", (item) => `<tr><td>${item.type}</td><td>${compactId(item.id)}</td><td>${statusLabel(item.status)}</td><td>${String(item.detail || "").slice(0, 180)}</td></tr>`);
+      $("companyIntelRawBox").textContent = userPretty({
+        symbol: data.symbol,
+        resolution: data.resolution,
+        data_quality: quality,
+        section_counts: counts,
+        company_profile: profile,
+        facts_and_events: facts,
+        relationships,
+        research_results: research,
+        analysis_workflow: workflow,
+        simulation_feedback: simulation,
+        usage_boundary: data.usage_boundary
+      });
+      const primarySecurity = profile.primary_security || {};
+      const issuer = profile.issuer || {};
+      if (issuer.issuer_id) activeEntityIssuerId = issuer.issuer_id;
+      if (data.symbol) {
+        setValue("secSingleTicker", data.symbol);
+        setValue("query", `${data.symbol} 研报 观点 风险`);
+      }
+      if (issuer.issuer_id) {
+        setValue("issuerId", issuer.issuer_id);
+        setValue("searchIssuer", issuer.issuer_id);
+      }
+      if (primarySecurity.security_id) {
+        activeEntitySecurityId = primarySecurity.security_id;
+      }
+    }
+
+    async function loadCompanyIntelligence(showStatus = true) {
+      try {
+        const symbol = formValue("companyIntelSymbol", "SPCX").trim() || "SPCX";
+        $("companyIntelStatus").textContent = "载入中";
+        const { data, trace_id } = await api(`/api/company-intelligence/${encodeURIComponent(symbol)}?limit=20`, { role: "analyst" });
+        renderCompanyIntelligence(data);
+        if (showStatus) setStatus(`公司情报已载入 · ${data.symbol || symbol} · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
     }
 
     async function runFilingQa() {
@@ -4532,13 +4850,13 @@
     async function runSecSingleName() {
       try {
         $("secSingleWorkflow").textContent = "运行中";
-        $("secSingleStageRows").innerHTML = `<tr><td>SEC 单标的研究</td><td><span class="badge warn">运行中</span></td><td>${$("secSingleTicker").value || "AAPL"}</td><td>仅模拟，不连接券商</td></tr>`;
+        $("secSingleStageRows").innerHTML = `<tr><td>SEC 单标的研究</td><td><span class="badge warn">运行中</span></td><td>${$("secSingleTicker").value || "SPCX"}</td><td>仅模拟，不连接券商</td></tr>`;
         const forms = (formValue("secSingleForms", "10-K,10-Q")).split(",").map((item) => item.trim()).filter(Boolean);
         const { data, trace_id } = await api("/api/research/tasks/sec-single-name/run", {
           method: "POST",
           role: "analyst",
           body: {
-            ticker: formValue("secSingleTicker", "AAPL"),
+            ticker: formValue("secSingleTicker", "SPCX"),
             cik: formValue("secSingleCik", "0000320193"),
             document_types: forms,
             limit: Number(formValue("secSingleLimit", "1")),
@@ -4548,6 +4866,8 @@
         });
         renderSecSingleNameResult(data);
         await loadDashboard();
+        setValue("companyIntelSymbol", data.ticker || formValue("secSingleTicker", "SPCX"));
+        await loadCompanyIntelligence(false);
         setStatus(`SEC 单标的研究闭环 ${statusLabel(data.workflow_status)} · ${trace_id}`);
       } catch (error) {
         $("secSingleWorkflow").textContent = "错误";
@@ -4572,7 +4892,7 @@
         const id = encodeURIComponent(formValue("intentId", "intent_demo"));
         const { data, trace_id } = await api(`/api/execution-intents/${id}`, { role: "pm" });
         $("intentBox").textContent = userPretty(data);
-        setStatus(`执行意图已载入 · ${trace_id}`);
+        setStatus(`模拟反馈输入单已载入 · ${trace_id}`);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -4688,7 +5008,7 @@
             proposal_id: formValue("portfolioProposalId", "pfp_bl"),
             decision: $("portfolioCommitteeDecision").value,
             committee_member: formValue("portfolioCommitteeMember", formValue("actor", "demo_user")),
-            rationale: "界面触发的纸面组合投委会复核",
+            rationale: "界面触发的纸面组合模拟反馈复核",
             include_valuation: true,
             feedback_start_date: formValue("portfolioFeedbackStart", ""),
             feedback_end_date: formValue("portfolioFeedbackEnd", "")
@@ -5124,6 +5444,12 @@
       setStatus(`调优模式已切换 · ${$("cpPipelineMode").selectedOptions[0].textContent}`);
       buildChokepointPrompt(false);
     });
+    $("loadCompanyIntelligence").addEventListener("click", () => loadCompanyIntelligence(true));
+    $("previewCompanyReportStructure").addEventListener("click", () => structureCompanyReports(false));
+    $("runCompanyReportStructure").addEventListener("click", () => structureCompanyReports(true));
+    $("companyIntelSymbol").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") loadCompanyIntelligence(true);
+    });
     $("runSecSingleName").addEventListener("click", runSecSingleName);
     $("runFilingQa").addEventListener("click", runFilingQa);
     $("runHotspotExpansion").addEventListener("click", runHotspotExpansion);
@@ -5161,6 +5487,7 @@
     $("reportId").value = currentReportId();
     renderChokepointPlaybook("generic");
     loadDashboard();
+    loadCompanyIntelligence(false);
   </script>
 </body>
 </html>

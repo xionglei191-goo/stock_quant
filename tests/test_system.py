@@ -24,7 +24,7 @@ from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, DecisionPack, RightsTag, SystemAlert
+from app.models import AlertNotification, DecisionPack, DisclosureEvent, ResearchReportAsset, RightsTag, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
 from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
@@ -51,6 +51,7 @@ from scripts.import_tdx_vipdoc_postgres import read_day_rows
 from scripts.tdx_batch_import import infer_exchange, normalize_symbol
 from scripts.local_ai_capability_acceptance import build_local_ai_capability_acceptance
 from scripts.local_benchmark_quality_package import build_local_benchmark_quality_package
+from scripts.local_chokepoint_quality_package import build_local_chokepoint_quality_package
 from scripts.local_production_audit import build_local_production_audit
 import scripts.market_data_storage_audit as market_data_storage_audit_script
 from scripts.migrate_sqlite_to_postgres import migrate_sqlite_to_postgres
@@ -71,7 +72,7 @@ from scripts.staging_acceptance import run_staging_acceptance
 from scripts.staging_lineage_registry_acceptance import run_staging_lineage_registry_acceptance
 from scripts.staging_security_acceptance import run_staging_security_acceptance
 from scripts.ui_cross_browser_matrix_check import validate_cross_browser_matrix
-from scripts.ui_static_check import REQUIRED_IDS, REQUIRED_JS_FUNCTIONS, validate_ui_html
+from scripts.ui_static_check import REQUIRED_IDS, REQUIRED_JS_FUNCTIONS, REQUIRED_STATUS_LABELS, validate_ui_html
 
 
 class _FakePostgresCursor:
@@ -384,6 +385,664 @@ class SystemServiceTests(unittest.TestCase):
         temp_dir = TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         self.service.object_store = LocalObjectStore(Path(temp_dir.name))
+
+    def test_company_intelligence_symbol_view_handles_spcx_before_and_after_research(self) -> None:
+        empty = self.router.dispatch("GET", "/api/company-intelligence/SPCX", {"limit": 10}, role="analyst")
+        self.assertTrue(empty.success, empty.error)
+        self.assertEqual(empty.data["symbol"], "SPCX")
+        self.assertEqual(empty.data["status"], "not_found")
+        self.assertIn("company_profile", empty.data["data_quality"]["missing_sections"])
+        self.assertTrue(any(item["action"] == "run_single_name_research" for item in empty.data["next_actions"]))
+        self.assertFalse(empty.data["simulation_feedback"]["live_execution_allowed"])
+
+        run = self.router.dispatch(
+            "POST",
+            "/api/research/tasks/sec-single-name/run",
+            {
+                "ticker": "SPCX",
+                "cik": "0000000000",
+                "company_name": "SPCX Research Vehicle",
+                "force_fallback": True,
+                "fallback_close": 25.5,
+                "fallback_volume": 1000,
+                "trade_date": "2026-06-24",
+                "quantity": 4,
+            },
+            role="analyst",
+        )
+        self.assertTrue(run.success, run.error)
+        self.assertEqual(run.data["ticker"], "SPCX")
+        self.assertFalse(run.data["live_execution_allowed"])
+        issuer_id = run.data["ids"]["issuer_id"]
+        security_id = run.data["ids"]["security_id"]
+        self.service.store.research_reports["rr_spcx_local"] = ResearchReportAsset(
+            report_id="rr_spcx_local",
+            source_id="local_research_reports",
+            broker="Local Broker",
+            file_path="/tmp/SPCX-report.pdf",
+            file_name="SPCX-report.pdf",
+            title="SPCX local research view",
+            issuer_id=issuer_id,
+            security_id=security_id,
+            viewpoint={"rating": "watch", "target_price": 30.0, "boundary": "opinion_only"},
+            status="text_indexed",
+        )
+
+        view = self.router.dispatch("GET", "/api/company-intelligence/SPCX", {"limit": 20}, role="analyst")
+
+        self.assertTrue(view.success, view.error)
+        self.assertEqual(view.data["status"], "available")
+        self.assertEqual(view.data["resolution"]["issuer_ids"], [issuer_id])
+        self.assertIn(security_id, view.data["resolution"]["security_ids"])
+        self.assertEqual(view.data["company_profile"]["primary_security"]["ticker"], "SPCX")
+        self.assertEqual(view.data["facts_and_events"]["latest_market_snapshot"]["close"], 25.5)
+        self.assertGreaterEqual(view.data["section_counts"]["research_answers"], 1)
+        self.assertGreaterEqual(view.data["section_counts"]["theses"], 1)
+        self.assertGreaterEqual(view.data["section_counts"]["signals"], 1)
+        self.assertEqual(view.data["section_counts"]["research_reports"], 1)
+        self.assertGreaterEqual(view.data["section_counts"]["simulated_executions"], 1)
+        self.assertFalse(view.data["simulation_feedback"]["live_execution_allowed"])
+        self.assertTrue(view.data["data_quality"]["profile_available"])
+        self.assertTrue(view.data["data_quality"]["research_results_available"])
+        self.assertTrue(view.data["data_quality"]["simulation_feedback_available"])
+        self.assertTrue(any(item["report_id"] == "rr_spcx_local" for item in view.data["research_results"]["research_reports"]))
+        self.assertTrue(any(item["resource_type"] == "research_report" for item in view.data["research_results"]["search"]["results"]))
+        self.assertEqual(view.data["usage_boundary"], "company_intelligence_research_only_simulation_feedback_only_no_broker_execution")
+
+    def test_company_intelligence_first_class_models_are_exposed_and_aggregated(self) -> None:
+        profile = self.router.dispatch("POST", "/api/company-profiles", {"issuer_id": "issuer_001", "business_summary": "Demo component supplier"}, role="analyst")
+        self.assertTrue(profile.success, profile.error)
+        self.assertEqual(profile.data["issuer_id"], "issuer_001")
+        self.assertIn("profile_coverage", profile.data["data_quality"])
+
+        event = self.router.dispatch(
+            "POST",
+            "/api/company-events",
+            {
+                "event_id": "ce_demo_001",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "event_type": "order",
+                "title": "Large customer order",
+                "summary": "Demo Corp received a new customer order.",
+                "source_ids": ["source_public"],
+                "evidence_ids": ["ev_demo_order"],
+                "fact_status": "verified",
+                "impact_tags": ["demand"],
+            },
+            role="analyst",
+        )
+        self.assertTrue(event.success, event.error)
+
+        relationship = self.router.dispatch(
+            "POST",
+            "/api/company-relationships",
+            {
+                "relationship_id": "rel_demo_customer",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "customer",
+                "object_id": "customer_alpha",
+                "relationship_type": "customer",
+                "source_ids": ["source_public"],
+                "evidence_ids": ["ev_demo_order"],
+                "confidence": 0.8,
+            },
+            role="analyst",
+        )
+        self.assertTrue(relationship.success, relationship.error)
+
+        analyst = self.router.dispatch(
+            "POST",
+            "/api/analyst-profiles",
+            {
+                "analyst_id": "analyst_demo",
+                "name": "Demo Analyst",
+                "institution_id": "broker_demo",
+                "covered_issuer_ids": ["issuer_001"],
+            },
+            role="analyst",
+        )
+        self.assertTrue(analyst.success, analyst.error)
+
+        report = self.router.dispatch(
+            "POST",
+            "/api/research-reports/structured",
+            {
+                "research_report_id": "srr_demo_001",
+                "title": "Demo Corp customer order update",
+                "institution_id": "broker_demo",
+                "institution_name": "Demo Securities",
+                "analyst_ids": ["analyst_demo"],
+                "analyst_names": ["Demo Analyst"],
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "report_type": "company_update",
+                "rating": "outperform",
+                "target_price": 12.5,
+                "current_price": 10.0,
+                "rights_boundary": "opinion_only_not_fact_source",
+            },
+            role="analyst",
+        )
+        self.assertTrue(report.success, report.error)
+        self.assertEqual(report.data["rights_boundary"], "opinion_only_not_fact_source")
+
+        viewpoint = self.router.dispatch(
+            "POST",
+            "/api/research-report-viewpoints",
+            {
+                "viewpoint_id": "vp_demo_001",
+                "research_report_id": "srr_demo_001",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "viewpoint_type": "target_price",
+                "stance": "bullish",
+                "statement": "Order visibility supports revenue growth.",
+                "rating": "outperform",
+                "target_price": 12.5,
+                "current_price": 10.0,
+                "core_assumptions": ["customer order converts to revenue"],
+                "catalysts": ["order delivery"],
+                "risks": ["delivery delay"],
+                "evidence_ids": ["ev_demo_order"],
+            },
+            role="analyst",
+        )
+        self.assertTrue(viewpoint.success, viewpoint.error)
+
+        forecast = self.router.dispatch(
+            "POST",
+            "/api/research-report-forecasts",
+            {
+                "forecast_id": "fc_demo_001",
+                "research_report_id": "srr_demo_001",
+                "viewpoint_id": "vp_demo_001",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "forecast_type": "target_price",
+                "period": "2026H2",
+                "forecast_value": 12.5,
+                "actual_value": 13.0,
+                "realization_status": "realized",
+            },
+            role="analyst",
+        )
+        self.assertTrue(forecast.success, forecast.error)
+
+        score = self.router.dispatch("POST", "/api/analyst-reliability-scores", {"analyst_id": "analyst_demo", "issuer_id": "issuer_001", "period": "2026H2"}, role="analyst")
+        self.assertTrue(score.success, score.error)
+        self.assertEqual(score.data["sample_count"], 1)
+        self.assertEqual(score.data["target_price_hit_rate"], 1.0)
+
+        observation = self.router.dispatch(
+            "POST",
+            "/api/observation-items",
+            {
+                "observation_id": "obs_demo_001",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "title": "Track order conversion",
+                "question": "Does the order convert into reported revenue?",
+                "related_event_ids": ["ce_demo_001"],
+                "related_relationship_ids": ["rel_demo_customer"],
+                "related_viewpoint_ids": ["vp_demo_001"],
+                "priority": "high",
+                "status": "open",
+            },
+            role="analyst",
+        )
+        self.assertTrue(observation.success, observation.error)
+
+        conclusion = self.router.dispatch(
+            "POST",
+            "/api/analysis-conclusions",
+            {
+                "analysis_conclusion_id": "ac_demo_001",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "title": "Order visibility improves near-term setup",
+                "conclusion": "Demo Corp deserves focused observation because order visibility improved.",
+                "facts": ["new customer order"],
+                "inferences": ["revenue visibility improved"],
+                "supporting_evidence_ids": ["ev_demo_order"],
+                "related_event_ids": ["ce_demo_001"],
+                "related_relationship_ids": ["rel_demo_customer"],
+                "related_viewpoint_ids": ["vp_demo_001"],
+                "related_observation_ids": ["obs_demo_001"],
+                "confidence": 0.7,
+                "status": "active",
+            },
+            role="analyst",
+        )
+        self.assertTrue(conclusion.success, conclusion.error)
+
+        feedback = self.router.dispatch(
+            "POST",
+            "/api/simulation-feedback",
+            {
+                "simulation_feedback_id": "sf_demo_001",
+                "analysis_conclusion_id": "ac_demo_001",
+                "observation_id": "obs_demo_001",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "feedback_type": "paper_position",
+                "simulated_action": "watch_buy",
+                "entry_price": 10.0,
+                "exit_price": 11.0,
+                "performance": {"absolute_return": 0.1},
+            },
+            role="analyst",
+        )
+        self.assertTrue(feedback.success, feedback.error)
+        self.assertTrue(feedback.data["paper_only"])
+        self.assertFalse(feedback.data["live_execution_allowed"])
+
+        rejected_live = self.router.dispatch(
+            "POST",
+            "/api/simulation-feedback",
+            {
+                "analysis_conclusion_id": "ac_demo_001",
+                "issuer_id": "issuer_001",
+                "live_execution_allowed": True,
+            },
+            role="analyst",
+        )
+        self.assertFalse(rejected_live.success)
+        self.assertEqual(rejected_live.error["type"], "validation_error")
+
+        aggregated = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
+        self.assertTrue(aggregated.success, aggregated.error)
+        self.assertEqual(aggregated.data["status"], "available")
+        self.assertEqual(aggregated.data["section_counts"]["company_profiles"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["company_events"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["company_relationships"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["structured_research_reports"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["report_viewpoints"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["observation_items"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["analysis_conclusions"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["simulation_feedback_records"], 1)
+        self.assertEqual(aggregated.data["facts_and_events"]["company_events"][0]["event_id"], "ce_demo_001")
+        self.assertEqual(aggregated.data["relationships"]["company_relationships"][0]["relationship_id"], "rel_demo_customer")
+        self.assertEqual(aggregated.data["research_results"]["report_viewpoints"][0]["viewpoint_id"], "vp_demo_001")
+        self.assertEqual(aggregated.data["analysis_workflow"]["analysis_conclusions"][0]["analysis_conclusion_id"], "ac_demo_001")
+        self.assertEqual(aggregated.data["simulation_feedback"]["feedback_records"][0]["simulation_feedback_id"], "sf_demo_001")
+        self.assertFalse(aggregated.data["simulation_feedback"]["live_execution_allowed"])
+
+        graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_001"}, role="analyst")
+        self.assertTrue(graph.success, graph.error)
+        self.assertTrue(any(item["event_id"] == "ce_demo_001" for item in graph.data["company_events"]))
+        self.assertTrue(any(item["relationship_id"] == "rel_demo_customer" for item in graph.data["company_relationships"]))
+        self.assertTrue(any(item["viewpoint_id"] == "vp_demo_001" for item in graph.data["report_viewpoints"]))
+        self.assertTrue(any(item["simulation_feedback_id"] == "sf_demo_001" for item in graph.data["simulation_feedback"]))
+        edge_types = {item["type"] for item in graph.data["edges"]}
+        self.assertIn("HAS_COMPANY_EVENT", edge_types)
+        self.assertIn("REPORT_HAS_VIEWPOINT", edge_types)
+        self.assertIn("FEEDBACK_FOR_CONCLUSION", edge_types)
+
+    def test_company_database_builder_materializes_profiles_and_binds_reports(self) -> None:
+        self.service.store.research_reports["rr_demo_unbound"] = ResearchReportAsset(
+            report_id="rr_demo_unbound",
+            source_id="local_research_reports",
+            broker="Local Broker",
+            file_path="/tmp/2026-DEMO-target-price-update.pdf",
+            file_name="2026-DEMO-target-price-update.pdf",
+            title="DEMO target price update 买入 目标价 18 元",
+            year="2026",
+            month="06",
+            issuer_id="",
+            security_id="",
+            status="text_indexed",
+        )
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/company-database/build",
+            {"symbols": ["DEMO"], "report_match_limit": 10, "structure_reports": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertEqual(dry_run.data["target_count"], 1)
+        self.assertEqual(dry_run.data["profiles_planned"], 1)
+        self.assertGreaterEqual(dry_run.data["research_reports_matched"], 1)
+        self.assertNotIn("issuer_001", self.service.store.company_profiles)
+        self.assertEqual(self.service.store.research_reports["rr_demo_unbound"].issuer_id, "")
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/build",
+            {
+                "symbols": ["DEMO"],
+                "report_match_limit": 10,
+                "structure_reports": True,
+                "structure_report_limit": 5,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["status"], "executed")
+        self.assertEqual(executed.data["profiles_saved"], 1)
+        self.assertEqual(executed.data["research_reports_bound"], 1)
+        self.assertIn("issuer_001", self.service.store.company_profiles)
+        report = self.service.store.research_reports["rr_demo_unbound"]
+        self.assertEqual(report.issuer_id, "issuer_001")
+        self.assertEqual(report.security_id, "sec_001")
+        self.assertEqual(report.asset_binding["matched_by"], "company_database_builder")
+        self.assertEqual(executed.data["structure_result"]["structured_count"], 1)
+        self.assertIn("rr_demo_unbound", self.service.store.structured_research_reports)
+        self.assertTrue(any(item.issuer_id == "issuer_001" for item in self.service.store.report_viewpoints.values()))
+
+    def test_company_event_builder_creates_market_and_research_attention_events(self) -> None:
+        market_point = self.service.register_market_data_point(
+            {
+                "data_id": "md_demo_latest",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "market": "A",
+                "as_of_date": "2026-06-24",
+                "close": 12.3,
+                "volume": 123456,
+            },
+            actor="data",
+        )
+        self.service.store.research_reports["rr_demo_bound"] = ResearchReportAsset(
+            report_id="rr_demo_bound",
+            source_id="local_research_reports",
+            broker="Local Broker",
+            file_path="/tmp/2026-DEMO-coverage.pdf",
+            file_name="2026-DEMO-coverage.pdf",
+            title="DEMO coverage update",
+            year="2026",
+            month="06",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            status="text_indexed",
+        )
+        self.service.store.disclosure_events["de_demo_001"] = DisclosureEvent(
+            event_id="de_demo_001",
+            document_id="doc_demo_001",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            event_type="annual_report",
+            item_code="10-K",
+            item_title="Annual report",
+            severity="medium",
+            summary="Demo official filing update.",
+            evidence_ids=["ev_demo_001"],
+            source_id="src_sec",
+        )
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/company-database/events/build",
+            {"symbols": ["DEMO"], "event_limit": 10},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertEqual(dry_run.data["events_planned"], 3)
+        self.assertFalse(self.service.store.company_events)
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/events/build",
+            {"symbols": ["DEMO"], "event_limit": 10, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["events_created"], 3)
+        event_types = {event.event_type for event in self.service.store.company_events.values()}
+        self.assertEqual(event_types, {"market_data", "research_coverage", "official_disclosure"})
+        market_event = next(event for event in self.service.store.company_events.values() if event.event_type == "market_data")
+        research_event = next(event for event in self.service.store.company_events.values() if event.event_type == "research_coverage")
+        disclosure_event = next(event for event in self.service.store.company_events.values() if event.event_type == "official_disclosure")
+        self.assertEqual(market_event.metadata["data_id"], market_point.data_id)
+        self.assertEqual(market_event.fact_status, "verified")
+        self.assertEqual(research_event.fact_status, "opinion_signal")
+        self.assertEqual(research_event.metadata["rights_boundary"], "opinion_only_not_fact_source")
+        self.assertEqual(disclosure_event.fact_status, "verified")
+        self.assertEqual(disclosure_event.document_ids, ["doc_demo_001"])
+        self.assertEqual(disclosure_event.evidence_ids, ["ev_demo_001"])
+        self.assertEqual(disclosure_event.metadata["source_layer"], "disclosure_event")
+
+        aggregated = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
+        self.assertTrue(aggregated.success, aggregated.error)
+        self.assertEqual(aggregated.data["section_counts"]["company_events"], 3)
+        self.assertTrue(aggregated.data["data_quality"]["event_timeline_available"])
+
+    def test_company_relationship_builder_creates_listing_and_coverage_links(self) -> None:
+        self.service.store.research_reports["rr_demo_bound"] = ResearchReportAsset(
+            report_id="rr_demo_bound",
+            source_id="local_research_reports",
+            broker="Local Broker",
+            file_path="/tmp/2026-DEMO-coverage.pdf",
+            file_name="2026-DEMO-coverage.pdf",
+            title="DEMO coverage update",
+            year="2026",
+            month="06",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            status="text_indexed",
+        )
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/company-database/relationships/build",
+            {"symbols": ["DEMO"], "relationship_limit": 10},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertEqual(dry_run.data["relationships_planned"], 2)
+        self.assertFalse(self.service.store.company_relationships)
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/relationships/build",
+            {"symbols": ["DEMO"], "relationship_limit": 10, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["relationships_created"], 2)
+        relationship_types = {relationship.relationship_type for relationship in self.service.store.company_relationships.values()}
+        self.assertEqual(relationship_types, {"listed_security", "institution_coverage"})
+        coverage = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "institution_coverage")
+        self.assertEqual(coverage.object_type, "institution")
+        self.assertEqual(coverage.review_status, "needs_review")
+        self.assertEqual(coverage.metadata["rights_boundary"], "opinion_coverage_relationship_not_company_fact")
+
+        aggregated = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
+        self.assertTrue(aggregated.success, aggregated.error)
+        self.assertEqual(aggregated.data["section_counts"]["company_relationships"], 2)
+        self.assertTrue(aggregated.data["data_quality"]["relationship_graph_available"])
+
+    def test_company_workflow_builder_creates_observation_conclusion_and_paper_feedback(self) -> None:
+        self.service.register_market_data_point(
+            {
+                "data_id": "md_demo_workflow_latest",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "market": "A",
+                "as_of_date": "2026-06-24",
+                "close": 12.3,
+                "volume": 123456,
+            },
+            actor="data",
+        )
+        self.service.store.research_reports["rr_demo_workflow"] = ResearchReportAsset(
+            report_id="rr_demo_workflow",
+            source_id="local_research_reports",
+            broker="Local Broker",
+            file_path="/tmp/2026-DEMO-workflow.pdf",
+            file_name="2026-DEMO-workflow.pdf",
+            title="DEMO 买入 目标价 18 元 demand catalyst risk margin",
+            year="2026",
+            month="06",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            status="text_indexed",
+        )
+        structured = self.router.dispatch(
+            "POST",
+            "/api/research-reports/structure",
+            {"report_ids": ["rr_demo_workflow"], "execute": True},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(structured.success, structured.error)
+        events = self.router.dispatch(
+            "POST",
+            "/api/company-database/events/build",
+            {"symbols": ["DEMO"], "event_limit": 10, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(events.success, events.error)
+        relationships = self.router.dispatch(
+            "POST",
+            "/api/company-database/relationships/build",
+            {"symbols": ["DEMO"], "relationship_limit": 10, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(relationships.success, relationships.error)
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/company-database/workflow/build",
+            {"symbols": ["DEMO"], "link_limit": 5},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertEqual(dry_run.data["observations_planned"], 1)
+        self.assertEqual(dry_run.data["conclusions_planned"], 1)
+        self.assertEqual(dry_run.data["feedback_planned"], 1)
+        self.assertFalse(self.service.store.observation_items)
+        self.assertFalse(self.service.store.analysis_conclusions)
+        self.assertFalse(self.service.store.simulation_feedback)
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/workflow/build",
+            {"symbols": ["DEMO"], "link_limit": 5, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["status"], "executed")
+        self.assertEqual(executed.data["observations_created"], 1)
+        self.assertEqual(executed.data["conclusions_created"], 1)
+        self.assertEqual(executed.data["feedback_created"], 1)
+        observation = next(iter(self.service.store.observation_items.values()))
+        conclusion = next(iter(self.service.store.analysis_conclusions.values()))
+        feedback = next(iter(self.service.store.simulation_feedback.values()))
+        self.assertEqual(observation.observation_type, "company_intelligence_follow_up")
+        self.assertEqual(conclusion.conclusion_type, "company_intelligence_baseline")
+        self.assertEqual(conclusion.status, "draft")
+        self.assertTrue(conclusion.related_viewpoint_ids)
+        self.assertEqual(feedback.feedback_type, "watch_only")
+        self.assertTrue(feedback.paper_only)
+        self.assertFalse(feedback.live_execution_allowed)
+        self.assertFalse(feedback.broker_connected)
+
+        refreshed = self.router.dispatch(
+            "POST",
+            "/api/company-database/workflow/build",
+            {"symbols": ["DEMO"], "link_limit": 5, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(refreshed.success, refreshed.error)
+        self.assertEqual(refreshed.data["observations_updated"], 1)
+        self.assertEqual(refreshed.data["conclusions_updated"], 1)
+        self.assertEqual(refreshed.data["feedback_updated"], 1)
+
+        aggregated = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
+        self.assertTrue(aggregated.success, aggregated.error)
+        self.assertEqual(aggregated.data["section_counts"]["observation_items"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["analysis_conclusions"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["simulation_feedback_records"], 1)
+        self.assertTrue(aggregated.data["data_quality"]["simulation_feedback_available"])
+
+    def test_simulation_feedback_performance_update_uses_latest_market_data(self) -> None:
+        self.service.register_market_data_point(
+            {
+                "data_id": "md_demo_feedback_latest",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "market": "A",
+                "as_of_date": "2026-06-24",
+                "close": 12.0,
+                "volume": 123456,
+            },
+            actor="data",
+        )
+        conclusion = self.service.create_analysis_conclusion(
+            {
+                "analysis_conclusion_id": "ac_feedback_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "title": "Demo feedback baseline",
+                "conclusion": "Watch only.",
+                "status": "draft",
+            },
+            actor="analyst",
+        )
+        feedback = self.service.record_simulation_feedback(
+            {
+                "simulation_feedback_id": "sf_feedback_demo",
+                "analysis_conclusion_id": conclusion.analysis_conclusion_id,
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "feedback_type": "watch_only",
+                "paper_only": True,
+                "live_execution_allowed": False,
+                "broker_connected": False,
+                "simulated_action": "watch",
+                "entry_price": 10.0,
+                "start_at": "2026-06-20T00:00:00+00:00",
+            },
+            actor="analyst",
+        )
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/simulation-feedback/performance/update",
+            {"symbols": ["DEMO"]},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertEqual(dry_run.data["feedback_planned"], 1)
+        self.assertEqual(self.service.store.simulation_feedback[feedback.simulation_feedback_id].performance, {})
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/simulation-feedback/performance/update",
+            {"symbols": ["DEMO"], "execute": True},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["feedback_updated"], 1)
+        updated = self.service.store.simulation_feedback[feedback.simulation_feedback_id]
+        self.assertEqual(updated.performance["latest_market_data_id"], "md_demo_feedback_latest")
+        self.assertEqual(updated.performance["return_pct"], 0.2)
+        self.assertTrue(updated.validation["paper_only"])
+        self.assertFalse(updated.validation["live_execution_allowed"])
 
     def test_latest_analysis_api_summarizes_local_artifact_for_ui(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -2778,6 +3437,132 @@ class SystemServiceTests(unittest.TestCase):
             self.assertIn("negative", guidance_topic["sentiment_counts"])
             self.assertGreaterEqual(viewpoints.data["bias_alert_count"], 1)
             self.assertEqual(viewpoints.data["usage_boundary"], "research_report_viewpoints_are_local_reference_only_not_fact_source_or_training_data")
+
+    def test_research_report_structure_endpoint_writes_viewpoints_and_forecasts(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            report_dir = Path(temp_dir) / "CICC" / "2026" / "06"
+            report_dir.mkdir(parents=True)
+            report_path = report_dir / "Demo Corp AI芯片公司深度_买入_目标价_盈利预测.txt"
+            report_path.write_text(
+                "分析师：张三、李四\n"
+                "评级：买入，12个月目标价 18.5 元，当前价 10.0 元。\n"
+                "核心假设：AI订单落地；毛利率改善。\n"
+                "盈利预测：2026 EPS 1.20 元。\n"
+                "催化剂：新品放量；政策支持。\n"
+                "风险：需求不及预期；竞争加剧。\n"
+                "估值方法：PE 25x。\n",
+                encoding="utf-8",
+            )
+            scanned = self.router.dispatch(
+                "POST",
+                "/api/research-reports/scan",
+                {"root_path": temp_dir, "extensions": [".txt"], "limit": 5},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(scanned.success, scanned.error)
+            report = scanned.data["reports"][0]
+            ingested = self.router.dispatch(
+                "POST",
+                f"/api/research-reports/{report['report_id']}/ingest",
+                {
+                    "issuer_id": "issuer_001",
+                    "security_id": "sec_001",
+                    "document_id": "doc_structured_research",
+                    "industry": "semiconductor",
+                },
+                actor="analyst",
+                role="analyst",
+            )
+            self.assertTrue(ingested.success, ingested.error)
+            extracted = self.router.dispatch(
+                "POST",
+                f"/api/research-reports/{report['report_id']}/extract",
+                {"citation_char_limit": 800},
+                actor="analyst",
+                role="analyst",
+            )
+            self.assertTrue(extracted.success, extracted.error)
+
+            structured = self.router.dispatch(
+                "POST",
+                "/api/research-reports/structure",
+                {"report_ids": [report["report_id"]], "execute": True},
+                actor="analyst",
+                role="analyst",
+            )
+            self.assertTrue(structured.success, structured.error)
+            self.assertEqual(structured.data["structured_count"], 1)
+            self.assertEqual(structured.data["viewpoint_count"], 1)
+            self.assertGreaterEqual(structured.data["forecast_count"], 2)
+            self.assertEqual(structured.data["usage_boundary"], "research_reports_are_viewpoint_signal_only_not_fact_source_or_training_data")
+            row = structured.data["reports"][0]
+            self.assertEqual(row["report_type"], "update")
+            self.assertEqual(row["rating"], "buy")
+            self.assertEqual(row["target_price"], 18.5)
+            self.assertEqual(row["target_price_currency"], "CNY")
+            self.assertEqual(row["issuer_id"], "issuer_001")
+            self.assertEqual(row["security_id"], "sec_001")
+            self.assertEqual(row["usage_boundary"], "opinion_only_not_fact_source")
+
+            listed_reports = self.router.dispatch(
+                "GET",
+                "/api/research-reports/structured",
+                {"issuer_id": "issuer_001"},
+                role="analyst",
+            )
+            self.assertTrue(listed_reports.success, listed_reports.error)
+            self.assertEqual(listed_reports.data["count"], 1)
+            structured_report = listed_reports.data["reports"][0]
+            self.assertEqual(structured_report["rights_boundary"], "opinion_only_not_fact_source")
+            self.assertEqual(structured_report["analyst_names"], ["张三", "李四"])
+
+            viewpoints = self.router.dispatch(
+                "GET",
+                "/api/research-report-viewpoints",
+                {"issuer_id": "issuer_001"},
+                role="analyst",
+            )
+            self.assertTrue(viewpoints.success, viewpoints.error)
+            self.assertEqual(viewpoints.data["count"], 1)
+            viewpoint = viewpoints.data["viewpoints"][0]
+            self.assertEqual(viewpoint["viewpoint_type"], "target_price")
+            self.assertEqual(viewpoint["rating"], "buy")
+            self.assertIn("AI订单落地", viewpoint["core_assumptions"])
+            self.assertIn("需求不及预期", viewpoint["risks"])
+            self.assertTrue(viewpoint["evidence_ids"])
+
+            forecasts = self.router.dispatch(
+                "GET",
+                "/api/research-report-forecasts",
+                {"issuer_id": "issuer_001"},
+                role="analyst",
+            )
+            self.assertTrue(forecasts.success, forecasts.error)
+            forecast_types = {item["forecast_type"] for item in forecasts.data["forecasts"]}
+            self.assertIn("target_price", forecast_types)
+            self.assertIn("eps", forecast_types)
+
+            analysts = self.router.dispatch(
+                "GET",
+                "/api/analyst-profiles",
+                {"issuer_id": "issuer_001"},
+                role="analyst",
+            )
+            self.assertTrue(analysts.success, analysts.error)
+            self.assertEqual(analysts.data["count"], 2)
+
+            duplicate = self.router.dispatch(
+                "POST",
+                "/api/research-reports/structure",
+                {"report_ids": [report["report_id"]], "execute": True},
+                actor="analyst",
+                role="analyst",
+            )
+            self.assertTrue(duplicate.success, duplicate.error)
+            self.assertEqual(duplicate.data["structured_count"], 0)
+            self.assertEqual(duplicate.data["skipped_count"], 1)
+            self.assertEqual(duplicate.data["reports"][0]["status"], "skipped_existing")
 
     def test_extract_evidence_strips_html_and_ignored_tags(self) -> None:
         self.service.ingest_document(
@@ -5192,6 +5977,163 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(step.success, step.error)
         self.assertEqual(sent[0]["timeout"], 7)
         self.assertNotIn("timeout_seconds", sent[0]["body"])
+
+    def test_local_chokepoint_quality_package_builds_repeatable_local_artifacts(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "chokepoint-quality"
+            package = build_local_chokepoint_quality_package(
+                output_dir=output_dir,
+                artifact_prefix="artifact://local/test-chokepoint-quality",
+            )
+
+            self.assertEqual(package["status"], "generated")
+            self.assertEqual(package["sample_count"], 5)
+            self.assertEqual(package["run_result_count"], 5)
+            self.assertTrue(package["ready_for_local_baseline"])
+            self.assertEqual(package["quality_baseline"]["boundary_violation_rate"], 0.0)
+            self.assertTrue(package["quality_baseline"]["automation_boundary_ok"])
+            self.assertTrue(package["quality_baseline"]["live_execution_boundary_ok"])
+
+            manifest = json.loads((output_dir / "sample-manifest.json").read_text(encoding="utf-8"))
+            results = json.loads((output_dir / "run-results.json").read_text(encoding="utf-8"))
+            review_seed = json.loads((output_dir / "manual-review-seed.json").read_text(encoding="utf-8"))
+            summary = json.loads((output_dir / "quality-summary.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(manifest["sample_count"], 5)
+            self.assertEqual(results["run_count"], 5)
+            self.assertEqual(review_seed["row_count"], 5)
+            self.assertTrue(summary["ready_for_local_baseline"])
+            self.assertEqual(summary["quality_baseline"]["manual_review_close_rate"], 0.0)
+            self.assertEqual(summary["quality_baseline"]["manual_review_sample_coverage_rate"], 0.0)
+            self.assertEqual(summary["quality_baseline"]["manual_review_issue_count"], 0)
+            self.assertEqual(summary["manual_review_summary"]["review_status_counts"], {"seed_only": 5})
+            self.assertGreater(summary["quality_baseline"]["verification_task_generation_rate"], 0.0)
+
+            first_run = results["runs"][0]
+            self.assertFalse(first_run["automation_allowed"])
+            self.assertFalse(first_run["live_execution_allowed"])
+            self.assertEqual(len(first_run["step_output_digest"]), 7)
+            self.assertIn(first_run["conclusion_status"], {"ready_for_review", "needs_evidence"})
+            self.assertEqual(first_run["usage_boundary"], "research_only_not_investment_advice")
+
+    def test_local_chokepoint_quality_package_merges_manual_review_metrics(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "chokepoint-quality"
+            manual_reviews = {
+                "rows": [
+                    {
+                        "sample_id": "cpq_nuclear_haleu",
+                        "review_status": "completed_manual_review",
+                        "reviewer": "pm-agent",
+                        "reviewed_at": "2026-05-28T21:00:00+08:00",
+                        "review_notes": "Reviewed for closure and issue tagging.",
+                        "expected_labels": [
+                            {"label_id": "core_supply_constraint", "manual_status": "confirmed", "notes": "supported by source ledger"},
+                            {"label_id": "needs_official_award_check", "manual_status": "dismissed", "notes": "left open but triaged out of this baseline"},
+                        ],
+                        "manual_issues": [
+                            {"issue_type": "missing_date", "severity": "warn"},
+                            {"issue_type": "classification_dispute", "severity": "warn"},
+                        ],
+                    },
+                    {
+                        "sample_id": "cpq_power_grid",
+                        "review_status": "partial_manual_review",
+                        "reviewer": "pm-agent",
+                        "reviewed_at": "2026-05-28T21:05:00+08:00",
+                        "expected_labels": [
+                            {"label_id": "grid_connection_delay", "manual_status": "confirmed", "notes": "kept as confirmed"},
+                            {"label_id": "pricing_misread", "manual_status": "pending_manual_review", "notes": "needs valuation follow-up"},
+                        ],
+                        "manual_issues": [
+                            {"issue_type": "needs_follow_up", "severity": "info"},
+                        ],
+                    },
+                ]
+            }
+            package = build_local_chokepoint_quality_package(
+                output_dir=output_dir,
+                artifact_prefix="artifact://local/test-chokepoint-quality",
+                manual_review_input=manual_reviews,
+            )
+
+            review_seed = json.loads((output_dir / "manual-review-seed.json").read_text(encoding="utf-8"))
+            summary = json.loads((output_dir / "quality-summary.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(package["manual_review_summary"]["review_row_count"], 5)
+            self.assertEqual(package["manual_review_summary"]["sample_coverage_count"], 2)
+            self.assertEqual(package["manual_review_summary"]["closed_label_count"], 3)
+            self.assertEqual(package["manual_review_summary"]["issue_counts"]["missing_date"], 1)
+            self.assertEqual(package["manual_review_summary"]["issue_counts"]["classification_dispute"], 1)
+            self.assertEqual(package["manual_review_summary"]["issue_counts"]["needs_follow_up"], 1)
+            self.assertEqual(summary["quality_baseline"]["manual_review_close_rate"], 0.3)
+            self.assertEqual(summary["quality_baseline"]["manual_review_sample_coverage_rate"], 0.4)
+            self.assertEqual(summary["quality_baseline"]["manual_review_issue_count"], 3)
+
+            first_review = next(row for row in review_seed["rows"] if row["sample_id"] == "cpq_nuclear_haleu")
+            second_review = next(row for row in review_seed["rows"] if row["sample_id"] == "cpq_power_grid")
+            self.assertEqual(first_review["review_status"], "completed_manual_review")
+            self.assertEqual(first_review["closed_label_count"], 2)
+            self.assertEqual(first_review["manual_issue_counts"], {"classification_dispute": 1, "missing_date": 1})
+            self.assertEqual(second_review["review_status"], "partial_manual_review")
+            self.assertEqual(second_review["closed_label_count"], 1)
+            self.assertEqual(second_review["label_count"], 2)
+
+    def test_local_chokepoint_quality_package_cli_accepts_manual_review_jsonl(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            manual_review_path = temp_path / "manual-review.jsonl"
+            manual_review_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "sample_id": "cpq_nuclear_haleu",
+                                "review_status": "completed_manual_review",
+                                "expected_labels": [
+                                    {"label_id": "core_supply_constraint", "manual_status": "confirmed"},
+                                    {"label_id": "needs_official_award_check", "manual_status": "dismissed"},
+                                ],
+                                "manual_issues": [{"issue_type": "missing_url"}],
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "sample_id": "cpq_power_grid",
+                                "review_status": "partial_manual_review",
+                                "expected_labels": [
+                                    {"label_id": "grid_connection_delay", "manual_status": "confirmed"},
+                                ],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cli_output = temp_path / "cli-quality"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/local_chokepoint_quality_package.py",
+                    "--output-dir",
+                    str(cli_output),
+                    "--manual-review-input",
+                    str(manual_review_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn('"status": "generated"', result.stdout)
+            summary = json.loads((cli_output / "quality-summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["manual_review_summary"]["sample_coverage_count"], 2)
+            self.assertEqual(summary["manual_review_summary"]["issue_counts"], {"missing_url": 1})
+            self.assertEqual(summary["quality_baseline"]["manual_review_close_rate"], 0.3)
+            self.assertFalse((cli_output / ".quality-package.json.tmp").exists())
 
     def test_llm_readiness_report_tracks_prompt_quality_budget_and_challenger_evidence(self) -> None:
         self.router.dispatch("POST", "/api/llm/task-templates/seed", {}, actor="ml", role="nlp_ml")
@@ -11371,7 +12313,7 @@ class SystemServiceTests(unittest.TestCase):
             "status": "passed",
             "browser": "/usr/bin/chromium",
             "ui_url": "https://staging.example.test/ui",
-            "required_text": ["AI 原生量化投研系统", "总览", "风控合规"],
+            "required_text": ["公司情报与市场综合分析平台", "总览", "风控合规"],
             "missing_text": [],
             "failure_count": 0,
             "screenshots": [
@@ -13776,7 +14718,7 @@ class SystemServiceTests(unittest.TestCase):
     def test_ui_static_contract_matches_target_information_architecture(self) -> None:
         result = validate_ui_html(run_node=False)
         self.assertEqual(result["nav_labels"], 8)
-        self.assertEqual(result["status_labels"], 8)
+        self.assertEqual(result["status_labels"], len(REQUIRED_STATUS_LABELS))
         self.assertEqual(result["required_ids"], len(REQUIRED_IDS))
         self.assertEqual(result["required_functions"], len(REQUIRED_JS_FUNCTIONS))
         self.assertEqual(result["node_check"], "skipped")
@@ -13832,7 +14774,7 @@ class SystemServiceTests(unittest.TestCase):
         invalid = validate_cross_browser_matrix(
             {
                 "browser_matrix": [{"browser": "chromium", "viewport": "desktop", "status": "passed"}],
-                "required_text": ["AI 原生量化投研系统"],
+                "required_text": ["公司情报与市场综合分析平台"],
                 "missing_text": [],
                 "failure_count": 0,
             }
@@ -13848,7 +14790,7 @@ class SystemServiceTests(unittest.TestCase):
                     {"browser": "chromium", "viewport": "desktop", "status": "passed"},
                     {"browser": "firefox", "viewport": "mobile", "status": "passed"},
                 ],
-                "required_text": ["AI 原生量化投研系统", "总览"],
+                "required_text": ["公司情报与市场综合分析平台", "总览"],
                 "missing_text": [],
                 "failure_count": 0,
             }

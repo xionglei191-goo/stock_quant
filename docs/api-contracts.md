@@ -1353,6 +1353,27 @@
 
 输出本地研报观点对比和偏见提示。报告按 issuer/security/broker/topic 过滤，基于题名、文件名和已登记 Document 文本里的主题词与情绪词，汇总同主题 broker 分布、情绪分布、单一 broker 占比，并返回 `single_broker_viewpoint`、`broker_concentration_bias`、`missing_negative_counterview`、`missing_positive_counterview` 等告警。报告固定 `automation_allowed=false`，只作为本地参考观点层。
 
+#### `POST /api/research-reports/structure`
+
+把已扫描的本地研报资产批量结构化为 `ResearchReport`、`ReportViewpoint`、`ReportForecast` 和 `AnalystProfile`。该接口复用研报题名、路径分类、已登记 `Document` 文本和 `research_report_citation` evidence，提取报告类型、评级、目标价、当前价、核心假设、盈利预测、估值方法、催化剂、风险和分析师；重复执行默认跳过已结构化研报，传 `force=true` 可重建同一研报的确定性子对象。`dry_run=true` 只返回计划，不写入。
+
+请求字段：
+
+- `report_ids` / `report_id`：可选；指定研报资产 ID
+- `issuer_id` / `security_id`：可选；只处理已映射到该主体或证券的研报
+- `broker` / `source_id` / `status` / `q`：可选过滤
+- `limit`：默认 50，最大 1000
+- `execute`：默认 `true`；`dry_run=true` 时强制不写入
+- `dry_run`：默认 `false`
+- `force`：默认 `false`
+
+返回字段：
+
+- `structured_count`、`viewpoint_count`、`forecast_count`、`analyst_count`
+- `skipped_count`、`metadata_only_count`
+- `reports[]`：每份研报的结构化分类、观点 ID、预测 ID 和用途边界
+- `usage_boundary`：固定 `research_reports_are_viewpoint_signal_only_not_fact_source_or_training_data`
+
 #### `GET /api/research-reports/extraction-queue`
 
 返回本地研报文本抽取/OCR 队列 dry-run。每个条目包含 `report_id`、`document_id`、broker/source、文件类型、当前状态、`action`、`reason`、`parser_version` 和使用边界；动作包括 `ingest_first`、`ready_text_extract`、`ocr_required`、`skip_already_indexed`、`repair_document_link`。响应带 `cache_policy`，固定 raw text 和 citation index 的保留期口径。支持 `broker`、`source_id`、`status`、`file_type`、`force`、`limit`、`citation_char_limit`、`parser_version`、`raw_text_cache_ttl_days`、`citation_index_ttl_days`。
@@ -2251,6 +2272,180 @@
 #### `POST /api/research/tasks/{task_id}/status`
 
 更新研究任务状态、负责人、优先级、证据回链和补充元数据。允许状态为 `open`、`in_progress`、`done`、`dismissed`。
+
+#### 公司情报一等对象 API
+
+以下接口是公司情报平台 T-432 至 T-435 的核心写入/查询入口。它们只服务本地研究、观点跟踪、观察任务、分析结论和 paper-only 模拟反馈，不连接真实券商，不把研报观点当作事实源。
+
+| 接口 | 方法 | 用途 |
+|---|---|---|
+| `/api/company-profiles` | `GET` / `POST` | 查询或登记 `CompanyProfile`，可由 `Issuer`、`Security`、行情、事件、关系和研报覆盖计算画像质量 |
+| `/api/company-profiles/schema` | `GET` | 返回公司画像核心字段、来源优先级和质量指标 |
+| `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
+| `/api/company-database/events/build` | `POST` | 从已入库公开披露、公开行情和研报覆盖生成最小公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
+| `/api/company-database/relationships/build` | `POST` | 从证券上市关系和研报覆盖记录生成最小公司关系层；研报覆盖关系固定为观点/关注度关系，不代表客户供应商事实 |
+| `/api/company-database/workflow/build` | `POST` | 从事件、关系和研报观点生成观察任务、公司情报基线结论和 paper-only 模拟反馈；默认 dry-run |
+| `/api/company-events` | `GET` / `POST` | 查询或登记 `CompanyEvent`，覆盖公告、财报、新闻、政策、订单、诉讼、价格、供需等事件 |
+| `/api/company-relationships` | `GET` / `POST` | 查询或登记 `CompanyRelationship`，覆盖客户、供应商、竞争、股权、机构覆盖、分析师覆盖和上下游 |
+| `/api/research-reports/structure` | `POST` | 把本地研报资产批量结构化为研报、观点、预测和分析师画像，固定观点层边界 |
+| `/api/research-reports/structured` | `GET` / `POST` | 查询或登记结构化 `ResearchReport`，字段包含机构、分析师、发布时间、评级、目标价、估值方法和边界 |
+| `/api/research-report-viewpoints` | `GET` / `POST` | 查询或登记 `ReportViewpoint`，记录研报观点、目标价、核心假设、催化剂、风险和兑现状态 |
+| `/api/research-report-forecasts` | `GET` / `POST` | 查询或登记 `ReportForecast`，记录预测值、实际值、误差和兑现状态 |
+| `/api/analyst-profiles` | `GET` / `POST` | 查询或登记 `AnalystProfile` |
+| `/api/analyst-reliability-scores` | `GET` / `POST` | 查询或计算 `AnalystReliabilityScore`，基于预测样本、目标价命中和误差覆盖率 |
+| `/api/observation-items` | `GET` / `POST` | 查询或登记 `ObservationItem`，用于观察池、触发条件和证据缺口 |
+| `/api/analysis-conclusions` | `GET` / `POST` | 查询或登记 `AnalysisConclusion`，记录事实、推断、主观判断、证据、反证和复盘计划 |
+| `/api/simulation-feedback` | `GET` / `POST` | 查询或登记 `SimulationFeedback`，固定 `paper_only=true`、`live_execution_allowed=false` |
+| `/api/simulation-feedback/performance/update` | `POST` | 使用本地最新行情更新 paper-only 模拟反馈表现，不连接券商 |
+
+过滤字段通用支持 `issuer_id`、`security_id`、`limit`；各接口还支持与对象对应的状态、类型、分析师、研报或结论 ID 过滤。`/api/simulation-feedback` 会拒绝任何 `paper_only=false`、`live_execution_allowed=true` 或 `broker_connected=true` 的请求。
+
+#### `POST /api/company-database/build`
+
+以公司数据库为中心，把已有原始记录物化为可展示、可复盘的公司情报底座。该接口不下载外部资料，不创建真实订单，不把研报当事实源；它只使用本地已有 `Issuer`、`Security`、`MarketDataPoint` 和 `ResearchReportAsset`，生成或预览 `CompanyProfile`，并把能通过 ticker/公司名匹配的本地研报挂到目标公司。
+
+请求字段：
+
+- `symbols` / `symbol` / `ticker`：可选；目标股票代码列表或单个代码，例如 `AAPL`、`600519`。
+- `issuer_ids`：可选；直接指定公司主体。
+- `limit`：目标公司数量上限，默认 20。
+- `report_match_limit`：每家公司研报匹配上限，默认 100。
+- `structure_reports`：可选；为 `true` 时对已匹配研报调用结构化入口。
+- `structure_report_limit`：结构化研报数量上限，默认 20。
+- `execute`：默认 `false`；为 `true` 时才写入公司画像和研报绑定。
+- `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划，不落库。
+
+返回字段：
+
+- `status`：`dry_run` 或 `executed`。
+- `target_count`：解析到的目标公司数量。
+- `profiles_planned` / `profiles_saved`：计划或已保存的公司画像数量。
+- `research_reports_matched` / `research_reports_bound`：匹配和实际绑定的研报数量。
+- `structure_result`：可选研报结构化结果。
+- `companies`：每家公司画像覆盖率、缺失字段、证券和样本研报。
+
+研报绑定是启发式结果，`asset_binding.review_status` 默认 `needs_review`；后续事实层仍需公告、财报、监管披露、公司 IR 或其他可信来源回链。
+
+#### `POST /api/company-database/events/build`
+
+为已有公司数据库构建最小事件时间线。该接口只使用本地已有数据，不下载外部资料。当前事件来源包括已入库公开披露/filing 事件、公开/已提供行情快照和已绑定本地研报覆盖记录；研报覆盖事件表示“该公司进入研报视野”这一关注度事实，事件 `fact_status=opinion_signal`，不得把研报观点升级为公司事实。
+
+请求字段：
+
+- `symbols` / `symbol` / `ticker`：可选；目标股票代码列表或单个代码。
+- `issuer_ids`：可选；直接指定公司主体。
+- `limit`：目标公司数量上限，默认 20。
+- `event_limit`：每家公司事件数量上限，默认 100。
+- `include_market_data`：默认 `true`，生成最新公开行情事件。
+- `include_research_coverage`：默认 `true`，生成已绑定研报覆盖事件。
+- `include_disclosures`：默认 `true`，从已有 `DisclosureEvent` 生成官方披露事件，`fact_status=verified`。
+- `execute`：默认 `false`；为 `true` 时才写入 `CompanyEvent`。
+- `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划，不落库。
+
+返回字段：
+
+- `status`：`dry_run` 或 `executed`。
+- `events_planned` / `events_created`：计划或实际创建事件数。
+- `companies`：每家公司事件数量、市场事件数、官方披露事件数、研报覆盖事件数和样本事件 ID。
+
+后续公告、财报、新闻、政策、订单、诉讼和管理层变化应继续通过该事件层扩展，并要求证据回链。
+
+#### `POST /api/company-database/relationships/build`
+
+为已有公司数据库构建最小关系层。该接口只使用本地已有主体、证券和已绑定研报资产，不下载外部资料。当前关系来源包括公司到上市证券的 `listed_security` 关系，以及公司到研报机构的 `institution_coverage` 关系；研报机构覆盖关系表示“该机构覆盖/发布过该公司相关研报”，不代表客户、供应商、竞争或投资建议事实。
+
+请求字段：
+
+- `symbols` / `symbol` / `ticker`：可选；目标股票代码列表或单个代码。
+- `issuer_ids`：可选；直接指定公司主体。
+- `limit`：目标公司数量上限，默认 20。
+- `relationship_limit`：每家公司关系数量上限，默认 100。
+- `include_listings`：默认 `true`，生成公司到证券的上市关系。
+- `include_institution_coverage`：默认 `true`，生成公司到研报机构的覆盖关系。
+- `execute`：默认 `false`；为 `true` 时才写入 `CompanyRelationship`。
+- `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划，不落库。
+
+返回字段：
+
+- `status`：`dry_run` 或 `executed`。
+- `relationships_planned` / `relationships_created`：计划或实际创建关系数。
+- `companies`：每家公司关系数量、上市关系数、机构覆盖关系数和样本关系 ID。
+
+客户、供应商、竞争、股权、上下游和人员关系应在后续通过事实证据或人工复核进入该层，不能从研报观点直接推断为事实。
+
+#### `POST /api/company-database/workflow/build`
+
+为已有公司数据库构建最小研究反馈闭环。该接口从本地已有公司事件、公司关系、结构化研报观点和行情快照生成 `ObservationItem`、`AnalysisConclusion` 和 `SimulationFeedback`，让公司页能显示“观察任务 -> 分析结论 -> 模拟反馈”的可复盘骨架。
+
+请求字段：
+
+- `symbols` / `symbol` / `ticker`：可选；目标股票代码列表或单个代码。
+- `issuer_ids`：可选；直接指定公司主体。
+- `limit`：目标公司数量上限，默认 20。
+- `link_limit`：每家公司回链事件、关系、观点和证据数量上限，默认 5。
+- `include_observations`：默认 `true`，生成观察任务。
+- `include_conclusions`：默认 `true`，生成公司情报基线结论。
+- `include_feedback`：默认 `true`，生成 watch-only 模拟反馈。
+- `refresh_existing`：默认 `true`，已有基线记录存在时刷新事件、关系、观点和证据回链。
+- `execute`：默认 `false`；为 `true` 时才写入对象。
+- `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划，不落库。
+
+返回字段：
+
+- `status`：`dry_run` 或 `executed`。
+- `observations_planned` / `observations_created`：计划或已创建观察任务数。
+- `conclusions_planned` / `conclusions_created`：计划或已创建分析结论数。
+- `feedback_planned` / `feedback_created`：计划或已创建模拟反馈数。
+- `observations_updated` / `conclusions_updated` / `feedback_updated`：已有基线记录被刷新次数。
+- `companies`：每家公司生成对象 ID、已回链事件/关系/观点数量和证据缺口。
+
+生成的结论类型为 `company_intelligence_baseline`，默认只是研究基线和复盘计划，不输出买卖建议。生成的反馈固定 `feedback_type=watch_only`、`paper_only=true`、`live_execution_allowed=false`、`broker_connected=false`；模型层仍会拒绝任何真实交易或券商连接字段。
+
+#### `POST /api/simulation-feedback/performance/update`
+
+使用本地最新行情更新 `SimulationFeedback.performance`，用于验证分析结论和观察任务是否有效。该接口只读取本地 `MarketDataPoint`，不连接真实券商，不创建订单，不修改真实持仓。
+
+请求字段：
+
+- `feedback_ids` / `feedback_id`：可选；指定反馈记录。
+- `symbols` / `symbol` / `ticker`：可选；按公司或证券筛选反馈记录。
+- `issuer_ids`：可选；按公司主体筛选。
+- `limit`：更新数量上限，默认 100。
+- `execute`：默认 `false`；为 `true` 时才写入 performance。
+- `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划，不落库。
+
+返回字段：
+
+- `status`：`dry_run` 或 `executed`。
+- `feedback_planned` / `feedback_updated` / `feedback_skipped`：计划、已更新和跳过记录数。
+- `feedback`：每条反馈的 entry price、最新价、最新行情日期、纸面收益率和持有天数。
+- `paper_only=true`、`live_execution_allowed=false`：固定边界声明。
+
+若反馈记录没有最新行情或有效 entry price，会被跳过并返回原因。若 entry price 为空但有最新行情，接口只初始化 paper baseline，不生成真实交易行为。
+
+#### `GET|POST /api/company-intelligence/{symbol}`
+
+按股票代码聚合公司情报工作台视图。该接口是只读聚合层，不自动创建 issuer/security，不下载外部资料，不触发真实交易；如果本地没有该代码，会返回 `status=not_found`、缺失 section 和 `next_actions`，引导用户先运行单标的研究或手工登记主体。已存在本地档案时，接口会按 ticker/security/entity mapping 解析主体，并聚合公司画像、行情、公司行动、文档、证据、公司事件、披露事件、公司关系、关系图谱、研报资产、结构化研报、研报观点、预测、分析师可靠性、研究问答、观察任务、分析结论、模拟反馈和旧纸面执行兼容对象。
+
+请求字段：
+
+- `symbol`：路径参数；例如 `SPCX`、`AAPL`、`600000`。
+- `limit`：每类明细最大返回数量，默认 20，最大 100。
+
+返回字段：
+
+- `status`：`available` 或 `not_found`。
+- `resolution`：匹配到的 `issuer_ids`、`security_ids`、`mapping_ids`。
+- `company_profile`：主体、证券、映射和覆盖摘要。
+- `facts_and_events`：行情、公司行动、资料、证据和披露事件。
+- `relationships`：公司关系、公司定位、13F/crowding 和 `/api/graph/query` 聚合图谱。
+- `research_results`：研报资产、结构化研报、研报观点、预测、分析师、可靠性评分、研究答案、观点、信号、反方、研究卡、研究任务和搜索结果。
+- `analysis_workflow`：观察任务、分析结论和一等模拟反馈记录。
+- `simulation_feedback`：一等 `SimulationFeedback` 记录和旧纸面执行意图、模拟成交、模拟流水兼容对象，固定 `live_execution_allowed=false`。
+- `data_quality`：画像、行情、事件、关系、研究结果和模拟反馈的可用性与缺口。
+- `next_actions`：缺口对应的下一步入口。
+
+研报字段只作为观点/关注度/可靠性复盘来源；事实仍需回链公告、财报、监管披露、公司 IR 或可信公开来源。返回的模拟反馈只用于验证分析结论有效性，不代表真实订单或投资建议。
 
 #### `GET /api/graph/query`
 

@@ -17,7 +17,7 @@ DEFAULT_ARTIFACT = Path("artifacts/us-cik-sec-backfill.json")
 
 
 def fetch_sec_tickers() -> list[dict[str, Any]]:
-    headers = {"User-Agent": os.getenv("AI_QUANT_SEC_USER_AGENT", "ai-native-quant-org/0.1 contact@example.com"), "Accept": "application/json"}
+    headers = {"User-Agent": os.getenv("AI_QUANT_SEC_USER_AGENT", "company-intelligence-platform/0.1 contact@example.com"), "Accept": "application/json"}
     with urlopen(Request("https://www.sec.gov/files/company_tickers_exchange.json", headers=headers), timeout=30) as response:
         payload = json.loads(response.read().decode("utf-8", errors="replace"))
     fields = payload.get("fields") or []

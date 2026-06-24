@@ -266,7 +266,7 @@ def run_staging_acceptance(
         "ui_loads",
         lambda: {
             "status": client.raw_get("/ui")[0],
-            "contains_app_name": "AI 原生量化投研系统" in client.raw_get("/ui")[1],
+            "contains_app_name": "公司情报与市场综合分析平台" in client.raw_get("/ui")[1],
         },
     )
     demo = _run_step(checks, "demo_full_flow", lambda: client.request("POST", "/api/demo/full-flow", {}, role="platform", actor="platform_staging"))

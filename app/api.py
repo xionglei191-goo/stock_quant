@@ -158,6 +158,16 @@ PERMISSION_POLICY_CATALOG: list[dict[str, Any]] = [
             "/api/research/tasks",
             "/api/macro-themes",
             "/api/industry-chains",
+            "/api/company-profiles",
+            "/api/company-events",
+            "/api/company-relationships",
+            "/api/research-report-viewpoints",
+            "/api/research-report-forecasts",
+            "/api/analyst-profiles",
+            "/api/analyst-reliability-scores",
+            "/api/observation-items",
+            "/api/analysis-conclusions",
+            "/api/simulation-feedback",
             "/api/hotspot-lexicons",
             "/api/hotspots",
             "/api/crowding",
@@ -238,7 +248,7 @@ PERMISSION_POLICY_CATALOG: list[dict[str, Any]] = [
     },
     {
         "rule_id": "operating_reviews_graph_search",
-        "path_prefixes": ["/api/reviews", "/api/operating-reports", "/api/strategy-replays", "/api/graph", "/api/search"],
+        "path_prefixes": ["/api/reviews", "/api/operating-reports", "/api/strategy-replays", "/api/graph", "/api/search", "/api/company-intelligence", "/api/company-database"],
         "sample_paths": {"GET": "/api/graph/query", "POST": "/api/operating-reports"},
         "methods": ["GET", "POST"],
         "actions": {"GET": "read", "POST": "write"},
@@ -445,6 +455,7 @@ class ApiRouter:
             ("POST", r"^/api/research-reports/mapping-report$", self._research_report_mapping_report),
             ("GET", r"^/api/research-reports/viewpoint-report$", self._research_report_viewpoint_report),
             ("POST", r"^/api/research-reports/viewpoint-report$", self._research_report_viewpoint_report),
+            ("POST", r"^/api/research-reports/structure$", self._structure_research_reports),
             ("GET", r"^/api/research-reports$", self._list_research_reports),
             ("POST", r"^/api/research-reports$", self._list_research_reports),
             ("POST", r"^/api/research-reports/(?P<report_id>[^/]+)/ingest$", self._ingest_research_report),
@@ -621,6 +632,34 @@ class ApiRouter:
             ("GET", r"^/api/company-positions/schema$", self._company_positions_schema),
             ("GET", r"^/api/company-positions/coverage-report$", self._company_positions_coverage_report),
             ("POST", r"^/api/company-positions/coverage-report$", self._company_positions_coverage_report),
+            ("GET", r"^/api/company-profiles$", self._list_company_profiles),
+            ("POST", r"^/api/company-profiles$", self._register_company_profile),
+            ("GET", r"^/api/company-profiles/schema$", self._company_profile_schema),
+            ("POST", r"^/api/company-database/build$", self._build_company_database),
+            ("POST", r"^/api/company-database/events/build$", self._build_company_events),
+            ("POST", r"^/api/company-database/relationships/build$", self._build_company_relationships),
+            ("POST", r"^/api/company-database/workflow/build$", self._build_company_workflow),
+            ("GET", r"^/api/company-events$", self._list_company_events),
+            ("POST", r"^/api/company-events$", self._register_company_event),
+            ("GET", r"^/api/company-relationships$", self._list_company_relationships),
+            ("POST", r"^/api/company-relationships$", self._register_company_relationship),
+            ("GET", r"^/api/research-reports/structured$", self._list_structured_research_reports),
+            ("POST", r"^/api/research-reports/structured$", self._register_structured_research_report),
+            ("GET", r"^/api/research-report-viewpoints$", self._list_report_viewpoints),
+            ("POST", r"^/api/research-report-viewpoints$", self._register_report_viewpoint),
+            ("GET", r"^/api/research-report-forecasts$", self._list_report_forecasts),
+            ("POST", r"^/api/research-report-forecasts$", self._register_report_forecast),
+            ("GET", r"^/api/analyst-profiles$", self._list_analyst_profiles),
+            ("POST", r"^/api/analyst-profiles$", self._register_analyst_profile),
+            ("GET", r"^/api/analyst-reliability-scores$", self._list_analyst_reliability_scores),
+            ("POST", r"^/api/analyst-reliability-scores$", self._compute_analyst_reliability_score),
+            ("GET", r"^/api/observation-items$", self._list_observation_items),
+            ("POST", r"^/api/observation-items$", self._register_observation_item),
+            ("GET", r"^/api/analysis-conclusions$", self._list_analysis_conclusions),
+            ("POST", r"^/api/analysis-conclusions$", self._create_analysis_conclusion),
+            ("GET", r"^/api/simulation-feedback$", self._list_simulation_feedback),
+            ("POST", r"^/api/simulation-feedback$", self._record_simulation_feedback),
+            ("POST", r"^/api/simulation-feedback/performance/update$", self._update_simulation_feedback_performance),
             ("GET", r"^/api/hotspot-lexicons$", self._list_hotspot_lexicons),
             ("POST", r"^/api/hotspot-lexicons$", self._register_hotspot_lexicon),
             ("POST", r"^/api/industry-chains/(?P<chain_id>[^/]+)/companies$", self._register_company_position),
@@ -636,6 +675,8 @@ class ApiRouter:
             ("POST", r"^/api/graph/neo4j/sync$", self._sync_graph_neo4j),
             ("GET", r"^/api/graph-vector/readiness-report$", self._graph_vector_readiness_report),
             ("POST", r"^/api/graph-vector/readiness-report$", self._graph_vector_readiness_report),
+            ("GET", r"^/api/company-intelligence/(?P<symbol>[^/]+)$", self._company_intelligence_by_symbol),
+            ("POST", r"^/api/company-intelligence/(?P<symbol>[^/]+)$", self._company_intelligence_by_symbol),
             ("GET", r"^/api/graph/query$", self._query_graph),
             ("GET", r"^/api/search/qdrant/export$", self._qdrant_vector_export),
             ("POST", r"^/api/search/qdrant/export$", self._qdrant_vector_export),
@@ -704,7 +745,7 @@ class ApiRouter:
             return role in {"system", "风险/合规", "平台负责人", "数据工程"}
         if path.startswith("/api/benchmarks") or path.startswith("/api/prompts/changes") or path.startswith("/api/scorecards"):
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO"}
-        if path.startswith("/api/templates") or path.startswith("/api/research-cards") or path.startswith("/api/research-reports") or path.startswith("/api/research/manual-references") or path.startswith("/api/research/answers") or path.startswith("/api/research/tasks") or path.startswith("/api/macro-themes") or path.startswith("/api/industry-chains") or path.startswith("/api/hotspot-lexicons") or path.startswith("/api/hotspots") or path.startswith("/api/crowding") or path.startswith("/api/challenger") or path.startswith("/api/playbooks") or path.startswith("/api/incident-reports") or path.startswith("/api/drill-schedules") or path.startswith("/api/alerts"):
+        if path.startswith("/api/templates") or path.startswith("/api/research-cards") or path.startswith("/api/research-reports") or path.startswith("/api/research/manual-references") or path.startswith("/api/research/answers") or path.startswith("/api/research/tasks") or path.startswith("/api/macro-themes") or path.startswith("/api/industry-chains") or path.startswith("/api/company-database") or path.startswith("/api/company-profiles") or path.startswith("/api/company-events") or path.startswith("/api/company-relationships") or path.startswith("/api/research-report-viewpoints") or path.startswith("/api/research-report-forecasts") or path.startswith("/api/analyst-profiles") or path.startswith("/api/analyst-reliability-scores") or path.startswith("/api/observation-items") or path.startswith("/api/analysis-conclusions") or path.startswith("/api/simulation-feedback") or path.startswith("/api/hotspot-lexicons") or path.startswith("/api/hotspots") or path.startswith("/api/crowding") or path.startswith("/api/challenger") or path.startswith("/api/playbooks") or path.startswith("/api/incident-reports") or path.startswith("/api/drill-schedules") or path.startswith("/api/alerts"):
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO", "PM", "分析师", "海外研究负责人", "数据工程"}
         if path.startswith("/api/llm"):
             return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人", "分析师", "NLP/ML 负责人", "海外研究负责人"}
@@ -1363,6 +1404,9 @@ class ApiRouter:
     def _research_report_viewpoint_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.research_report_viewpoint_report(body)
 
+    def _structure_research_reports(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.structure_research_reports(body, actor=actor)
+
     def _ingest_research_report(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/research-reports/(?P<report_id>[^/]+)/ingest$", path)
         return self.service.ingest_research_report(match["report_id"], body, actor=actor)
@@ -1787,6 +1831,90 @@ class ApiRouter:
     def _company_positions_coverage_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_positions_coverage_report(body)
 
+    def _register_company_profile(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_company_profile(body, actor=actor))
+
+    def _list_company_profiles(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_profiles_payload(body)
+
+    def _company_profile_schema(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_profile_schema_payload(body)
+
+    def _build_company_database(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.build_company_database(body, actor=actor)
+
+    def _build_company_events(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.build_company_events(body, actor=actor)
+
+    def _build_company_relationships(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.build_company_relationships(body, actor=actor)
+
+    def _build_company_workflow(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.build_company_workflow(body, actor=actor)
+
+    def _register_company_event(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_company_event(body, actor=actor))
+
+    def _list_company_events(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_events_payload(body)
+
+    def _register_company_relationship(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_company_relationship(body, actor=actor))
+
+    def _list_company_relationships(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_relationships_payload(body)
+
+    def _register_structured_research_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_structured_research_report(body, actor=actor))
+
+    def _list_structured_research_reports(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.structured_research_reports_payload(body)
+
+    def _register_report_viewpoint(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_report_viewpoint(body, actor=actor))
+
+    def _list_report_viewpoints(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.report_viewpoints_payload(body)
+
+    def _register_report_forecast(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_report_forecast(body, actor=actor))
+
+    def _list_report_forecasts(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.report_forecasts_payload(body)
+
+    def _register_analyst_profile(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_analyst_profile(body, actor=actor))
+
+    def _list_analyst_profiles(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.analyst_profiles_payload(body)
+
+    def _compute_analyst_reliability_score(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.compute_analyst_reliability_score(body, actor=actor))
+
+    def _list_analyst_reliability_scores(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.analyst_reliability_scores_payload(body)
+
+    def _register_observation_item(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.register_observation_item(body, actor=actor))
+
+    def _list_observation_items(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.observation_items_payload(body)
+
+    def _create_analysis_conclusion(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.create_analysis_conclusion(body, actor=actor))
+
+    def _list_analysis_conclusions(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.analysis_conclusions_payload(body)
+
+    def _record_simulation_feedback(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return to_plain(self.service.record_simulation_feedback(body, actor=actor))
+
+    def _list_simulation_feedback(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.simulation_feedback_payload(body)
+
+    def _update_simulation_feedback_performance(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.update_simulation_feedback_performance(body, actor=actor)
+
     def _register_hotspot_lexicon(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.register_hotspot_lexicon(body, actor=actor))
 
@@ -1854,6 +1982,12 @@ class ApiRouter:
 
     def _query_graph(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.query_graph(body)
+
+    def _company_intelligence_by_symbol(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/company-intelligence/(?P<symbol>[^/]+)$", path)
+        payload = dict(body)
+        payload["symbol"] = match["symbol"] if match else payload.get("symbol", "")
+        return self.service.company_intelligence(payload)
 
     def _graph_traceability_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.graph_traceability_report(body)

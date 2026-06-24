@@ -106,10 +106,14 @@ class Handler(BaseHTTPRequestHandler):
         if path in {"/ui", "/ui/"}:
             self._send_html("index.html")
             return
+        if path == "/favicon.ico":
+            self.send_response(204)
+            self.end_headers()
+            return
         if path == "/":
             self._send_json(
                 {
-                    "service": "ai-native-quant-org",
+                    "service": "company-intelligence-platform",
                     "ui": "/ui",
                     "routes": [
                         "/api/dashboard/ceo",

@@ -704,6 +704,56 @@ class CompanyPosition:
 
 
 @dataclass(slots=True)
+class CompanyProfile:
+    issuer_id: str
+    display_name: str = ""
+    legal_name: str = ""
+    security_ids: list[str] = field(default_factory=list)
+    markets: list[str] = field(default_factory=list)
+    sector: str = ""
+    industry: str = ""
+    business_summary: str = ""
+    products: list[str] = field(default_factory=list)
+    identifiers: dict[str, Any] = field(default_factory=dict)
+    latest_market_snapshot: dict[str, Any] = field(default_factory=dict)
+    latest_financial_snapshot: dict[str, Any] = field(default_factory=dict)
+    coverage_summary: dict[str, Any] = field(default_factory=dict)
+    event_summary: dict[str, Any] = field(default_factory=dict)
+    data_quality: dict[str, Any] = field(default_factory=dict)
+    source_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    updated_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class CompanyRelationship:
+    relationship_id: str
+    subject_type: str
+    subject_id: str
+    object_type: str
+    object_id: str
+    relationship_type: str
+    issuer_id: str = ""
+    security_id: str = ""
+    direction: str = "directed"
+    weight: float = 1.0
+    valid_from: Any = None
+    valid_to: Any = None
+    source_ids: list[str] = field(default_factory=list)
+    document_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    confidence: float = 0.5
+    relationship_status: str = "active"
+    review_status: str = "unreviewed"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.direction, {"directed", "undirected"}, "direction")
+        _validate_choice(self.relationship_status, {"active", "inactive", "historical", "unknown"}, "relationship_status")
+
+
+@dataclass(slots=True)
 class HotspotLexicon:
     lexicon_id: str
     name: str
@@ -1042,6 +1092,124 @@ class ResearchReportAsset:
 
 
 @dataclass(slots=True)
+class ResearchReport:
+    research_report_id: str
+    document_id: str = ""
+    title: str = ""
+    institution_id: str = ""
+    institution_name: str = ""
+    analyst_ids: list[str] = field(default_factory=list)
+    analyst_names: list[str] = field(default_factory=list)
+    issuer_id: str = ""
+    security_id: str = ""
+    covered_entities: list[dict[str, Any]] = field(default_factory=list)
+    report_type: str = "other"
+    language: str = "unknown"
+    source_id: str = ""
+    source_uri: str = ""
+    rights_boundary: str = "opinion_only_not_fact_source"
+    published_at: Any = field(default_factory=utcnow)
+    current_price_at_publication: float = 0.0
+    rating: str = "not_rated"
+    target_price: float = 0.0
+    target_price_currency: str = ""
+    target_price_horizon: str = "unknown"
+    summary: str = ""
+    parser_status: str = "pending"
+    viewpoint_ids: list[str] = field(default_factory=list)
+    forecast_ids: list[str] = field(default_factory=list)
+    realization_status: str = "pending"
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class ReportViewpoint:
+    viewpoint_id: str
+    research_report_id: str
+    issuer_id: str = ""
+    security_id: str = ""
+    viewpoint_type: str = "other"
+    stance: str = "uncertain"
+    statement: str = ""
+    rating: str = ""
+    target_price: float = 0.0
+    current_price: float = 0.0
+    upside_downside_pct: float = 0.0
+    valuation_method: str = ""
+    core_assumptions: list[str] = field(default_factory=list)
+    catalysts: list[str] = field(default_factory=list)
+    risks: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    source_quote_locator: str = ""
+    view_status: str = "active"
+    realization_status: str = "pending"
+    realization_checked_at: Any = None
+    notes: str = ""
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class ReportForecast:
+    forecast_id: str
+    research_report_id: str
+    issuer_id: str
+    viewpoint_id: str = ""
+    security_id: str = ""
+    forecast_type: str = "other"
+    period: str = ""
+    forecast_value: float = 0.0
+    unit: str = ""
+    currency: str = ""
+    base_value: float = 0.0
+    actual_value: float = 0.0
+    actual_source_id: str = ""
+    actual_evidence_ids: list[str] = field(default_factory=list)
+    error_abs: float = 0.0
+    error_pct: float = 0.0
+    realization_status: str = "pending"
+    checked_at: Any = None
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class AnalystProfile:
+    analyst_id: str
+    name: str
+    institution_id: str = ""
+    person_id: str = ""
+    coverage_markets: list[str] = field(default_factory=list)
+    coverage_industries: list[str] = field(default_factory=list)
+    covered_issuer_ids: list[str] = field(default_factory=list)
+    report_count: int = 0
+    active: bool = True
+    source_ids: list[str] = field(default_factory=list)
+    first_seen_at: Any = field(default_factory=utcnow)
+    last_seen_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class AnalystReliabilityScore:
+    score_id: str
+    analyst_id: str
+    institution_id: str = ""
+    issuer_id: str = ""
+    period: str = ""
+    sample_count: int = 0
+    target_price_hit_rate: float = 0.0
+    rating_direction_accuracy: float = 0.0
+    earnings_forecast_mape: float = 0.0
+    forecast_review_coverage: float = 0.0
+    timeliness_score: float = 0.0
+    revision_quality_score: float = 0.0
+    overall_score: float = 0.0
+    methodology_version: str = "analyst-reliability-v1"
+    input_forecast_ids: list[str] = field(default_factory=list)
+    notes: str = ""
+    computed_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
 class CrowdingSnapshot:
     snapshot_id: str
     issuer_id: str
@@ -1098,6 +1266,115 @@ class DisclosureEvent:
     post_event_performance: dict[str, Any] = field(default_factory=dict)
     occurred_at: Any = field(default_factory=utcnow)
     created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class CompanyEvent:
+    event_id: str
+    issuer_id: str
+    security_id: str = ""
+    event_type: str = "other"
+    title: str = ""
+    summary: str = ""
+    occurred_at: Any = field(default_factory=utcnow)
+    detected_at: Any = field(default_factory=utcnow)
+    source_ids: list[str] = field(default_factory=list)
+    document_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    impact_tags: list[str] = field(default_factory=list)
+    affected_entities: list[dict[str, Any]] = field(default_factory=list)
+    confidence: float = 0.5
+    fact_status: str = "unknown"
+    review_status: str = "unreviewed"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
+class ObservationItem:
+    observation_id: str
+    issuer_id: str
+    title: str
+    security_id: str = ""
+    question: str = ""
+    observation_type: str = "custom"
+    trigger_conditions: list[dict[str, Any]] = field(default_factory=list)
+    related_event_ids: list[str] = field(default_factory=list)
+    related_relationship_ids: list[str] = field(default_factory=list)
+    related_viewpoint_ids: list[str] = field(default_factory=list)
+    evidence_gap: list[str] = field(default_factory=list)
+    priority: str = "medium"
+    status: str = "open"
+    owner: str = ""
+    due_at: Any = None
+    created_at: Any = field(default_factory=utcnow)
+    closed_at: Any = None
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"open", "in_progress", "waiting", "closed", "cancelled"}, "status")
+        _validate_choice(self.priority, {"low", "medium", "high", "critical"}, "priority")
+
+
+@dataclass(slots=True)
+class AnalysisConclusion:
+    analysis_conclusion_id: str
+    issuer_id: str
+    title: str
+    conclusion: str
+    security_id: str = ""
+    conclusion_type: str = "custom"
+    horizon: str = "unknown"
+    hypothesis: str = ""
+    facts: list[str] = field(default_factory=list)
+    inferences: list[str] = field(default_factory=list)
+    forecasts: list[str] = field(default_factory=list)
+    subjective_judgments: list[str] = field(default_factory=list)
+    supporting_evidence_ids: list[str] = field(default_factory=list)
+    counter_evidence_ids: list[str] = field(default_factory=list)
+    related_event_ids: list[str] = field(default_factory=list)
+    related_relationship_ids: list[str] = field(default_factory=list)
+    related_viewpoint_ids: list[str] = field(default_factory=list)
+    related_observation_ids: list[str] = field(default_factory=list)
+    confidence: float = 0.5
+    valid_from: Any = field(default_factory=utcnow)
+    valid_to: Any = None
+    review_plan: dict[str, Any] = field(default_factory=dict)
+    status: str = "draft"
+    created_by: str = ""
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"draft", "active", "superseded", "expired", "reviewed", "rejected"}, "status")
+
+
+@dataclass(slots=True)
+class SimulationFeedback:
+    simulation_feedback_id: str
+    analysis_conclusion_id: str
+    issuer_id: str
+    security_id: str = ""
+    observation_id: str = ""
+    feedback_type: str = "watch_only"
+    paper_only: bool = True
+    live_execution_allowed: bool = False
+    broker_connected: bool = False
+    simulated_action: str = "watch"
+    simulated_size: dict[str, Any] = field(default_factory=dict)
+    start_at: Any = field(default_factory=utcnow)
+    end_at: Any = None
+    entry_price: float = 0.0
+    exit_price: float = 0.0
+    benchmark_security_id: str = ""
+    performance: dict[str, Any] = field(default_factory=dict)
+    validation: dict[str, Any] = field(default_factory=dict)
+    review_result: dict[str, Any] = field(default_factory=dict)
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        if not self.paper_only or self.live_execution_allowed or self.broker_connected:
+            raise ValidationError("simulation feedback must remain paper-only and cannot connect to brokers")
 
 
 @dataclass(slots=True)

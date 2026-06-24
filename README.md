@@ -1,6 +1,26 @@
-# AI Native Quant Org
+# 公司情报与市场综合分析平台
 
-一个基于项目文档实现的最小可运行投研后端原型，覆盖三市场数据接入骨架、证据链、评分、决策治理、模拟持仓反馈、审计、challenger、知识图谱查询和事故剧本管理。系统用于投资分析和复盘，不连接真实券商，不做自动下单。
+本项目是一个本地优先的公司情报与市场综合分析平台。核心目标是为每只股票/公司建立结构化与非结构化结合的全天候数据库，支持公司画像、事件时间线、关系图谱、研报观点追踪、观察任务、分析结论记录和模拟反馈复盘。
+
+系统用于投资研究、证据整理和分析有效性验证，不连接真实券商，不做自动下单，也不是实时量化交易平台。既有的投委会、签批、执行意图和生产发布门禁能力保留为兼容/运维模块，但不再作为产品主叙事。
+
+## 核心主线
+
+```text
+数据入湖 -> 公司画像 -> 事件时间线 -> 关系图谱 -> 多源观点 -> 观察任务 -> 分析结论 -> 模拟反馈
+```
+
+核心价值：
+
+- 每只股票建立可持续更新的公司级数据库。
+- 结构化管理行情、财务、公告、公司事件和实体关系。
+- 将研报、新闻、政策、网页和本地文件作为可回链的非结构化情报来源。
+- 把研报作为关注度信号、观点样本库和分析师可靠性复盘来源。
+- 用模拟交易和观察反馈验证分析结论是否有效，不触发真实交易。
+
+## 数据与研报边界
+
+事实层优先使用公告、财报、监管披露、公司 IR、公开/已提供行情和其他可信来源。研报属于观点层：可以用于筛选关注池、结构化机构观点、记录目标价/评级/盈利预测和复盘分析师可靠性，但不能直接作为事实真相源、训练源或真实交易触发源。
 
 ## 目录
 
@@ -69,6 +89,20 @@ python3 scripts/research_report_inbox_ingest.py --base-url http://127.0.0.1:8000
 
 输出为 `artifacts/research-report-inbox-ingest.json`。无可抽文本的 PDF/扫描件会进入人工复核队列；可抽文本的 TXT/MD 会生成受限 citation evidence。
 
+从现有主体、证券、行情和本地研报索引构建最小公司数据库时，先 dry-run 检查目标公司画像和研报绑定计划：
+
+```bash
+python3 scripts/build_company_database_minimum.py --base-url http://127.0.0.1:8000 --symbols AAPL,NVDA,600519,300750,600887
+```
+
+确认匹配结果后再落库；如需同时生成最小事件时间线、关系层、结构化研报观点和观察/结论/模拟反馈闭环，可追加 `--build-events --build-relationships --structure-reports --build-workflow`：
+
+```bash
+python3 scripts/build_company_database_minimum.py --base-url http://127.0.0.1:8000 --symbols AAPL,NVDA,600519,300750,600887 --build-events --build-relationships --structure-reports --build-workflow --execute
+```
+
+输出为 `artifacts/company-database-build.json`。研报绑定是观点层/关注度信号，默认 `needs_review`；研报覆盖事件和机构覆盖关系只表示关注度变化，不得作为事实真相源或真实交易触发源。`--build-workflow` 只生成观察任务、公司情报基线结论和 watch-only 模拟反馈，固定 paper-only，不连接券商。
+
 ## 启动服务
 
 ```bash
@@ -84,6 +118,12 @@ python3 -m app.server
 
 ```bash
 AI_QUANT_DB=./data/state.db python3 -m app.server
+```
+
+如果本机 `.env` 已配置 `AI_QUANT_POSTGRES_DSN` 或 `AI_QUANT_DATABASE_URL`，服务会优先使用 PostgreSQL；未安装 `psycopg` 时裸跑会启动失败。需要临时用 SQLite 本地启动时，显式清空 Postgres DSN：
+
+```bash
+AI_QUANT_POSTGRES_DSN= AI_QUANT_DATABASE_URL= AI_QUANT_DB=./data/state.db python3 -m app.server
 ```
 
 生产状态库可使用 PostgreSQL。先安装可选依赖 `psycopg`，再设置 `AI_QUANT_POSTGRES_DSN`；也可以直接让 `AI_QUANT_DB` 使用 `postgresql://` 或 `postgres://` DSN：
@@ -153,7 +193,7 @@ UI 静态验收会检查左侧信息架构、顶部状态条、关键面板 ID �
 python3 scripts/ui_static_check.py
 ```
 
-UI 点击联动验收会用 Headless Chrome 打开 `/ui` 并真实点击总览收益卡、研报观点证据、公司定位、产业链和投委会组合方案，确认能切换到对应工作台并带入上下文：
+UI 点击联动验收会用 Headless Chrome 打开 `/ui` 并真实点击总览收益卡、研报观点证据、公司定位、产业链和模拟反馈/兼容方案入口，确认能切换到对应工作台并带入上下文：
 
 ```bash
 python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance
@@ -198,7 +238,7 @@ python3 scripts/fetch_benchmark_samples.py \
   --include-ashare-attachment-text \
   --sec-document-types 10-K,10-Q \
   --limit-per-symbol 2 \
-  --user-agent 'ai-native-quant-org/0.1 contact@example.com'
+  --user-agent 'company-intelligence-platform/0.1 contact@example.com'
 
 python3 scripts/local_benchmark_quality_package.py \
   data/objects/ashare_exchange data/objects/sec_edgar docs artifacts/benchmark-sample-fetch \
@@ -237,7 +277,7 @@ A 股样本补齐仍只走已冻结的公开披露/本地材料边界。`--inclu
 - 免费 A 股补充接口候选会以 `a-stock-data` 生态为参考登记，但默认只作为人工参考或补充研究，不替代本地通达信和官方公开披露核心数据
 - 宏观主题、热点扩散和产业链公司定位将作为知识图谱一等能力：从热点词扩展到上下游节点、相关公司、数据槽位、证据缺口和后续研究任务
 - 术语、数值、期间和规则表格读取基线抽取，并可按中英 benchmark 样本集运行阈值、定位、表格和低置信度拦截评估
-- Issuer / Security / MarketDataPoint / Document / Evidence / Thesis / Signal / Decision / Review
+- Issuer / Security / MarketDataPoint / Document / Evidence / Thesis / Signal / Decision / Review，其中 Issuer/Security/Document/Evidence 是公司情报主数据底座，Thesis/Decision/Review 作为旧研究结论与复盘兼容对象继续保留
 - CorporateAction 用于拆股、分红、代码变更等复权和估值链路
 - `/api/market-data/adjusted` 提供 `raw`、`backward`、`forward` 复权计算视图；现金分红只作为公司行动返回，不默认混入价格因子
 - `/api/market-data/returns` 基于复权价格输出收益序列、累计收益、波动和最大回撤；默认价格收益，传 `total_return_method=cash_dividend_reinvested` 时计入 ex-date 现金分红
@@ -245,14 +285,16 @@ A 股样本补齐仍只走已冻结的公开披露/本地材料边界。`--inclu
 - `/api/portfolio/valuation` 用 as-of 前最近公开行情价计算持仓市值、权重、现金权重和缺失价格清单
 - `/api/portfolio/transactions` 和 `/api/portfolio/positions` 记录交易流水并按 as-of 派生持仓，供月报绩效和归因复算
 - 英文 evidence 优先的研究问答与中文摘要审计，保留 summary/prompt/model 版本、人工覆核状态和答案级质量/复核队列报告
-- benchmark、prompt 审批、scorecard、research card
+- `/api/company-profiles`、`/api/company-events`、`/api/company-relationships`、`/api/research-reports/structured`、`/api/research-report-viewpoints`、`/api/observation-items`、`/api/analysis-conclusions` 和 `/api/simulation-feedback` 提供公司情报平台的一等对象写入与查询入口
+- `/api/company-intelligence/{symbol}` 按股票代码聚合公司画像、行情、事件、关系图谱、结构化研报、研报观点、观察任务、分析结论和模拟反馈；`SPCX` 可作为默认输入，未入库时返回下一步研究入口
+- benchmark、prompt 版本记录、scorecard、research card
 - Reg FD / non-display 合规闸门
-- approved decision 到纸面执行意图和模拟持仓反馈的审批闸门
+- 旧 approved decision 到纸面执行意图和模拟持仓反馈的兼容闸门；新路线应以分析结论和模拟反馈为中心
 - 13F institutional holding、crowding、8-K/6-K/20-F disclosure event、challenger、playbook、incident report、drill schedule
 - Black-Litterman 纸面组合原型，支持观点置信度/Omega、风险预算、禁投清单、压力测试和 walk-forward 诊断
 - dashboard、graph/evidence/portfolio query、macro theme / industry chain / company positioning query、review query
-- 可选 SQLite / PostgreSQL 持久化，覆盖核心对象、审批签字和审计日志
-- `/ui` 静态单页界面，覆盖目标运营台总览、CEO Dashboard、主体页、投委会页、A/H/U 预览、结构化抽取、采集调度和事故日历
+- 可选 SQLite / PostgreSQL 持久化，覆盖核心对象、旧审批签字兼容记录和审计日志
+- `/ui` 静态单页界面，主路径已调整为公司情报工作台，覆盖总览、公司画像、事件/关系、研报观点、观察结论、模拟反馈和旧运营/审批兼容入口
 - UI 静态验收脚本，覆盖 `pic/UI.png` 对应的左侧信息架构、顶部市场/风险/冲突状态和关键控件存在性
 - `/api/demo/full-flow` 生成一套可展示的端到端 demo 数据
 - operating report 与 strategy replay，覆盖月报红灯项、治理指标、TWR/最大回撤/换手/信息比率、发布审批和版本化决策回放
@@ -268,7 +310,7 @@ A 股样本补齐仍只走已冻结的公开披露/本地材料边界。`--inclu
 
 ## 说明
 
-当前实现是 MVP 后端与前端初版，重点是把文档中的核心对象、接口、治理规则、最小持久化和可操作页面落成可测试代码。A/H/U 三市场公告/filing 真实检索已补上最小入口；状态库、对象存储和检索已具备本地 fallback 与生产 adapter 边界。专用图谱/向量存储、复杂 OCR/PDF、真实外部环境压测和前端生产化验收仍是后续建设项。
+当前实现是 MVP 后端与前端初版，重点是把公司情报所需的核心对象、接口、治理规则、最小持久化和可操作页面落成可测试代码。A/H/U 三市场公告/filing 真实检索已补上最小入口；状态库、对象存储和检索已具备本地 fallback 与生产 adapter 边界。公司画像、事件时间线、关系图谱、研报观点追踪、观察任务、分析结论和模拟反馈闭环已有最小可验收实现；专用图谱/向量存储、复杂 OCR/PDF、真实外部环境压测和前端生产化验收属于增强项。
 
 ## 存储与检索配置
 

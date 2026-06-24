@@ -12,6 +12,9 @@ from .models import (
     AuditEvent,
     AlertNotification,
     AlertRule,
+    AnalystProfile,
+    AnalystReliabilityScore,
+    AnalysisConclusion,
     AStockConnectorDefinition,
     BenchmarkConfig,
     BenchmarkResult,
@@ -20,7 +23,10 @@ from .models import (
     CacheRetentionRunRecord,
     ChokepointResearchRun,
     CorporateAction,
+    CompanyEvent,
     CompanyPosition,
+    CompanyProfile,
+    CompanyRelationship,
     DrillSchedule,
     DisclosureEvent,
     EntityMapping,
@@ -52,6 +58,7 @@ from .models import (
     MarketDataPoint,
     MacroTheme,
     ModelVersionRecord,
+    ObservationItem,
     OperatingReport,
     PortfolioProposal,
     PortfolioTransaction,
@@ -59,14 +66,18 @@ from .models import (
     ReadinessCheckRecord,
     ResearchAnswer,
     ResearchCard,
+    ResearchReport,
     ResearchReportAsset,
     ResearchTask,
     ResearchTemplate,
     ResearchSignal,
+    ReportForecast,
+    ReportViewpoint,
     ReviewRecord,
     Security,
     SecretRotationRecord,
     SimulatedExecution,
+    SimulationFeedback,
     ScorecardProfile,
     SourceReviewRecord,
     SourceDefinition,
@@ -111,6 +122,9 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("industry_chain_template_candidates", "candidate_id", IndustryChainTemplateCandidate),
     ("industry_chain_template_reviews", "review_id", IndustryChainTemplateReview),
     ("company_positions", "position_id", CompanyPosition),
+    ("company_profiles", "issuer_id", CompanyProfile),
+    ("company_events", "event_id", CompanyEvent),
+    ("company_relationships", "relationship_id", CompanyRelationship),
     ("hotspot_lexicons", "lexicon_id", HotspotLexicon),
     ("research_tasks", "task_id", ResearchTask),
     ("chokepoint_research_runs", "run_id", ChokepointResearchRun),
@@ -138,9 +152,17 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("research_answers", "answer_id", ResearchAnswer),
     ("research_cards", "card_id", ResearchCard),
     ("research_reports", "report_id", ResearchReportAsset),
+    ("structured_research_reports", "research_report_id", ResearchReport),
+    ("report_viewpoints", "viewpoint_id", ReportViewpoint),
+    ("report_forecasts", "forecast_id", ReportForecast),
+    ("analyst_profiles", "analyst_id", AnalystProfile),
+    ("analyst_reliability_scores", "score_id", AnalystReliabilityScore),
     ("crowding", "snapshot_id", CrowdingSnapshot),
     ("institutional_holdings", "holding_id", InstitutionalHolding),
     ("disclosure_events", "event_id", DisclosureEvent),
+    ("observation_items", "observation_id", ObservationItem),
+    ("analysis_conclusions", "analysis_conclusion_id", AnalysisConclusion),
+    ("simulation_feedback", "simulation_feedback_id", SimulationFeedback),
     ("challengers", "challenger_id", ChallengerResult),
     ("playbooks", "playbook_id", IncidentPlaybook),
     ("incident_reports", "report_id", IncidentReport),
@@ -188,6 +210,9 @@ def _candidate_collections_for_resource(resource_type: str) -> list[str]:
         "industry_chain_template_candidate": "industry_chain_template_candidates",
         "industry_chain_template_review": "industry_chain_template_reviews",
         "company_position": "company_positions",
+        "company_profile": "company_profiles",
+        "company_event": "company_events",
+        "company_relationship": "company_relationships",
         "hotspot_lexicon": "hotspot_lexicons",
         "research_task": "research_tasks",
         "chokepoint_research_run": "chokepoint_research_runs",
@@ -218,10 +243,18 @@ def _candidate_collections_for_resource(resource_type: str) -> list[str]:
         "research_card": "research_cards",
         "research_report": "research_reports",
         "research_report_asset": "research_reports",
+        "structured_research_report": "structured_research_reports",
+        "report_viewpoint": "report_viewpoints",
+        "report_forecast": "report_forecasts",
+        "analyst_profile": "analyst_profiles",
+        "analyst_reliability_score": "analyst_reliability_scores",
         "crowding": "crowding",
         "crowding_snapshot": "crowding",
         "institutional_holding": "institutional_holdings",
         "disclosure_event": "disclosure_events",
+        "observation_item": "observation_items",
+        "analysis_conclusion": "analysis_conclusions",
+        "simulation_feedback": "simulation_feedback",
         "challenger": "challengers",
         "challenger_result": "challengers",
         "playbook": "playbooks",
@@ -265,6 +298,9 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     IndustryChainTemplateCandidate: ("created_at", "updated_at", "submitted_at", "published_at"),
     IndustryChainTemplateReview: ("created_at",),
     CompanyPosition: ("created_at",),
+    CompanyProfile: ("updated_at",),
+    CompanyEvent: ("occurred_at", "detected_at", "created_at"),
+    CompanyRelationship: ("valid_from", "valid_to", "created_at"),
     HotspotLexicon: ("created_at",),
     ResearchTask: ("created_at", "updated_at"),
     ChokepointResearchRun: ("created_at", "updated_at"),
@@ -280,9 +316,17 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     ResearchAnswer: ("created_at", "updated_at"),
     ResearchCard: ("created_at",),
     ResearchReportAsset: ("indexed_at",),
+    ResearchReport: ("published_at", "created_at", "updated_at"),
+    ReportViewpoint: ("realization_checked_at", "created_at"),
+    ReportForecast: ("checked_at", "created_at"),
+    AnalystProfile: ("first_seen_at", "last_seen_at"),
+    AnalystReliabilityScore: ("computed_at",),
     CrowdingSnapshot: ("created_at",),
     InstitutionalHolding: ("created_at",),
     DisclosureEvent: ("occurred_at", "created_at"),
+    ObservationItem: ("due_at", "created_at", "closed_at"),
+    AnalysisConclusion: ("valid_from", "valid_to", "created_at", "updated_at"),
+    SimulationFeedback: ("start_at", "end_at", "created_at", "updated_at"),
     ChallengerResult: ("created_at",),
     IncidentPlaybook: ("created_at",),
     IncidentReport: ("created_at",),
@@ -309,6 +353,7 @@ OPTIONAL_DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     OperatingReport: ("published_at",),
     IndustryChain: ("published_at",),
     IndustryChainTemplateCandidate: ("submitted_at", "published_at"),
+    CompanyRelationship: ("valid_from", "valid_to"),
     SourceReviewRecord: ("next_review_due_at",),
     AStockConnectorDefinition: ("last_checked_at",),
     ReadinessCheckRecord: ("expires_at",),
@@ -316,6 +361,11 @@ OPTIONAL_DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     SecretRotationRecord: ("next_rotation_due_at",),
     CacheRetentionRunRecord: ("executed_at",),
     EntityMapping: ("valid_to",),
+    ReportViewpoint: ("realization_checked_at",),
+    ReportForecast: ("checked_at",),
+    ObservationItem: ("due_at", "closed_at"),
+    AnalysisConclusion: ("valid_to",),
+    SimulationFeedback: ("end_at",),
     LLMBudgetApproval: ("expires_at",),
 }
 
@@ -387,6 +437,9 @@ class InMemoryStore:
     industry_chain_template_candidates: dict[str, IndustryChainTemplateCandidate] = field(default_factory=dict)
     industry_chain_template_reviews: dict[str, IndustryChainTemplateReview] = field(default_factory=dict)
     company_positions: dict[str, CompanyPosition] = field(default_factory=dict)
+    company_profiles: dict[str, CompanyProfile] = field(default_factory=dict)
+    company_events: dict[str, CompanyEvent] = field(default_factory=dict)
+    company_relationships: dict[str, CompanyRelationship] = field(default_factory=dict)
     hotspot_lexicons: dict[str, HotspotLexicon] = field(default_factory=dict)
     research_tasks: dict[str, ResearchTask] = field(default_factory=dict)
     chokepoint_research_runs: dict[str, ChokepointResearchRun] = field(default_factory=dict)
@@ -414,9 +467,17 @@ class InMemoryStore:
     research_answers: dict[str, ResearchAnswer] = field(default_factory=dict)
     research_cards: dict[str, ResearchCard] = field(default_factory=dict)
     research_reports: dict[str, ResearchReportAsset] = field(default_factory=dict)
+    structured_research_reports: dict[str, ResearchReport] = field(default_factory=dict)
+    report_viewpoints: dict[str, ReportViewpoint] = field(default_factory=dict)
+    report_forecasts: dict[str, ReportForecast] = field(default_factory=dict)
+    analyst_profiles: dict[str, AnalystProfile] = field(default_factory=dict)
+    analyst_reliability_scores: dict[str, AnalystReliabilityScore] = field(default_factory=dict)
     crowding: dict[str, CrowdingSnapshot] = field(default_factory=dict)
     institutional_holdings: dict[str, InstitutionalHolding] = field(default_factory=dict)
     disclosure_events: dict[str, DisclosureEvent] = field(default_factory=dict)
+    observation_items: dict[str, ObservationItem] = field(default_factory=dict)
+    analysis_conclusions: dict[str, AnalysisConclusion] = field(default_factory=dict)
+    simulation_feedback: dict[str, SimulationFeedback] = field(default_factory=dict)
     challengers: dict[str, ChallengerResult] = field(default_factory=dict)
     playbooks: dict[str, IncidentPlaybook] = field(default_factory=dict)
     incident_reports: dict[str, IncidentReport] = field(default_factory=dict)

@@ -89,7 +89,7 @@ ORDER BY max(coalesce((i.payload #>> '{{valuation_metrics,market_cap}}')::numeri
 
 
 def fetch_companyfacts(cik: str, *, retries: int = 3) -> dict[str, Any]:
-    headers = {"User-Agent": os.getenv("AI_QUANT_SEC_USER_AGENT", "ai-native-quant-org/0.1 contact@example.com"), "Accept": "application/json"}
+    headers = {"User-Agent": os.getenv("AI_QUANT_SEC_USER_AGENT", "company-intelligence-platform/0.1 contact@example.com"), "Accept": "application/json"}
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
         try:

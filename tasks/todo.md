@@ -5,26 +5,147 @@
 - 状态只用 `TODO` `DOING` `DONE` `BLOCKED`
 - 本文件维护“达到项目愿景”的剩余路线图；历史实现只在“已落地基线”里汇总
 - 每项任务必须映射到 `docs/mvp-backlog.md` 的 E1-E9；无法完全映射的标注为“愿景扩展/生产化增强”
-- 新增能力默认遵循：研究先于模拟组合、公开/已提供数据先于自动化、模拟持仓反馈先于任何真实交易设想
-- 当前系统目标是投资分析和投研反馈，不接真实券商、不做自动下单；`execution intent` 仅表示纸面/模拟意图
+- 新增能力默认遵循：公司情报数据库先于结论，事实/事件/关系先于观点，观点先于模拟反馈，公开/已提供数据先于自动化
+- 当前系统目标是公司情报、市场综合分析、研究记录和模拟反馈验证，不接真实券商、不做自动下单；`execution intent` 仅作为旧纸面/模拟意图兼容对象
 - 不采购或依赖商业授权数据；行情、披露、研报线索、转录稿和第三方接口统一优先使用已提供本地数据、官方公开披露、公开网页/API、开源工具可采集的数据
 - 所有外部数据进入自动化链路前必须记录来源、URL/API、采集时间、robots/TOS/公开性判断、字段边界、缓存期限和用途边界；边界不清的数据只进入人工参考
-- 生产闭环只允许用真实 staging/production artifact URI 回填 manifest；仓库里保留 `artifacts/production-closure-manifest.example.json` 作为填报模板，不作为可直接发布的证据
-- 已回填 URI 的外部证据采集计划必须先经 `scripts/production_evidence_plan_check.py --require-filled-uris` 检查，并提供 artifact inventory 证明每个 evidence URI 的归档对象、sha256、size、环境、producer、owner、retention 和 immutable/object lock，再用 `scripts/production_evidence_plan_to_manifest.py` 或 `scripts/production_release_gate.py` 生成 production closure manifest；草案仍需严格 manifest 和 readiness evidence package 校验后才能签批
+- 非本机组织级发布闭环只允许用真实 staging/production artifact URI 回填 manifest；仓库里保留 `artifacts/production-closure-manifest.example.json` 作为运维附录模板，不作为当前产品主路线或可直接发布的证据
+- 已回填 URI 的外部证据采集计划必须先经 `scripts/production_evidence_plan_check.py --require-filled-uris` 检查，并提供 artifact inventory 证明每个 evidence URI 的归档对象、sha256、size、环境、producer、owner、retention 和 immutable/object lock，再用 `scripts/production_evidence_plan_to_manifest.py` 或 `scripts/production_release_gate.py` 生成 production closure manifest；草案仍需严格 manifest 和 readiness evidence package 校验后才能进入非本机发布确认
 
 ## 当前判断
 
-当前能力：代码已经跑通 MVP 主链路，覆盖 A/H/U 公开披露接入、rights tag、证据切片、规则抽取、benchmark 阈值、Thesis/Signal/Decision、纸面执行意图、模拟持仓 ledger、月报/回放、事故剧本、SQLite/PostgreSQL、本地/S3 对象存储、内置/OpenSearch 检索、`/ui` 静态页面、健康检查、烟测、LLM 中转站和 PaddleOCR-VL 文档解析备用接口。本机长期运行口径下，`artifacts/local-business-acceptance.json` 已通过，`artifacts/latest-analysis/latest-analysis.json` 已生成最新 A 股/美股分析结果。
+当前能力：代码已经跑通本机 MVP 主链路，覆盖 A/H/U 公开披露接入、rights tag、证据切片、规则抽取、benchmark 阈值、Thesis/Signal/Decision 兼容对象、纸面执行意图兼容入口、模拟持仓 ledger、月报/回放、事故剧本、SQLite/PostgreSQL、本地/S3 对象存储、内置/OpenSearch 检索、`/ui` 静态页面、健康检查、烟测、LLM 中转站和 PaddleOCR-VL 文档解析备用接口。本轮产品方向调整后，这些能力应重新归类到公司画像、事件时间线、关系图谱、观点库、观察任务、分析结论和模拟反馈闭环。
 
 新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 已完成全量入库和解析，源目录 11702 份可处理文件全部登记为 research report asset、全部关联 research document、全部进入 `text_indexed`，无 `indexed` / `ingested` / `needs_text_review` 残留，研报 citation evidence 共 88515 条，审计见 `artifacts/research-report-completion-audit.json`；`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
 
-剩余关键缺口：用户已明确后续以本机长期使用为目标；本机 production-like 栈已可作为个人/单机生产口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。当前 `artifacts/project-completion-audit.json` 在 `local_only_personal_production` 目标下为 `status=achieved`。若未来要升级为非本机组织级真实生产发布，仍差真实生产参数、外部密钥管理系统、生产级 artifact URI、灰度/回滚窗口和 CEO 签批边界。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。`artifact://staging-local/...` 可以作为本机长期使用证据，但不作为非本机组织级发布签批证据。
+剩余关键缺口：后续主路线不再是强化组织级发布或实时交易，而是建立公司级数据库和分析反馈闭环。本机 production-like 栈仍可作为个人/单机长期使用口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。非本机组织级真实生产发布、外部密钥管理、生产级 artifact URI、灰度/回滚窗口和发布确认全部下沉为运维/非本机发布附录，不阻塞公司情报平台产品路线。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：本机长期使用口径下，优先保持 Compose 栈、备份恢复、本机证据包、LLM/OCR 冒烟、最新分析产物和 `local_production_audit` 可复验；日常启动建议使用 `scripts/local_production_stack.sh`。研报解析底座和研报接入业务分析/UI 看板已经全量收口，`artifacts/latest-analysis/latest-analysis.json` 已包含 A 股、美股、产业链、财报、行情和研报观点 evidence，`artifacts/latest-analysis/research-evidence-recall-audit.json` 已确认研报只进入观点/参考层，不进入事实源、训练源或真实交易信号。M6-M9 代码层已收口，剩余 `BLOCKED` 项保留为“非本机/组织级生产或大样本质量增强”证据缺口，不阻塞本机使用。
+近期优先级：先完成产品重定位、架构重写和数据结构统一，再拆实现任务。本机长期使用仍需保持 Compose 栈、备份恢复、本机证据包、LLM/OCR 冒烟、最新分析产物和 `local_production_audit` 可复验；日常启动建议使用 `scripts/local_production_stack.sh`。研报解析底座和研报接入业务分析/UI 看板已经全量收口，`artifacts/latest-analysis/latest-analysis.json` 已包含 A 股、美股、产业链、财报、行情和研报观点 evidence，`artifacts/latest-analysis/research-evidence-recall-audit.json` 已确认研报只进入观点/参考层，不进入事实源、训练源或真实交易信号。M6-M9 代码层已收口，剩余 `BLOCKED` 项保留为“非本机/组织级生产或大样本质量增强”证据缺口，不阻塞公司情报平台重定位。
 
-## 项目经理整理 / 当前工程治理待办
+## 项目经理整理 / 公司情报平台重定位路线
 
-项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做投资分析、证据研究、模拟组合和复盘反馈，不接真实券商，不做自动下单。
+项目经理口径：以下任务来自 2026-06-24 产品方向重定位，目标是把项目从组织/执行导向的旧叙事，调整为公司情报、市场综合分析、研报观点追踪、观察任务、分析结论和模拟反馈闭环。T-431 先完成文档重定位；T-432 至 T-436 已补齐最小可验收代码、API、UI 和测试闭环。
+
+- `DONE` T-431 产品重定位与文档统一
+  - 对应：愿景扩展/生产化增强
+  - 目标：统一 README、PRD、系统架构、数据结构和文档索引，把主叙事改为“公司情报与市场综合分析平台”。
+  - 已完成：`README.md` 前屏重写，明确公司级数据库、事件关系、研报观点、观察任务、分析结论和模拟反馈主线。
+  - 已完成：`docs/product-requirements-document.md` 重写为个人研究者/分析用户视角，成功指标改为公司画像覆盖率、事件回链率、研报观点结构化率、分析师预测复盘覆盖率、分析结论复盘完成率和模拟反馈可回链率。
+  - 已完成：`docs/system-architecture.md` 重写为 Data Lake、Entity、Fact & Event、Relationship、View & Feedback 分层；旧决策治理、投委会 Pack 和执行意图降级为兼容模块。
+  - 已完成：`docs/data-structure-design.md` 重写核心对象，明确 `CompanyProfile`、`CompanyEvent`、`CompanyRelationship`、`ResearchReport`、`ReportViewpoint`、`ReportForecast`、`AnalystProfile`、`AnalystReliabilityScore`、`ObservationItem`、`AnalysisConclusion`、`SimulationFeedback`。
+  - 验收：研报被定义为关注度信号、观点样本库和分析师可靠性复盘来源；模拟交易只用于反馈分析有效性，不进入真实交易。
+
+- `DONE` T-432 公司级数据模型与画像 schema
+  - 对应：E3-US1, E3-US3, E5-US1；愿景扩展/生产化增强
+  - 目标：把现有 `Issuer` / `Security` / 行情 / 财务 / 研报覆盖能力编排成 `CompanyProfile`，输出公司画像 API/schema 和数据完整度口径。
+  - 已有基础：`Issuer` / `Security`、entity mapping、行情、公司行动、文档、证据、披露事件、关系图谱、研报、研究答案、thesis/signal/challenger/research card、研究任务和模拟 ledger 等对象可复用为公司画像输入。
+  - **已完成（SPCX 验收切片）**：新增 `GET|POST /api/company-intelligence/{symbol}` 只读聚合接口，可按股票代码汇总公司画像、行情/事件、关系图谱、研报资产、研究答案、观点/信号/反方/研究卡、研究任务和模拟反馈；`SPCX` 空档案时返回 `next_actions`，运行单标的研究后可展示完整聚合视图。
+  - **已完成（本轮收口）**：新增一等 `CompanyProfile` 持久化集合、`GET|POST /api/company-profiles` 和 `GET /api/company-profiles/schema`，画像可由既有 issuer/security/行情/事件/关系/研报覆盖计算生成。
+  - **已完成（本轮收口）**：`/api/company-intelligence/{symbol}` 返回 `company_profile.profile/profiles`、画像覆盖率、缺失字段、事件回链率和关系回链率。
+  - 验收：任一重点公司可生成基础画像、行情财务摘要、研报覆盖摘要、事件摘要、关系摘要和缺失数据清单。
+
+- `DONE` T-433 事件时间线与关系图谱数据结构
+  - 对应：E3-US1, E5-US1, E7-US3；愿景扩展/生产化增强
+  - 目标：把公告、财报、新闻、政策、订单、诉讼、价格、供需和管理层变化统一为 `CompanyEvent`，把客户、供应商、竞争、股权、机构覆盖、分析师覆盖和上下游统一为 `CompanyRelationship`。
+  - **已完成（本轮收口）**：新增 `CompanyEvent`、`CompanyRelationship` 持久化集合和 `GET|POST /api/company-events`、`GET|POST /api/company-relationships`。
+  - **已完成（本轮收口）**：事件支持来源、文档、证据、影响标签、置信度、事实状态和复核状态；关系支持主体/客体类型、关系类型、有效期、证据、置信度和状态。
+  - **已完成（本轮收口）**：`/api/graph/query` 返回 `company_events`、`company_relationships` 并补 `HAS_COMPANY_EVENT`、`HAS_COMPANY_RELATIONSHIP`、`RELATIONSHIP_EVIDENCE` 等回链边。
+  - 验收：公司页可按时间线查看事件，图谱可按关系类型回查来源与证据。
+
+- `DONE` T-434 研报观点结构化与分析师可靠性模型
+  - 对应：E3-US3, E5-US1, E6-US3；愿景扩展/生产化增强
+  - 目标：把研报从文档资产推进到结构化观点库和分析师可靠性复盘。
+  - **已完成（本轮收口）**：新增结构化 `ResearchReport`、`ReportViewpoint`、`ReportForecast`、`AnalystProfile`、`AnalystReliabilityScore` 持久化集合。
+  - **已完成（本轮收口）**：新增 `/api/research-reports/structured`、`/api/research-report-viewpoints`、`/api/research-report-forecasts`、`/api/analyst-profiles`、`/api/analyst-reliability-scores`。
+  - **已完成（本轮收口）**：研报字段覆盖机构、分析师、发布时间、标的、报告类型、评级、目标价、当前价、核心假设、盈利预测/目标价预测、估值方法、催化剂、风险和后续兑现状态；研报仍固定为观点层，不作为事实真相源。
+  - **已完成（本轮增强）**：新增 `POST /api/research-reports/structure`，可把本地研报资产、已登记 Document 文本和 citation evidence 自动结构化为 `ResearchReport`、`ReportViewpoint`、`ReportForecast` 和 `AnalystProfile`；默认幂等跳过已结构化研报，支持 `dry_run` 和 `force`。
+  - **已完成（本轮 UI 增强）**：公司情报页新增“研报结构化”受控入口，支持按当前主体/证券或关键词小批量 `dry_run` 预览，再显式执行结构化；执行后自动刷新公司情报总览。
+  - **已完成（本轮收口）**：T-406 瓶颈研究和真实样本质量包已在文档口径上归入“观点与观察池”方向，继续保留事实分层、来源台账和人工复核质量基线。
+  - 验收：研报观点结构化率、预测兑现覆盖率、目标价命中率、盈利预测误差和分析师综合可靠性可计算。
+
+- `DONE` T-435 观察池、分析结论和模拟反馈闭环
+  - 对应：E5-US1, E6-US5, E8-US1；愿景扩展/生产化增强
+  - 目标：建立 `ObservationItem`、`AnalysisConclusion` 和 `SimulationFeedback` 闭环，用模拟反馈验证分析结论有效性。
+  - 已有基础：旧 execution intent、simulated execution 和 portfolio transaction 可作为 `SimulationFeedback` 的兼容输入，但需要重新建模为分析有效性反馈，而不是执行系统。
+  - **已完成（SPCX 验收切片）**：公司情报聚合接口把旧 execution intent、simulated execution 和 portfolio transaction 按股票代码汇总为 `simulation_feedback` 区块，并固定返回 `paper_only=true` / `live_execution_allowed=false`。
+  - **已完成（本轮收口）**：新增 `ObservationItem`、`AnalysisConclusion`、`SimulationFeedback` 持久化集合和 `/api/observation-items`、`/api/analysis-conclusions`、`/api/simulation-feedback`。
+  - **已完成（本轮收口）**：观察任务状态机支持 `open/in_progress/waiting/closed/cancelled`；分析结论记录事实、推断、预测、主观判断、证据、反证、有效期、复盘计划和关联观察任务。
+  - **已完成（本轮收口）**：`SimulationFeedback` 在模型层强制 `paper_only=true`、`live_execution_allowed=false`、`broker_connected=false`，API 会拒绝真实交易相关请求。
+  - 后续增强：更细的事件/行情自动验证逻辑和复盘评分算法可以继续迭代，但不阻塞当前闭环成立。
+  - 验收：每条模拟反馈能回链到分析结论、观察任务、事件、证据和行情表现，且固定 `live_execution_allowed=false`。
+
+- `DONE` T-436 UI 信息架构从投委会/CEO 改为公司情报工作台
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 目标：把 `/ui` 导航和页面组织从旧运营/审批视角改为公司情报工作台。
+  - 已有基础：当前 `/ui` 已有总览、主体页、研报证据、图谱、模拟反馈和旧运营/投委会入口，可复用为公司情报工作台的初始组件。
+  - **已完成（SPCX 验收切片）**：研究工作台新增“公司情报总览”，默认输入 `SPCX`，可载入画像、事实/事件、研究结果、模拟反馈、下一步缺口和完整聚合 JSON；单标的研究完成后会自动刷新该总览。
+  - **已完成（SPCX 验收切片）**：`scripts/ui_interaction_acceptance.py` 增加 `company_intelligence_spcx_research_flow` 浏览器验收，真实点击单标的研究后断言 SPCX 公司情报页出现画像、研究结果、模拟反馈和聚合 JSON。
+  - **已完成（本轮收口）**：主导航从“研究工作台/策略实验室/投委会”调整为“公司情报/复盘反馈/兼容审批”，旧投委会、签批和执行意图保留在兼容入口。
+  - **已完成（本轮收口）**：公司情报面板优先展示 `CompanyProfile`、`CompanyEvent`、`CompanyRelationship`、结构化研报、研报观点、观察任务、分析结论和 `SimulationFeedback`。
+  - **已完成（本轮收口）**：`scripts/ui_static_check.py` 静态导航验收更新为公司情报主路径。
+  - **已完成（运行态修复）**：`/ui` 浏览器标题、首屏 H1、首屏流程、动态结果标签、UI/smoke/staging 验收文本和 `/api/health` service 元数据已统一为“公司情报与市场综合分析平台”；本机 Compose 应用容器已重建并验证 `http://127.0.0.1:8000/ui` 返回新主叙事。
+  - **已完成（本轮 UI 增强）**：公司情报工作台新增研报结构化预览/执行面板，静态检查覆盖新增控件，浏览器验收覆盖 `dry_run` 预览链路。
+  - **已完成（空白页修复）**：知识图谱页输入股票代码时会先通过 `/api/company-intelligence/{symbol}` 解析到主体 ID；`SPCX` 可自动载入 `issuer_spcx`，未知标的如 `SPAX` 会明确提示本地未建档，不再静默显示空表。
+  - 验收：首屏体现公司情报平台；主导航不再以组织签批或执行意图为中心。
+
+- `DONE` T-437 完整公司数据库底座构建入口
+  - 对应：E3-US1, E3-US3, E5-US1；愿景扩展/生产化增强
+  - 背景：PostgreSQL 已有 `issuers`、`securities`、`research_reports` 等原始层记录，但 `company_profiles`、公司事件、关系、结构化研报观点、观察结论和模拟反馈等公司情报核心对象仍缺少系统性构建入口；页面空白的根因是公司数据库没有从原始索引物化出来。
+  - **已完成（本轮）**：新增 `POST /api/company-database/build`，以公司数据库为主轴，从现有主体/证券/行情/研报资产生成或预览 `CompanyProfile`，并用 ticker/公司名启发式把未绑定研报挂到目标公司和证券；默认 dry-run，只有显式 `execute=true` 才落库。
+  - **已完成（本轮）**：新增 `scripts/build_company_database_minimum.py`，可对 `AAPL,NVDA,600519,300750,600887` 等样本公司执行最小公司数据库 dry-run/落库，并输出 `artifacts/company-database-build.json`。
+  - **已完成（本轮）**：构建入口支持可选小批量研报结构化，把已匹配研报推进为 `ResearchReport`、`ReportViewpoint`、`ReportForecast` 和 `AnalystProfile`；研报仍固定为观点层，不作为事实源或真实交易信号。
+  - 验收：单测覆盖 dry-run 不落库、execute 后持久化公司画像、绑定未归属研报、生成结构化研报观点；后续应继续补 `CompanyEvent` / `CompanyRelationship` 的自动抽取和公司数据库覆盖率审计。
+
+- `DONE` T-438 公司事件时间线最小构建入口
+  - 对应：E3-US1, E5-US1；愿景扩展/生产化增强
+  - 背景：T-437 已能从原始主体、证券、行情和研报索引物化公司画像与研报绑定，但公司事件时间线仍为空，导致公司数据库不完整。
+  - **已完成（本轮）**：新增 `POST /api/company-database/events/build`，默认 dry-run，可从已入库公开行情和已绑定研报覆盖记录生成最小 `CompanyEvent` 时间线。
+  - **已完成（本轮）**：行情事件标记为 `fact_status=verified`，来源为公开/已提供行情；研报覆盖事件标记为 `fact_status=opinion_signal`、`review_status=needs_review`，只表示关注度/观点信号，不把研报升级为事实源。
+  - **已完成（本轮）**：`scripts/build_company_database_minimum.py` 支持 `--build-events`，可在构建公司画像和研报绑定后继续生成最小事件时间线。
+  - 验收：单测覆盖事件 builder dry-run 不落库、execute 后生成市场行情事件与研报覆盖事件，并在 `/api/company-intelligence/{symbol}` 中体现 `company_events` 和事件时间线可用性。
+  - 后续增强：公告、财报、新闻、政策、订单、诉讼、管理层变化、供需和价格冲击等事件抽取仍需单独推进，并要求证据回链和人工复核。
+
+- `DONE` T-439 公司关系层最小构建入口
+  - 对应：E3-US1, E5-US1, E7-US3；愿景扩展/生产化增强
+  - 背景：T-437/T-438 已补公司画像、研报绑定和事件时间线，但 `CompanyRelationship` 仍为空，导致关系图谱缺少一等公司关系对象。
+  - **已完成（本轮）**：新增 `POST /api/company-database/relationships/build`，默认 dry-run，可从已入库证券和已绑定研报资产生成最小 `CompanyRelationship` 关系层。
+  - **已完成（本轮）**：上市证券关系使用 `relationship_type=listed_security`、`review_status=auto_generated`；研报机构覆盖关系使用 `relationship_type=institution_coverage`、`review_status=needs_review`，只表示机构覆盖/关注度关系，不代表客户、供应商、竞争或投资建议事实。
+  - **已完成（本轮）**：`scripts/build_company_database_minimum.py` 支持 `--build-relationships`，可在构建画像、事件后继续生成最小关系层。
+  - 验收：单测覆盖关系 builder dry-run 不落库、execute 后生成上市证券关系与机构覆盖关系，并在 `/api/company-intelligence/{symbol}` 中体现 `company_relationships`。
+  - 后续增强：客户、供应商、竞争、股权、上下游、人物和产品关系需要从公告、财报、官网、监管披露或人工复核证据进入，不能从研报观点直接推断为事实。
+
+- `DONE` T-440 观察任务、分析结论和模拟反馈最小构建入口
+  - 对应：E3-US1, E5-US1, E7-US3；愿景扩展/生产化增强
+  - 背景：T-437/T-439 已让公司页具备画像、事件、关系和研报观点入口，但观察任务、分析结论和 `SimulationFeedback` 仍主要依赖手工写入，导致“分析结果记录和反馈验证”没有形成一键可见闭环。
+  - **已完成（本轮）**：新增 `POST /api/company-database/workflow/build`，默认 dry-run，可从已有事件、关系、结构化研报观点和行情快照生成 `ObservationItem`、`AnalysisConclusion` 和 `SimulationFeedback`。
+  - **已完成（本轮）**：生成的分析结论使用 `conclusion_type=company_intelligence_baseline`，只作为公司情报基线和复盘计划；事实、推断、观点和证据缺口分开记录，不输出买卖建议。
+  - **已完成（本轮）**：生成的模拟反馈固定 `feedback_type=watch_only`、`paper_only=true`、`live_execution_allowed=false`、`broker_connected=false`，只用于验证分析结论有效性，不连接真实券商。
+  - **已完成（本轮）**：workflow builder 默认刷新已有基线记录；后续新增结构化研报观点或事件关系时，可更新观察任务、结论和反馈的回链，不需要删除重建。
+  - **已完成（本轮）**：`scripts/build_company_database_minimum.py` 支持 `--build-workflow`，可在画像、事件、关系和研报结构化后继续生成观察/结论/反馈闭环。
+  - 验收：单测覆盖 workflow builder dry-run 不落库、execute 后生成观察任务、分析结论和 paper-only 模拟反馈，并在 `/api/company-intelligence/{symbol}` 中体现 `observation_items`、`analysis_conclusions` 和 `simulation_feedback_records`。
+  - 后续增强：模拟反馈的收益/回撤/相对基准表现、观点兑现状态和分析师可靠性评分仍需后续根据行情、财报和人工复盘数据持续更新。
+
+- `DONE` T-441 公开披露事件进入公司事件时间线
+  - 对应：E3-US1, E5-US1, E7-US3；愿景扩展/生产化增强
+  - 背景：T-438 已生成行情事件和研报覆盖事件，但公司数据库事实层仍偏薄；公开披露/filing 已有 `DisclosureEvent` 对象，却没有自动物化为一等 `CompanyEvent`。
+  - **已完成（本轮）**：`POST /api/company-database/events/build` 新增 `include_disclosures`，默认从已有 `DisclosureEvent` 生成 `event_type=official_disclosure` 的公司事件。
+  - **已完成（本轮）**：官方披露事件保留 `document_id`、`evidence_ids`、`source_id`、`item_code`、`severity` 和 `disclosure_event_id` 回链，`fact_status=verified`、`review_status=auto_generated`。
+  - **已完成（本轮）**：研报覆盖事件仍保持 `fact_status=opinion_signal`，不会因为加入官方披露事件而把研报观点混入事实层。
+  - 验收：单测覆盖事件 builder dry-run 不落库、execute 后同时生成行情事件、研报覆盖事件和官方披露事件，并在 `/api/company-intelligence/{symbol}` 中体现公司事件时间线可用性。
+  - 后续增强：公告/财报正文的细粒度事件抽取、管理层变化、诉讼、订单、价格、供需和政策事件仍需继续扩展，并加入人工复核和来源质量评分。
+
+- `DONE` T-442 模拟反馈表现更新入口
+  - 对应：E5-US1, E7-US3；愿景扩展/生产化增强
+  - 背景：T-440 已能生成 paper-only `SimulationFeedback`，但反馈仍停留在静态 pending 状态，不能根据后续行情验证分析结论有效性。
+  - **已完成（本轮）**：新增 `POST /api/simulation-feedback/performance/update`，默认 dry-run，可按反馈 ID、股票代码或主体筛选，用本地最新 `MarketDataPoint` 更新纸面表现。
+  - **已完成（本轮）**：更新字段包括 entry price、最新价、最新行情日期、纸面收益率、持有天数、数据来源和待人工复盘状态；所有结果固定 `paper_only=true`、`live_execution_allowed=false`。
+  - **已完成（本轮）**：无最新行情或无有效 entry price 的反馈会被跳过并返回原因；entry price 为空但有最新行情时只初始化 paper baseline，不创建真实交易。
+  - 验收：单测覆盖 dry-run 不落库、execute 后根据最新行情更新 `SimulationFeedback.performance` 和 `validation`，并保持真实交易禁用边界。
+  - 后续增强：补相对基准收益、最大回撤、事件窗口收益、观点兑现状态和人工复盘评分，再与分析师可靠性模型联动。
+
+## 运维/非本机发布附录 / 当前工程治理待办
+
+项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。
 
 - `DONE` T-424 测试健康与 UI 静态契约收敛
   - 对应：E7-US1, E8-US2, E9-US2；愿景扩展/生产化增强
@@ -129,7 +250,7 @@
   - 对应：E2-US1, E6-US2, E6-US4
   - 已有：`docs/us-compliance-open-questions.md` 覆盖 Reg FD 来源公开性、Nasdaq/NYSE non-display/derived data declaration、投资顾问和外部资管边界、真实券商接口 / best execution / live execution 的非目标说明、衍生品与跨境限制
 
-## P0 当前冲刺 / M6 生产化事实层
+## 历史能力与运维附录 / M6 事实层
 
 - `DONE` T-401 复杂版式 PDF / OCR 与真实证据定位生产化
   - 对应：E3-US3, E4-US1, E4-US2, E4-US3
@@ -266,9 +387,11 @@
 - `TODO` T-406C 瓶颈研究真实样本质量包与可复验基线
   - 对应：E3-US2, E4-US1, E5-US1, E6-US3, E8-US2；愿景扩展/生产化增强
   - 目标：把瓶颈研究从“能生成流水线”推进到“能用真实主题复验质量”。优先选择 5-10 个真实赛道/主题样本，例如核燃料链、AI 数据中心电力、CPO/光模块、药械审批、稀缺材料和消费渠道入口，批量跑完整 7 步流水线并归档质量报告。
-  - 待做：新增 `scripts/local_chokepoint_quality_package.py`，自动创建/运行 chokepoint run，导出样本 manifest、step 输出摘要、来源台账覆盖、事实分层统计、人工复核标注样例和 readiness report。
+  - **已完成（本轮）**：新增 `scripts/local_chokepoint_quality_package.py`，内置 5 个真实主题样本模板，自动创建/运行 chokepoint run，导出 `sample-manifest.json`、`run-results.json`、`manual-review-seed.json`、`quality-summary.json` 和 `quality-package.json` 本地产物；输出固定 `automation_allowed=false` / `live_execution_allowed=false`
+  - **已完成（本轮）**：形成首版本机质量基线口径，汇总 URL 覆盖率、confirmed run rate、unknown run rate、verification task 生成率、fallback 率、边界违规率、平均 URL/confirmed/verification task 数，并保留人工复核关闭率占位
+  - **已完成（本轮）**：质量包脚本支持 `manual_review_input` 导入，接受内联对象、`.json` 或 `.jsonl`；会按 `sample_id` 合并人工复核到 `manual-review-seed.json`，并汇总 `manual_review_close_rate`、`manual_review_sample_coverage_rate`、`manual_review_issue_count`、`manual_review_summary.review_status_counts`、`manual_review_summary.issue_counts`
   - 待做：为每个样本人工标注核心结论的 `confirmed` / `inferred` / `speculative` / `unknown`，记录错分、无 URL、无日期、事实升级、投资建议越界和 LLM fallback 问题。
-  - 待做：形成本机质量基线指标：来源 URL 覆盖率、confirmed 比例、unknown 数量、verification task 生成率、人工 review 关闭率、fallback 率和边界违规率。
+  - 待做：把 `manual-review-seed.json` 从标注骨架推进到真实人工 review 结果，继续沿用当前最窄导入 contract，只做样本级 label 判定与问题标记；同时收敛 `unknown`、verification task 和关闭率口径，形成可复验人工基线。
   - 验收：质量包能在本机一条命令重跑；至少 5 个真实主题样本有完整 run、结论、验证任务和人工标注摘要；所有样本输出保持 `automation_allowed=false` / `live_execution_allowed=false`。
 
 - `TODO` T-406D 瓶颈研究结构化结论、评分模型和证据门禁
@@ -287,7 +410,7 @@
   - 待做：新增 UI “质量门禁 / 证据缺口 / 复盘”面板，展示 verification task 关闭率、已证实/已证伪项、仍待验证项和下一步动作。
   - 验收：关闭验证任务后，run 结论能幂等刷新；被证伪的 thesis 不会继续显示为 ready；复盘档案可展示当时假设、后续证据和模拟反馈，不触发真实交易。
 
-## P1 下一批 / M7 经营驾驶舱和投研闭环
+## 历史能力与兼容附录 / M7 经营驾驶舱和投研闭环
 
 - `BLOCKED` T-407 CEO Dashboard 与 UI 图对齐验收
   - 对应：E6-US5, E7-US1, E7-US2, E7-US3, E8-US2, E9-US1
@@ -375,7 +498,7 @@
   - 待做：真实生产环境参数确认、外部密钥管理系统真实接入、备份恢复演练 artifact、发布 checklist、灰度/回滚演练 artifact URI 归档
   - 验收：上线前检查、备份恢复、容量基线、密钥注入、回滚路径均有记录；`/api/readiness/deployment-report` 无 missing requirements 且不暴露任何真实密钥值
 
-## P2 数据与研究资产扩展 / M8
+## 观点与研究资产附录 / M8
 
 - `BLOCKED` T-414 公开电话会/转录稿和研报线索引用策略
   - 对应：E2-US1, E2-US3, E6-US2
@@ -459,7 +582,7 @@
   - 待做：真实模型调用质量评估、回退策略大样本对照、生产/预发 LLM gateway smoke 与预算同步 artifact URI 归档
   - 验收：生产 prompt 100% 可追溯；未审批 prompt 变更数 = 0；高风险结论 challenger 覆盖率 = 100%
 
-## P2/P3 生产基础设施与治理 / M9
+## 运维/非本机发布附录 / M9 生产基础设施与治理
 
 - `BLOCKED` T-419 图谱 / 向量 / 语义检索生产化
   - 对应：E3-US2, E3-US4, E8-US2；愿景扩展/生产化增强
@@ -511,7 +634,7 @@
   - 待做：非本机生产/预发外部密钥管理系统真实接入、外部 API key 最小权限策略和对象存储/搜索索引外部删除 executor 真实执行证据 URI 归档
   - 验收：红区数据自动入库训练数 = 0；关键动作审计字段覆盖率 100%；越权访问可拦截并留痕；`/api/governance/security-readiness-report` 无 missing requirements
 
-## 愿景验收闸门 / M10
+## 运维/非本机发布附录 / M10 愿景验收闸门
 
 - `DONE` T-422 本机 staging 真实验收与上线闸门
   - 对应：E1-US3, E2-US1, E3-US3, E4-US3, E6-US4, E7-US1, E8-US1, E8-US2, E9-US2；愿景扩展/生产化增强

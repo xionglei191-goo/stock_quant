@@ -490,7 +490,7 @@ def main() -> None:
     parser.add_argument("--max-tickers", type=int, default=0)
     parser.add_argument("--start-date", default="2025-01-01")
     parser.add_argument("--end-date", default=date.today().isoformat())
-    parser.add_argument("--user-agent", default="ai-native-quant-org/0.1 contact@example.com")
+    parser.add_argument("--user-agent", default="company-intelligence-platform/0.1 contact@example.com")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--output", default="")
     args = parser.parse_args()

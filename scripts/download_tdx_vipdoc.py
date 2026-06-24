@@ -19,7 +19,7 @@ def download_tdx_vipdoc_archive(
     *,
     expected_sha256: str = "",
     extract: bool = True,
-    user_agent: str = "ai-native-quant-org/0.1",
+    user_agent: str = "company-intelligence-platform/0.1",
     max_bytes: int = 2_000_000_000,
 ) -> dict[str, Any]:
     source_url = str(source_url).strip()
@@ -113,7 +113,7 @@ def main() -> None:
     parser.add_argument("--target-dir", default="data/local/tdx/vipdoc_downloads")
     parser.add_argument("--expected-sha256", default="")
     parser.add_argument("--no-extract", action="store_true")
-    parser.add_argument("--user-agent", default="ai-native-quant-org/0.1")
+    parser.add_argument("--user-agent", default="company-intelligence-platform/0.1")
     parser.add_argument("--max-bytes", type=int, default=2_000_000_000)
     args = parser.parse_args()
     result = download_tdx_vipdoc_archive(
