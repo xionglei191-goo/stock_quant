@@ -20963,6 +20963,7 @@ class SystemService:
         relationship_limit = self._bounded_limit(payload.get("relationship_limit", 100), 5000)
         include_listings = self._truthy(payload.get("include_listings", True))
         include_institution_coverage = self._truthy(payload.get("include_institution_coverage", True))
+        include_disclosure_candidates = self._truthy(payload.get("include_disclosure_candidates", True))
         issuers = self._company_database_target_issuers(payload, limit=limit)
         planned_relationships: list[CompanyRelationship] = []
         rows: list[dict[str, Any]] = []
@@ -21042,6 +21043,14 @@ class SystemService:
                     )
                     if len(relationships) >= relationship_limit:
                         break
+            if include_disclosure_candidates and len(relationships) < relationship_limit:
+                relationships.extend(
+                    self._company_relationship_candidates_from_disclosures(
+                        issuer,
+                        securities,
+                        limit=max(0, relationship_limit - len(relationships)),
+                    )
+                )
             relationships = relationships[:relationship_limit]
             if execute:
                 for relationship in relationships:
@@ -21054,6 +21063,7 @@ class SystemService:
                     "planned_or_created_relationships": len(relationships),
                     "listing_relationship_count": sum(1 for relationship in relationships if relationship.relationship_type == "listed_security"),
                     "institution_coverage_relationship_count": sum(1 for relationship in relationships if relationship.relationship_type == "institution_coverage"),
+                    "disclosure_candidate_relationship_count": sum(1 for relationship in relationships if str(relationship.relationship_type).endswith("_candidate")),
                     "sample_relationship_ids": [relationship.relationship_id for relationship in relationships[:5]],
                 }
             )
@@ -21078,9 +21088,117 @@ class SystemService:
             "relationships_created": len(planned_relationships) if execute else 0,
             "include_listings": include_listings,
             "include_institution_coverage": include_institution_coverage,
+            "include_disclosure_candidates": include_disclosure_candidates,
             "companies": rows,
-            "usage_boundary": "company_relationships_from_listings_and_research_coverage_only_no_live_trading",
+            "usage_boundary": "company_relationships_from_listings_research_coverage_and_public_disclosure_candidates_only_no_live_trading",
         }
+
+    def _company_relationship_candidates_from_disclosures(
+        self,
+        issuer: Issuer,
+        securities: list[Security],
+        *,
+        limit: int,
+    ) -> list[CompanyRelationship]:
+        if limit <= 0:
+            return []
+        security_ids = {security.security_id for security in securities}
+        disclosure_rows = [
+            event
+            for event in self.store.disclosure_events.values()
+            if event.issuer_id == issuer.issuer_id or event.security_id in security_ids
+        ]
+        disclosure_rows.sort(key=lambda item: (str(to_plain(item.occurred_at)), item.event_id), reverse=True)
+        candidates: list[CompanyRelationship] = []
+        seen_keys: set[tuple[str, str]] = set()
+        for disclosure in disclosure_rows:
+            document = self.store.documents.get(disclosure.document_id) if disclosure.document_id else None
+            text_parts = [disclosure.summary, disclosure.item_title]
+            evidence_ids = list(disclosure.evidence_ids)
+            for evidence_id in disclosure.evidence_ids:
+                evidence = self.store.evidence.get(evidence_id)
+                if evidence is not None:
+                    text_parts.append(evidence.span_text)
+                    text_parts.append(evidence.canonical_text)
+            if document is not None:
+                if document.document_type == "research_report" or "research" in document.source_id.lower():
+                    continue
+                text_parts.append(document.title)
+                text_parts.append(document.body[:4000])
+            text = "\n".join(str(part) for part in text_parts if str(part).strip())
+            for relationship_type, entity_name, rule_name in self._extract_relationship_mentions(text):
+                key = (relationship_type, entity_name.lower())
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                entity_part = self._company_database_id_part(entity_name)
+                relationship_id = f"rel_disclosure_{self._company_database_id_part(issuer.issuer_id)}_{relationship_type}_{entity_part}"
+                if relationship_id in self.store.company_relationships:
+                    continue
+                source_ids = [disclosure.source_id] if disclosure.source_id else []
+                if document is not None and document.source_id and document.source_id not in source_ids:
+                    source_ids.append(document.source_id)
+                candidates.append(
+                    CompanyRelationship(
+                        relationship_id=relationship_id,
+                        issuer_id=issuer.issuer_id,
+                        security_id=disclosure.security_id,
+                        subject_type="company",
+                        subject_id=issuer.issuer_id,
+                        object_type="company",
+                        object_id=f"external_company_{entity_part}",
+                        relationship_type=relationship_type,
+                        direction="directed",
+                        weight=0.5,
+                        source_ids=source_ids,
+                        document_ids=[disclosure.document_id] if disclosure.document_id else [],
+                        evidence_ids=evidence_ids[:10],
+                        confidence=0.55,
+                        relationship_status="unknown",
+                        review_status="needs_review",
+                        metadata={
+                            "entity_name": entity_name,
+                            "disclosure_event_id": disclosure.event_id,
+                            "source_layer": "official_disclosure_candidate",
+                            "candidate_status": "candidate",
+                            "extraction_rule": rule_name,
+                            "rights_boundary": "public_disclosure_candidate_needs_review",
+                        },
+                    )
+                )
+                if len(candidates) >= limit:
+                    return candidates
+        return candidates
+
+    def _extract_relationship_mentions(self, text: str) -> list[tuple[str, str, str]]:
+        patterns: list[tuple[str, str, str]] = [
+            ("customer_candidate", r"\bcustomer\s+(?:named\s+|including\s+|is\s+)?([A-Z][A-Za-z0-9&.,'()\- ]{2,80}?)(?:,|;|\.|\sand\s|$)", "en_customer"),
+            ("supplier_candidate", r"\bsupplier\s+(?:named\s+|including\s+|is\s+)?([A-Z][A-Za-z0-9&.,'()\- ]{2,80}?)(?:,|;|\.|\sand\s|$)", "en_supplier"),
+            ("partner_candidate", r"\bpartner(?:ship)?(?:\s+with)?\s+([A-Z][A-Za-z0-9&.,'()\- ]{2,80}?)(?:,|;|\.|\sand\s|$)", "en_partner"),
+            ("subsidiary_candidate", r"\bsubsidiary\s+([A-Z][A-Za-z0-9&.,'()\- ]{2,80}?)(?:,|;|\.|\sand\s|$)", "en_subsidiary"),
+            ("customer_candidate", r"(?:客户|主要客户)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_customer"),
+            ("supplier_candidate", r"(?:供应商|主要供应商)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_supplier"),
+            ("partner_candidate", r"(?:合作方|合作伙伴)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_partner"),
+            ("subsidiary_candidate", r"(?:子公司)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_subsidiary"),
+        ]
+        mentions: list[tuple[str, str, str]] = []
+        for relationship_type, pattern, rule_name in patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                entity_name = self._normalize_relationship_entity_name(match.group(1))
+                if not entity_name:
+                    continue
+                mentions.append((relationship_type, entity_name, rule_name))
+        return mentions
+
+    def _normalize_relationship_entity_name(self, value: str) -> str:
+        cleaned = re.sub(r"\s+", " ", str(value)).strip(" \t\r\n,.;:：，。；、()（）")
+        cleaned = re.sub(r"\b(the|a|an|our|its|their|major|key)\b\s+", "", cleaned, flags=re.IGNORECASE).strip()
+        if len(cleaned) < 2 or len(cleaned) > 80:
+            return ""
+        blocked = {"customer", "supplier", "partner", "subsidiary", "company", "group", "客户", "供应商", "合作伙伴", "子公司"}
+        if cleaned.lower() in blocked:
+            return ""
+        return cleaned
 
     def build_company_workflow(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}

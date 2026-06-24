@@ -143,6 +143,16 @@
   - 验收：单测覆盖 dry-run 不落库、execute 后根据最新行情更新 `SimulationFeedback.performance` 和 `validation`，并保持真实交易禁用边界。
   - 后续增强：补相对基准收益、最大回撤、事件窗口收益、观点兑现状态和人工复盘评分，再与分析师可靠性模型联动。
 
+- `DONE` T-443 公开披露关系候选抽取入口
+  - 对应：E3-US1, E5-US1, E7-US3；愿景扩展/生产化增强
+  - 背景：T-439 已补上市证券关系和研报机构覆盖关系，但客户、供应商、合作方、子公司等公司关系仍未从公开披露/证据文本进入关系层。
+  - **已完成（本轮）**：`POST /api/company-database/relationships/build` 新增 `include_disclosure_candidates`，默认从已有 `DisclosureEvent`、`Evidence` 和非研报 `Document` 文本中抽取关系候选。
+  - **已完成（本轮）**：当前支持 `customer_candidate`、`supplier_candidate`、`partner_candidate`、`subsidiary_candidate`；候选关系保留 `disclosure_event_id`、`document_ids`、`evidence_ids`、`source_ids` 和抽取规则。
+  - **已完成（本轮）**：所有公开披露抽取关系默认 `relationship_status=unknown`、`review_status=needs_review`、`metadata.candidate_status=candidate`、`confidence=0.55`，不会直接升级为高置信事实。
+  - **已完成（本轮）**：关系 builder 仍保持研报机构覆盖只是观点/关注度关系，不从研报观点推断客户、供应商或竞争关系。
+  - 验收：单测覆盖 dry-run 不落库、execute 后同时生成上市证券关系、研报机构覆盖关系、客户候选关系和供应商候选关系，并在 `/api/company-intelligence/{symbol}` 中体现关系图谱可用性。
+  - 后续增强：补更强的中文/英文实体抽取、同义归并、主体映射、人工审核工作流和来源质量评分，再将复核通过的候选关系提升为事实关系。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

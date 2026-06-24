@@ -24,7 +24,7 @@ from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, DecisionPack, DisclosureEvent, ResearchReportAsset, RightsTag, SystemAlert
+from app.models import AlertNotification, DecisionPack, DisclosureEvent, Evidence, ResearchReportAsset, RightsTag, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
 from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
@@ -832,6 +832,31 @@ class SystemServiceTests(unittest.TestCase):
             security_id="sec_001",
             status="text_indexed",
         )
+        self.service.store.evidence["ev_relationship_demo"] = Evidence(
+            evidence_id="ev_relationship_demo",
+            document_id="doc_relationship_demo",
+            section="official_disclosure",
+            page_no=1,
+            bbox="p1",
+            span_text="The company reported customer Mega Cloud and supplier Wafer Co.",
+            canonical_text="customer Mega Cloud and supplier Wafer Co.",
+            confidence=0.91,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+        self.service.store.disclosure_events["de_relationship_demo"] = DisclosureEvent(
+            event_id="de_relationship_demo",
+            document_id="doc_relationship_demo",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            event_type="annual_report",
+            item_code="10-K",
+            item_title="Annual report relationship disclosure",
+            severity="medium",
+            summary="The company reported customer Mega Cloud and supplier Wafer Co.",
+            evidence_ids=["ev_relationship_demo"],
+            source_id="src_sec",
+        )
 
         dry_run = self.router.dispatch(
             "POST",
@@ -842,7 +867,7 @@ class SystemServiceTests(unittest.TestCase):
         )
         self.assertTrue(dry_run.success, dry_run.error)
         self.assertEqual(dry_run.data["status"], "dry_run")
-        self.assertEqual(dry_run.data["relationships_planned"], 2)
+        self.assertEqual(dry_run.data["relationships_planned"], 4)
         self.assertFalse(self.service.store.company_relationships)
 
         executed = self.router.dispatch(
@@ -853,17 +878,24 @@ class SystemServiceTests(unittest.TestCase):
             role="data_engineer",
         )
         self.assertTrue(executed.success, executed.error)
-        self.assertEqual(executed.data["relationships_created"], 2)
+        self.assertEqual(executed.data["relationships_created"], 4)
         relationship_types = {relationship.relationship_type for relationship in self.service.store.company_relationships.values()}
-        self.assertEqual(relationship_types, {"listed_security", "institution_coverage"})
+        self.assertEqual(relationship_types, {"listed_security", "institution_coverage", "customer_candidate", "supplier_candidate"})
         coverage = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "institution_coverage")
         self.assertEqual(coverage.object_type, "institution")
         self.assertEqual(coverage.review_status, "needs_review")
         self.assertEqual(coverage.metadata["rights_boundary"], "opinion_coverage_relationship_not_company_fact")
+        customer = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "customer_candidate")
+        supplier = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "supplier_candidate")
+        self.assertEqual(customer.metadata["entity_name"], "Mega Cloud")
+        self.assertEqual(supplier.metadata["entity_name"], "Wafer Co")
+        self.assertEqual(customer.review_status, "needs_review")
+        self.assertEqual(customer.metadata["source_layer"], "official_disclosure_candidate")
+        self.assertEqual(customer.evidence_ids, ["ev_relationship_demo"])
 
         aggregated = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
         self.assertTrue(aggregated.success, aggregated.error)
-        self.assertEqual(aggregated.data["section_counts"]["company_relationships"], 2)
+        self.assertEqual(aggregated.data["section_counts"]["company_relationships"], 4)
         self.assertTrue(aggregated.data["data_quality"]["relationship_graph_available"])
 
     def test_company_workflow_builder_creates_observation_conclusion_and_paper_feedback(self) -> None:

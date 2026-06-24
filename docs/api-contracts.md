@@ -2283,7 +2283,7 @@
 | `/api/company-profiles/schema` | `GET` | 返回公司画像核心字段、来源优先级和质量指标 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/events/build` | `POST` | 从已入库公开披露、公开行情和研报覆盖生成最小公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
-| `/api/company-database/relationships/build` | `POST` | 从证券上市关系和研报覆盖记录生成最小公司关系层；研报覆盖关系固定为观点/关注度关系，不代表客户供应商事实 |
+| `/api/company-database/relationships/build` | `POST` | 从证券上市关系、研报覆盖记录和公开披露文本生成最小公司关系层；研报覆盖关系固定为观点/关注度关系，公开披露抽取关系默认待复核 |
 | `/api/company-database/workflow/build` | `POST` | 从事件、关系和研报观点生成观察任务、公司情报基线结论和 paper-only 模拟反馈；默认 dry-run |
 | `/api/company-events` | `GET` / `POST` | 查询或登记 `CompanyEvent`，覆盖公告、财报、新闻、政策、订单、诉讼、价格、供需等事件 |
 | `/api/company-relationships` | `GET` / `POST` | 查询或登记 `CompanyRelationship`，覆盖客户、供应商、竞争、股权、机构覆盖、分析师覆盖和上下游 |
@@ -2352,7 +2352,7 @@
 
 #### `POST /api/company-database/relationships/build`
 
-为已有公司数据库构建最小关系层。该接口只使用本地已有主体、证券和已绑定研报资产，不下载外部资料。当前关系来源包括公司到上市证券的 `listed_security` 关系，以及公司到研报机构的 `institution_coverage` 关系；研报机构覆盖关系表示“该机构覆盖/发布过该公司相关研报”，不代表客户、供应商、竞争或投资建议事实。
+为已有公司数据库构建最小关系层。该接口只使用本地已有主体、证券、已绑定研报资产和公开披露证据，不下载外部资料。当前关系来源包括公司到上市证券的 `listed_security` 关系、公司到研报机构的 `institution_coverage` 关系，以及从公开披露/证据文本中抽取的 `customer_candidate`、`supplier_candidate`、`partner_candidate`、`subsidiary_candidate` 候选关系。研报机构覆盖关系表示“该机构覆盖/发布过该公司相关研报”，不代表客户、供应商、竞争或投资建议事实；公开披露候选关系默认仍需人工复核。
 
 请求字段：
 
@@ -2362,6 +2362,7 @@
 - `relationship_limit`：每家公司关系数量上限，默认 100。
 - `include_listings`：默认 `true`，生成公司到证券的上市关系。
 - `include_institution_coverage`：默认 `true`，生成公司到研报机构的覆盖关系。
+- `include_disclosure_candidates`：默认 `true`，从已有 `DisclosureEvent`、`Evidence` 和非研报 `Document` 文本中抽取候选关系。
 - `execute`：默认 `false`；为 `true` 时才写入 `CompanyRelationship`。
 - `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划，不落库。
 
@@ -2369,9 +2370,9 @@
 
 - `status`：`dry_run` 或 `executed`。
 - `relationships_planned` / `relationships_created`：计划或实际创建关系数。
-- `companies`：每家公司关系数量、上市关系数、机构覆盖关系数和样本关系 ID。
+- `companies`：每家公司关系数量、上市关系数、机构覆盖关系数、公开披露候选关系数和样本关系 ID。
 
-客户、供应商、竞争、股权、上下游和人员关系应在后续通过事实证据或人工复核进入该层，不能从研报观点直接推断为事实。
+公开披露候选关系使用 `review_status=needs_review`、`relationship_status=unknown`，并在 metadata 中记录 `candidate_status=candidate`，同时保留 `disclosure_event_id`、`document_ids`、`evidence_ids` 和 `source_ids`。客户、供应商、竞争、股权、上下游和人员关系后续仍需人工复核、来源质量评分和更细粒度抽取，不能从研报观点直接推断为事实。
 
 #### `POST /api/company-database/workflow/build`
 
