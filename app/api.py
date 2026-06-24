@@ -638,6 +638,8 @@ class ApiRouter:
             ("GET", r"^/api/company-profiles/schema$", self._company_profile_schema),
             ("POST", r"^/api/company-database/build$", self._build_company_database),
             ("POST", r"^/api/company-database/batch/build$", self._build_company_database_batch),
+            ("GET", r"^/api/company-database/batch/runs$", self._company_database_build_runs),
+            ("POST", r"^/api/company-database/batch/runs$", self._company_database_build_runs),
             ("GET", r"^/api/company-database/coverage/audit$", self._company_database_coverage_audit),
             ("POST", r"^/api/company-database/coverage/audit$", self._company_database_coverage_audit),
             ("POST", r"^/api/company-database/events/build$", self._build_company_events),
@@ -1853,6 +1855,9 @@ class ApiRouter:
 
     def _build_company_database_batch(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.build_company_database_batch(body, actor=actor)
+
+    def _company_database_build_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_database_build_runs_payload(body)
 
     def _company_database_coverage_audit(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_database_coverage_audit(body, actor=actor)

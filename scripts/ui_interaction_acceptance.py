@@ -283,6 +283,13 @@ def run_ui_interaction_acceptance(
             ),
             _run_check(
                 client,
+                "company_intelligence_empty_state_guidance",
+                "document.querySelector('[data-open=\"search\"]').click(); document.querySelector('#companyIntelSymbol').value = 'ZZZNOLOCAL'; document.querySelector('#loadCompanyIntelligence').click(); true",
+                "document.querySelector('#companyIntelGuidanceStatus').textContent.includes('未建档') && document.querySelector('#companyIntelMissingRows').textContent.includes('公司画像') && document.querySelector('#companyIntelNextActionRows').textContent.includes('建立最小公司情报档案') && document.querySelector('#companyIntelNextActionRows [data-action=\"company-intel-guidance\"]') !== null",
+                wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
                 "company_report_structure_preview_dry_run",
                 "document.querySelector('[data-open=\"search\"]').click(); document.querySelector('#companyIntelReportLimit').value = '2'; document.querySelector('#companyIntelReportQuery').value = 'SPCX'; document.querySelector('#previewCompanyReportStructure').click(); true",
                 "document.querySelector('#companyIntelReportStructureStatus').textContent.includes('预览') && document.querySelector('#companyIntelReportStructureBox').textContent.includes('dry_run') && document.querySelector('#companyIntelReportStructureBox').textContent.includes('research_reports_are_viewpoint_signal')",

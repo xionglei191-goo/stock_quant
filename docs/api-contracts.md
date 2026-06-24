@@ -2283,8 +2283,9 @@
 | `/api/company-profiles/schema` | `GET` | 返回公司画像核心字段、来源优先级和质量指标 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
+| `/api/company-database/batch/runs` | `GET` / `POST` | 查询公司数据库批量补齐运行历史，用于审计、复盘和后续断点续跑 |
 | `/api/company-database/coverage/audit` | `GET` / `POST` | 按公司审计画像、证券、行情、财务、文档、事件、关系、研报、观察结论和模拟反馈覆盖情况 |
-| `/api/company-database/events/build` | `POST` | 从已入库公开披露、公开行情和研报覆盖生成最小公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
+| `/api/company-database/events/build` | `POST` | 从已入库公开披露、披露正文证据、公开行情和研报覆盖生成公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
 | `/api/company-database/relationships/build` | `POST` | 从证券上市关系、研报覆盖记录和公开披露文本生成最小公司关系层；研报覆盖关系固定为观点/关注度关系，公开披露抽取关系默认待复核 |
 | `/api/company-database/workflow/build` | `POST` | 从事件、关系和研报观点生成观察任务、公司情报基线结论和 paper-only 模拟反馈；默认 dry-run |
 | `/api/company-events` | `GET` / `POST` | 查询或登记 `CompanyEvent`，覆盖公告、财报、新闻、政策、订单、诉讼、价格、供需等事件 |
@@ -2344,6 +2345,10 @@
 - `structure_reports`：默认 `false`；为 `true` 时调用研报结构化。
 - `structure_report_limit`：每批结构化研报数量上限，默认 20。
 - `build_events` / `build_relationships` / `build_workflow`：默认 `true`，分别构建事件、关系和观察反馈闭环。
+- `include_market_data` / `include_research_coverage` / `include_disclosures` / `include_structured_disclosures`：默认 `true`，透传给事件构建器。
+- `include_listings` / `include_institution_coverage` / `include_disclosure_candidates`：默认 `true`，透传给关系构建器。
+- `record_run`：默认随 `execute` 为 `true`；dry-run 需要显式传 `record_run=true` 才持久化运行记录。
+- `run_id`：可选；调用方指定运行记录 ID，否则系统生成 `cdb_run_*`。
 - `execute`：默认 `false`；为 `true` 时才落库。
 - `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划。
 
@@ -2352,10 +2357,27 @@
 - `status`：`dry_run` 或 `executed`。
 - `issuer_count` / `batch_count` / `batch_size`：目标公司和批次数。
 - `totals`：画像、研报绑定、事件、关系、观察、结论和反馈的计划/创建汇总。
-- `coverage_after`：同一目标范围的覆盖率审计结果。
+- `coverage_before` / `coverage_after`：同一目标范围补库前后的覆盖率审计结果。
+- `run_id` / `run_recorded` / `run`：运行 ID、是否已持久化和运行记录快照。
 - `batches`：每批的 `database_result`、`events_result`、`relationships_result` 和 `workflow_result`。
 
-该接口是本机补库编排入口；未来可在此基础上增加 run_id、断点续跑、失败重试和 artifact 输出。
+运行记录写入 `CompanyDatabaseBuildRun`，包含 actor、状态、目标公司、目标代码、批次数、构建选项、totals、覆盖率前后、批次明细和 `usage_boundary=company_database_build_run_is_local_research_operations_history_no_live_trading`。该接口是本机补库编排入口；未来可在此基础上增加断点续跑、失败重试和 artifact 输出。
+
+#### `GET|POST /api/company-database/batch/runs`
+
+查询公司数据库批量补齐运行历史。该接口只读本地 `CompanyDatabaseBuildRun` 记录，不触发补库、不下载外部资料、不连接真实券商。
+
+请求字段：
+
+- `issuer_id`：可选；只返回包含该公司主体的运行。
+- `status`：可选；`dry_run`、`executed` 或 `failed`。
+- `limit`：返回数量上限，默认 20，最大 200。
+
+返回字段：
+
+- `count`：过滤后的运行记录总数。
+- `runs`：按 `completed_at` 倒序排列的运行记录。
+- `usage_boundary`：固定为本地操作历史，不是交易或生产发布证据。
 
 #### `GET|POST /api/company-database/coverage/audit`
 
@@ -2379,7 +2401,7 @@
 
 #### `POST /api/company-database/events/build`
 
-为已有公司数据库构建最小事件时间线。该接口只使用本地已有数据，不下载外部资料。当前事件来源包括已入库公开披露/filing 事件、公开/已提供行情快照和已绑定本地研报覆盖记录；研报覆盖事件表示“该公司进入研报视野”这一关注度事实，事件 `fact_status=opinion_signal`，不得把研报观点升级为公司事实。
+为已有公司数据库构建事件时间线。该接口只使用本地已有数据，不下载外部资料。当前事件来源包括已入库公开披露/filing 事件、披露摘要/证据/非研报文档正文、公开/已提供行情快照和已绑定本地研报覆盖记录；研报覆盖事件表示“该公司进入研报视野”这一关注度事实，事件 `fact_status=opinion_signal`，不得把研报观点升级为公司事实。
 
 请求字段：
 
@@ -2390,6 +2412,7 @@
 - `include_market_data`：默认 `true`，生成最新公开行情事件。
 - `include_research_coverage`：默认 `true`，生成已绑定研报覆盖事件。
 - `include_disclosures`：默认 `true`，从已有 `DisclosureEvent` 生成官方披露事件，`fact_status=verified`。
+- `include_structured_disclosures`：默认 `true`，从官方披露摘要、`DisclosureEvent.evidence_ids` 对应 evidence 文本和非研报 `Document.body` 中抽取细粒度事件候选。当前支持 `earnings_result`、`management_change`、`litigation_regulatory`、`major_order_contract`、`capacity_supply_demand`、`policy_impact`。这些事件保留官方披露/证据回链，`fact_status=verified`，但分类本身为 `review_status=needs_review`。
 - `execute`：默认 `false`；为 `true` 时才写入 `CompanyEvent`。
 - `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划，不落库。
 
@@ -2397,9 +2420,10 @@
 
 - `status`：`dry_run` 或 `executed`。
 - `events_planned` / `events_created`：计划或实际创建事件数。
-- `companies`：每家公司事件数量、市场事件数、官方披露事件数、研报覆盖事件数和样本事件 ID。
+- `include_structured_disclosures`：本次是否启用官方披露正文细粒度分类。
+- `companies`：每家公司事件数量、市场事件数、官方披露事件数、研报覆盖事件数、结构化披露事件数和样本事件 ID。
 
-后续公告、财报、新闻、政策、订单、诉讼和管理层变化应继续通过该事件层扩展，并要求证据回链。
+结构化披露事件的 `metadata.source_layer=official_disclosure_text_classification`，会记录 `classification_rule`、`matched_terms`、`classification_status=candidate_needs_review` 和 `rights_boundary=official_disclosure_fact_with_classification_review`。后续新闻、官网、行业政策网页和更强实体抽取仍应通过该事件层扩展，并要求来源治理、证据回链和人工复核。
 
 #### `POST /api/company-database/relationships/build`
 

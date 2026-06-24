@@ -195,6 +195,36 @@
   - 验收：静态 UI 检查和浏览器验收脚本覆盖新增可见入口；执行路径仍只调用本地公司数据库与观点复盘 API，不连接真实券商。
   - 后续增强：补批量审核队列、候选关系筛选、补库 run_id 历史和覆盖率趋势图。
 
+- `DONE` T-449 公司事件细粒度抽取与事件分类补强
+  - 对应：E3-US1, E5-US1, E7-US3；愿景扩展/生产化增强
+  - 背景：T-438/T-441 已能把行情、研报覆盖和官方披露物化为公司事件，但事件层仍偏粗，无法支撑用户想要的“公司全天候情报数据库”里的财报、管理层、诉讼监管、订单合同、产能供需和政策影响等结构化事件。
+  - **已完成（本轮）**：`POST /api/company-database/events/build` 新增默认开启的 `include_structured_disclosures`，从官方披露摘要、披露 evidence 文本和非研报 `Document.body` 抽取细粒度 `CompanyEvent`。
+  - **已完成（本轮）**：当前支持 `earnings_result`、`management_change`、`litigation_regulatory`、`major_order_contract`、`capacity_supply_demand`、`policy_impact` 六类事件。
+  - **已完成（本轮）**：结构化披露事件保留 `document_ids`、`evidence_ids`、`source_ids`、`disclosure_event_id`、`matched_terms` 和 `classification_rule`；事实来源为官方披露，`fact_status=verified`，但分类结果默认 `review_status=needs_review`。
+  - **已完成（本轮）**：研报仍只生成 `research_coverage` 关注度事件，`fact_status=opinion_signal`，不会被结构化为公司事实事件。
+  - 验收：单测覆盖 dry-run 不落库、execute 后从同一官方披露生成官方披露粗事件和六类细分事件，且所有细分事件保留证据回链和分类待复核边界。
+  - 后续增强：补新闻/政策网页采集、实体归并、事件去重、来源质量评分和 UI 事件筛选。
+
+- `DONE` T-450 公司情报空状态缺口诊断与一键下一步
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：后端公司情报聚合在未知标的会返回 `not_found` 和 `next_actions`，但 UI 仍容易表现为空表和 raw JSON，用户难以判断是系统没运行、标的未建档还是数据层缺失。
+  - **已完成（本轮）**：公司情报总览新增“缺口诊断”系统条、缺失层表和下一步动作表，直接展示 `data_quality.missing_sections` 和 `next_actions`。
+  - **已完成（本轮）**：下一步动作支持从诊断表触发单标的研究建档、研报结构化预览或覆盖审计；未知 ticker 会显示“未建档”和“建立最小公司情报档案”入口。
+  - **已完成（本轮）**：补库/审计 payload 不再优先使用全局图谱里的旧 `activeEntityIssuerId`，只使用当前公司情报结果匹配到的 issuer；未知 ticker 会按 ticker 发送，避免误操作上一家公司。
+  - **已完成（本轮）**：`scripts/ui_static_check.py` 和 `scripts/ui_interaction_acceptance.py` 覆盖新增 DOM、JS 函数和未知 ticker 空状态验收。
+  - 验收：UI 静态检查通过；浏览器验收覆盖未知 ticker 时出现缺口诊断、公司画像缺失和可点击下一步。
+  - 后续增强：把覆盖审计、补库预览和研报兑现结果从 raw JSON 进一步拆成差异摘要和运行历史。
+
+- `DONE` T-451 公司数据库批量补齐运行历史
+  - 对应：E3-US4, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-446 已能批量编排公司画像、事件、关系和 workflow 构建，但运行只存在于一次 API 响应里，缺少可审计、可复盘、可继续增强为断点续跑的运行记录。
+  - **已完成（本轮）**：新增一等 `CompanyDatabaseBuildRun` 数据结构，并接入 SQLite/PostgreSQL 通用 JSON records 存储。
+  - **已完成（本轮）**：`POST /api/company-database/batch/build` 返回并可持久化 `run_id`、目标公司、目标代码、批次、选项、totals、覆盖率前后和批次明细；execute 默认记录，dry-run 需显式 `record_run=true`。
+  - **已完成（本轮）**：新增 `GET|POST /api/company-database/batch/runs`，可按 issuer/status 查询补库运行历史。
+  - **已完成（本轮）**：批量构建现在透传 `include_structured_disclosures`、`include_disclosure_candidates` 等事件/关系构建开关，保证 T-449/T-443 能从批量补库入口生效。
+  - 验收：单测覆盖 execute 自动记录 run、按 issuer 查询运行历史、dry-run 默认不记录但 `record_run=true` 可显式记录。
+  - 后续增强：补断点续跑、失败重试、UI 运行历史表、覆盖率趋势和 artifact 输出。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

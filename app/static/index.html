@@ -1488,6 +1488,13 @@
               <div class="system-box"><strong>研究结果</strong><span id="companyIntelResearchCount">0</span></div>
               <div class="system-box"><strong>模拟反馈</strong><span id="companyIntelSimulationCount">0</span></div>
             </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>缺口诊断</strong><span id="companyIntelGuidanceStatus">待载入</span></div>
+              <div class="system-box"><strong>缺失层数</strong><span id="companyIntelMissingCount">0</span></div>
+              <div class="system-box"><strong>可执行下一步</strong><span id="companyIntelNextActionCount">0</span></div>
+            </div>
+            <table><thead><tr><th>缺失层</th><th>影响</th><th>建议动作</th></tr></thead><tbody id="companyIntelMissingRows"></tbody></table>
+            <table><thead><tr><th>动作</th><th>原因</th><th>入口</th></tr></thead><tbody id="companyIntelNextActionRows"></tbody></table>
           </div>
           <div class="panel span-6">
             <h2>公司画像与事实</h2>
@@ -4734,10 +4741,104 @@
       }
     }
 
+    function companyIntelCurrentSymbol() {
+      return formValue("companyIntelSymbol", "SPCX").trim();
+    }
+
+    function latestCompanyIntelMatchesSymbol(symbol) {
+      if (!latestCompanyIntelligence) return false;
+      const current = String(symbol || "").trim().toUpperCase();
+      const returned = String(latestCompanyIntelligence.symbol || "").trim().toUpperCase();
+      const input = String(latestCompanyIntelligence.input_symbol || "").trim().toUpperCase();
+      return Boolean(current && (current === returned || current === input));
+    }
+
+    function currentCompanyIntelIssuerId() {
+      const symbol = companyIntelCurrentSymbol();
+      if (!latestCompanyIntelMatchesSymbol(symbol)) return "";
+      const profile = latestCompanyIntelligence?.company_profile || {};
+      return profile.issuer?.issuer_id || latestCompanyIntelligence?.resolution?.issuer_ids?.[0] || "";
+    }
+
+    function companyIntelSectionLabel(section) {
+      const labels = {
+        company_profile: "公司画像",
+        market_data: "行情数据",
+        events: "事件时间线",
+        relationships: "关系图谱",
+        research_results: "研究结果",
+        simulation_feedback: "模拟反馈"
+      };
+      return labels[section] || statusLabel(section || "");
+    }
+
+    function companyIntelSectionImpact(section) {
+      const impacts = {
+        company_profile: "无法确认主体、证券和基础档案",
+        market_data: "无法计算后续表现和模拟反馈",
+        events: "缺少可复盘的事实时间线",
+        relationships: "无法观察客户、供应商、机构覆盖和上下游关系",
+        research_results: "缺少研报观点、研究答案或分析结论",
+        simulation_feedback: "无法验证分析结论是否有效"
+      };
+      return impacts[section] || "该层数据不足";
+    }
+
+    function companyIntelSectionAction(section) {
+      const actions = {
+        company_profile: "运行单标的研究或手工登记主体",
+        market_data: "执行行情补齐或导入公开 EOD 数据",
+        events: "执行公司数据库补齐并生成事件",
+        relationships: "执行关系构建并审核候选",
+        research_results: "结构化研报或运行原文问答",
+        simulation_feedback: "生成分析结论后记录 paper-only 反馈"
+      };
+      return actions[section] || "查看覆盖审计后补齐";
+    }
+
+    function companyIntelGuidanceButton(action, label) {
+      return `<button data-action="company-intel-guidance" data-guidance-action="${action}">${label}</button>`;
+    }
+
+    function renderCompanyIntelGuidance(data) {
+      const quality = data.data_quality || {};
+      const missing = quality.missing_sections || [];
+      const nextActions = data.next_actions || [];
+      const status = data.status === "not_found"
+        ? "未建档"
+        : missing.length
+          ? `缺 ${missing.length} 层`
+          : "主要层可用";
+      $("companyIntelGuidanceStatus").textContent = status;
+      $("companyIntelMissingCount").textContent = `${missing.length}`;
+      $("companyIntelNextActionCount").textContent = `${nextActions.length}`;
+      $("companyIntelMissingRows").innerHTML = rows(missing, "暂无缺失层。", (section) => `<tr><td>${companyIntelSectionLabel(section)}</td><td>${companyIntelSectionImpact(section)}</td><td>${companyIntelSectionAction(section)}</td></tr>`);
+      $("companyIntelNextActionRows").innerHTML = rows(nextActions, "暂无下一步动作。", (item) => {
+        const action = item.action || "coverage_audit";
+        const primaryAction = action === "run_single_name_research" || action === "record_simulation_feedback" ? "run_single_name_research" : action === "collect_research_views" ? "preview_research_structure" : "coverage_audit";
+        const button = companyIntelGuidanceButton(primaryAction, item.label || "执行下一步");
+        return `<tr><td>${statusLabel(item.action || "")}</td><td>${String(item.reason || "").slice(0, 180)}</td><td>${button}</td></tr>`;
+      });
+    }
+
+    async function runCompanyIntelGuidanceAction(action) {
+      const symbol = companyIntelCurrentSymbol() || "SPCX";
+      if (action === "run_single_name_research") {
+        setValue("secSingleTicker", symbol);
+        await runSecSingleName();
+      } else if (action === "preview_research_structure") {
+        setValue("companyIntelReportQuery", symbol);
+        await structureCompanyReports(false);
+      } else if (action === "preview_batch_build") {
+        await buildCompanyDatabaseBatch(false);
+      } else {
+        await auditCompanyCoverage();
+      }
+    }
+
     function companyIntelBuildPayload(execute = false) {
       const symbol = formValue("companyIntelSymbol", "SPCX").trim();
-      const profile = latestCompanyIntelligence?.company_profile || {};
-      const issuerId = activeEntityIssuerId || profile.issuer?.issuer_id || "";
+      const issuerId = currentCompanyIntelIssuerId();
       const limit = Math.max(1, Math.min(500, Number(formValue("companyIntelBuildLimit", "20")) || 20));
       const batchSize = Math.max(1, Math.min(100, Number(formValue("companyIntelBatchSize", "10")) || 10));
       const payload = {
@@ -4757,8 +4858,7 @@
 
     function companyIntelScopedPayload(limit = 20) {
       const symbol = formValue("companyIntelSymbol", "SPCX").trim();
-      const profile = latestCompanyIntelligence?.company_profile || {};
-      const issuerId = activeEntityIssuerId || profile.issuer?.issuer_id || "";
+      const issuerId = currentCompanyIntelIssuerId();
       const payload = { limit };
       if (issuerId) payload.issuer_ids = [issuerId];
       if (!issuerId && symbol) payload.symbols = [symbol];
@@ -4937,6 +5037,7 @@
       $("companyIntelEvidenceCount").textContent = `${counts.evidence || 0} 证据 / ${(counts.company_events || 0) + (counts.disclosure_events || 0)} 事件`;
       $("companyIntelResearchCount").textContent = `${(counts.structured_research_reports || 0) + (counts.report_viewpoints || 0) + (counts.research_reports || 0) + (counts.research_answers || 0) + (counts.analysis_conclusions || 0)}`;
       $("companyIntelSimulationCount").textContent = `${(counts.simulation_feedback_records || 0) + (counts.simulated_executions || 0) + (counts.portfolio_transactions || 0)}`;
+      renderCompanyIntelGuidance(data);
       const factRows = [
         ...((profile.profiles || []).slice(0, 5).map((item) => ({ type: "画像", id: item.issuer_id, status: `${Math.round((item.data_quality?.profile_coverage || 0) * 100)}%`, detail: `${item.display_name || item.legal_name || ""} ${item.industry || ""}` }))),
         ...(profile.issuers || []).map((item) => ({ type: "公司", id: item.issuer_id, status: item.status || "active", detail: `${item.legal_name || ""} ${item.country || ""}` })),
@@ -5617,6 +5718,8 @@
           await runHotspotExpansion();
         } else if (action === "review-company-relationship") {
           await reviewCompanyRelationship(target.dataset.relationshipId, target.dataset.reviewAction || "approve");
+        } else if (action === "company-intel-guidance") {
+          await runCompanyIntelGuidanceAction(target.dataset.guidanceAction || "coverage_audit");
         } else if (action === "open-ingestion") {
           openTab("ingestion");
           setStatus("已切到数据中台");

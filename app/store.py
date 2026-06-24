@@ -23,6 +23,7 @@ from .models import (
     CacheRetentionRunRecord,
     ChokepointResearchRun,
     CorporateAction,
+    CompanyDatabaseBuildRun,
     CompanyEvent,
     CompanyPosition,
     CompanyProfile,
@@ -122,6 +123,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("industry_chain_template_candidates", "candidate_id", IndustryChainTemplateCandidate),
     ("industry_chain_template_reviews", "review_id", IndustryChainTemplateReview),
     ("company_positions", "position_id", CompanyPosition),
+    ("company_database_build_runs", "run_id", CompanyDatabaseBuildRun),
     ("company_profiles", "issuer_id", CompanyProfile),
     ("company_events", "event_id", CompanyEvent),
     ("company_relationships", "relationship_id", CompanyRelationship),
@@ -210,6 +212,7 @@ def _candidate_collections_for_resource(resource_type: str) -> list[str]:
         "industry_chain_template_candidate": "industry_chain_template_candidates",
         "industry_chain_template_review": "industry_chain_template_reviews",
         "company_position": "company_positions",
+        "company_database_build_run": "company_database_build_runs",
         "company_profile": "company_profiles",
         "company_event": "company_events",
         "company_relationship": "company_relationships",
@@ -298,6 +301,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     IndustryChainTemplateCandidate: ("created_at", "updated_at", "submitted_at", "published_at"),
     IndustryChainTemplateReview: ("created_at",),
     CompanyPosition: ("created_at",),
+    CompanyDatabaseBuildRun: ("started_at", "completed_at", "created_at"),
     CompanyProfile: ("updated_at",),
     CompanyEvent: ("occurred_at", "detected_at", "created_at"),
     CompanyRelationship: ("valid_from", "valid_to", "created_at"),
@@ -437,6 +441,7 @@ class InMemoryStore:
     industry_chain_template_candidates: dict[str, IndustryChainTemplateCandidate] = field(default_factory=dict)
     industry_chain_template_reviews: dict[str, IndustryChainTemplateReview] = field(default_factory=dict)
     company_positions: dict[str, CompanyPosition] = field(default_factory=dict)
+    company_database_build_runs: dict[str, CompanyDatabaseBuildRun] = field(default_factory=dict)
     company_profiles: dict[str, CompanyProfile] = field(default_factory=dict)
     company_events: dict[str, CompanyEvent] = field(default_factory=dict)
     company_relationships: dict[str, CompanyRelationship] = field(default_factory=dict)

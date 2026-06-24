@@ -726,6 +726,32 @@ class CompanyProfile:
 
 
 @dataclass(slots=True)
+class CompanyDatabaseBuildRun:
+    run_id: str
+    actor: str = "system"
+    status: str = "dry_run"
+    execute: bool = False
+    dry_run: bool = True
+    target_issuer_ids: list[str] = field(default_factory=list)
+    target_symbols: list[str] = field(default_factory=list)
+    batch_count: int = 0
+    batch_size: int = 0
+    totals: dict[str, Any] = field(default_factory=dict)
+    coverage_before: dict[str, Any] = field(default_factory=dict)
+    coverage_after: dict[str, Any] = field(default_factory=dict)
+    options: dict[str, Any] = field(default_factory=dict)
+    batches: list[dict[str, Any]] = field(default_factory=list)
+    error: str = ""
+    usage_boundary: str = "company_database_build_run_is_local_research_operations_history_no_live_trading"
+    started_at: Any = field(default_factory=utcnow)
+    completed_at: Any = field(default_factory=utcnow)
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"dry_run", "executed", "failed"}, "status")
+
+
+@dataclass(slots=True)
 class CompanyRelationship:
     relationship_id: str
     subject_type: str

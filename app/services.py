@@ -38,6 +38,7 @@ from .models import (
     BenchmarkSample,
     CacheRetentionRunRecord,
     ChokepointResearchRun,
+    CompanyDatabaseBuildRun,
     CompanyEvent,
     CompanyPosition,
     CompanyProfile,
@@ -20851,7 +20852,20 @@ class SystemService:
         build_events = self._truthy(payload.get("build_events", True))
         build_relationships = self._truthy(payload.get("build_relationships", True))
         build_workflow = self._truthy(payload.get("build_workflow", True))
+        include_market_data = self._truthy(payload.get("include_market_data", True))
+        include_research_coverage = self._truthy(payload.get("include_research_coverage", True))
+        include_disclosures = self._truthy(payload.get("include_disclosures", True))
+        include_structured_disclosures = self._truthy(payload.get("include_structured_disclosures", True))
+        include_listings = self._truthy(payload.get("include_listings", True))
+        include_institution_coverage = self._truthy(payload.get("include_institution_coverage", True))
+        include_disclosure_candidates = self._truthy(payload.get("include_disclosure_candidates", True))
+        record_run = execute or self._truthy(payload.get("record_run", False))
+        started_at = utcnow()
         issuers = self._company_database_target_issuers(payload, limit=limit)
+        target_issuer_ids = [issuer.issuer_id for issuer in issuers]
+        target_symbols = [str(item) for item in payload.get("symbols", [])] if isinstance(payload.get("symbols"), list) else ([str(payload.get("symbol") or payload.get("ticker"))] if payload.get("symbol") or payload.get("ticker") else [])
+        coverage_filter = {"issuer_ids": target_issuer_ids, "limit": len(target_issuer_ids)}
+        coverage_before = self.company_database_coverage_audit(coverage_filter, actor=actor) if issuers else {}
         batches: list[dict[str, Any]] = []
         totals = {
             "profiles_saved": 0,
@@ -20891,6 +20905,10 @@ class SystemService:
                         "issuer_ids": batch_issuer_ids,
                         "limit": len(batch_issuer_ids),
                         "event_limit": payload.get("event_limit", 100),
+                        "include_market_data": include_market_data,
+                        "include_research_coverage": include_research_coverage,
+                        "include_disclosures": include_disclosures,
+                        "include_structured_disclosures": include_structured_disclosures,
                         "execute": execute,
                         "dry_run": dry_run,
                     },
@@ -20903,6 +20921,9 @@ class SystemService:
                         "issuer_ids": batch_issuer_ids,
                         "limit": len(batch_issuer_ids),
                         "relationship_limit": payload.get("relationship_limit", 100),
+                        "include_listings": include_listings,
+                        "include_institution_coverage": include_institution_coverage,
+                        "include_disclosure_candidates": include_disclosure_candidates,
                         "execute": execute,
                         "dry_run": dry_run,
                     },
@@ -20944,7 +20965,50 @@ class SystemService:
                     "workflow_result": workflow_result,
                 }
             )
-        coverage = self.company_database_coverage_audit({"issuer_ids": [issuer.issuer_id for issuer in issuers], "limit": len(issuers)}, actor=actor) if issuers else {}
+        coverage = self.company_database_coverage_audit(coverage_filter, actor=actor) if issuers else {}
+        run_id = str(payload.get("run_id") or self._company_database_batch_run_id(actor, target_issuer_ids, started_at))
+        run_record: CompanyDatabaseBuildRun | None = None
+        options = self._company_database_batch_options(
+            limit=limit,
+            batch_size=batch_size,
+            report_match_limit=report_match_limit,
+            structure_reports=structure_reports,
+            structure_report_limit=structure_report_limit,
+            build_events=build_events,
+            build_relationships=build_relationships,
+            build_workflow=build_workflow,
+            include_market_data=include_market_data,
+            include_research_coverage=include_research_coverage,
+            include_disclosures=include_disclosures,
+            include_structured_disclosures=include_structured_disclosures,
+            include_listings=include_listings,
+            include_institution_coverage=include_institution_coverage,
+            include_disclosure_candidates=include_disclosure_candidates,
+        )
+        if record_run:
+            run_record = CompanyDatabaseBuildRun(
+                run_id=run_id,
+                actor=actor,
+                status="executed" if execute else "dry_run",
+                execute=execute,
+                dry_run=dry_run,
+                target_issuer_ids=target_issuer_ids,
+                target_symbols=target_symbols,
+                batch_count=len(batches),
+                batch_size=batch_size,
+                totals=totals,
+                coverage_before=coverage_before,
+                coverage_after=coverage,
+                options=options,
+                batches=batches,
+                started_at=started_at,
+                completed_at=utcnow(),
+            )
+            self.store.company_database_build_runs[run_id] = run_record
+            marker = getattr(self.store, "mark_dirty_for_resource", None)
+            if callable(marker):
+                marker("company_database_build_run")
+            self.store.commit()
         self._audit(
             actor,
             "build_company_database_batch",
@@ -20960,9 +21024,37 @@ class SystemService:
             "batch_count": len(batches),
             "batch_size": batch_size,
             "totals": totals,
+            "coverage_before": coverage_before,
             "coverage_after": coverage,
+            "run_id": run_id,
+            "run_recorded": record_run,
+            "run": to_plain(run_record) if run_record else {},
             "batches": batches,
             "usage_boundary": "company_database_batch_build_uses_local_records_only_no_live_trading",
+        }
+
+    def _company_database_batch_run_id(self, actor: str, issuer_ids: list[str], started_at: Any) -> str:
+        raw = f"{actor}:{','.join(issuer_ids)}:{to_plain(started_at)}:{time.time()}"
+        return f"cdb_run_{utcnow().strftime('%Y%m%d%H%M%S')}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:10]}"
+
+    def _company_database_batch_options(self, **kwargs: Any) -> dict[str, Any]:
+        return {key: value for key, value in kwargs.items()}
+
+    def company_database_build_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        limit = self._bounded_limit(filters.get("limit", 20), 200)
+        issuer_id = str(filters.get("issuer_id", "")).strip()
+        status = str(filters.get("status", "")).strip()
+        runs = list(self.store.company_database_build_runs.values())
+        if issuer_id:
+            runs = [run for run in runs if issuer_id in run.target_issuer_ids]
+        if status:
+            runs = [run for run in runs if run.status == status]
+        runs.sort(key=lambda item: (str(to_plain(item.completed_at)), item.run_id), reverse=True)
+        return {
+            "count": len(runs),
+            "runs": [to_plain(run) for run in runs[:limit]],
+            "usage_boundary": "company_database_build_runs_are_local_operations_history_no_live_trading",
         }
 
     def build_company_database(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
@@ -21076,6 +21168,7 @@ class SystemService:
         include_market_data = self._truthy(payload.get("include_market_data", True))
         include_research_coverage = self._truthy(payload.get("include_research_coverage", True))
         include_disclosures = self._truthy(payload.get("include_disclosures", True))
+        include_structured_disclosures = self._truthy(payload.get("include_structured_disclosures", True))
         issuers = self._company_database_target_issuers(payload, limit=limit)
         planned_events: list[CompanyEvent] = []
         rows: list[dict[str, Any]] = []
@@ -21150,38 +21243,51 @@ class SystemService:
                 ]
                 disclosure_rows.sort(key=lambda item: (str(to_plain(item.occurred_at)), item.event_id), reverse=True)
                 for disclosure in disclosure_rows[:event_limit]:
-                    event_id = f"ce_disclosure_{safe_source_part(disclosure.event_id)}"
-                    if event_id in self.store.company_events:
-                        continue
-                    title = disclosure.item_title or disclosure.item_code or disclosure.event_type or "Official disclosure"
-                    company_events.append(
-                        CompanyEvent(
-                            event_id=event_id,
-                            issuer_id=issuer.issuer_id,
-                            security_id=disclosure.security_id,
-                            event_type="official_disclosure",
-                            title=f"Official disclosure: {title[:120]}",
-                            summary=disclosure.summary or title,
-                            occurred_at=parse_datetime(disclosure.occurred_at),
-                            detected_at=parse_datetime(disclosure.created_at),
-                            source_ids=[disclosure.source_id] if disclosure.source_id else [],
-                            document_ids=[disclosure.document_id] if disclosure.document_id else [],
-                            evidence_ids=list(disclosure.evidence_ids),
-                            impact_tags=list(dict.fromkeys(["official_disclosure", disclosure.event_type, disclosure.severity])),
-                            confidence=0.95,
-                            fact_status="verified",
-                            review_status="auto_generated",
-                            metadata={
-                                "disclosure_event_id": disclosure.event_id,
-                                "document_id": disclosure.document_id,
-                                "item_code": disclosure.item_code,
-                                "severity": disclosure.severity,
-                                "source_layer": "disclosure_event",
-                            },
-                        )
-                    )
                     if len(company_events) >= event_limit:
                         break
+                    event_id = f"ce_disclosure_{safe_source_part(disclosure.event_id)}"
+                    if event_id not in self.store.company_events:
+                        title = disclosure.item_title or disclosure.item_code or disclosure.event_type or "Official disclosure"
+                        company_events.append(
+                            CompanyEvent(
+                                event_id=event_id,
+                                issuer_id=issuer.issuer_id,
+                                security_id=disclosure.security_id,
+                                event_type="official_disclosure",
+                                title=f"Official disclosure: {title[:120]}",
+                                summary=disclosure.summary or title,
+                                occurred_at=parse_datetime(disclosure.occurred_at),
+                                detected_at=parse_datetime(disclosure.created_at),
+                                source_ids=[disclosure.source_id] if disclosure.source_id else [],
+                                document_ids=[disclosure.document_id] if disclosure.document_id else [],
+                                evidence_ids=list(disclosure.evidence_ids),
+                                impact_tags=list(dict.fromkeys(["official_disclosure", disclosure.event_type, disclosure.severity])),
+                                confidence=0.95,
+                                fact_status="verified",
+                                review_status="auto_generated",
+                                metadata={
+                                    "disclosure_event_id": disclosure.event_id,
+                                    "document_id": disclosure.document_id,
+                                    "item_code": disclosure.item_code,
+                                    "severity": disclosure.severity,
+                                    "source_layer": "disclosure_event",
+                                },
+                            )
+                        )
+                    if include_structured_disclosures and len(company_events) < event_limit:
+                        detailed_events = self._company_events_from_disclosure_text(
+                            issuer,
+                            disclosure,
+                            limit=max(0, event_limit - len(company_events)),
+                        )
+                        existing_ids = {event.event_id for event in company_events}
+                        for detailed_event in detailed_events:
+                            if detailed_event.event_id in self.store.company_events or detailed_event.event_id in existing_ids:
+                                continue
+                            company_events.append(detailed_event)
+                            existing_ids.add(detailed_event.event_id)
+                            if len(company_events) >= event_limit:
+                                break
             if execute:
                 for event in company_events[:event_limit]:
                     self.store.company_events[event.event_id] = event
@@ -21194,6 +21300,7 @@ class SystemService:
                     "market_event_count": sum(1 for event in company_events[:event_limit] if event.event_type == "market_data"),
                     "research_coverage_event_count": sum(1 for event in company_events[:event_limit] if event.event_type == "research_coverage"),
                     "official_disclosure_event_count": sum(1 for event in company_events[:event_limit] if event.event_type == "official_disclosure"),
+                    "structured_disclosure_event_count": sum(1 for event in company_events[:event_limit] if event.metadata.get("source_layer") == "official_disclosure_text_classification"),
                     "sample_event_ids": [event.event_id for event in company_events[:5]],
                 }
             )
@@ -21219,9 +21326,128 @@ class SystemService:
             "include_market_data": include_market_data,
             "include_research_coverage": include_research_coverage,
             "include_disclosures": include_disclosures,
+            "include_structured_disclosures": include_structured_disclosures,
             "companies": rows,
             "usage_boundary": "company_events_from_public_disclosures_market_data_and_research_attention_only_no_live_trading",
         }
+
+    def _company_events_from_disclosure_text(
+        self,
+        issuer: Issuer,
+        disclosure: DisclosureEvent,
+        *,
+        limit: int,
+    ) -> list[CompanyEvent]:
+        if limit <= 0:
+            return []
+        document = self.store.documents.get(disclosure.document_id) if disclosure.document_id else None
+        text_parts = [disclosure.item_title, disclosure.summary]
+        evidence_ids = list(disclosure.evidence_ids)
+        for evidence_id in disclosure.evidence_ids:
+            evidence = self.store.evidence.get(evidence_id)
+            if evidence is not None:
+                text_parts.append(evidence.span_text)
+                text_parts.append(evidence.canonical_text)
+        document_ids = [disclosure.document_id] if disclosure.document_id else []
+        source_ids = [disclosure.source_id] if disclosure.source_id else []
+        if document is not None:
+            if document.document_type == "research_report" or "research" in document.source_id.lower():
+                return []
+            text_parts.append(document.title)
+            text_parts.append(document.body[:6000])
+            if document.source_id and document.source_id not in source_ids:
+                source_ids.append(document.source_id)
+        text = "\n".join(str(part) for part in text_parts if str(part).strip())
+        events: list[CompanyEvent] = []
+        for event_type, match in self._extract_company_event_mentions(text):
+            event_id = f"ce_disclosure_detail_{safe_source_part(disclosure.event_id)}_{event_type}"
+            if event_id in self.store.company_events:
+                continue
+            title = self._company_event_type_label(event_type)
+            matched_terms = match["matched_terms"]
+            summary = match["snippet"] or disclosure.summary or disclosure.item_title or title
+            events.append(
+                CompanyEvent(
+                    event_id=event_id,
+                    issuer_id=issuer.issuer_id,
+                    security_id=disclosure.security_id,
+                    event_type=event_type,
+                    title=f"{title}: {(disclosure.item_title or disclosure.event_type or disclosure.event_id)[:100]}",
+                    summary=summary[:600],
+                    occurred_at=parse_datetime(disclosure.occurred_at),
+                    detected_at=parse_datetime(disclosure.created_at),
+                    source_ids=source_ids,
+                    document_ids=document_ids,
+                    evidence_ids=evidence_ids[:20],
+                    impact_tags=list(dict.fromkeys(["official_disclosure", event_type, *match["impact_tags"]])),
+                    confidence=float(match["confidence"]),
+                    fact_status="verified",
+                    review_status="needs_review",
+                    metadata={
+                        "disclosure_event_id": disclosure.event_id,
+                        "document_id": disclosure.document_id,
+                        "item_code": disclosure.item_code,
+                        "severity": disclosure.severity,
+                        "source_layer": "official_disclosure_text_classification",
+                        "classification_status": "candidate_needs_review",
+                        "classification_rule": match["rule_name"],
+                        "matched_terms": matched_terms,
+                        "rights_boundary": "official_disclosure_fact_with_classification_review",
+                    },
+                )
+            )
+            if len(events) >= limit:
+                break
+        return events
+
+    def _extract_company_event_mentions(self, text: str) -> list[tuple[str, dict[str, Any]]]:
+        patterns: list[tuple[str, str, str, list[str], float]] = [
+            ("earnings_result", r"\b(revenue|sales|net income|earnings|gross margin|operating income)\b|营收|收入|净利润|毛利率|业绩|归母净利润", "financial_result_terms", ["financial_result"], 0.82),
+            ("management_change", r"\b(resign(?:ed|ation)?|appoint(?:ed|ment)?|chief executive|chief financial officer|director|management change)\b|任命|辞任|辞职|董事长|总经理|高管|首席执行官|财务总监", "management_change_terms", ["governance"], 0.8),
+            ("litigation_regulatory", r"\b(litigation|lawsuit|investigation|regulatory|penalty|fine|settlement|subpoena)\b|诉讼|仲裁|调查|处罚|罚款|监管|立案|和解", "litigation_regulatory_terms", ["risk", "regulatory"], 0.78),
+            ("major_order_contract", r"\b(order|contract|purchase agreement|supply agreement|award(?:ed)?|backlog)\b|订单|合同|协议|中标|采购|供货|框架协议", "order_contract_terms", ["commercial"], 0.76),
+            ("capacity_supply_demand", r"\b(capacity|production|plant|factory|fab|supply|demand|inventory|utilization)\b|产能|投产|扩产|产量|供需|库存|开工率|利用率", "capacity_supply_terms", ["supply_demand"], 0.74),
+            ("policy_impact", r"\b(policy|tariff|subsidy|export control|sanction|regulation)\b|政策|关税|补贴|出口管制|制裁|监管规则", "policy_impact_terms", ["policy"], 0.72),
+        ]
+        mentions: list[tuple[str, dict[str, Any]]] = []
+        seen: set[str] = set()
+        for event_type, pattern, rule_name, impact_tags, confidence in patterns:
+            matches = list(re.finditer(pattern, text, flags=re.IGNORECASE))
+            if not matches or event_type in seen:
+                continue
+            seen.add(event_type)
+            matched_terms = list(dict.fromkeys(match.group(0).strip() for match in matches[:5] if match.group(0).strip()))
+            snippet = self._company_event_snippet(text, matches[0])
+            mentions.append(
+                (
+                    event_type,
+                    {
+                        "rule_name": rule_name,
+                        "matched_terms": matched_terms,
+                        "snippet": snippet,
+                        "impact_tags": impact_tags,
+                        "confidence": confidence,
+                    },
+                )
+            )
+        return mentions
+
+    def _company_event_snippet(self, text: str, match: re.Match[str]) -> str:
+        start = max(0, match.start() - 140)
+        end = min(len(text), match.end() + 220)
+        snippet = re.sub(r"\s+", " ", text[start:end]).strip(" \t\r\n,.;:：，。；、")
+        return snippet
+
+    def _company_event_type_label(self, event_type: str) -> str:
+        labels = {
+            "earnings_result": "Earnings or financial result",
+            "management_change": "Management change",
+            "litigation_regulatory": "Litigation or regulatory matter",
+            "major_order_contract": "Major order or contract",
+            "capacity_supply_demand": "Capacity, supply or demand change",
+            "policy_impact": "Policy or regulatory impact",
+        }
+        return labels.get(event_type, event_type.replace("_", " ").title())
 
     def build_company_relationships(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}

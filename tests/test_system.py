@@ -798,6 +798,91 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(result.data["totals"]["profiles_planned"], 1)
         self.assertEqual(result.data["coverage_after"]["issuer_count"], 1)
 
+    def test_company_database_batch_build_records_run_history(self) -> None:
+        result = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/build",
+            {
+                "symbols": ["DEMO"],
+                "limit": 1,
+                "batch_size": 1,
+                "build_events": False,
+                "build_relationships": False,
+                "build_workflow": False,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.data["status"], "executed")
+        self.assertTrue(result.data["run_recorded"])
+        run_id = result.data["run_id"]
+        self.assertIn(run_id, self.service.store.company_database_build_runs)
+        run = self.service.store.company_database_build_runs[run_id]
+        self.assertEqual(run.status, "executed")
+        self.assertEqual(run.target_issuer_ids, ["issuer_001"])
+        self.assertEqual(run.batch_count, 1)
+        self.assertEqual(run.totals["profiles_saved"], 1)
+        self.assertEqual(run.coverage_before["issuer_count"], 1)
+        self.assertEqual(run.coverage_after["issuer_count"], 1)
+        self.assertFalse(run.options["build_events"])
+        self.assertEqual(result.data["run"]["run_id"], run_id)
+
+        listed = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/runs",
+            {"issuer_id": "issuer_001", "limit": 5},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(listed.success, listed.error)
+        self.assertEqual(listed.data["count"], 1)
+        self.assertEqual(listed.data["runs"][0]["run_id"], run_id)
+        self.assertEqual(listed.data["runs"][0]["usage_boundary"], "company_database_build_run_is_local_research_operations_history_no_live_trading")
+
+    def test_company_database_batch_build_dry_run_history_is_explicit(self) -> None:
+        preview = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/build",
+            {
+                "symbols": ["DEMO"],
+                "limit": 1,
+                "batch_size": 1,
+                "build_events": False,
+                "build_relationships": False,
+                "build_workflow": False,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(preview.success, preview.error)
+        self.assertFalse(preview.data["run_recorded"])
+        self.assertFalse(self.service.store.company_database_build_runs)
+
+        recorded = self.router.dispatch(
+            "POST",
+            "/api/company-database/batch/build",
+            {
+                "symbols": ["DEMO"],
+                "limit": 1,
+                "batch_size": 1,
+                "build_events": False,
+                "build_relationships": False,
+                "build_workflow": False,
+                "record_run": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(recorded.success, recorded.error)
+        self.assertTrue(recorded.data["run_recorded"])
+        run = self.service.store.company_database_build_runs[recorded.data["run_id"]]
+        self.assertEqual(run.status, "dry_run")
+        self.assertFalse(run.execute)
+        self.assertTrue(run.dry_run)
+        self.assertEqual(run.totals["profiles_planned"], 1)
+
     def test_company_event_builder_creates_market_and_research_attention_events(self) -> None:
         market_point = self.service.register_market_data_point(
             {
@@ -877,6 +962,100 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(aggregated.success, aggregated.error)
         self.assertEqual(aggregated.data["section_counts"]["company_events"], 3)
         self.assertTrue(aggregated.data["data_quality"]["event_timeline_available"])
+
+    def test_company_event_builder_extracts_structured_disclosure_events(self) -> None:
+        self.service.store.evidence["ev_detail_disclosure"] = Evidence(
+            evidence_id="ev_detail_disclosure",
+            document_id="doc_detail_disclosure",
+            section="official_disclosure",
+            page_no=1,
+            bbox="p1",
+            span_text=(
+                "Revenue increased 18% and net income improved. The board appointed a new chief financial officer. "
+                "The company signed a supply agreement and expanded production capacity. "
+                "Management disclosed an export control policy impact and settled a litigation matter."
+            ),
+            canonical_text=(
+                "Revenue increased, chief financial officer appointed, supply agreement, production capacity, "
+                "export control policy impact and litigation settlement."
+            ),
+            confidence=0.93,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+        self.service.store.disclosure_events["de_detail_disclosure"] = DisclosureEvent(
+            event_id="de_detail_disclosure",
+            document_id="doc_detail_disclosure",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            event_type="annual_report",
+            item_code="10-K",
+            item_title="Annual report detailed operating update",
+            severity="medium",
+            summary="Annual report contains financial, management, contract, capacity, policy and litigation updates.",
+            evidence_ids=["ev_detail_disclosure"],
+            source_id="src_sec",
+        )
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/company-database/events/build",
+            {
+                "symbols": ["DEMO"],
+                "event_limit": 10,
+                "include_market_data": False,
+                "include_research_coverage": False,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertEqual(dry_run.data["events_planned"], 7)
+        self.assertEqual(dry_run.data["companies"][0]["structured_disclosure_event_count"], 6)
+        self.assertFalse(self.service.store.company_events)
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/events/build",
+            {
+                "symbols": ["DEMO"],
+                "event_limit": 10,
+                "include_market_data": False,
+                "include_research_coverage": False,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["events_created"], 7)
+        event_types = {event.event_type for event in self.service.store.company_events.values()}
+        self.assertEqual(
+            event_types,
+            {
+                "official_disclosure",
+                "earnings_result",
+                "management_change",
+                "litigation_regulatory",
+                "major_order_contract",
+                "capacity_supply_demand",
+                "policy_impact",
+            },
+        )
+        detailed_events = [
+            event
+            for event in self.service.store.company_events.values()
+            if event.metadata.get("source_layer") == "official_disclosure_text_classification"
+        ]
+        self.assertEqual(len(detailed_events), 6)
+        for event in detailed_events:
+            self.assertEqual(event.fact_status, "verified")
+            self.assertEqual(event.review_status, "needs_review")
+            self.assertEqual(event.document_ids, ["doc_detail_disclosure"])
+            self.assertEqual(event.evidence_ids, ["ev_detail_disclosure"])
+            self.assertEqual(event.metadata["classification_status"], "candidate_needs_review")
+            self.assertEqual(event.metadata["rights_boundary"], "official_disclosure_fact_with_classification_review")
 
     def test_company_relationship_builder_creates_listing_and_coverage_links(self) -> None:
         self.service.store.research_reports["rr_demo_bound"] = ResearchReportAsset(

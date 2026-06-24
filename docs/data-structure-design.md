@@ -3,7 +3,7 @@
 - Status: active
 - Owner group: Data and Evidence
 - Last updated: 2026-06-24
-- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436
+- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451
 - Scope: 公司级数据库、事件、关系、研报观点、观察任务、分析结论和模拟反馈核心模型
 - Non-goals: 真实交易订单模型、券商账户模型、把研报作为事实真相源
 
@@ -45,6 +45,7 @@
 | 观察任务 | `observation_id` | 观察池任务 |
 | 分析结论 | `analysis_conclusion_id` | 个人或系统分析结论 |
 | 模拟反馈 | `simulation_feedback_id` | 分析结论有效性反馈 |
+| 补库运行 | `run_id` | 公司数据库批量补齐运行历史 |
 
 降级主键：
 
@@ -693,6 +694,48 @@ Required report fields:
   },
   "created_at": "datetime",
   "updated_at": "datetime"
+}
+```
+
+### 10.4 CompanyDatabaseBuildRun
+
+`CompanyDatabaseBuildRun` 记录公司数据库批量补齐的本地运行历史，用于审计、复盘、覆盖率趋势和后续断点续跑。它不是交易指令，也不是生产发布证据。
+
+```json
+{
+  "run_id": "string",
+  "actor": "string",
+  "status": "dry_run|executed|failed",
+  "execute": false,
+  "dry_run": true,
+  "target_issuer_ids": ["issuer_id"],
+  "target_symbols": ["string"],
+  "batch_count": 0,
+  "batch_size": 0,
+  "totals": {
+    "profiles_saved": 0,
+    "profiles_planned": 0,
+    "research_reports_matched": 0,
+    "research_reports_bound": 0,
+    "events_created": 0,
+    "events_planned": 0,
+    "relationships_created": 0,
+    "relationships_planned": 0,
+    "observations_created": 0,
+    "observations_planned": 0,
+    "conclusions_created": 0,
+    "conclusions_planned": 0,
+    "feedback_created": 0,
+    "feedback_planned": 0
+  },
+  "coverage_before": {},
+  "coverage_after": {},
+  "options": {},
+  "batches": [],
+  "usage_boundary": "company_database_build_run_is_local_research_operations_history_no_live_trading",
+  "started_at": "datetime",
+  "completed_at": "datetime",
+  "created_at": "datetime"
 }
 ```
 
