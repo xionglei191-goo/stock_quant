@@ -2283,9 +2283,11 @@
 | `/api/company-profiles/schema` | `GET` | 返回公司画像核心字段、来源优先级和质量指标 |
 | `/api/company-profiles/fields/extract` | `POST` | 从已入库官方披露、公司 IR、公司官网或监管/交易所文档抽取公司画像字段；默认 dry-run，显式 `execute=true` 才写入 |
 | `/api/company-profiles/field-assertions` | `GET` / `POST` | 查询公司画像字段级事实断言，按字段返回来源、文档、证据、置信度和状态 |
+| `/api/company-profiles/field-assertions/review` | `POST` | 复核画像字段断言冲突，支持 approve、supersede、reject，批准后才替换公司画像字段 |
 | `/api/company-profiles/coverage/audit` | `GET` / `POST` | 按公司输出画像深字段覆盖率、缺失字段、来源记录、证据回链和推荐补齐来源 |
 | `/api/company-database/profile-field-coverage/audit` | `GET` / `POST` | `company-profiles/coverage/audit` 的兼容别名，用于公司数据库补齐任务按深字段审计 |
 | `/api/company-database/profile-field-assertions` | `GET` / `POST` | `company-profiles/field-assertions` 的兼容别名，用于公司数据库补齐任务查询字段级 provenance |
+| `/api/company-database/profile-field-assertions/review` | `POST` | `company-profiles/field-assertions/review` 的兼容别名，用于补库流程处理字段冲突候选 |
 | `/api/company-database/profile-fields/extract` | `POST` | `company-profiles/fields/extract` 的公司数据库兼容入口，用于补库流程先抽取画像字段再审计覆盖 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
@@ -2337,7 +2339,7 @@
 
 - `schema_id`：当前为 `company-profile-field-extraction-v1`。
 - `status`：`dry_run` 或 `executed`。
-- `totals.documents_scanned` / `evidence_scanned` / `candidates_found` / `fields_planned` / `fields_updated` / `profiles_saved`。
+- `totals.documents_scanned` / `evidence_scanned` / `candidates_found` / `fields_planned` / `fields_updated` / `assertions_recorded` / `conflict_assertions` / `profiles_saved`。
 - `companies[].candidates[]`：字段候选，包含 `field`、`value`、`confidence`、`document_id`、`source_id`、`evidence_ids`、`section`、`extraction_method`、`source_policy` 和 `status`。
 - `companies[].applied`：执行时返回写入字段、字段级 `assertion_ids`、是否保存 `CompanyProfile` 和保存后的 profile 摘要。
 - `source_rules.research_reports`：固定为 `ignored_for_fact_fields_opinion_only`。
@@ -2345,6 +2347,8 @@
 边界：抽取只接受 `_company_profile_document_is_fact_source` 和 `_evidence_is_official_public` 认可的官方披露、公司 IR、公司官网、交易所/监管披露或公开公司披露记录。`research_report`、`broker_research`、`local_reference`、`manual_reference`、`news` 和 `curated_public_profile` 不会写入事实字段，也不会生成 `CompanyProfileFieldAssertion`。
 
 执行语义：`execute=true` 后，每个成功应用的字段会生成或更新一条幂等 `CompanyProfileFieldAssertion`，记录 `field_name`、`value`、`document_ids`、`evidence_ids`、`source_ids`、`confidence`、`source_policy`、`fact_status` 和 `review_status`。这些断言用于后续字段级证据审计、冲突处理和公司情报页 provenance 展示。
+
+冲突语义：当 `refresh_existing=true` / `overwrite=true` 且同一公司、同一字段、同一 period 已存在 active 断言但新值不同，接口不会立即覆盖 `Issuer` 或 `CompanyProfile` 当前字段。它会生成 `assertion_status=conflict_candidate`、`review_status=needs_review` 的新断言，并在 `conflicts_with` 中记录被冲突的旧断言 ID。只有复核接口批准后，新值才会应用到公司画像。
 
 #### `GET|POST /api/company-profiles/field-assertions`
 
@@ -2362,9 +2366,38 @@
 
 - `schema_id`：当前为 `company-profile-field-assertions-v1`。
 - `count`：匹配断言总数。
-- `assertions[]`：字段级事实记录，包含 `assertion_id`、`issuer_id`、`field_name`、`value`、`source_ids`、`document_ids`、`evidence_ids`、`confidence`、`source_policy`、`fact_status`、`review_status`、`assertion_status`、`extraction_method`、`created_at` 和 `updated_at`。
+- `status_counts` / `review_status_counts`：按断言状态和复核状态聚合的数量。
+- `conflict_count` / `superseded_count`：待复核冲突候选和已被替代断言数量。
+- `assertions[]`：字段级事实记录，包含 `assertion_id`、`issuer_id`、`field_name`、`value`、`source_ids`、`document_ids`、`evidence_ids`、`confidence`、`source_policy`、`fact_status`、`review_status`、`assertion_status`、`conflicts_with`、`resolved_by`、`extraction_method`、`created_at` 和 `updated_at`。
 
 边界：字段断言是本地公司数据库 provenance，不是投资建议，不连接券商，不触发真实交易。
+
+#### `POST /api/company-profiles/field-assertions/review`
+
+复核公司画像字段断言。兼容别名：`POST /api/company-database/profile-field-assertions/review`。
+
+请求字段：
+
+- `assertion_id`：必填；要复核的字段断言。
+- `action`：必填；允许 `approve`、`supersede`、`reject`。
+- `supersedes`：可选；手工指定被替代的断言 ID。系统也会读取当前断言的 `conflicts_with`。
+- `note`：可选；复核说明。
+
+返回字段：
+
+- `schema_id`：当前为 `company-profile-field-assertion-review-v1`。
+- `status`：固定为 `reviewed`。
+- `action`：实际复核动作。
+- `assertion`：复核后的断言。
+- `superseded_assertion_ids`：被替代的旧断言。
+- `changed_assertion_ids`：本次复核改动的断言 ID。
+
+动作语义：
+
+- `approve` / `supersede`：把当前断言置为 `active` / `approved`，应用字段值到 `Issuer` 和 `CompanyProfile`，并把 `conflicts_with` 或 `supersedes` 指向的旧断言置为 `superseded`。
+- `reject`：把当前断言置为 `rejected`，不修改公司画像字段。
+
+边界：复核只更新本地公司数据库字段 provenance 和画像事实字段，不生成投资建议，不连接真实券商，不触发自动交易。
 
 #### `scripts/company_material_inbox_ingest.py`
 

@@ -1130,6 +1130,155 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(fields["revenue"]["present"])
         self.assertEqual(fields["revenue"]["evidence_ids"], ["evi_demo_revenue_only"])
 
+    def test_company_profile_field_assertion_conflict_requires_review_before_replacement(self) -> None:
+        first_document = Document(
+            document_id="doc_demo_website_old",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="official_business_overview",
+            source_id="src_company_ir_old",
+            source_type="company_ir",
+            source_uri="https://example.test/demo-old",
+            rights_tag=RightsTag("public"),
+            body="",
+            title="Demo old official website",
+        )
+        self.service.store.documents[first_document.document_id] = first_document
+        self.service.store.evidence["evi_demo_website_old"] = Evidence(
+            evidence_id="evi_demo_website_old",
+            document_id=first_document.document_id,
+            section="business_overview",
+            page_no=1,
+            bbox="p1",
+            span_text="Official website: https://demo.example.com.",
+            canonical_text="Official website: https://demo.example.com.",
+            confidence=0.90,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+
+        first = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-fields/extract",
+            {"symbols": ["DEMO"], "fields": ["website_url"], "require_evidence": True, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(first.success, first.error)
+        self.assertEqual(first.data["totals"]["fields_updated"], 1)
+        old_assertion_id = first.data["companies"][0]["applied"]["assertion_ids"][0]
+        self.assertEqual(self.service.store.issuers["issuer_001"].company_details["website_url"], "https://demo.example.com")
+
+        second_document = Document(
+            document_id="doc_demo_website_new",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="official_business_overview",
+            source_id="src_company_ir_new",
+            source_type="company_ir",
+            source_uri="https://example.test/demo-new",
+            rights_tag=RightsTag("public"),
+            body="",
+            title="Demo new official website",
+        )
+        self.service.store.documents[second_document.document_id] = second_document
+        self.service.store.evidence["evi_demo_website_new"] = Evidence(
+            evidence_id="evi_demo_website_new",
+            document_id=second_document.document_id,
+            section="business_overview",
+            page_no=1,
+            bbox="p1",
+            span_text="Official website: https://new-demo.example.com.",
+            canonical_text="Official website: https://new-demo.example.com.",
+            confidence=0.99,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+
+        conflict = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-fields/extract",
+            {
+                "symbols": ["DEMO"],
+                "fields": ["website_url"],
+                "require_evidence": True,
+                "refresh_existing": True,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(conflict.success, conflict.error)
+        self.assertEqual(conflict.data["totals"]["fields_updated"], 0)
+        self.assertEqual(conflict.data["totals"]["assertions_recorded"], 1)
+        self.assertEqual(conflict.data["totals"]["conflict_assertions"], 1)
+        applied = conflict.data["companies"][0]["applied"]
+        self.assertEqual(applied["updated_fields"], [])
+        conflict_assertion_id = applied["assertion_ids"][0]
+        self.assertEqual(self.service.store.issuers["issuer_001"].company_details["website_url"], "https://demo.example.com")
+        self.assertNotIn("src_company_ir_new", self.service.store.company_profiles["issuer_001"].source_ids)
+        conflict_assertion = self.service.store.company_profile_field_assertions[conflict_assertion_id]
+        self.assertEqual(conflict_assertion.assertion_status, "conflict_candidate")
+        self.assertEqual(conflict_assertion.review_status, "needs_review")
+        self.assertEqual(conflict_assertion.conflicts_with, [old_assertion_id])
+
+        query = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-assertions",
+            {"symbols": ["DEMO"], "field_name": "website_url", "limit": 10},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(query.success, query.error)
+        self.assertEqual(query.data["conflict_count"], 1)
+
+        reviewed = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-assertions/review",
+            {"assertion_id": conflict_assertion_id, "action": "approve", "note": "new official website supersedes old IR page"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(reviewed.success, reviewed.error)
+        self.assertEqual(reviewed.data["superseded_assertion_ids"], [old_assertion_id])
+        self.assertEqual(self.service.store.issuers["issuer_001"].company_details["website_url"], "https://new-demo.example.com")
+        self.assertEqual(self.service.store.company_profile_field_assertions[old_assertion_id].assertion_status, "superseded")
+        self.assertEqual(self.service.store.company_profile_field_assertions[old_assertion_id].resolved_by, conflict_assertion_id)
+        self.assertEqual(self.service.store.company_profile_field_assertions[conflict_assertion_id].assertion_status, "active")
+        self.assertEqual(self.service.store.company_profile_field_assertions[conflict_assertion_id].review_status, "approved")
+
+        active_query = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-assertions",
+            {"symbols": ["DEMO"], "field_name": "website_url", "assertion_status": "active", "limit": 10},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(active_query.success, active_query.error)
+        self.assertEqual([item["assertion_id"] for item in active_query.data["assertions"]], [conflict_assertion_id])
+        superseded_query = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-assertions",
+            {"symbols": ["DEMO"], "field_name": "website_url", "assertion_status": "superseded", "limit": 10},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(superseded_query.success, superseded_query.error)
+        self.assertEqual([item["assertion_id"] for item in superseded_query.data["assertions"]], [old_assertion_id])
+
+        audit = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-coverage/audit",
+            {"symbols": ["DEMO"], "required_fields": ["website_url"], "require_evidence": True},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(audit.success, audit.error)
+        website_field = audit.data["companies"][0]["fields"]["website_url"]
+        self.assertTrue(website_field["present"])
+        self.assertEqual(website_field["assertion_ids"], [conflict_assertion_id])
+        self.assertEqual(website_field["evidence_ids"], ["evi_demo_website_new"])
+
     def test_company_profile_field_extraction_keeps_research_reports_opinion_only(self) -> None:
         research_document = Document(
             document_id="doc_demo_research_profile_extract",

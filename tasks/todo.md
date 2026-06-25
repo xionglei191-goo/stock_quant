@@ -342,6 +342,16 @@
   - 验收：单测覆盖未建档公司返回 `not_found` 和建档但缺事件/行情等事实层时返回 `incomplete`；UI 静态检查通过；浏览器验收 18/18 通过。
   - 后续增强：T-463 可继续处理多字段冲突/替代断言，并把真实样本完整度分数权重校准为可配置规则。
 
+- `DONE` T-463 公司画像字段断言冲突复核
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-460/T-461 已把官方/IR 材料抽取为字段级证据断言，但同一公司、同一字段可能从不同官方来源得到不同值。系统需要在替换前保留冲突候选，避免自动覆盖既有公司画像。
+  - **已完成（本轮）**：`CompanyProfileFieldAssertion` 新增 `conflicts_with` 和 `resolved_by`，可表达新旧字段断言之间的冲突和复核解决关系。
+  - **已完成（本轮）**：`POST /api/company-database/profile-fields/extract` 在 `refresh_existing=true` 遇到不同 active 断言时，生成 `conflict_candidate` / `needs_review` 字段断言，不会提前覆盖 `Issuer` 或 `CompanyProfile` 当前字段。
+  - **已完成（本轮）**：新增 `POST /api/company-database/profile-field-assertions/review` 和 `POST /api/company-profiles/field-assertions/review`，支持 `approve`、`supersede`、`reject`；批准后才应用新字段值并把旧断言标记为 `superseded`。
+  - **已完成（本轮）**：字段断言查询返回 `status_counts`、`review_status_counts`、`conflict_count` 和 `superseded_count`，便于公司数据库补库流程发现待复核冲突。
+  - 验收：单测覆盖官网字段冲突候选不覆盖原值、复核批准后替换画像字段、旧断言 superseded、新断言 active/approved、覆盖审计只引用批准后的 evidence。
+  - 后续增强：UI 待复核队列、批量批准/驳回和字段级来源优先级规则仍可继续推进。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

@@ -745,6 +745,8 @@ class CompanyProfileFieldAssertion:
     assertion_status: str = "active"
     extraction_method: str = ""
     supersedes: list[str] = field(default_factory=list)
+    conflicts_with: list[str] = field(default_factory=list)
+    resolved_by: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: Any = field(default_factory=utcnow)
     updated_at: Any = field(default_factory=utcnow)

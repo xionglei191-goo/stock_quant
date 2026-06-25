@@ -3,7 +3,7 @@
 - Status: active
 - Owner group: Data and Evidence
 - Last updated: 2026-06-25
-- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454, T-456, T-457, T-458, T-459, T-460, T-461
+- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454, T-456, T-457, T-458, T-459, T-460, T-461, T-462, T-463
 - Scope: 公司级数据库、事件、关系、研报观点、观察任务、分析结论和模拟反馈核心模型
 - Non-goals: 真实交易订单模型、券商账户模型、把研报作为事实真相源
 
@@ -317,15 +317,21 @@
   "confidence": 0.98,
   "source_policy": "fact_or_governed_record",
   "fact_status": "verified",
-  "review_status": "auto_generated|needs_review|approved|rejected",
-  "assertion_status": "active|superseded|rejected",
+  "review_status": "auto_generated|needs_review|approved|rejected|superseded",
+  "assertion_status": "active|conflict_candidate|superseded|rejected",
   "extraction_method": "rule_company_profile_official_ir_v1",
   "supersedes": ["assertion_id"],
+  "conflicts_with": ["assertion_id"],
+  "resolved_by": "assertion_id_or_actor",
   "metadata": {},
   "created_at": "datetime",
   "updated_at": "datetime"
 }
 ```
+
+冲突规则：同一 `issuer_id`、`field_name`、`period` 和 `security_id` 下，如果 active 断言已有不同 `normalized_value`，新抽取结果应先成为 `assertion_status=conflict_candidate`、`review_status=needs_review`，并把旧断言放入 `conflicts_with`。冲突候选不会更新 `Issuer` 或 `CompanyProfile` 当前字段，直到复核通过。
+
+复核规则：批准冲突候选后，新断言变为 `active` / `approved` 并应用字段值；被替代断言变为 `superseded`，`resolved_by` 指向新断言。驳回候选时，新断言变为 `rejected`，不修改公司画像。
 
 ### 6.1.3 CompanyProfileFieldExtractionResult
 
@@ -345,6 +351,8 @@
     "candidates_found": 4,
     "fields_planned": 4,
     "fields_updated": 0,
+    "assertions_recorded": 0,
+    "conflict_assertions": 0,
     "profiles_saved": 0,
     "skipped_research_or_reference_documents": 0
   },

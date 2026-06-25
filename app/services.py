@@ -20705,11 +20705,95 @@ class SystemService:
             if value:
                 rows = [item for item in rows if str(getattr(item, field_name, "")) == value]
         rows.sort(key=lambda item: (str(to_plain(item.updated_at)), item.assertion_id), reverse=True)
+        status_counts: dict[str, int] = {}
+        review_counts: dict[str, int] = {}
+        for assertion in rows:
+            status_counts[assertion.assertion_status] = status_counts.get(assertion.assertion_status, 0) + 1
+            review_counts[assertion.review_status] = review_counts.get(assertion.review_status, 0) + 1
         return {
             "schema_id": "company-profile-field-assertions-v1",
             "count": len(rows),
             "assertions": [to_plain(item) for item in rows[:limit]],
+            "status_counts": status_counts,
+            "review_status_counts": review_counts,
+            "conflict_count": status_counts.get("conflict_candidate", 0),
+            "superseded_count": status_counts.get("superseded", 0),
             "usage_boundary": "profile_field_assertions_are_local_fact_provenance_records_no_live_trading",
+        }
+
+    def review_company_profile_field_assertion(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        assertion_id = str(payload.get("assertion_id", "")).strip()
+        action = str(payload.get("action", "")).strip().lower()
+        if not assertion_id:
+            raise ValidationError("assertion_id is required")
+        if action not in {"approve", "supersede", "reject"}:
+            raise ValidationError("action must be approve, supersede or reject")
+        assertion = self.store.company_profile_field_assertions.get(assertion_id)
+        if assertion is None:
+            raise ValidationError("assertion_id not found")
+        now = utcnow()
+        note = str(payload.get("note", "")).strip()
+        changed_ids = [assertion.assertion_id]
+        superseded: list[CompanyProfileFieldAssertion] = []
+        if action in {"approve", "supersede"}:
+            requested_supersedes = self._string_list(payload.get("supersedes", []))
+            conflict_ids = self._unique_strings([*assertion.conflicts_with, *requested_supersedes])
+            for conflict_id in conflict_ids:
+                conflict = self.store.company_profile_field_assertions.get(conflict_id)
+                if conflict is None or conflict.assertion_id == assertion.assertion_id:
+                    continue
+                conflict.assertion_status = "superseded"
+                conflict.review_status = "superseded"
+                conflict.resolved_by = assertion.assertion_id
+                conflict.updated_at = now
+                conflict.metadata = {
+                    **dict(conflict.metadata or {}),
+                    "resolution_action": action,
+                    "resolution_note": note,
+                    "resolved_by_actor": actor,
+                }
+                superseded.append(conflict)
+                changed_ids.append(conflict.assertion_id)
+            assertion.assertion_status = "active"
+            assertion.review_status = "approved"
+            assertion.supersedes = self._unique_strings([*assertion.supersedes, *(item.assertion_id for item in superseded)])
+            assertion.resolved_by = ""
+            assertion.metadata = {
+                **dict(assertion.metadata or {}),
+                "resolution_action": action,
+                "resolution_note": note,
+                "resolved_by_actor": actor,
+            }
+            self._apply_company_profile_field_assertion_value(assertion)
+        else:
+            assertion.assertion_status = "rejected"
+            assertion.review_status = "rejected"
+            assertion.resolved_by = str(payload.get("resolved_by", "")) or actor
+            assertion.metadata = {
+                **dict(assertion.metadata or {}),
+                "resolution_action": action,
+                "resolution_note": note,
+                "resolved_by_actor": actor,
+            }
+        assertion.updated_at = now
+        self._audit(
+            actor,
+            "review_company_profile_field_assertion",
+            "company_profile_field_assertion",
+            assertion.assertion_id,
+            approval_state=f"action={action};field={assertion.field_name};issuer_id={assertion.issuer_id}",
+        )
+        self._mark_company_database_dirty()
+        self.store.commit()
+        return {
+            "schema_id": "company-profile-field-assertion-review-v1",
+            "status": "reviewed",
+            "action": action,
+            "assertion": to_plain(assertion),
+            "superseded_assertion_ids": [item.assertion_id for item in superseded],
+            "changed_assertion_ids": self._unique_strings(changed_ids),
+            "usage_boundary": "profile_field_assertion_review_updates_local_fact_provenance_only_no_live_trading",
         }
 
     def company_profile_schema_payload(self, _filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -21006,6 +21090,8 @@ class SystemService:
             "candidates_found": 0,
             "fields_planned": 0,
             "fields_updated": 0,
+            "assertions_recorded": 0,
+            "conflict_assertions": 0,
             "profiles_saved": 0,
             "skipped_research_or_reference_documents": 0,
         }
@@ -21029,6 +21115,8 @@ class SystemService:
                 applied = self._apply_company_profile_field_candidates(issuer, row["candidates"], overwrite=overwrite)
                 row["applied"] = applied
                 totals["fields_updated"] += int(applied["fields_updated"])
+                totals["assertions_recorded"] += len(applied["assertion_ids"])
+                totals["conflict_assertions"] += sum(1 for item in row["candidates"] if item["status"] == "conflict_needs_review")
                 totals["profiles_saved"] += 1 if applied["profile_saved"] else 0
             companies.append(row)
         self._audit(
@@ -21038,7 +21126,7 @@ class SystemService:
             "official_ir_fields",
             approval_state=f"execute={execute};issuers={len(issuers)};fields_updated={totals['fields_updated']}",
         )
-        if execute and totals["profiles_saved"]:
+        if execute and (totals["profiles_saved"] or totals["assertions_recorded"]):
             self._mark_company_database_dirty()
             self.store.commit()
         return {
@@ -21439,8 +21527,8 @@ class SystemService:
             return {"fields_updated": 0, "profile_saved": False, "updated_fields": [], "assertion_ids": []}
         existing_profile = self.store.company_profiles.get(issuer.issuer_id)
         overlay = to_plain(existing_profile) if existing_profile is not None else {}
-        source_ids = self._unique_strings([*issuer.data_sources, *overlay.get("source_ids", []), *(candidate.get("source_id", "") for candidate in planned)])
-        evidence_ids = self._unique_strings([*overlay.get("evidence_ids", []), *(evidence_id for candidate in planned for evidence_id in candidate.get("evidence_ids", []))])
+        source_ids = self._unique_strings([*issuer.data_sources, *overlay.get("source_ids", [])])
+        evidence_ids = self._unique_strings([*overlay.get("evidence_ids", [])])
         updated_fields: list[str] = []
         company_details = dict(issuer.company_details)
         fundamentals = dict(issuer.fundamentals)
@@ -21451,6 +21539,28 @@ class SystemService:
             value = candidate["value"]
             if not overwrite and self._company_profile_current_field_value(issuer, existing_profile or self._company_profile_from_existing_records(issuer.issuer_id, {}), field_name) not in (None, "", [], {}):
                 candidate["status"] = "skipped_existing"
+                continue
+            normalized_value = self._company_profile_assertion_normalized_value(value)
+            period = self._company_profile_assertion_period(issuer, field_name, value)
+            conflicts = self._company_profile_field_assertion_conflicts(
+                issuer_id=issuer.issuer_id,
+                field_name=field_name,
+                period=period,
+                normalized_value=normalized_value,
+                security_id=str(candidate.get("security_id", "")),
+            )
+            if conflicts:
+                assertion = self._record_company_profile_field_assertion(
+                    issuer,
+                    candidate,
+                    value,
+                    assertion_status="conflict_candidate",
+                    review_status="needs_review",
+                    conflicts_with=[item.assertion_id for item in conflicts],
+                )
+                assertion_ids.append(assertion.assertion_id)
+                candidate["status"] = "conflict_needs_review"
+                candidate["conflicts_with"] = [item.assertion_id for item in conflicts]
                 continue
             applied = False
             if field_name == "business_summary":
@@ -21488,17 +21598,22 @@ class SystemService:
                 continue
             candidate["status"] = "applied"
             updated_fields.append(field_name)
+            source_ids = self._unique_strings([*source_ids, str(candidate.get("source_id", ""))])
+            evidence_ids = self._unique_strings([*evidence_ids, *(str(evidence_id) for evidence_id in candidate.get("evidence_ids", []))])
             assertion = self._record_company_profile_field_assertion(issuer, candidate, value)
             assertion_ids.append(assertion.assertion_id)
-        issuer.company_details = company_details
-        issuer.fundamentals = fundamentals
-        issuer.data_sources = source_ids
-        issuer.updated_at = utcnow()
-        overlay["latest_financial_snapshot"] = financial_snapshot
-        overlay["source_ids"] = source_ids
-        overlay["evidence_ids"] = evidence_ids
-        profile = self._company_profile_from_existing_records(issuer.issuer_id, overlay)
-        self.store.company_profiles[issuer.issuer_id] = profile
+        if updated_fields:
+            issuer.company_details = company_details
+            issuer.fundamentals = fundamentals
+            issuer.data_sources = source_ids
+            issuer.updated_at = utcnow()
+            overlay["latest_financial_snapshot"] = financial_snapshot
+            overlay["source_ids"] = source_ids
+            overlay["evidence_ids"] = evidence_ids
+            profile = self._company_profile_from_existing_records(issuer.issuer_id, overlay)
+            self.store.company_profiles[issuer.issuer_id] = profile
+        else:
+            profile = existing_profile or self._company_profile_from_existing_records(issuer.issuer_id, {})
         return {
             "fields_updated": len(updated_fields),
             "profile_saved": bool(updated_fields),
@@ -21507,22 +21622,111 @@ class SystemService:
             "profile": to_plain(profile),
         }
 
-    def _record_company_profile_field_assertion(self, issuer: Issuer, candidate: Mapping[str, Any], value: Any) -> CompanyProfileFieldAssertion:
+    def _company_profile_assertion_normalized_value(self, value: Any) -> str:
+        return json.dumps(to_plain(value), ensure_ascii=False, sort_keys=True, default=str)[:1000]
+
+    def _company_profile_assertion_period(self, issuer: Issuer, field_name: str, value: Any) -> str:
+        if field_name == "period":
+            return str(value)
+        return str((issuer.fundamentals or {}).get("period", ""))
+
+    def _company_profile_field_assertion_conflicts(
+        self,
+        *,
+        issuer_id: str,
+        field_name: str,
+        period: str,
+        normalized_value: str,
+        security_id: str = "",
+    ) -> list[CompanyProfileFieldAssertion]:
+        conflicts: list[CompanyProfileFieldAssertion] = []
+        for assertion in self.store.company_profile_field_assertions.values():
+            if assertion.issuer_id != issuer_id:
+                continue
+            if assertion.field_name != field_name:
+                continue
+            if assertion.assertion_status != "active":
+                continue
+            if period and assertion.period and assertion.period != period:
+                continue
+            if security_id and assertion.security_id and assertion.security_id != security_id:
+                continue
+            if assertion.normalized_value and assertion.normalized_value != normalized_value:
+                conflicts.append(assertion)
+        conflicts.sort(key=lambda item: (float(item.confidence or 0.0), str(to_plain(item.updated_at))), reverse=True)
+        return conflicts
+
+    def _apply_company_profile_field_assertion_value(self, assertion: CompanyProfileFieldAssertion) -> CompanyProfile:
+        issuer = self.store.issuers.get(assertion.issuer_id)
+        if issuer is None:
+            raise ValidationError("assertion issuer_id not found")
+        existing_profile = self.store.company_profiles.get(issuer.issuer_id)
+        overlay = to_plain(existing_profile) if existing_profile is not None else {}
+        company_details = dict(issuer.company_details)
+        fundamentals = dict(issuer.fundamentals)
+        financial_snapshot = dict(overlay.get("latest_financial_snapshot", {}))
+        field_name = assertion.field_name
+        value = assertion.value
+        if field_name == "business_summary":
+            company_details["business_summary"] = str(value)
+            overlay["business_summary"] = str(value)
+        elif field_name == "products":
+            products = [str(item) for item in value] if isinstance(value, list) else [str(value)]
+            company_details["products"] = products
+            overlay["products"] = products
+        elif field_name in {"website_url", "ir_url", "headquarters"}:
+            company_details[field_name] = str(value)
+        elif field_name == "employee_count":
+            company_details[field_name] = int(value)
+        elif field_name == "management":
+            company_details[field_name] = [dict(item) for item in value] if isinstance(value, list) else []
+        elif field_name in {"key_customers", "key_suppliers"}:
+            company_details[field_name] = [str(item) for item in value] if isinstance(value, list) else [str(value)]
+        elif field_name in {"country", "region", "sector", "industry"}:
+            setattr(issuer, field_name, str(value))
+            overlay[field_name] = str(value)
+        elif field_name in {"period", "revenue", "net_income", "gross_margin", "cash", "debt"}:
+            fundamentals[field_name] = value
+            financial_snapshot[field_name] = value
+        else:
+            raise ValidationError(f"unsupported company profile assertion field: {field_name}")
+        overlay["latest_financial_snapshot"] = financial_snapshot
+        overlay["source_ids"] = self._unique_strings([*overlay.get("source_ids", []), *assertion.source_ids])
+        overlay["evidence_ids"] = self._unique_strings([*overlay.get("evidence_ids", []), *assertion.evidence_ids])
+        issuer.company_details = company_details
+        issuer.fundamentals = fundamentals
+        issuer.data_sources = self._unique_strings([*issuer.data_sources, *assertion.source_ids])
+        issuer.updated_at = utcnow()
+        profile = self._company_profile_from_existing_records(issuer.issuer_id, overlay)
+        self.store.company_profiles[issuer.issuer_id] = profile
+        return profile
+
+    def _record_company_profile_field_assertion(
+        self,
+        issuer: Issuer,
+        candidate: Mapping[str, Any],
+        value: Any,
+        *,
+        assertion_status: str = "active",
+        review_status: str = "auto_generated",
+        conflicts_with: list[str] | None = None,
+        supersedes: list[str] | None = None,
+    ) -> CompanyProfileFieldAssertion:
         field_name = str(candidate.get("field", ""))
         document_id = str(candidate.get("document_id", ""))
         evidence_ids = [str(item) for item in candidate.get("evidence_ids", [])]
         source_id = str(candidate.get("source_id", ""))
-        normalized_value = json.dumps(to_plain(value), ensure_ascii=False, sort_keys=True, default=str)
+        normalized_value = self._company_profile_assertion_normalized_value(value)
         seed = "|".join([issuer.issuer_id, field_name, document_id, ",".join(evidence_ids), normalized_value])
         assertion_id = f"cpfa_{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:24]}"
-        period = str(value) if field_name == "period" else str(issuer.fundamentals.get("period", ""))
+        period = self._company_profile_assertion_period(issuer, field_name, value)
         assertion = CompanyProfileFieldAssertion(
             assertion_id=assertion_id,
             issuer_id=issuer.issuer_id,
             security_id=str(candidate.get("security_id", "")),
             field_name=field_name,
             value=to_plain(value),
-            normalized_value=normalized_value[:1000],
+            normalized_value=normalized_value,
             period=period,
             source_ids=[source_id] if source_id else [],
             document_ids=[document_id] if document_id else [],
@@ -21530,13 +21734,16 @@ class SystemService:
             confidence=float(candidate.get("confidence", 0.0) or 0.0),
             source_policy=str(candidate.get("source_policy", "fact_or_governed_record")),
             fact_status="verified",
-            review_status="auto_generated",
-            assertion_status="active",
+            review_status=review_status,
+            assertion_status=assertion_status,
             extraction_method=str(candidate.get("extraction_method", "")),
+            supersedes=self._unique_strings(supersedes or []),
+            conflicts_with=self._unique_strings(conflicts_with or []),
             metadata={
                 "section": candidate.get("section", ""),
                 "source_type": candidate.get("source_type", ""),
                 "previous_value": to_plain(candidate.get("previous_value")),
+                "conflict_count": len(conflicts_with or []),
             },
         )
         self.store.company_profile_field_assertions[assertion_id] = assertion
