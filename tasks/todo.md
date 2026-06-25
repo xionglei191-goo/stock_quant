@@ -337,8 +337,10 @@
   - **已完成（本轮）**：`GET|POST /api/company-intelligence/{symbol}` 新增 `completeness_verdict`，按公司画像、行情快照、事件时间线、关系图谱、研究观点和模拟反馈六层输出完整度状态、分数、缺失层、阻塞缺口、提醒缺口和下一步动作。
   - **已完成（本轮）**：完整度判断接入公司数据库覆盖率和画像深字段 coverage，返回 `database_coverage_score`、`profile_field_coverage_score`、必需事实字段和缺失事实字段，避免只用研报或观点把事实层误判为完整。
   - **已完成（本轮）**：研报边界在 verdict 中显式声明为 `opinion_and_attention_slots_only_not_fact_source`，`research_reports_can_complete_fact_fields=false`；模拟反馈仍固定为 paper-only 验证层。
-  - 验收：单测覆盖未建档公司返回 `not_found` 和建档但缺事件/行情等事实层时返回 `incomplete`；现有公司情报聚合测试通过。
-  - 后续增强：UI 需要把 `completeness_verdict` 从 raw JSON 提升为可视化状态条/缺口清单，并增加浏览器执行路径验收；T-463 可继续处理多字段冲突/替代断言。
+  - **已完成（本轮 UI）**：公司情报工作台新增“完整度判断”状态条和逐层缺口表，展示完整度分数、事实层/分析层/反馈层 readiness、缺失事实字段、下一步动作和研报边界。
+  - **已完成（本轮验收）**：`scripts/ui_static_check.py` 覆盖新增 DOM 和渲染函数；`scripts/ui_interaction_acceptance.py` 覆盖 SPCX 研究流和未知公司空状态中的完整度 UI。
+  - 验收：单测覆盖未建档公司返回 `not_found` 和建档但缺事件/行情等事实层时返回 `incomplete`；UI 静态检查通过；浏览器验收 18/18 通过。
+  - 后续增强：T-463 可继续处理多字段冲突/替代断言，并把真实样本完整度分数权重校准为可配置规则。
 
 ## 运维/非本机发布附录 / 当前工程治理待办
 

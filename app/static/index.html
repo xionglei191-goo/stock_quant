@@ -1489,6 +1489,15 @@
               <div class="system-box"><strong>模拟反馈</strong><span id="companyIntelSimulationCount">0</span></div>
             </div>
             <div class="system-strip">
+              <div class="system-box"><strong>完整度判断</strong><span id="companyIntelVerdictStatus">待载入</span></div>
+              <div class="system-box"><strong>完整度分数</strong><span id="companyIntelVerdictScore">0%</span></div>
+              <div class="system-box"><strong>事实层</strong><span id="companyIntelFactReadiness">未就绪</span></div>
+              <div class="system-box"><strong>分析层</strong><span id="companyIntelAnalysisReadiness">未就绪</span></div>
+              <div class="system-box"><strong>反馈层</strong><span id="companyIntelFeedbackReadiness">未就绪</span></div>
+              <div class="system-box"><strong>缺事实字段</strong><span id="companyIntelFactFieldMissing">0</span></div>
+            </div>
+            <table><thead><tr><th>层级</th><th>状态</th><th>性质</th><th>说明</th></tr></thead><tbody id="companyIntelVerdictRows"></tbody></table>
+            <div class="system-strip">
               <div class="system-box"><strong>缺口诊断</strong><span id="companyIntelGuidanceStatus">待载入</span></div>
               <div class="system-box"><strong>缺失层数</strong><span id="companyIntelMissingCount">0</span></div>
               <div class="system-box"><strong>可执行下一步</strong><span id="companyIntelNextActionCount">0</span></div>
@@ -3731,6 +3740,12 @@
         available: "可用",
         usable: "可用",
         usable_with_warnings: "可用但有警告",
+        usable_with_gaps: "有缺口可用",
+        complete: "完整",
+        near_complete: "接近完整",
+        incomplete: "未完整",
+        not_found: "未建档",
+        sparse: "稀疏",
         research_only: "仅研究",
         needs_review: "需要复核",
         not_actionable: "不可执行",
@@ -3895,7 +3910,15 @@
         continue_or_expand: "继续或扩大",
         review_again: "重新复核",
         stop_or_reduce: "停止或降低",
-        manual_reference_boundary_review: "人工资料边界复核"
+        manual_reference_boundary_review: "人工资料边界复核",
+        fact_or_governed_record: "事实或治理记录",
+        public_or_local_market_data: "公开或本地行情",
+        official_public_fact_or_reviewed_event: "官方公开事实或复核事件",
+        fact_or_reviewed_relationship_candidate: "事实或已复核关系",
+        opinion_layer_not_fact_source: "观点层，不作事实源",
+        paper_only_feedback: "仅纸面反馈",
+        official_disclosure_company_ir_public_market_or_governed_local_records_only: "仅官方披露、公司 IR、公开行情或治理后的本地记录",
+        opinion_and_attention_slots_only_not_fact_source: "仅观点和关注度信号，不作事实源"
       };
       return labels[value] || value || "-";
     }
@@ -4853,6 +4876,68 @@
       return `<button data-action="company-intel-guidance" data-guidance-action="${action}">${label}</button>`;
     }
 
+    function companyIntelVerdictTone(status) {
+      if (status === "complete") return "ok";
+      if (status === "not_found" || status === "incomplete") return "block";
+      return "warn";
+    }
+
+    function readinessLabel(value) {
+      return value ? "就绪" : "未就绪";
+    }
+
+    function renderCompanyIntelCompletenessVerdict(data) {
+      const verdict = data.completeness_verdict || {};
+      const status = verdict.status || "unknown";
+      const label = verdict.label || statusLabel(status);
+      const level = verdict.level ? ` · ${statusLabel(verdict.level)}` : "";
+      const score = Number(verdict.score || 0);
+      const missingFields = verdict.missing_fact_fields || [];
+      const recommended = verdict.recommended_next_action || {};
+      const policy = verdict.source_policy_summary || {};
+      $("companyIntelVerdictStatus").innerHTML = `<span class="badge ${companyIntelVerdictTone(status)}">${label}</span>${level}`;
+      $("companyIntelVerdictScore").textContent = pct(score);
+      $("companyIntelFactReadiness").textContent = readinessLabel(verdict.ready_for_fact_review);
+      $("companyIntelAnalysisReadiness").textContent = readinessLabel(verdict.ready_for_analysis);
+      $("companyIntelFeedbackReadiness").textContent = readinessLabel(verdict.ready_for_feedback_review);
+      $("companyIntelFactFieldMissing").textContent = `${missingFields.length}`;
+      const sectionRows = (verdict.sections || []).map((item) => ({
+        layer: item.label || companyIntelSectionLabel(item.section),
+        status: item.available ? "已覆盖" : "缺失",
+        tone: item.available ? "ok" : item.blocking ? "block" : "warn",
+        type: item.blocking ? "事实层阻塞" : "观点/反馈提醒",
+        detail: `${statusLabel(item.source_policy || "")}${metaLine("记录", item.record_count ?? 0)}${metaLine("得分", pct(item.score_contribution || 0))}${metaLine("建议", item.recommended_action || companyIntelSectionAction(item.section))}`,
+      }));
+      if (missingFields.length) {
+        sectionRows.push({
+          layer: "画像事实字段",
+          status: `${missingFields.length} 项缺失`,
+          tone: "warn",
+          type: "字段级证据",
+          detail: missingFields.slice(0, 8).map(statusLabel).join(", "),
+        });
+      }
+      if (recommended.action && recommended.action !== "none") {
+        sectionRows.push({
+          layer: "下一步",
+          status: statusLabel(recommended.action),
+          tone: "warn",
+          type: "补库动作",
+          detail: `${recommended.label || ""}${metaLine("原因", recommended.reason || "")}`,
+        });
+      }
+      if (policy.research_reports) {
+        sectionRows.push({
+          layer: "研报边界",
+          status: policy.research_reports_can_complete_fact_fields ? "需复核" : "不补事实",
+          tone: policy.research_reports_can_complete_fact_fields ? "block" : "ok",
+          type: "来源边界",
+          detail: statusLabel(policy.research_reports),
+        });
+      }
+      $("companyIntelVerdictRows").innerHTML = rows(sectionRows, "暂无完整度判断。", (item) => `<tr><td>${item.layer}</td><td><span class="badge ${item.tone}">${item.status}</span></td><td>${item.type}</td><td>${String(item.detail || "").slice(0, 220)}</td></tr>`);
+    }
+
     function renderCompanyIntelGuidance(data) {
       const quality = data.data_quality || {};
       const missing = quality.missing_sections || [];
@@ -5427,6 +5512,7 @@
       $("companyIntelEvidenceCount").textContent = `${counts.evidence || 0} 证据 / ${(counts.company_events || 0) + (counts.disclosure_events || 0)} 事件`;
       $("companyIntelResearchCount").textContent = `${(counts.structured_research_reports || 0) + (counts.report_viewpoints || 0) + (counts.research_reports || 0) + (counts.research_answers || 0) + (counts.analysis_conclusions || 0)}`;
       $("companyIntelSimulationCount").textContent = `${(counts.simulation_feedback_records || 0) + (counts.simulated_executions || 0) + (counts.portfolio_transactions || 0)}`;
+      renderCompanyIntelCompletenessVerdict(data);
       renderCompanyIntelGuidance(data);
       const factRows = [
         ...((profile.profiles || []).slice(0, 5).map((item) => ({ type: "画像", id: item.issuer_id, status: `${Math.round((item.data_quality?.profile_coverage || 0) * 100)}%`, detail: `${item.display_name || item.legal_name || ""} ${item.industry || ""}` }))),
@@ -5468,6 +5554,7 @@
       $("companyIntelRawBox").textContent = userPretty({
         symbol: data.symbol,
         resolution: data.resolution,
+        completeness_verdict: data.completeness_verdict,
         data_quality: quality,
         section_counts: counts,
         company_profile: profile,
