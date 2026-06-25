@@ -1530,6 +1530,28 @@
               <button id="previewCompanyReportRealization">预览兑现</button>
               <button id="runCompanyReportRealization" class="primary">更新兑现</button>
             </div>
+            <div class="row">
+              <div class="field">
+                <label for="companyIntelProfileFieldList">画像字段</label>
+                <input id="companyIntelProfileFieldList" value="business_summary,products,period,revenue,net_income,gross_margin,cash,debt" aria-label="公司画像深字段列表">
+                <span class="hint">用逗号分隔；留空使用默认深字段</span>
+              </div>
+              <label class="field compact">
+                <span>要求证据</span>
+                <input id="companyIntelProfileRequireEvidence" type="checkbox" aria-label="画像字段必须有证据" checked>
+                <span class="hint">只接受证据回链</span>
+              </label>
+              <label class="field compact">
+                <span>刷新已有</span>
+                <input id="companyIntelProfileRefreshExisting" type="checkbox" aria-label="刷新已有公司画像字段">
+                <span class="hint">默认不覆盖</span>
+              </label>
+              <button id="auditCompanyProfileFieldCoverage">深字段审计</button>
+              <button id="previewCompanyProfileFieldExtract">预览字段抽取</button>
+              <button id="runCompanyProfileFieldExtract" class="primary">执行字段抽取</button>
+              <button id="previewCompanyQualityReconcile">预览质量归并</button>
+              <button id="runCompanyQualityReconcile" class="primary">执行质量归并</button>
+            </div>
             <div class="system-strip">
               <div class="system-box"><strong>覆盖率</strong><span id="companyIntelCoverageScore">0%</span></div>
               <div class="system-box"><strong>缺失层</strong><span id="companyIntelCoverageMissing">0</span></div>
@@ -1543,9 +1565,25 @@
               <div class="system-box"><strong>兑现状态</strong><span id="companyIntelRealizationStatus">待检查</span></div>
               <div class="system-box"><strong>兑现更新</strong><span id="companyIntelRealizationUpdated">0/0</span></div>
             </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>深字段</strong><span id="companyIntelProfileFieldCoverageStatus">待审计</span></div>
+              <div class="system-box"><strong>字段覆盖</strong><span id="companyIntelProfileFieldCoverageScore">0%</span></div>
+              <div class="system-box"><strong>缺失字段</strong><span id="companyIntelProfileFieldMissingCount">0</span></div>
+              <div class="system-box"><strong>抽取状态</strong><span id="companyIntelProfileFieldExtractStatus">待预览</span></div>
+              <div class="system-box"><strong>候选字段</strong><span id="companyIntelProfileFieldCandidateCount">0</span></div>
+              <div class="system-box"><strong>写入字段</strong><span id="companyIntelProfileFieldUpdatedCount">0</span></div>
+              <div class="system-box"><strong>质量归并</strong><span id="companyIntelQualityReconcileStatus">待预览</span></div>
+              <div class="system-box"><strong>事件重复</strong><span id="companyIntelEventDuplicateCount">0</span></div>
+              <div class="system-box"><strong>关系重复</strong><span id="companyIntelRelationshipDuplicateCount">0</span></div>
+              <div class="system-box"><strong>实体候选</strong><span id="companyIntelEntityMergeCandidateCount">0</span></div>
+              <div class="system-box"><strong>来源评分</strong><span id="companyIntelSourceQualityCount">0</span></div>
+            </div>
             <table><thead><tr><th>运行</th><th>目标/批次</th><th>覆盖变化</th><th>汇总</th></tr></thead><tbody id="companyIntelRunRows"></tbody></table>
             <table><thead><tr><th>运行</th><th>覆盖趋势</th><th>缺失变化</th><th>状态/边界</th></tr></thead><tbody id="companyIntelTrendRows"></tbody></table>
             <table><thead><tr><th>公司</th><th>覆盖率</th><th>缺失层</th><th>计数</th></tr></thead><tbody id="companyIntelCoverageRows"></tbody></table>
+            <table><thead><tr><th>字段</th><th>分组</th><th>状态</th><th>来源/原因</th></tr></thead><tbody id="companyIntelProfileFieldRows"></tbody></table>
+            <table><thead><tr><th>候选字段</th><th>值</th><th>来源</th><th>状态</th></tr></thead><tbody id="companyIntelProfileFieldExtractRows"></tbody></table>
+            <table><thead><tr><th>质量项</th><th>对象</th><th>动作/分数</th><th>说明</th></tr></thead><tbody id="companyIntelQualityReconcileRows"></tbody></table>
             <pre id="companyIntelOperationBox">载入公司后可审计覆盖率、预览补齐和更新研报兑现。</pre>
           </div>
           <div class="panel span-12">
@@ -4880,6 +4918,213 @@
       return payload;
     }
 
+    function companyIntelProfileFieldSelection() {
+      return formValue("companyIntelProfileFieldList", "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+
+    function companyIntelProfileFieldAuditPayload(limit = 20) {
+      const payload = companyIntelScopedPayload(limit);
+      const fields = companyIntelProfileFieldSelection();
+      if (fields.length) payload.required_fields = fields;
+      payload.include_optional = true;
+      payload.require_evidence = Boolean($("companyIntelProfileRequireEvidence")?.checked);
+      return payload;
+    }
+
+    function companyIntelProfileFieldExtractPayload(execute = false) {
+      const payload = companyIntelScopedPayload(Number(formValue("companyIntelBuildLimit", "20")) || 20);
+      const fields = companyIntelProfileFieldSelection();
+      if (fields.length) payload.fields = fields;
+      payload.require_evidence = Boolean($("companyIntelProfileRequireEvidence")?.checked);
+      payload.refresh_existing = Boolean($("companyIntelProfileRefreshExisting")?.checked);
+      payload.execute = execute;
+      payload.dry_run = !execute;
+      return payload;
+    }
+
+    function renderCompanyProfileFieldCoverage(data, showDetails = true) {
+      const companies = data.companies || [];
+      const first = companies[0] || {};
+      const fields = first.fields || {};
+      const fieldRows = companies.flatMap((company) => Object.entries(company.fields || {}).map(([fieldName, field]) => ({
+        issuer_id: company.issuer_id,
+        display_name: company.display_name,
+        field_name: fieldName,
+        group: field.group,
+        present: Boolean(field.present),
+        source_policy: field.source_policy,
+        source_records: field.source_records || [],
+        evidence_ids: field.evidence_ids || [],
+        missing_reason: field.missing_reason || ""
+      })));
+      $("companyIntelProfileFieldCoverageStatus").textContent = companies.length ? "已审计" : "无公司";
+      $("companyIntelProfileFieldCoverageScore").textContent = pct(first.field_coverage_score || data.average_field_coverage_score || 0);
+      $("companyIntelProfileFieldMissingCount").textContent = `${(first.missing_fields || []).length || Object.values(data.field_missing_counts || {}).reduce((sum, value) => sum + Number(value || 0), 0)}`;
+      $("companyIntelProfileFieldRows").innerHTML = rows(fieldRows.slice(0, 80), "暂无深字段覆盖结果。", (item) => {
+        const sourceLine = item.present
+          ? [
+              `${(item.source_records || []).slice(0, 3).map((record) => compactId(record.resource_id || record.resource_type || "")).join(", ") || "-"}`,
+              (item.evidence_ids || []).length ? `evidence ${(item.evidence_ids || []).length}` : ""
+            ].filter(Boolean).join(" · ")
+          : statusLabel(item.missing_reason || "missing");
+        return `<tr><td>${statusLabel(item.field_name)}${metaLine("公司", compactId(item.issuer_id))}</td><td>${statusLabel(item.group || "")}</td><td>${item.present ? '<span class="badge ok">已覆盖</span>' : '<span class="badge warn">缺失</span>'}</td><td>${statusLabel(item.source_policy || "")}${metaLine("来源", sourceLine)}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          schema_id: data.schema_id,
+          issuer_count: data.issuer_count,
+          average_field_coverage_score: data.average_field_coverage_score,
+          required_fields: data.required_fields,
+          field_missing_counts: data.field_missing_counts,
+          rules: data.rules,
+          usage_boundary: data.usage_boundary,
+          companies: companies.slice(0, 5)
+        });
+      }
+      return fields;
+    }
+
+    async function auditCompanyProfileFieldCoverage(showDetails = true) {
+      try {
+        $("companyIntelProfileFieldCoverageStatus").textContent = "审计中";
+        const { data, trace_id } = await api("/api/company-database/profile-field-coverage/audit", {
+          method: "POST",
+          role: "analyst",
+          body: companyIntelProfileFieldAuditPayload(Number(formValue("companyIntelBuildLimit", "20")) || 20)
+        });
+        renderCompanyProfileFieldCoverage(data, showDetails);
+        if (showDetails) setStatus(`画像深字段审计完成 · ${data.issuer_count || 0} 家 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelProfileFieldCoverageStatus").textContent = "错误";
+        if (showDetails) setStatus(error.message, true);
+      }
+    }
+
+    function renderCompanyProfileFieldExtraction(data, showDetails = true) {
+      const companies = data.companies || [];
+      const totals = data.totals || {};
+      const candidateRows = companies.flatMap((company) => (company.candidates || []).map((candidate) => ({
+        issuer_id: company.issuer_id,
+        display_name: company.display_name,
+        ...candidate
+      })));
+      $("companyIntelProfileFieldExtractStatus").textContent = data.execute ? "已执行" : "预览";
+      $("companyIntelProfileFieldCandidateCount").textContent = `${totals.candidates_found || candidateRows.length || 0}`;
+      $("companyIntelProfileFieldUpdatedCount").textContent = `${totals.fields_updated || 0}`;
+      $("companyIntelProfileFieldExtractRows").innerHTML = rows(candidateRows.slice(0, 50), "暂无可抽取画像字段。请先入库官方披露、IR 或官网证据。", (item) => {
+        const value = typeof item.value === "object" ? JSON.stringify(item.value) : String(item.value ?? "");
+        const source = `${compactId(item.document_id || item.source_id || "")}${metaLine("证据", (item.evidence_ids || []).slice(0, 3).map(compactId).join(", ") || "-")}`;
+        return `<tr><td>${statusLabel(item.field || "")}${metaLine("公司", compactId(item.issuer_id))}</td><td>${value.slice(0, 160)}</td><td>${source}</td><td>${statusLabel(item.status || "")}${metaLine("置信", formatScore(item.confidence || 0))}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          schema_id: data.schema_id,
+          status: data.status,
+          fields: data.fields,
+          totals,
+          source_rules: data.source_rules,
+          usage_boundary: data.usage_boundary,
+          companies: companies.slice(0, 5)
+        });
+      }
+    }
+
+    async function extractCompanyProfileFields(execute = false) {
+      try {
+        $("companyIntelProfileFieldExtractStatus").textContent = execute ? "执行中" : "预览中";
+        const { data, trace_id } = await api("/api/company-database/profile-fields/extract", {
+          method: "POST",
+          role: "data_engineer",
+          body: companyIntelProfileFieldExtractPayload(execute)
+        });
+        renderCompanyProfileFieldExtraction(data, true);
+        if (execute) {
+          await auditCompanyProfileFieldCoverage(false);
+          await loadCompanyIntelligence(false);
+        }
+        setStatus(`${execute ? "画像字段抽取已执行" : "画像字段抽取预览完成"} · 候选 ${data.totals?.candidates_found || 0} · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelProfileFieldExtractStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    function companyIntelQualityReconcilePayload(execute = false) {
+      const payload = companyIntelScopedPayload(Number(formValue("companyIntelBuildLimit", "20")) || 20);
+      payload.include_events = true;
+      payload.include_relationships = true;
+      payload.merge_duplicates = true;
+      payload.score_sources = true;
+      payload.execute = execute;
+      payload.dry_run = !execute;
+      return payload;
+    }
+
+    function renderCompanyDatabaseQualityReconcile(data, showDetails = true) {
+      const companies = data.companies || [];
+      const totals = data.totals || {};
+      const rowsData = [];
+      companies.forEach((company) => {
+        (company.event_duplicate_groups || []).forEach((group) => rowsData.push({
+          type: "event_duplicate",
+          issuer_id: company.issuer_id,
+          object_id: group.canonical_id,
+          action: `${(group.duplicate_ids || []).length} duplicate`,
+          detail: group.reason || group.dedup_key || ""
+        }));
+        (company.relationship_duplicate_groups || []).forEach((group) => rowsData.push({
+          type: group.entity_merge_candidate ? "relationship_alias_merge" : "relationship_duplicate",
+          issuer_id: company.issuer_id,
+          object_id: group.canonical_id,
+          action: `${(group.duplicate_ids || []).length} duplicate`,
+          detail: (group.entity_names || []).join(", ") || group.reason || group.dedup_key || ""
+        }));
+        (company.source_quality || []).slice(0, 20).forEach((item) => rowsData.push({
+          type: item.record_type,
+          issuer_id: company.issuer_id,
+          object_id: item.record_id,
+          action: `${item.source_quality?.level || "-"} ${formatScore(item.source_quality?.score || 0)}`,
+          detail: (item.source_quality?.source_types || []).join(", ") || (item.source_quality?.factors || []).join(", ")
+        }));
+      });
+      $("companyIntelQualityReconcileStatus").textContent = data.execute ? "已执行" : "预览";
+      $("companyIntelEventDuplicateCount").textContent = `${totals.event_duplicates || 0}`;
+      $("companyIntelRelationshipDuplicateCount").textContent = `${totals.relationship_duplicates || 0}`;
+      $("companyIntelEntityMergeCandidateCount").textContent = `${totals.entity_merge_candidates || 0}`;
+      $("companyIntelSourceQualityCount").textContent = `${totals.source_quality_scored || 0}`;
+      $("companyIntelQualityReconcileRows").innerHTML = rows(rowsData.slice(0, 80), "暂无重复事件、关系归并或来源质量评分记录。", (item) => `<tr><td>${statusLabel(item.type)}${metaLine("公司", compactId(item.issuer_id))}</td><td>${compactId(item.object_id)}</td><td>${item.action}</td><td>${String(item.detail || "").slice(0, 180)}</td></tr>`);
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          schema_id: data.schema_id,
+          status: data.status,
+          totals,
+          rules: data.rules,
+          usage_boundary: data.usage_boundary,
+          companies: companies.slice(0, 5)
+        });
+      }
+    }
+
+    async function reconcileCompanyDatabaseQuality(execute = false) {
+      try {
+        $("companyIntelQualityReconcileStatus").textContent = execute ? "执行中" : "预览中";
+        const { data, trace_id } = await api("/api/company-database/quality/reconcile", {
+          method: "POST",
+          role: "data_engineer",
+          body: companyIntelQualityReconcilePayload(execute)
+        });
+        renderCompanyDatabaseQualityReconcile(data, true);
+        if (execute) await loadCompanyIntelligence(false);
+        setStatus(`${execute ? "质量归并已执行" : "质量归并预览完成"} · 事件重复 ${data.totals?.event_duplicates || 0} · 关系重复 ${data.totals?.relationship_duplicates || 0} · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelQualityReconcileStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
     function renderCompanyCoverageAudit(data) {
       const companies = data.companies || [];
       const first = companies[0] || {};
@@ -5941,6 +6186,11 @@
     $("runCompanyBatchBuild").addEventListener("click", () => buildCompanyDatabaseBatch(true));
     $("loadCompanyBuildRuns").addEventListener("click", () => loadCompanyBuildRuns(true));
     $("loadCompanyCoverageTrends").addEventListener("click", () => loadCompanyCoverageTrends(true));
+    $("auditCompanyProfileFieldCoverage").addEventListener("click", () => auditCompanyProfileFieldCoverage(true));
+    $("previewCompanyProfileFieldExtract").addEventListener("click", () => extractCompanyProfileFields(false));
+    $("runCompanyProfileFieldExtract").addEventListener("click", () => extractCompanyProfileFields(true));
+    $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));
+    $("runCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(true));
     $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));
     $("runCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(true));
     $("previewCompanyReportStructure").addEventListener("click", () => structureCompanyReports(false));

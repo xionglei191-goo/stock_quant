@@ -196,7 +196,13 @@ def _run_check(
                 companyIntelRunHistoryStatus: text("#companyIntelRunHistoryStatus"),
                 companyIntelRunRows: text("#companyIntelRunRows").slice(0, 240),
                 companyIntelTrendStatus: text("#companyIntelTrendStatus"),
-                companyIntelTrendRows: text("#companyIntelTrendRows").slice(0, 240)
+                companyIntelTrendRows: text("#companyIntelTrendRows").slice(0, 240),
+                companyIntelProfileFieldCoverageStatus: text("#companyIntelProfileFieldCoverageStatus"),
+                companyIntelProfileFieldExtractStatus: text("#companyIntelProfileFieldExtractStatus"),
+                companyIntelQualityReconcileStatus: text("#companyIntelQualityReconcileStatus"),
+                companyIntelProfileFieldRows: text("#companyIntelProfileFieldRows").slice(0, 240),
+                companyIntelProfileFieldExtractRows: text("#companyIntelProfileFieldExtractRows").slice(0, 240),
+                companyIntelQualityReconcileRows: text("#companyIntelQualityReconcileRows").slice(0, 240)
               };
             })()
             """
@@ -330,14 +336,35 @@ def run_ui_interaction_acceptance(
             _run_check(
                 client,
                 "company_database_batch_preview",
-                "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#previewCompanyBatchBuild').click(); true",
-                "document.querySelector('#companyIntelBatchBuildStatus').textContent.includes('预览') && document.querySelector('#companyIntelOperationBox').textContent.includes('company_database_batch_build')",
+                "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#companyIntelBatchBuildStatus').textContent = '等待'; document.querySelector('#companyIntelCoverageRows').innerHTML = ''; document.querySelector('#previewCompanyBatchBuild').click(); true",
+                "document.querySelector('#companyIntelBatchBuildStatus').textContent.includes('预览') && document.querySelector('#companyIntelCoverageRows').textContent.trim().length > 0",
+                wait_timeout=max(timeout, 60.0),
+            ),
+            _run_check(
+                client,
+                "company_profile_deep_field_coverage_load",
+                "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#companyIntelProfileFieldList').value = 'business_summary,products,revenue,net_income'; document.querySelector('#auditCompanyProfileFieldCoverage').click(); true",
+                "document.querySelector('#companyIntelProfileFieldCoverageStatus').textContent.includes('已审计') && document.querySelector('#companyIntelProfileFieldRows').textContent.trim().length > 0 && document.querySelector('#companyIntelProfileFieldCoverageScore').textContent.trim().length > 0",
+                wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
+                "company_profile_field_extraction_preview",
+                "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#previewCompanyProfileFieldExtract').click(); true",
+                "document.querySelector('#companyIntelProfileFieldExtractStatus').textContent.includes('预览') && document.querySelector('#companyIntelProfileFieldCandidateCount').textContent.trim().length > 0 && document.querySelector('#companyIntelProfileFieldExtractRows').textContent.trim().length > 0",
+                wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
+                "company_database_quality_reconcile_preview",
+                "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#previewCompanyQualityReconcile').click(); true",
+                "document.querySelector('#companyIntelQualityReconcileStatus').textContent.includes('预览') && document.querySelector('#companyIntelSourceQualityCount').textContent.trim().length > 0 && document.querySelector('#companyIntelQualityReconcileRows').textContent.trim().length > 0",
                 wait_timeout=max(timeout, 20.0),
             ),
             _run_check(
                 client,
                 "company_database_batch_execute_records_run_history",
-                "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#runCompanyBatchBuild').click(); true",
+                "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#companyIntelBatchBuildStatus').textContent = '等待'; document.querySelector('#companyIntelRunRows').innerHTML = ''; document.querySelector('#runCompanyBatchBuild').click(); true",
                 "document.querySelector('#companyIntelBatchBuildStatus').textContent.includes('已执行') && document.querySelector('#companyIntelRunHistoryStatus').textContent.trim().length > 0 && document.querySelector('#companyIntelRunHistoryStatus').textContent !== '待载入' && document.querySelector('#companyIntelRunRows').textContent.includes('已执行') && document.querySelector('#companyIntelRunRows').textContent.includes('本地补库历史')",
                 wait_timeout=max(timeout, 30.0),
             ),
