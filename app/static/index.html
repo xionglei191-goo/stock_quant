@@ -1558,6 +1558,7 @@
               <button id="auditCompanyProfileFieldCoverage">深字段审计</button>
               <button id="previewCompanyProfileFieldExtract">预览字段抽取</button>
               <button id="runCompanyProfileFieldExtract" class="primary">执行字段抽取</button>
+              <button id="loadCompanyProfileAssertionConflicts">查看字段冲突</button>
               <button id="previewCompanyQualityReconcile">预览质量归并</button>
               <button id="runCompanyQualityReconcile" class="primary">执行质量归并</button>
             </div>
@@ -1581,6 +1582,9 @@
               <div class="system-box"><strong>抽取状态</strong><span id="companyIntelProfileFieldExtractStatus">待预览</span></div>
               <div class="system-box"><strong>候选字段</strong><span id="companyIntelProfileFieldCandidateCount">0</span></div>
               <div class="system-box"><strong>写入字段</strong><span id="companyIntelProfileFieldUpdatedCount">0</span></div>
+              <div class="system-box"><strong>字段复核</strong><span id="companyIntelProfileAssertionReviewStatus">待载入</span></div>
+              <div class="system-box"><strong>字段冲突</strong><span id="companyIntelProfileAssertionConflictCount">0</span></div>
+              <div class="system-box"><strong>已替代</strong><span id="companyIntelProfileAssertionSupersededCount">0</span></div>
               <div class="system-box"><strong>质量归并</strong><span id="companyIntelQualityReconcileStatus">待预览</span></div>
               <div class="system-box"><strong>事件重复</strong><span id="companyIntelEventDuplicateCount">0</span></div>
               <div class="system-box"><strong>关系重复</strong><span id="companyIntelRelationshipDuplicateCount">0</span></div>
@@ -1592,6 +1596,7 @@
             <table><thead><tr><th>公司</th><th>覆盖率</th><th>缺失层</th><th>计数</th></tr></thead><tbody id="companyIntelCoverageRows"></tbody></table>
             <table><thead><tr><th>字段</th><th>分组</th><th>状态</th><th>来源/原因</th></tr></thead><tbody id="companyIntelProfileFieldRows"></tbody></table>
             <table><thead><tr><th>候选字段</th><th>值</th><th>来源</th><th>状态</th></tr></thead><tbody id="companyIntelProfileFieldExtractRows"></tbody></table>
+            <table><thead><tr><th>冲突断言</th><th>候选值</th><th>来源/冲突</th><th>操作</th></tr></thead><tbody id="companyIntelProfileAssertionReviewRows"></tbody></table>
             <table><thead><tr><th>质量项</th><th>对象</th><th>动作/分数</th><th>说明</th></tr></thead><tbody id="companyIntelQualityReconcileRows"></tbody></table>
             <pre id="companyIntelOperationBox">载入公司后可审计覆盖率、预览补齐和更新研报兑现。</pre>
           </div>
@@ -5117,6 +5122,81 @@
       }
     }
 
+    function companyIntelProfileAssertionPayload(limit = 50, assertionStatus = "conflict_candidate") {
+      const payload = companyIntelScopedPayload(limit);
+      if (assertionStatus) payload.assertion_status = assertionStatus;
+      return payload;
+    }
+
+    function renderCompanyProfileAssertionConflicts(data, showDetails = true) {
+      const assertions = data.assertions || data.company_profile?.profile_field_assertions || [];
+      const conflictRows = assertions.filter((item) => {
+        const assertionStatus = String(item.assertion_status || "");
+        const reviewStatus = String(item.review_status || "");
+        return assertionStatus === "conflict_candidate" || reviewStatus === "needs_review";
+      });
+      const supersededCount = data.superseded_count ?? assertions.filter((item) => String(item.assertion_status || "") === "superseded").length;
+      const conflictCount = data.conflict_count ?? conflictRows.length;
+      $("companyIntelProfileAssertionReviewStatus").textContent = conflictRows.length ? "待复核" : "无冲突";
+      $("companyIntelProfileAssertionConflictCount").textContent = `${conflictCount || conflictRows.length || 0}`;
+      $("companyIntelProfileAssertionSupersededCount").textContent = `${supersededCount || 0}`;
+      $("companyIntelProfileAssertionReviewRows").innerHTML = rows(conflictRows.slice(0, 50), "暂无待复核字段冲突。执行字段抽取并开启刷新已有字段后，如发现不同官方值会进入这里。", (item) => {
+        const value = typeof item.value === "object" ? JSON.stringify(item.value) : String(item.value ?? "");
+        const evidence = (item.evidence_ids || []).slice(0, 3).map(compactId).join(", ") || "-";
+        const conflicts = (item.conflicts_with || []).slice(0, 3).map(compactId).join(", ") || "-";
+        const actions = [
+          `<button data-action="review-company-profile-assertion" data-review-action="approve" data-assertion-id="${item.assertion_id}">批准替换</button>`,
+          `<button data-action="review-company-profile-assertion" data-review-action="reject" data-assertion-id="${item.assertion_id}">拒绝</button>`
+        ].join(" ");
+        return `<tr><td>${compactId(item.assertion_id)}${metaLine("字段", statusLabel(item.field_name || ""))}${metaLine("公司", compactId(item.issuer_id || ""))}</td><td>${value.slice(0, 180)}${metaLine("状态", statusLabel(item.review_status || item.assertion_status || ""))}</td><td>${compactId((item.document_ids || [])[0] || (item.source_ids || [])[0] || "")}${metaLine("证据", evidence)}${metaLine("冲突", conflicts)}</td><td>${actions}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          schema_id: data.schema_id || "company-profile-field-assertions-v1",
+          count: data.count ?? assertions.length,
+          conflict_count: conflictCount,
+          superseded_count: supersededCount,
+          status_counts: data.status_counts,
+          review_status_counts: data.review_status_counts,
+          assertions: conflictRows.slice(0, 10),
+          usage_boundary: data.usage_boundary || "profile_field_assertions_are_local_fact_provenance_records_no_live_trading"
+        });
+      }
+    }
+
+    async function loadCompanyProfileAssertionConflicts(showDetails = true) {
+      try {
+        $("companyIntelProfileAssertionReviewStatus").textContent = "载入中";
+        const { data, trace_id } = await api("/api/company-database/profile-field-assertions", {
+          method: "POST",
+          role: "analyst",
+          body: companyIntelProfileAssertionPayload(50, "conflict_candidate")
+        });
+        renderCompanyProfileAssertionConflicts(data, showDetails);
+        if (showDetails) setStatus(`字段冲突复核队列已载入 · ${data.conflict_count || data.count || 0} 条 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelProfileAssertionReviewStatus").textContent = "错误";
+        if (showDetails) setStatus(error.message, true);
+      }
+    }
+
+    async function reviewCompanyProfileFieldAssertion(assertionId, action) {
+      if (!assertionId) return;
+      const { data, trace_id } = await api("/api/company-database/profile-field-assertions/review", {
+        method: "POST",
+        role: "analyst",
+        body: {
+          assertion_id: assertionId,
+          action,
+          note: `company_intelligence_workbench_${action}`
+        }
+      });
+      setStatus(`字段断言已${action === "approve" ? "批准替换" : "拒绝"} · ${compactId(assertionId)} · ${trace_id}`);
+      await loadCompanyProfileAssertionConflicts(false);
+      await loadCompanyIntelligence(false);
+      return data;
+    }
+
     async function extractCompanyProfileFields(execute = false) {
       try {
         $("companyIntelProfileFieldExtractStatus").textContent = execute ? "执行中" : "预览中";
@@ -5126,6 +5206,7 @@
           body: companyIntelProfileFieldExtractPayload(execute)
         });
         renderCompanyProfileFieldExtraction(data, true);
+        if (execute || Number(data.totals?.conflict_assertions || 0) > 0) await loadCompanyProfileAssertionConflicts(false);
         if (execute) {
           await auditCompanyProfileFieldCoverage(false);
           await loadCompanyIntelligence(false);
@@ -5514,6 +5595,7 @@
       $("companyIntelSimulationCount").textContent = `${(counts.simulation_feedback_records || 0) + (counts.simulated_executions || 0) + (counts.portfolio_transactions || 0)}`;
       renderCompanyIntelCompletenessVerdict(data);
       renderCompanyIntelGuidance(data);
+      renderCompanyProfileAssertionConflicts(data, false);
       const factRows = [
         ...((profile.profiles || []).slice(0, 5).map((item) => ({ type: "画像", id: item.issuer_id, status: `${Math.round((item.data_quality?.profile_coverage || 0) * 100)}%`, detail: `${item.display_name || item.legal_name || ""} ${item.industry || ""}` }))),
         ...(profile.issuers || []).map((item) => ({ type: "公司", id: item.issuer_id, status: item.status || "active", detail: `${item.legal_name || ""} ${item.country || ""}` })),
@@ -6195,6 +6277,8 @@
           setValue("hotspotChainId", target.dataset.chainId || "");
           openTab("search");
           await runHotspotExpansion();
+        } else if (action === "review-company-profile-assertion") {
+          await reviewCompanyProfileFieldAssertion(target.dataset.assertionId, target.dataset.reviewAction || "approve");
         } else if (action === "review-company-relationship") {
           await reviewCompanyRelationship(target.dataset.relationshipId, target.dataset.reviewAction || "approve");
         } else if (action === "company-intel-guidance") {
@@ -6276,6 +6360,7 @@
     $("auditCompanyProfileFieldCoverage").addEventListener("click", () => auditCompanyProfileFieldCoverage(true));
     $("previewCompanyProfileFieldExtract").addEventListener("click", () => extractCompanyProfileFields(false));
     $("runCompanyProfileFieldExtract").addEventListener("click", () => extractCompanyProfileFields(true));
+    $("loadCompanyProfileAssertionConflicts").addEventListener("click", () => loadCompanyProfileAssertionConflicts(true));
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));
     $("runCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(true));
     $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));

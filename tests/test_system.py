@@ -1279,6 +1279,109 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(website_field["assertion_ids"], [conflict_assertion_id])
         self.assertEqual(website_field["evidence_ids"], ["evi_demo_website_new"])
 
+    def test_company_profile_field_assertion_reject_keeps_existing_profile_value(self) -> None:
+        first_document = Document(
+            document_id="doc_demo_website_reject_old",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="official_business_overview",
+            source_id="src_company_ir_reject_old",
+            source_type="company_ir",
+            source_uri="https://example.test/reject-old",
+            rights_tag=RightsTag("public"),
+            body="",
+            title="Demo old official website",
+        )
+        self.service.store.documents[first_document.document_id] = first_document
+        self.service.store.evidence["evi_demo_website_reject_old"] = Evidence(
+            evidence_id="evi_demo_website_reject_old",
+            document_id=first_document.document_id,
+            section="business_overview",
+            page_no=1,
+            bbox="p1",
+            span_text="Official website: https://stable-demo.example.com.",
+            canonical_text="Official website: https://stable-demo.example.com.",
+            confidence=0.90,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+        first = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-fields/extract",
+            {"symbols": ["DEMO"], "fields": ["website_url"], "require_evidence": True, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(first.success, first.error)
+        old_assertion_id = first.data["companies"][0]["applied"]["assertion_ids"][0]
+
+        second_document = Document(
+            document_id="doc_demo_website_reject_new",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="official_business_overview",
+            source_id="src_company_ir_reject_new",
+            source_type="company_ir",
+            source_uri="https://example.test/reject-new",
+            rights_tag=RightsTag("public"),
+            body="",
+            title="Demo unsupported replacement website",
+        )
+        self.service.store.documents[second_document.document_id] = second_document
+        self.service.store.evidence["evi_demo_website_reject_new"] = Evidence(
+            evidence_id="evi_demo_website_reject_new",
+            document_id=second_document.document_id,
+            section="business_overview",
+            page_no=1,
+            bbox="p1",
+            span_text="Official website: https://unconfirmed-demo.example.com.",
+            canonical_text="Official website: https://unconfirmed-demo.example.com.",
+            confidence=0.99,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+        conflict = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-fields/extract",
+            {
+                "symbols": ["DEMO"],
+                "fields": ["website_url"],
+                "require_evidence": True,
+                "refresh_existing": True,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(conflict.success, conflict.error)
+        conflict_assertion_id = conflict.data["companies"][0]["applied"]["assertion_ids"][0]
+
+        rejected = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-assertions/review",
+            {"assertion_id": conflict_assertion_id, "action": "reject", "note": "replacement source rejected"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(rejected.success, rejected.error)
+        self.assertEqual(self.service.store.issuers["issuer_001"].company_details["website_url"], "https://stable-demo.example.com")
+        self.assertEqual(self.service.store.company_profile_field_assertions[old_assertion_id].assertion_status, "active")
+        self.assertEqual(self.service.store.company_profile_field_assertions[conflict_assertion_id].assertion_status, "rejected")
+        self.assertEqual(self.service.store.company_profile_field_assertions[conflict_assertion_id].review_status, "rejected")
+
+        audit = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-coverage/audit",
+            {"symbols": ["DEMO"], "required_fields": ["website_url"], "require_evidence": True},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(audit.success, audit.error)
+        website_field = audit.data["companies"][0]["fields"]["website_url"]
+        self.assertTrue(website_field["present"])
+        self.assertEqual(website_field["assertion_ids"], [old_assertion_id])
+        self.assertEqual(website_field["evidence_ids"], ["evi_demo_website_reject_old"])
+
     def test_company_profile_field_extraction_keeps_research_reports_opinion_only(self) -> None:
         research_document = Document(
             document_id="doc_demo_research_profile_extract",

@@ -358,6 +358,13 @@ def run_ui_interaction_acceptance(
             ),
             _run_check(
                 client,
+                "company_profile_assertion_conflict_queue_render",
+                "document.querySelector('[data-open=\"search\"]').click(); renderCompanyProfileAssertionConflicts({schema_id:'company-profile-field-assertions-v1', count:1, conflict_count:1, superseded_count:0, status_counts:{conflict_candidate:1}, review_status_counts:{needs_review:1}, assertions:[{assertion_id:'cpfa_demo_conflict', issuer_id:'issuer_001', security_id:'sec_001', field_name:'website_url', value:'https://new-demo.example.com', document_ids:['doc_demo_website_new'], evidence_ids:['evi_demo_website_new'], source_ids:['src_company_ir_new'], review_status:'needs_review', assertion_status:'conflict_candidate', conflicts_with:['cpfa_demo_old']}], usage_boundary:'profile_field_assertions_are_local_fact_provenance_records_no_live_trading'}, true); true",
+                "document.querySelector('#companyIntelProfileAssertionReviewStatus').textContent.includes('待复核') && document.querySelector('#companyIntelProfileAssertionConflictCount').textContent.includes('1') && document.querySelector('#companyIntelProfileAssertionReviewRows').textContent.includes('website') && document.querySelector('#companyIntelProfileAssertionReviewRows [data-action=\"review-company-profile-assertion\"][data-review-action=\"approve\"]') !== null && document.querySelector('#companyIntelOperationBox').textContent.includes('conflict_count')",
+                wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
                 "company_database_quality_reconcile_preview",
                 "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#previewCompanyQualityReconcile').click(); true",
                 "document.querySelector('#companyIntelQualityReconcileStatus').textContent.includes('预览') && document.querySelector('#companyIntelSourceQualityCount').textContent.trim().length > 0 && document.querySelector('#companyIntelQualityReconcileRows').textContent.trim().length > 0",
