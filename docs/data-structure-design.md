@@ -3,7 +3,7 @@
 - Status: active
 - Owner group: Data and Evidence
 - Last updated: 2026-06-25
-- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454, T-456, T-457, T-458, T-459, T-460
+- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454, T-456, T-457, T-458, T-459, T-460, T-461
 - Scope: 公司级数据库、事件、关系、研报观点、观察任务、分析结论和模拟反馈核心模型
 - Non-goals: 真实交易订单模型、券商账户模型、把研报作为事实真相源
 
@@ -399,6 +399,74 @@
 | 已应用字段候选 | `CompanyProfileFieldAssertion`，按字段保留 `document_ids`、`evidence_ids`、`confidence` 和 `source_policy` |
 
 抽取结果保持 `review_status` 语义上的“自动候选，需要复核”：当前结构用 `status` 表示 planned/applied，不把规则抽取等同于人工确认。研报、券商研究、本地人工参考和新闻不会写入事实字段。
+
+### 6.1.4 CompanyMaterialInboxManifest / RunSummary
+
+`CompanyMaterialInboxManifest` 是 T-461 本地脚本 `scripts/company_material_inbox_ingest.py` 的 sidecar 输入，不落业务库。它用于把用户已下载或手工保存的公司官网、IR、官方披露材料映射到现有 `SourceDefinition`、`Document`、`Evidence` 和 `CompanyProfileFieldAssertion`。
+
+```json
+{
+  "issuer_id": "issuer_001",
+  "security_id": "sec_001",
+  "source_id": "local_demo_ir",
+  "source_type": "company_ir",
+  "document_type": "official_business_overview",
+  "source_uri": "https://company.example.com/investors/profile",
+  "file_path": "demo-ir-profile.txt",
+  "title": "Demo IR profile",
+  "language": "en",
+  "published_at": "2026-06-25",
+  "rights_tag": {
+    "license_class": "public_company_ir_reference",
+    "training_allowed": false,
+    "redistribution_allowed": false,
+    "display_use": "allowed",
+    "non_display_use": "restricted",
+    "derived_data_use": "restricted"
+  }
+}
+```
+
+`CompanyMaterialInboxRunSummary` 是脚本输出 artifact，默认路径 `artifacts/company-material-inbox-ingest.json`，分类为 `local-only`。它记录 dry-run 或 execute 的本地补库结果。
+
+```json
+{
+  "generated_at": "datetime",
+  "root_path": "/path/to/company_materials/inbox",
+  "manifest_glob": "*.manifest.json",
+  "dry_run": true,
+  "execute": false,
+  "fields": ["business_summary", "website_url", "ir_url"],
+  "totals": {
+    "manifests_scanned": 1,
+    "planned_count": 1,
+    "invalid_count": 0,
+    "sources_registered": 0,
+    "documents_ingested": 0,
+    "evidence_extracted": 0,
+    "profile_fields_updated": 0,
+    "profile_field_assertions_planned_or_written": 0,
+    "failed_count": 0
+  },
+  "items": [
+    {
+      "manifest_path": "/path/to/demo.manifest.json",
+      "file_path": "/path/to/demo-ir-profile.txt",
+      "issuer_id": "issuer_001",
+      "source_id": "local_demo_ir",
+      "document_id": "doc_cmat_issuer_001_xxx",
+      "status": "planned|executed|invalid|failed",
+      "errors": [],
+      "evidence_count": 0,
+      "fields_updated": 0,
+      "profile_field_assertions": 0
+    }
+  ],
+  "usage_boundary": "local_company_material_inbox_only_official_ir_public_materials_no_external_download_no_training_no_live_trading"
+}
+```
+
+边界：manifest 只允许官方/IR/监管/交易所/公司官方公开材料进入事实层。研报、券商研究、新闻、人工参考、边界不清材料和 `training_allowed=true` 记录只能停留在观点/人工参考层，不能生成 `CompanyProfileFieldAssertion`。
 
 ### 6.2 Security
 

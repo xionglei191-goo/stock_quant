@@ -4727,6 +4727,187 @@ class SystemServiceTests(unittest.TestCase):
             self.assertEqual(report.status, "text_indexed")
             self.assertTrue(any(item.section == "research_report_citation" for item in self.service.store.evidence.values()))
 
+    def test_company_material_inbox_script_dry_run_plans_without_mutation(self) -> None:
+        from scripts.company_material_inbox_ingest import DEFAULT_FIELDS, run_company_material_inbox_ingest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "company_materials"
+            root.mkdir()
+            material = root / "demo-ir.txt"
+            material.write_text(
+                "Business overview: Demo Corp is engaged in cloud AI chips and data center acceleration. "
+                "Official website: https://demo.example.com. Investor relations: https://demo.example.com/investors. "
+                "Headquarters: Shanghai, China. Employees 12,300.",
+                encoding="utf-8",
+            )
+            (root / "demo.manifest.json").write_text(
+                json.dumps(
+                    {
+                        "issuer_id": "issuer_001",
+                        "security_id": "sec_001",
+                        "source_id": "local_demo_ir",
+                        "source_type": "company_ir",
+                        "document_type": "official_business_overview",
+                        "source_uri": "https://demo.example.com/investors/profile",
+                        "file_path": "demo-ir.txt",
+                        "title": "Demo IR profile",
+                        "language": "en",
+                        "published_at": "2026-06-25",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output = Path(temp_dir) / "artifact.json"
+
+            summary = run_company_material_inbox_ingest(
+                base_url="local",
+                root_path=str(root),
+                output=output,
+                manifest_glob="*.manifest.json",
+                extensions=[".txt"],
+                fields=DEFAULT_FIELDS,
+                scan_limit=10,
+                execute=False,
+                dry_run=True,
+                require_evidence=True,
+                refresh_existing=False,
+                timeout=1,
+            )
+
+            self.assertEqual(summary["status"], "passed")
+            self.assertEqual(summary["totals"]["planned_count"], 1)
+            self.assertEqual(summary["totals"]["documents_ingested"], 0)
+            self.assertNotIn("local_demo_ir", self.service.store.sources)
+            self.assertFalse(self.service.store.documents)
+            self.assertFalse(self.service.store.company_profile_field_assertions)
+            self.assertTrue(output.exists())
+
+    def test_company_material_inbox_script_executes_profile_backfill(self) -> None:
+        import scripts.company_material_inbox_ingest as company_inbox_script
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "company_materials"
+            root.mkdir()
+            material = root / "demo-ir.txt"
+            material.write_text(
+                "Business overview: Demo Corp is engaged in cloud AI chips and data center acceleration. "
+                "Products include AI accelerator module, inference card. Official website: https://demo.example.com. "
+                "Investor relations: https://demo.example.com/investors. Headquarters: Shanghai, China. "
+                "Employees 12,300. CEO Jane Doe. Customers include Alpha Cloud, Beta Auto. "
+                "Suppliers include Gamma Foundry, Delta Packaging.",
+                encoding="utf-8",
+            )
+            (root / "demo.manifest.json").write_text(
+                json.dumps(
+                    {
+                        "issuer_id": "issuer_001",
+                        "security_id": "sec_001",
+                        "source_id": "local_demo_ir",
+                        "source_type": "company_ir",
+                        "document_type": "official_business_overview",
+                        "source_uri": "https://demo.example.com/investors/profile",
+                        "file_path": "demo-ir.txt",
+                        "title": "Demo IR profile",
+                        "language": "en",
+                        "published_at": "2026-06-25",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output = Path(temp_dir) / "artifact.json"
+            self_router = self.router
+
+            class LocalClient:
+                def __init__(self, _base_url: str, *, timeout: float = 120.0) -> None:
+                    self.timeout = timeout
+
+                def request(self, method: str, path: str, body: dict | None = None) -> dict:
+                    response = self_router.dispatch(method, path, body or {}, actor="company_inbox_test", role="platform")
+                    if not response.success:
+                        raise company_inbox_script.ApiRequestError(method, path, {"success": False, "error": response.error or {}, "status_code": response.status_code})
+                    return response.data
+
+            original_client = company_inbox_script.ApiClient
+            try:
+                company_inbox_script.ApiClient = LocalClient
+                summary = company_inbox_script.run_company_material_inbox_ingest(
+                    base_url="local",
+                    root_path=str(root),
+                    output=output,
+                    manifest_glob="*.manifest.json",
+                    extensions=[".txt"],
+                    fields=["business_summary", "products", "website_url", "ir_url", "headquarters", "employee_count", "management", "key_customers", "key_suppliers"],
+                    scan_limit=10,
+                    execute=True,
+                    dry_run=False,
+                    require_evidence=True,
+                    refresh_existing=False,
+                    timeout=1,
+                )
+            finally:
+                company_inbox_script.ApiClient = original_client
+
+            self.assertEqual(summary["status"], "passed")
+            self.assertEqual(summary["totals"]["sources_registered"], 1)
+            self.assertEqual(summary["totals"]["documents_ingested"], 1)
+            self.assertGreater(summary["totals"]["evidence_extracted"], 0)
+            self.assertGreaterEqual(summary["totals"]["profile_fields_updated"], 7)
+            issuer = self.service.store.issuers["issuer_001"]
+            self.assertEqual(issuer.company_details["website_url"], "https://demo.example.com")
+            self.assertEqual(issuer.company_details["ir_url"], "https://demo.example.com/investors")
+            self.assertIn("Shanghai", issuer.company_details["headquarters"])
+            self.assertGreater(len(self.service.store.company_profile_field_assertions), 0)
+            self.assertTrue(all(assertion.source_ids == ["local_demo_ir"] for assertion in self.service.store.company_profile_field_assertions.values()))
+
+    def test_company_material_inbox_script_rejects_research_and_manual_sources(self) -> None:
+        from scripts.company_material_inbox_ingest import run_company_material_inbox_ingest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "company_materials"
+            root.mkdir()
+            material = root / "broker-note.txt"
+            material.write_text("Broker opinion should stay out of company fact fields.", encoding="utf-8")
+            (root / "broker.manifest.json").write_text(
+                json.dumps(
+                    {
+                        "issuer_id": "issuer_001",
+                        "security_id": "sec_001",
+                        "source_id": "local_broker_note",
+                        "source_type": "broker_research",
+                        "document_type": "research_report",
+                        "source_uri": "local://broker-note",
+                        "file_path": "broker-note.txt",
+                        "title": "Broker note",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            summary = run_company_material_inbox_ingest(
+                base_url="local",
+                root_path=str(root),
+                output=Path(temp_dir) / "artifact.json",
+                manifest_glob="*.manifest.json",
+                extensions=[".txt"],
+                fields=["business_summary"],
+                scan_limit=10,
+                execute=True,
+                dry_run=False,
+                require_evidence=True,
+                refresh_existing=False,
+                timeout=1,
+            )
+
+            self.assertEqual(summary["status"], "passed")
+            self.assertEqual(summary["totals"]["invalid_count"], 1)
+            self.assertIn("disallowed_source_type", summary["items"][0]["errors"])
+            self.assertIn("disallowed_document_type", summary["items"][0]["errors"])
+            self.assertNotIn("local_broker_note", self.service.store.sources)
+            self.assertFalse(self.service.store.documents)
+            self.assertFalse(self.service.store.company_profile_field_assertions)
+
     def test_research_report_governance_report_flags_stale_and_single_source_bias(self) -> None:
         with TemporaryDirectory() as temp_dir:
             files = [

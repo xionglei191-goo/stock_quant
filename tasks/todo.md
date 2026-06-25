@@ -321,6 +321,16 @@
   - 验收：单测覆盖官方/IR 证据抽取扩展字段并生成断言、字段级 evidence gate、研报不生成事实断言；API 文档和数据结构文档已更新。
   - 后续增强：T-461 本地公司 IR/官网公开材料 inbox 与 backfill；T-462 公司情报页完整度总判断和执行路径验收。
 
+- `DONE` T-461 本地公司 IR/官网公开材料 inbox 与 backfill
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-460 已有字段级证据断言，但用户仍需要把本地已下载或手工保存的公司官网、IR、官方披露材料批量送入公司数据库，而不是手工逐个调用 source/document/evidence/profile-fields API。
+  - **已完成（本轮）**：新增 `scripts/company_material_inbox_ingest.py`，扫描 `*.manifest.json` sidecar，默认 dry-run 输出计划；显式 `--execute` 才注册 source、登记 document、抽取 evidence 并触发 `POST /api/company-database/profile-fields/extract`。
+  - **已完成（本轮）**：manifest 必须显式提供 `issuer_id`、`source_id`、`source_type`、`document_type`、`source_uri` 和 `file_path`，脚本不靠文件名猜公司或来源，支持 `company_ir`、`company_official`、`official_public`、`issuer_disclosure`、`exchange_disclosure`、`regulatory` 等事实源。
+  - **已完成（本轮）**：研报、券商研究、新闻、人工参考和 `training_allowed=true` 记录会被标记 invalid，不会注册 source/document，也不会写入 `CompanyProfileFieldAssertion`。
+  - **已完成（本轮）**：修正官网字段抽取兜底规则，避免把 Investor Relations 链接误写为 `website_url`。
+  - 验收：单测覆盖 dry-run 不落库、execute 完成 source/document/evidence/profile-field assertion 回填、研报/manual 边界拒绝；脚本输出本地 artifact，固定 `local-only` 使用边界。
+  - 后续增强：T-462 公司情报页完整度总判断和执行路径验收；T-463 多字段冲突/替代断言处理。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

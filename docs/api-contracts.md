@@ -2366,6 +2366,63 @@
 
 边界：字段断言是本地公司数据库 provenance，不是投资建议，不连接券商，不触发真实交易。
 
+#### `scripts/company_material_inbox_ingest.py`
+
+T-461 本地脚本，用于把已经下载或手工保存的公司官网、公司 IR、官方披露材料送入公司数据库。它不是新后端服务，不访问外网，不抓取网页；只扫描本机目录中的 `*.manifest.json` sidecar 和对应文本/HTML/Markdown 文件。
+
+默认 dry-run：
+
+```bash
+python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_materials/inbox
+```
+
+执行写入：
+
+```bash
+python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_materials/inbox --execute
+```
+
+执行链路：
+
+1. 读取 manifest 并校验来源边界。
+2. 调用 `POST /api/ingestion/sources` 注册缺失 source。
+3. 调用 `POST /api/ingestion/documents` 登记本地文本为 `Document`。
+4. 调用 `POST /api/evidence/extract` 生成证据回链。
+5. 调用 `POST /api/company-database/profile-fields/extract` 写入画像字段和 `CompanyProfileFieldAssertion`。
+
+最小 manifest：
+
+```json
+{
+  "issuer_id": "issuer_001",
+  "security_id": "sec_001",
+  "source_id": "local_demo_ir",
+  "source_type": "company_ir",
+  "document_type": "official_business_overview",
+  "source_uri": "https://company.example.com/investors/profile",
+  "file_path": "demo-ir-profile.txt",
+  "title": "Demo IR profile",
+  "language": "en",
+  "published_at": "2026-06-25",
+  "rights_tag": {
+    "license_class": "public_company_ir_reference",
+    "training_allowed": false,
+    "redistribution_allowed": false,
+    "display_use": "allowed",
+    "non_display_use": "restricted",
+    "derived_data_use": "restricted"
+  }
+}
+```
+
+允许来源：`company_ir`、`company_official`、`official_public`、`issuer_disclosure`、`exchange_disclosure`、`regulatory`、`public_company_disclosure`。
+
+允许文档：`annual_report`、`10-K`、`10-Q`、`8-K`、`20-F`、`6-K`、`prospectus`、`registration_statement`、`company_announcement`、`official_product_page`、`official_business_overview`、`official_governance_page`、`presentation`、`transcript`、`webcast`。
+
+拒绝边界：`research_report`、`broker_research`、`local_reference`、`manual_reference`、`news`、`curated_public_profile`、`training_allowed=true`。这些记录不会注册 source/document，不会生成 evidence，也不会写入公司事实字段或字段断言。
+
+输出 artifact 默认为 `artifacts/company-material-inbox-ingest.json`，分类为 `local-only`，只用于本机补库审计，不可作为非本机生产发布证据。
+
 #### `GET|POST /api/company-profiles/coverage/audit`
 
 输出公司画像深字段覆盖率，用于回答“公司数据库还缺哪些字段、应该从哪些受治理来源补齐”。该接口只读本地记录，不触发外部下载，不写入画像，不把研报观点升级为事实源。

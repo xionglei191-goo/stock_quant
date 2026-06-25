@@ -21297,7 +21297,7 @@ class SystemService:
         label_expr = "|".join(re.escape(label) for label in labels)
         pattern = rf"(?:{label_expr})[:：\s]*(https?://[^\s,，;；。)）]+|www\.[^\s,，;；。)）]+)"
         match = re.search(pattern, text, flags=re.IGNORECASE)
-        if not match and kind == "website":
+        if not match and kind == "website" and not re.search(r"(?:investor relations|\bir\b|investors|投资者关系)", text, flags=re.IGNORECASE):
             match = re.search(r"\b(https?://(?:www\.)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/[^\s,，;；。)）]*)?)", text)
         if not match:
             return ""
