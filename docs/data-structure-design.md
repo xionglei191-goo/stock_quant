@@ -2,8 +2,8 @@
 
 - Status: active
 - Owner group: Data and Evidence
-- Last updated: 2026-06-24
-- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454, T-456, T-457, T-458
+- Last updated: 2026-06-25
+- Related tasks: T-431, T-432, T-433, T-434, T-435, T-436, T-451, T-453, T-454, T-456, T-457, T-458, T-459, T-460
 - Scope: 公司级数据库、事件、关系、研报观点、观察任务、分析结论和模拟反馈核心模型
 - Non-goals: 真实交易订单模型、券商账户模型、把研报作为事实真相源
 
@@ -170,6 +170,15 @@
   "sector": "string",
   "business_summary": "string",
   "products": ["product_id"],
+  "company_details": {
+    "website_url": "string",
+    "ir_url": "string",
+    "headquarters": "string",
+    "employee_count": 0,
+    "management": [{"role": "CEO", "name": "string"}],
+    "key_customers": ["string"],
+    "key_suppliers": ["string"]
+  },
   "main_securities": ["security_id"],
   "identifiers": {
     "lei": "string",
@@ -240,6 +249,7 @@
           "present": false,
           "source_records": [],
           "evidence_ids": [],
+          "assertion_ids": [],
           "missing_reason": "no_underlying_record|research_report_or_local_reference_is_not_fact_source|no_authorized_fact_source_document",
           "source_policy": "fact_or_governed_record|opinion_slot"
         }
@@ -274,7 +284,10 @@
 |---|---|
 | `identity` | `legal_name`, `display_name`, `aliases`, `country`, `region`, `sector`, `industry`, `identifiers` |
 | `listing` | `security_ids`, `tickers`, `exchange`, `market`, `currency`, `figi`, `isin`, `security_type`, `status`, `listing_date` |
-| `business` | `business_summary`, `products`, `company_details` |
+| `business` | `business_summary`, `products`, `employee_count`, `company_details` |
+| `contact` | `website_url`, `ir_url`, `headquarters` |
+| `governance_people` | `management` |
+| `relationship_clues` | `key_customers`, `key_suppliers` |
 | `market_snapshot` | `as_of_date`, `close`, `volume`, `amount`, `valuation_metrics` |
 | `financial_snapshot` | `period`, `revenue`, `net_income`, `gross_margin`, `cash`, `debt` |
 | `source_evidence` | `source_ids`, `authorized_documents`, `field_evidence_ids`, `evidence_backlinks` |
@@ -284,9 +297,39 @@
 
 事实字段只接受官方披露、公司 IR、公司官网、交易所/监管披露、公开行情或已治理的结构化本地记录。研报只满足 `coverage_opinion`，不能让 business、financial、identity 等事实字段变为 present。`manual_reference` 与边界不清来源只能进入补齐计划和人工复核。
 
-### 6.1.2 CompanyProfileFieldExtractionResult
+### 6.1.2 CompanyProfileFieldAssertion
 
-`CompanyProfileFieldExtractionResult` 是一次本地抽取运行的 API 返回结构，不新增持久化表。它从已入库并通过治理边界的 `Document` / `Evidence` 中生成画像字段候选；默认 dry-run，显式 `execute=true` 时才把候选写入 `Issuer` 和 `CompanyProfile`。
+`CompanyProfileFieldAssertion` 是字段级事实/provenance 记录。它解决 `CompanyProfile.source_ids` / `evidence_ids` 只能表达“整张画像用过哪些来源”、不能证明“某个字段由哪个证据支撑”的问题。字段断言只由已入库、已治理的官方披露、公司 IR、公司官网、交易所/监管披露或公开公司披露生成；研报不会生成事实断言。
+
+```json
+{
+  "assertion_id": "cpfa_xxx",
+  "issuer_id": "issuer_001",
+  "security_id": "sec_001",
+  "field_name": "website_url",
+  "value": "https://example.com",
+  "normalized_value": "\"https://example.com\"",
+  "period": "FY2026",
+  "as_of_date": "datetime|null",
+  "source_ids": ["src_company_ir"],
+  "document_ids": ["doc_company_ir_profile"],
+  "evidence_ids": ["evi_company_ir_profile"],
+  "confidence": 0.98,
+  "source_policy": "fact_or_governed_record",
+  "fact_status": "verified",
+  "review_status": "auto_generated|needs_review|approved|rejected",
+  "assertion_status": "active|superseded|rejected",
+  "extraction_method": "rule_company_profile_official_ir_v1",
+  "supersedes": ["assertion_id"],
+  "metadata": {},
+  "created_at": "datetime",
+  "updated_at": "datetime"
+}
+```
+
+### 6.1.3 CompanyProfileFieldExtractionResult
+
+`CompanyProfileFieldExtractionResult` 是一次本地抽取运行的 API 返回结构，不新增运行表。它从已入库并通过治理边界的 `Document` / `Evidence` 中生成画像字段候选；默认 dry-run，显式 `execute=true` 时才把候选写入 `Issuer` / `CompanyProfile`，并为每个已应用字段写入 `CompanyProfileFieldAssertion`。
 
 ```json
 {
@@ -295,7 +338,7 @@
   "execute": false,
   "dry_run": true,
   "issuer_count": 1,
-  "fields": ["business_summary", "products", "revenue", "net_income"],
+  "fields": ["business_summary", "products", "website_url", "ir_url", "management", "revenue", "net_income"],
   "totals": {
     "documents_scanned": 1,
     "evidence_scanned": 1,
@@ -330,7 +373,8 @@
       "applied": {
         "fields_updated": 0,
         "profile_saved": false,
-        "updated_fields": []
+        "updated_fields": [],
+        "assertion_ids": []
       }
     }
   ],
@@ -348,9 +392,11 @@
 |---|---|
 | `business_summary` | `Issuer.company_details.business_summary`, `CompanyProfile.business_summary` |
 | `products` | `Issuer.company_details.products`, `CompanyProfile.products` |
+| `website_url`, `ir_url`, `headquarters`, `employee_count`, `management`, `key_customers`, `key_suppliers` | `Issuer.company_details` 同名字段 |
 | `country`, `region`, `sector`, `industry` | `Issuer` 同名字段；`sector` / `industry` 同步到 `CompanyProfile` |
 | `period`, `revenue`, `net_income`, `gross_margin`, `cash`, `debt` | `Issuer.fundamentals`, `CompanyProfile.latest_financial_snapshot` |
 | `source_id`, `evidence_ids` | `Issuer.data_sources`, `CompanyProfile.source_ids`, `CompanyProfile.evidence_ids` |
+| 已应用字段候选 | `CompanyProfileFieldAssertion`，按字段保留 `document_ids`、`evidence_ids`、`confidence` 和 `source_policy` |
 
 抽取结果保持 `review_status` 语义上的“自动候选，需要复核”：当前结构用 `status` 表示 planned/applied，不把规则抽取等同于人工确认。研报、券商研究、本地人工参考和新闻不会写入事实字段。
 

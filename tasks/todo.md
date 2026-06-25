@@ -310,6 +310,17 @@
   - **已完成（本轮）**：`scripts/ui_static_check.py` 和 `scripts/ui_interaction_acceptance.py` 覆盖新增 DOM、JS 函数和三个 dry-run 浏览器路径。
   - 验收：UI 静态检查通过；浏览器交互验收覆盖深字段审计、字段抽取预览和质量归并预览；执行路径不下载外部数据、不触发真实交易。
 
+- `DONE` T-460 公司画像基础事实字段扩展与字段级证据断言
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-457/T-459 已能抽取和展示部分画像字段，但公司数据库仍缺官网/IR、总部地址、员工规模、管理层、关键客户/供应商等基础事实字段；同时 `CompanyProfile.source_ids/evidence_ids` 只能表达整张画像来源，不能证明“某个字段由哪个证据支撑”。
+  - **已完成（本轮）**：新增一等 `CompanyProfileFieldAssertion` 持久对象和 `company_profile_field_assertions` 集合，记录字段名、值、来源、文档、证据、置信度、事实状态、复核状态和抽取方法。
+  - **已完成（本轮）**：`POST /api/company-database/profile-fields/extract` 扩展默认字段到 `website_url`、`ir_url`、`headquarters`、`employee_count`、`management`、`key_customers`、`key_suppliers`，执行写入 `Issuer.company_details` 并为每个已应用字段生成字段级断言。
+  - **已完成（本轮）**：新增 `GET|POST /api/company-database/profile-field-assertions` 和 `GET|POST /api/company-profiles/field-assertions`，可按公司、字段和状态查询字段级 provenance。
+  - **已完成（本轮）**：深字段覆盖审计优先使用字段自己的 assertion/evidence；`require_evidence=true` 时不能用无关官方 evidence 证明其他字段。
+  - **已完成（本轮）**：研报、券商研究、新闻、人工参考仍不会写入事实字段，也不会生成 `CompanyProfileFieldAssertion`。
+  - 验收：单测覆盖官方/IR 证据抽取扩展字段并生成断言、字段级 evidence gate、研报不生成事实断言；API 文档和数据结构文档已更新。
+  - 后续增强：T-461 本地公司 IR/官网公开材料 inbox 与 backfill；T-462 公司情报页完整度总判断和执行路径验收。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

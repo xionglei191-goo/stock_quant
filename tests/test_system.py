@@ -954,25 +954,48 @@ class SystemServiceTests(unittest.TestCase):
             bbox="p1",
             span_text=(
                 "Business overview: Demo Corp is engaged in cloud AI chips and data center acceleration. "
-                "Products include AI accelerator module, inference card. FY2026 revenue 1200 million "
+                "Products include AI accelerator module, inference card. Official website: https://demo.example.com. "
+                "Investor relations: https://demo.example.com/investors. Headquarters: Shanghai, China. "
+                "Employees 12,300. CEO Jane Doe. CFO John Smith. Customers include Alpha Cloud, Beta Auto. "
+                "Suppliers include Gamma Foundry, Delta Packaging. FY2026 revenue 1200 million "
                 "and net income 180 million with gross margin 42%. Cash 300 million and debt 80 million."
             ),
             canonical_text=(
                 "Business overview: Demo Corp is engaged in cloud AI chips and data center acceleration. "
-                "Products include AI accelerator module, inference card. FY2026 revenue 1200 million "
+                "Products include AI accelerator module, inference card. Official website: https://demo.example.com. "
+                "Investor relations: https://demo.example.com/investors. Headquarters: Shanghai, China. "
+                "Employees 12,300. CEO Jane Doe. CFO John Smith. Customers include Alpha Cloud, Beta Auto. "
+                "Suppliers include Gamma Foundry, Delta Packaging. FY2026 revenue 1200 million "
                 "and net income 180 million with gross margin 42%. Cash 300 million and debt 80 million."
             ),
             confidence=0.93,
             issuer_id="issuer_001",
             security_id="sec_001",
         )
+        fields_to_extract = [
+            "business_summary",
+            "products",
+            "website_url",
+            "ir_url",
+            "headquarters",
+            "employee_count",
+            "management",
+            "key_customers",
+            "key_suppliers",
+            "period",
+            "revenue",
+            "net_income",
+            "gross_margin",
+            "cash",
+            "debt",
+        ]
 
         dry_run = self.router.dispatch(
             "POST",
             "/api/company-database/profile-fields/extract",
             {
                 "symbols": ["DEMO"],
-                "fields": ["business_summary", "products", "period", "revenue", "net_income", "gross_margin", "cash", "debt"],
+                "fields": fields_to_extract,
                 "require_evidence": True,
             },
             actor="data",
@@ -980,15 +1003,16 @@ class SystemServiceTests(unittest.TestCase):
         )
         self.assertTrue(dry_run.success, dry_run.error)
         self.assertEqual(dry_run.data["status"], "dry_run")
-        self.assertGreaterEqual(dry_run.data["totals"]["fields_planned"], 8)
+        self.assertGreaterEqual(dry_run.data["totals"]["fields_planned"], 15)
         self.assertNotIn("issuer_001", self.service.store.company_profiles)
+        self.assertEqual(len(self.service.store.company_profile_field_assertions), 0)
 
         executed = self.router.dispatch(
             "POST",
             "/api/company-database/profile-fields/extract",
             {
                 "symbols": ["DEMO"],
-                "fields": ["business_summary", "products", "period", "revenue", "net_income", "gross_margin", "cash", "debt"],
+                "fields": fields_to_extract,
                 "require_evidence": True,
                 "execute": True,
             },
@@ -1001,6 +1025,13 @@ class SystemServiceTests(unittest.TestCase):
         issuer = self.service.store.issuers["issuer_001"]
         self.assertIn("cloud AI chips", issuer.company_details["business_summary"])
         self.assertIn("AI accelerator module", issuer.company_details["products"])
+        self.assertEqual(issuer.company_details["website_url"], "https://demo.example.com")
+        self.assertEqual(issuer.company_details["ir_url"], "https://demo.example.com/investors")
+        self.assertIn("Shanghai", issuer.company_details["headquarters"])
+        self.assertEqual(issuer.company_details["employee_count"], 12300)
+        self.assertIn({"role": "CEO", "name": "Jane Doe"}, issuer.company_details["management"])
+        self.assertIn("Alpha Cloud", issuer.company_details["key_customers"])
+        self.assertIn("Gamma Foundry", issuer.company_details["key_suppliers"])
         self.assertEqual(issuer.fundamentals["period"], "FY2026")
         self.assertEqual(issuer.fundamentals["revenue"], 1200000000.0)
         self.assertEqual(issuer.fundamentals["net_income"], 180000000.0)
@@ -1008,6 +1039,20 @@ class SystemServiceTests(unittest.TestCase):
         profile = self.service.store.company_profiles["issuer_001"]
         self.assertIn("src_company_ir", profile.source_ids)
         self.assertIn("evi_demo_ir_profile", profile.evidence_ids)
+        assertions = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-assertions",
+            {"symbols": ["DEMO"], "limit": 50},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(assertions.success, assertions.error)
+        assertion_fields = {item["field_name"] for item in assertions.data["assertions"]}
+        for field_name in ["business_summary", "website_url", "ir_url", "management", "key_customers", "revenue"]:
+            self.assertIn(field_name, assertion_fields)
+        website_assertion = next(item for item in assertions.data["assertions"] if item["field_name"] == "website_url")
+        self.assertEqual(website_assertion["evidence_ids"], ["evi_demo_ir_profile"])
+        self.assertEqual(website_assertion["source_policy"], "fact_or_governed_record")
 
         audit = self.router.dispatch(
             "POST",
@@ -1023,6 +1068,49 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(fields["revenue"]["present"])
         self.assertTrue(fields["net_income"]["present"])
         self.assertTrue(fields["field_evidence_ids"]["present"])
+
+    def test_company_profile_coverage_requires_field_specific_evidence(self) -> None:
+        issuer = self.service.store.issuers["issuer_001"]
+        issuer.company_details = {"business_summary": "Manually entered summary without field evidence."}
+        issuer.fundamentals = {"period": "FY2026", "revenue": 1200000000.0}
+        document = Document(
+            document_id="doc_demo_revenue_only",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="annual_report",
+            source_id="src_sec",
+            source_type="regulatory",
+            source_uri="https://example.test/demo-revenue-only",
+            rights_tag=RightsTag("public"),
+            body="",
+            title="Demo revenue only annual report",
+        )
+        self.service.store.documents[document.document_id] = document
+        self.service.store.evidence["evi_demo_revenue_only"] = Evidence(
+            evidence_id="evi_demo_revenue_only",
+            document_id=document.document_id,
+            section="financials",
+            page_no=1,
+            bbox="p1",
+            span_text="FY2026 revenue 1200 million.",
+            canonical_text="FY2026 revenue 1200 million.",
+            confidence=0.95,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+
+        audit = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-coverage/audit",
+            {"symbols": ["DEMO"], "required_fields": ["business_summary", "revenue"], "require_evidence": True},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(audit.success, audit.error)
+        fields = audit.data["companies"][0]["fields"]
+        self.assertFalse(fields["business_summary"]["present"])
+        self.assertTrue(fields["revenue"]["present"])
+        self.assertEqual(fields["revenue"]["evidence_ids"], ["evi_demo_revenue_only"])
 
     def test_company_profile_field_extraction_keeps_research_reports_opinion_only(self) -> None:
         research_document = Document(
@@ -1064,6 +1152,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(executed.data["totals"]["skipped_research_or_reference_documents"], 1)
         self.assertNotIn("business_summary", self.service.store.issuers["issuer_001"].company_details)
         self.assertNotIn("issuer_001", self.service.store.company_profiles)
+        self.assertEqual(len(self.service.store.company_profile_field_assertions), 0)
 
     def test_company_profile_field_extraction_does_not_overwrite_without_refresh(self) -> None:
         issuer = self.service.store.issuers["issuer_001"]

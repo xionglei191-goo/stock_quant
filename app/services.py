@@ -42,6 +42,7 @@ from .models import (
     CompanyEvent,
     CompanyPosition,
     CompanyProfile,
+    CompanyProfileFieldAssertion,
     CompanyRelationship,
     CorporateAction,
     DrillSchedule,
@@ -91,6 +92,7 @@ from .models import (
     ReportForecast,
     ReportViewpoint,
     ReviewRecord,
+    RightsTag,
     Security,
     SecretRotationRecord,
     SimulatedExecution,
@@ -20687,14 +20689,246 @@ class SystemService:
         profiles.sort(key=lambda item: str(item.updated_at), reverse=True)
         return {"count": len(profiles), "profiles": [to_plain(item) for item in profiles[:limit]]}
 
+    def company_profile_field_assertions_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        limit = self._bounded_limit(filters.get("limit", 100), 5000)
+        rows = list(self.store.company_profile_field_assertions.values())
+        issuer_ids = set(self._string_list(filters.get("issuer_ids", [])))
+        if any(str(filters.get(field_name, "")).strip() for field_name in ["symbol", "ticker", "q"]) or filters.get("symbols"):
+            issuer_ids.update(issuer.issuer_id for issuer in self._company_database_target_issuers(filters, limit=limit))
+        if str(filters.get("issuer_id", "")).strip():
+            issuer_ids.add(str(filters.get("issuer_id")).strip())
+        if issuer_ids:
+            rows = [item for item in rows if item.issuer_id in issuer_ids]
+        for field_name in ["security_id", "field_name", "source_policy", "fact_status", "review_status", "assertion_status"]:
+            value = str(filters.get(field_name, "")).strip()
+            if value:
+                rows = [item for item in rows if str(getattr(item, field_name, "")) == value]
+        rows.sort(key=lambda item: (str(to_plain(item.updated_at)), item.assertion_id), reverse=True)
+        return {
+            "schema_id": "company-profile-field-assertions-v1",
+            "count": len(rows),
+            "assertions": [to_plain(item) for item in rows[:limit]],
+            "usage_boundary": "profile_field_assertions_are_local_fact_provenance_records_no_live_trading",
+        }
+
     def company_profile_schema_payload(self, _filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         return {
             "primary_key": "issuer_id",
             "required_fields": ["issuer_id", "display_name", "security_ids", "coverage_summary", "data_quality"],
+            "extractable_fields": self._company_profile_extractable_fields(),
+            "company_detail_fields": self._company_profile_company_detail_fields(),
             "source_priority": ["official_disclosure", "company_ir", "public_market_data", "local_reference", "manual_reference"],
             "quality_metrics": ["profile_coverage", "event_backlink_rate", "relationship_backlink_rate", "research_viewpoint_coverage"],
             "compatibility_inputs": ["Issuer", "Security", "MarketDataPoint", "ResearchReportAsset", "DisclosureEvent", "CompanyPosition"],
         }
+
+    def company_official_material_inbox(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        raw_root = str(payload.get("root_path") or os.environ.get("AI_QUANT_COMPANY_OFFICIAL_INBOX") or "").strip()
+        if not raw_root:
+            raise ValidationError("company official material inbox requires root_path or AI_QUANT_COMPANY_OFFICIAL_INBOX")
+        root = Path(raw_root).expanduser()
+        if not root.exists() or not root.is_dir():
+            raise ValidationError(f"company official material inbox root not found: {root}")
+        extensions = payload.get("extensions", [".txt", ".md", ".html", ".htm", ".pdf"])
+        if isinstance(extensions, str):
+            extensions = [item.strip() for item in extensions.split(",") if item.strip()]
+        allowed_extensions = {str(item).lower() if str(item).startswith(".") else f".{str(item).lower()}" for item in extensions}
+        limit = self._bounded_limit(payload.get("limit", payload.get("scan_limit", 200)), 10000)
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        extract_fields = self._truthy(payload.get("extract_fields", execute))
+        require_evidence = self._truthy(payload.get("require_evidence", True))
+        refresh_existing = self._truthy(payload.get("refresh_existing", False))
+        fields = self._string_list(payload.get("fields", []))
+        files = [path for path in sorted(root.rglob("*")) if path.is_file() and path.suffix.lower() in allowed_extensions][:limit]
+        items: list[dict[str, Any]] = []
+        ingested_document_ids: list[str] = []
+        affected_issuer_ids: list[str] = []
+        evidence_created = 0
+        for path in files:
+            row = self._company_official_material_inbox_row(path, root)
+            issuer = self._company_official_material_match_issuer(row["symbol_token"])
+            if issuer is None:
+                row.update({"action": "skip_unknown_issuer", "status": "skipped", "reason": "path token did not match an issuer/security/mapping"})
+                items.append(row)
+                continue
+            source_type, document_type = self._company_official_material_types(path, row)
+            source_id = self._company_official_material_source_id(issuer.issuer_id, source_type)
+            document_id = self._company_official_material_document_id(path, issuer.issuer_id)
+            body = self._company_official_material_text(path)
+            row.update(
+                {
+                    "issuer_id": issuer.issuer_id,
+                    "source_id": source_id,
+                    "source_type": source_type,
+                    "document_id": document_id,
+                    "document_type": document_type,
+                    "has_text": bool(body.strip()),
+                    "action": "ingest" if document_id not in self.store.documents else "skip_existing_document",
+                    "status": "planned" if not execute else "pending",
+                }
+            )
+            if not execute:
+                items.append(row)
+                continue
+            self._ensure_company_official_material_source(issuer, source_type, actor=actor)
+            if document_id in self.store.documents:
+                document = self.store.documents[document_id]
+                row["status"] = "skipped_existing"
+            else:
+                document = self.ingest_document(
+                    {
+                        "document_id": document_id,
+                        "issuer_id": issuer.issuer_id,
+                        "security_id": self._company_official_material_primary_security_id(issuer.issuer_id),
+                        "source_id": source_id,
+                        "source_type": source_type,
+                        "document_type": document_type,
+                        "source_uri": f"local://company-official-inbox/{row['relative_path']}",
+                        "title": path.stem.replace("_", " ").replace("-", " "),
+                        "body": body,
+                        "rights_tag": to_plain(self.store.sources[source_id].rights_tag),
+                        "language": "zh" if re.search(r"[\u4e00-\u9fff]", body) else "en",
+                    },
+                    actor=actor,
+                )
+                row["status"] = "ingested"
+                ingested_document_ids.append(document.document_id)
+            affected_issuer_ids.append(issuer.issuer_id)
+            if body.strip() and not any(evidence.document_id == document.document_id for evidence in self.store.evidence.values()):
+                try:
+                    evidence_rows = self.extract_evidence(document.document_id, actor=actor, parser_version="company-official-inbox-v1", model_version="rule-company-official-inbox-v1")
+                    evidence_created += len(evidence_rows)
+                    row["evidence_created"] = len(evidence_rows)
+                except ValidationError as exc:
+                    row["status"] = "needs_text_review"
+                    row["error"] = str(exc)
+            items.append(row)
+        extraction: dict[str, Any] = {}
+        if execute and extract_fields and affected_issuer_ids and ingested_document_ids:
+            extraction_payload: dict[str, Any] = {
+                "issuer_ids": self._unique_strings(affected_issuer_ids),
+                "document_ids": self._unique_strings(ingested_document_ids),
+                "require_evidence": require_evidence,
+                "refresh_existing": refresh_existing,
+                "execute": True,
+            }
+            if fields:
+                extraction_payload["fields"] = fields
+            extraction = self.extract_company_profile_fields(extraction_payload, actor=actor)
+        self._audit(
+            actor,
+            "company_official_material_inbox",
+            "document",
+            str(root),
+            source="company_official_inbox",
+            approval_state=f"execute={execute};ingested={len(ingested_document_ids)};evidence={evidence_created}",
+        )
+        if execute:
+            self.store.commit()
+        return {
+            "status": "executed" if execute else "dry_run",
+            "execute": execute,
+            "dry_run": not execute,
+            "schema_id": "company-official-material-inbox-v1",
+            "root_path": str(root),
+            "scanned_count": len(files),
+            "planned_count": sum(1 for item in items if item.get("status") == "planned"),
+            "ingested_count": len(ingested_document_ids),
+            "skipped_count": sum(1 for item in items if str(item.get("status", "")).startswith("skip")),
+            "evidence_created": evidence_created,
+            "items": items,
+            "extraction": extraction,
+            "usage_boundary": "local_company_official_ir_inbox_public_materials_only_no_external_download_no_paid_data_no_live_trading",
+        }
+
+    def _company_official_material_inbox_row(self, path: Path, root: Path) -> dict[str, Any]:
+        relative = path.relative_to(root)
+        parts = list(relative.parts)
+        symbol_token = parts[0] if len(parts) > 1 else path.stem.split("_")[0].split("-")[0]
+        return {
+            "file_path": str(path),
+            "relative_path": str(relative),
+            "file_name": path.name,
+            "size_bytes": path.stat().st_size,
+            "symbol_token": str(symbol_token).strip(),
+        }
+
+    def _company_official_material_match_issuer(self, token: str) -> Issuer | None:
+        cleaned = str(token or "").strip()
+        if not cleaned:
+            return None
+        tokens = self._company_intelligence_symbol_tokens(cleaned)
+        for security in self.store.securities.values():
+            if self._company_intelligence_security_matches(security, tokens) and security.issuer_id in self.store.issuers:
+                return self.store.issuers[security.issuer_id]
+        for mapping in self.store.entity_mappings.values():
+            if self._company_intelligence_mapping_matches(mapping, tokens) and mapping.issuer_id in self.store.issuers:
+                return self.store.issuers[mapping.issuer_id]
+        for issuer in self.store.issuers.values():
+            if self._company_intelligence_issuer_matches(issuer, tokens):
+                return issuer
+        return None
+
+    def _company_official_material_types(self, path: Path, row: Mapping[str, Any]) -> tuple[str, str]:
+        haystack = f"{row.get('relative_path', '')} {path.stem}".lower()
+        if any(term in haystack for term in ["webcast", "transcript", "call", "电话会", "业绩会"]):
+            return "company_ir", "company_public_webcast"
+        if any(term in haystack for term in ["presentation", "deck", "roadshow", "investor", "ir", "演示", "路演"]):
+            return "company_ir", "company_presentation"
+        if any(term in haystack for term in ["product", "产品"]):
+            return "company_official", "official_product_page"
+        if any(term in haystack for term in ["governance", "management", "board", "治理", "管理层"]):
+            return "company_official", "official_governance_page"
+        return "company_official", "official_business_overview"
+
+    def _company_official_material_source_id(self, issuer_id: str, source_type: str) -> str:
+        return f"{source_type}_{safe_source_part(issuer_id)}"
+
+    def _ensure_company_official_material_source(self, issuer: Issuer, source_type: str, *, actor: str) -> SourceDefinition:
+        source_id = self._company_official_material_source_id(issuer.issuer_id, source_type)
+        source = self.store.sources.get(source_id)
+        if source is not None:
+            return source
+        source = SourceDefinition(
+            source_id=source_id,
+            source_type=source_type,
+            rights_tag=RightsTag("public_company_official_reference", False, False, "allowed", "restricted", "restricted"),
+            description=f"Local inbox for public company official/IR materials for {issuer.legal_name or issuer.issuer_id}",
+            risk_level="green",
+            allowed_document_types=["official_business_overview", "official_product_page", "official_governance_page", "company_presentation", "company_public_webcast"],
+            field_whitelist=self._company_profile_extractable_fields(),
+            retention_policy="local_public_company_material_cache",
+            cache_ttl_days=365,
+            provenance_ref="local_company_official_material_inbox",
+            usage_scope="company_profile_fact_extraction_and_research_reference_only",
+            collection_method="local_inbox_user_provided_or_public_company_download",
+            robots_policy="not_applicable_for_local_files_review_public_source_before_download",
+            review_owner_role="数据工程",
+        )
+        self.store.sources[source.source_id] = source
+        self._audit(actor, "register_company_official_material_source", "source", source.source_id, source=source.source_type, version=source.rights_tag.license_class)
+        return source
+
+    def _company_official_material_primary_security_id(self, issuer_id: str) -> str:
+        security = next((item for item in self.store.securities.values() if item.issuer_id == issuer_id), None)
+        return security.security_id if security is not None else ""
+
+    def _company_official_material_document_id(self, path: Path, issuer_id: str) -> str:
+        stat = path.stat()
+        seed = f"{issuer_id}:{path.resolve()}:{stat.st_size}:{int(stat.st_mtime)}"
+        return f"doc_comat_{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:24]}"
+
+    def _company_official_material_text(self, path: Path) -> str:
+        suffix = path.suffix.lower()
+        data = path.read_bytes()
+        if suffix == ".pdf":
+            return pdf_bytes_to_text(data)
+        return data.decode("utf-8", errors="ignore")
 
     def company_profile_coverage_audit(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
@@ -20825,7 +21059,40 @@ class SystemService:
         }
 
     def _company_profile_extractable_fields(self) -> list[str]:
-        return ["business_summary", "products", "country", "region", "sector", "industry", "period", "revenue", "net_income", "gross_margin", "cash", "debt"]
+        return [
+            "business_summary",
+            "products",
+            "website_url",
+            "ir_url",
+            "headquarters",
+            "employee_count",
+            "management",
+            "key_customers",
+            "key_suppliers",
+            "country",
+            "region",
+            "sector",
+            "industry",
+            "period",
+            "revenue",
+            "net_income",
+            "gross_margin",
+            "cash",
+            "debt",
+        ]
+
+    def _company_profile_company_detail_fields(self) -> list[str]:
+        return [
+            "business_summary",
+            "products",
+            "website_url",
+            "ir_url",
+            "headquarters",
+            "employee_count",
+            "management",
+            "key_customers",
+            "key_suppliers",
+        ]
 
     def _company_profile_field_extraction_row(
         self,
@@ -20927,6 +21194,8 @@ class SystemService:
             return profile.business_summary or issuer.company_details.get("business_summary", "")
         if field_name == "products":
             return profile.products or issuer.company_details.get("products", [])
+        if field_name in self._company_profile_company_detail_fields():
+            return issuer.company_details.get(field_name)
         if field_name in {"country", "region", "sector", "industry"}:
             return getattr(issuer, field_name)
         if field_name in {"period", "revenue", "net_income", "gross_margin", "cash", "debt"}:
@@ -20971,6 +21240,20 @@ class SystemService:
             return self._extract_company_profile_business_summary(normalized)
         if field_name == "products":
             return self._extract_company_profile_products(normalized)
+        if field_name == "website_url":
+            return self._extract_company_profile_url(normalized, kind="website")
+        if field_name == "ir_url":
+            return self._extract_company_profile_url(normalized, kind="ir")
+        if field_name == "headquarters":
+            return self._extract_company_profile_headquarters(normalized)
+        if field_name == "employee_count":
+            return self._extract_company_profile_employee_count(normalized)
+        if field_name == "management":
+            return self._extract_company_profile_management(normalized)
+        if field_name == "key_customers":
+            return self._extract_company_profile_named_list(normalized, kind="customers")
+        if field_name == "key_suppliers":
+            return self._extract_company_profile_named_list(normalized, kind="suppliers")
         if field_name in {"country", "region", "sector", "industry"}:
             return self._extract_company_profile_labeled_text(field_name, normalized)
         if field_name == "period":
@@ -21004,6 +21287,92 @@ class SystemService:
             parts = re.split(r"[,，、;/；]|\band\b|\band\s+", raw, flags=re.IGNORECASE)
             products = [part.strip(" -:：()（）") for part in parts if 1 < len(part.strip(" -:：()（）")) <= 60]
             return self._unique_strings(products)[:12]
+        return []
+
+    def _extract_company_profile_url(self, text: str, *, kind: str) -> str:
+        if kind == "ir":
+            labels = ["investor relations", "IR website", "IR site", "investors", "投资者关系", "投资者关系网站"]
+        else:
+            labels = ["official website", "website", "corporate website", "公司官网", "官方网站", "官网"]
+        label_expr = "|".join(re.escape(label) for label in labels)
+        pattern = rf"(?:{label_expr})[:：\s]*(https?://[^\s,，;；。)）]+|www\.[^\s,，;；。)）]+)"
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match and kind == "website":
+            match = re.search(r"\b(https?://(?:www\.)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/[^\s,，;；。)）]*)?)", text)
+        if not match:
+            return ""
+        url = match.group(1).strip(" <>[]()（）,，.;；。")
+        if url.startswith("www."):
+            url = f"https://{url}"
+        return url[:240]
+
+    def _extract_company_profile_headquarters(self, text: str) -> str:
+        patterns = [
+            r"(?:headquarters|headquartered at|headquartered in|principal executive offices)[:：]?\s*([^。.;\n]{4,160})",
+            r"(?:总部地址|总部位于|办公地址|注册地址)[:：]?\s*([^。.;\n]{4,160})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return self._clean_company_profile_text(match.group(1), max_chars=160)
+        return ""
+
+    def _extract_company_profile_employee_count(self, text: str) -> int | None:
+        patterns = [
+            r"(?:employees|full-time employees|employee count|headcount)[^\d]{0,40}(\d[\d,]*(?:\.\d+)?)\s*(million|thousand|people|employees)?",
+            r"(?:员工人数|雇员|职工人数|员工总数)[^\d]{0,20}(\d[\d,]*(?:\.\d+)?)\s*(万人|万名|人|名)?",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            value = self._parse_company_profile_number(match.group(1), str(match.group(2) or ""))
+            if value is None:
+                continue
+            return int(round(value))
+        return None
+
+    def _extract_company_profile_management(self, text: str) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        patterns = [
+            r"\b(CEO|Chief Executive Officer|CFO|Chief Financial Officer|Chairman|President)\b\s*(?:is|:|：)?\s*([A-Z][A-Za-z'-]+(?:\s+(?!(?:CEO|CFO|Chief|Chairman|President)\b)[A-Z][A-Za-z'-]+){0,3})",
+            r"(董事长|总经理|首席执行官|财务总监|总裁|CEO|CFO)[:：为是\s]*([\u4e00-\u9fff]{2,8})",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                role = self._clean_company_profile_text(match.group(1), max_chars=80)
+                name = self._clean_company_profile_text(match.group(2), max_chars=80)
+                if role and name:
+                    rows.append({"role": role, "name": name})
+        deduped: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            key = (row["role"].lower(), row["name"].lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        return deduped[:12]
+
+    def _extract_company_profile_named_list(self, text: str, *, kind: str) -> list[str]:
+        if kind == "customers":
+            patterns = [
+                r"(?:customers include|major customers include|key customers include)[:：]?\s*([^。.;\n]{3,220})",
+                r"(?:主要客户(?:包括|为)?|客户包括|核心客户包括)[:：]?\s*([^。.;\n]{2,220})",
+            ]
+        else:
+            patterns = [
+                r"(?:suppliers include|major suppliers include|key suppliers include)[:：]?\s*([^。.;\n]{3,220})",
+                r"(?:主要供应商(?:包括|为)?|供应商包括|核心供应商包括)[:：]?\s*([^。.;\n]{2,220})",
+            ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            raw = self._clean_company_profile_text(match.group(1), max_chars=220)
+            parts = re.split(r"[,，、;/；]|\band\b|\b及\b|\b和\b", raw, flags=re.IGNORECASE)
+            values = [part.strip(" -:：()（）") for part in parts if 1 < len(part.strip(" -:：()（）")) <= 80]
+            return self._unique_strings(values)[:16]
         return []
 
     def _extract_company_profile_labeled_text(self, field_name: str, text: str) -> str:
@@ -21067,7 +21436,7 @@ class SystemService:
     def _apply_company_profile_field_candidates(self, issuer: Issuer, candidates: list[dict[str, Any]], *, overwrite: bool) -> dict[str, Any]:
         planned = [candidate for candidate in candidates if candidate.get("status") == "planned"]
         if not planned:
-            return {"fields_updated": 0, "profile_saved": False, "updated_fields": []}
+            return {"fields_updated": 0, "profile_saved": False, "updated_fields": [], "assertion_ids": []}
         existing_profile = self.store.company_profiles.get(issuer.issuer_id)
         overlay = to_plain(existing_profile) if existing_profile is not None else {}
         source_ids = self._unique_strings([*issuer.data_sources, *overlay.get("source_ids", []), *(candidate.get("source_id", "") for candidate in planned)])
@@ -21076,29 +21445,51 @@ class SystemService:
         company_details = dict(issuer.company_details)
         fundamentals = dict(issuer.fundamentals)
         financial_snapshot = dict(overlay.get("latest_financial_snapshot", {}))
+        assertion_ids: list[str] = []
         for candidate in planned:
             field_name = str(candidate["field"])
             value = candidate["value"]
             if not overwrite and self._company_profile_current_field_value(issuer, existing_profile or self._company_profile_from_existing_records(issuer.issuer_id, {}), field_name) not in (None, "", [], {}):
                 candidate["status"] = "skipped_existing"
                 continue
+            applied = False
             if field_name == "business_summary":
                 company_details["business_summary"] = str(value)
                 overlay["business_summary"] = str(value)
+                applied = True
             elif field_name == "products":
                 products = [str(item) for item in value]
                 company_details["products"] = products
                 overlay["products"] = products
+                applied = True
+            elif field_name in {"website_url", "ir_url", "headquarters"}:
+                company_details[field_name] = str(value)
+                applied = True
+            elif field_name == "employee_count":
+                company_details[field_name] = int(value)
+                applied = True
+            elif field_name in {"management"}:
+                company_details[field_name] = [dict(item) for item in value]
+                applied = True
+            elif field_name in {"key_customers", "key_suppliers"}:
+                company_details[field_name] = [str(item) for item in value]
+                applied = True
             elif field_name in {"country", "region", "sector", "industry"}:
                 setattr(issuer, field_name, str(value))
                 overlay[field_name] = str(value)
+                applied = True
             elif field_name in {"period", "revenue", "net_income", "gross_margin", "cash", "debt"}:
                 fundamentals[field_name] = value
                 financial_snapshot[field_name] = value
+                applied = True
             else:
+                continue
+            if not applied:
                 continue
             candidate["status"] = "applied"
             updated_fields.append(field_name)
+            assertion = self._record_company_profile_field_assertion(issuer, candidate, value)
+            assertion_ids.append(assertion.assertion_id)
         issuer.company_details = company_details
         issuer.fundamentals = fundamentals
         issuer.data_sources = source_ids
@@ -21112,8 +21503,44 @@ class SystemService:
             "fields_updated": len(updated_fields),
             "profile_saved": bool(updated_fields),
             "updated_fields": updated_fields,
+            "assertion_ids": assertion_ids,
             "profile": to_plain(profile),
         }
+
+    def _record_company_profile_field_assertion(self, issuer: Issuer, candidate: Mapping[str, Any], value: Any) -> CompanyProfileFieldAssertion:
+        field_name = str(candidate.get("field", ""))
+        document_id = str(candidate.get("document_id", ""))
+        evidence_ids = [str(item) for item in candidate.get("evidence_ids", [])]
+        source_id = str(candidate.get("source_id", ""))
+        normalized_value = json.dumps(to_plain(value), ensure_ascii=False, sort_keys=True, default=str)
+        seed = "|".join([issuer.issuer_id, field_name, document_id, ",".join(evidence_ids), normalized_value])
+        assertion_id = f"cpfa_{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:24]}"
+        period = str(value) if field_name == "period" else str(issuer.fundamentals.get("period", ""))
+        assertion = CompanyProfileFieldAssertion(
+            assertion_id=assertion_id,
+            issuer_id=issuer.issuer_id,
+            security_id=str(candidate.get("security_id", "")),
+            field_name=field_name,
+            value=to_plain(value),
+            normalized_value=normalized_value[:1000],
+            period=period,
+            source_ids=[source_id] if source_id else [],
+            document_ids=[document_id] if document_id else [],
+            evidence_ids=evidence_ids,
+            confidence=float(candidate.get("confidence", 0.0) or 0.0),
+            source_policy=str(candidate.get("source_policy", "fact_or_governed_record")),
+            fact_status="verified",
+            review_status="auto_generated",
+            assertion_status="active",
+            extraction_method=str(candidate.get("extraction_method", "")),
+            metadata={
+                "section": candidate.get("section", ""),
+                "source_type": candidate.get("source_type", ""),
+                "previous_value": to_plain(candidate.get("previous_value")),
+            },
+        )
+        self.store.company_profile_field_assertions[assertion_id] = assertion
+        return assertion
 
     def _company_profile_deep_coverage_fields(self, *, include_optional: bool = False) -> list[str]:
         required = [
@@ -21134,6 +21561,10 @@ class SystemService:
             "status",
             "business_summary",
             "products",
+            "website_url",
+            "ir_url",
+            "headquarters",
+            "management",
             "company_details",
             "as_of_date",
             "close",
@@ -21162,7 +21593,7 @@ class SystemService:
             "event_backlink_rate",
             "relationship_backlink_rate",
         ]
-        optional = ["figi", "isin", "listing_date", "gross_margin", "cash", "debt"]
+        optional = ["figi", "isin", "listing_date", "employee_count", "key_customers", "key_suppliers", "gross_margin", "cash", "debt"]
         return required + optional if include_optional else required
 
     def _company_profile_deep_source_plan(self) -> dict[str, Any]:
@@ -21172,6 +21603,9 @@ class SystemService:
                 "identity": ["official_disclosure", "exchange_disclosure", "company_ir", "SEC EDGAR", "HKEXnews", "CNINFO"],
                 "listing": ["exchange_disclosure", "public_market_data", "SEC/Nasdaq directories", "TDX/AkShare/official exchange directories"],
                 "business": ["annual_report", "10-K/20-F", "company_ir", "official_business_overview"],
+                "contact": ["company_official", "company_ir", "annual_report", "official_business_overview"],
+                "governance_people": ["annual_report", "10-K/20-F", "company_ir", "official_governance_page"],
+                "relationship_clues": ["annual_report", "10-K/20-F", "company_ir", "official_business_overview"],
                 "market_snapshot": ["public_eod_market_data", "TDX vipdoc", "Yahoo/Stooq fallback where governed"],
                 "financial_snapshot": ["annual_report", "quarterly_report", "SEC companyfacts", "public financial summary connectors"],
                 "source_evidence": ["document", "evidence", "source_governance_review"],
@@ -21216,6 +21650,17 @@ class SystemService:
             or evidence.security_id in security_ids
             or (evidence.document_id in {document.document_id for document in documents})
         ]
+        active_field_assertions = [
+            assertion
+            for assertion in self.store.company_profile_field_assertions.values()
+            if assertion.issuer_id == issuer.issuer_id
+            and assertion.assertion_status == "active"
+        ]
+        assertions_by_field: dict[str, list[CompanyProfileFieldAssertion]] = {}
+        for assertion in active_field_assertions:
+            assertions_by_field.setdefault(assertion.field_name, []).append(assertion)
+        for assertion_rows in assertions_by_field.values():
+            assertion_rows.sort(key=lambda item: (float(item.confidence or 0.0), str(to_plain(item.updated_at))), reverse=True)
         official_evidence_ids = [evidence.evidence_id for evidence in evidence_rows if self._evidence_is_official_public(evidence.evidence_id)]
         research_evidence_ids = [
             evidence.evidence_id
@@ -21278,6 +21723,13 @@ class SystemService:
             "listing_date": ("listing", any(security.listing_date for security in securities), [{"resource_type": "security", "resource_id": security.security_id} for security in securities if security.listing_date]),
             "business_summary": ("business", bool(profile.business_summary or company_details.get("business_summary") or company_details.get("description")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
             "products": ("business", bool(profile.products or company_details.get("products")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
+            "website_url": ("contact", bool(company_details.get("website_url")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
+            "ir_url": ("contact", bool(company_details.get("ir_url")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
+            "headquarters": ("contact", bool(company_details.get("headquarters")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
+            "employee_count": ("business", bool(company_details.get("employee_count")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
+            "management": ("governance_people", bool(company_details.get("management")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
+            "key_customers": ("relationship_clues", bool(company_details.get("key_customers")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
+            "key_suppliers": ("relationship_clues", bool(company_details.get("key_suppliers")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}, *[{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]]),
             "company_details": ("business", bool(company_details), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
             "as_of_date": ("market_snapshot", latest_market is not None and bool(latest_market.as_of_date), [{"resource_type": "market_data", "resource_id": latest_market.data_id}] if latest_market else []),
             "close": ("market_snapshot", latest_market is not None and float(latest_market.close or 0) != 0, [{"resource_type": "market_data", "resource_id": latest_market.data_id}] if latest_market else []),
@@ -21309,10 +21761,17 @@ class SystemService:
             "event_backlink_rate": ("quality", profile.data_quality.get("event_backlink_rate") is not None, [{"resource_type": "company_profile", "resource_id": issuer.issuer_id}]),
             "relationship_backlink_rate": ("quality", profile.data_quality.get("relationship_backlink_rate") is not None, [{"resource_type": "company_profile", "resource_id": issuer.issuer_id}]),
         }
+        field_specific_evidence_ids = {
+            field_name: self._company_profile_field_specific_evidence_ids(field_name, evidence_rows, assertions_by_field)
+            for field_name in required_fields
+        }
         fields: dict[str, dict[str, Any]] = {}
         for field_name in required_fields:
             group, present, source_records = field_defs[field_name]
-            evidence_ids = official_evidence_ids if group in {"identity", "business", "financial_snapshot", "source_evidence"} else []
+            field_assertions = assertions_by_field.get(field_name, [])
+            evidence_ids = field_specific_evidence_ids.get(field_name, [])
+            if group == "source_evidence":
+                evidence_ids = official_evidence_ids
             if require_evidence and group not in {"coverage_opinion", "workflow_feedback", "quality", "listing", "market_snapshot"}:
                 present = bool(present and evidence_ids)
             missing_reason = ""
@@ -21328,6 +21787,7 @@ class SystemService:
                 "present": bool(present),
                 "source_records": source_records if present else [],
                 "evidence_ids": evidence_ids[:10] if present else [],
+                "assertion_ids": [assertion.assertion_id for assertion in field_assertions[:10]] if present else [],
                 "missing_reason": missing_reason,
                 "source_policy": "opinion_slot" if group == "coverage_opinion" else "fact_or_governed_record",
             }
@@ -21362,6 +21822,39 @@ class SystemService:
             },
             "research_tasks": research_tasks,
         }
+
+    def _company_profile_field_specific_evidence_ids(
+        self,
+        field_name: str,
+        evidence_rows: list[Evidence],
+        assertions_by_field: Mapping[str, list[CompanyProfileFieldAssertion]],
+    ) -> list[str]:
+        assertion_evidence = self._unique_strings(
+            [
+                evidence_id
+                for assertion in assertions_by_field.get(field_name, [])
+                if assertion.assertion_status == "active"
+                for evidence_id in assertion.evidence_ids
+            ]
+        )
+        if assertion_evidence:
+            return assertion_evidence[:10]
+        if field_name in {"source_ids", "authorized_documents", "field_evidence_ids", "evidence_backlinks"}:
+            return [evidence.evidence_id for evidence in evidence_rows if self._evidence_is_official_public(evidence.evidence_id)][:10]
+        if field_name not in self._company_profile_extractable_fields():
+            return []
+        matched: list[str] = []
+        for evidence in evidence_rows:
+            if not self._evidence_is_official_public(evidence.evidence_id):
+                continue
+            text = str(evidence.canonical_text or evidence.span_text or "").strip()
+            if not text:
+                continue
+            extracted = self._company_profile_extract_field_value(field_name, text)
+            if extracted in (None, "", [], {}):
+                continue
+            matched.append(evidence.evidence_id)
+        return self._unique_strings(matched)[:10]
 
     def company_database_coverage_audit(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
@@ -23504,6 +23997,7 @@ class SystemService:
             return
         for resource_type in [
             "company_profile",
+            "company_profile_field_assertion",
             "company_event",
             "company_relationship",
             "research_report",
@@ -24993,6 +25487,14 @@ class SystemService:
             or text_matches(feedback)
         ]
         first_class_simulation_feedback.sort(key=lambda item: item.created_at, reverse=True)
+        profile_field_assertions = [
+            assertion
+            for assertion in self.store.company_profile_field_assertions.values()
+            if assertion.issuer_id in issuer_ids
+            or assertion.security_id in security_ids
+            or text_matches(assertion)
+        ]
+        profile_field_assertions.sort(key=lambda item: (str(to_plain(item.updated_at)), item.assertion_id), reverse=True)
 
         primary_issuer = issuers[0] if issuers else None
         primary_security = securities[0] if securities else None
@@ -25034,6 +25536,7 @@ class SystemService:
             "research_cards": len(research_cards),
             "research_tasks": len(research_tasks),
             "company_profiles": len(company_profiles),
+            "company_profile_field_assertions": len(profile_field_assertions),
             "company_events": len(company_events),
             "company_relationships": len(company_relationships),
             "disclosure_events": len(disclosure_events),
@@ -25116,6 +25619,7 @@ class SystemService:
                 "issuers": plain_rows(issuers),
                 "securities": plain_rows(securities),
                 "entity_mappings": plain_rows(mappings),
+                "profile_field_assertions": plain_rows(profile_field_assertions),
                 "coverage_summary": {
                     "research_report_count": len(research_reports),
                     "structured_research_report_count": len(structured_research_reports),

@@ -27,6 +27,7 @@ from .models import (
     CompanyEvent,
     CompanyPosition,
     CompanyProfile,
+    CompanyProfileFieldAssertion,
     CompanyRelationship,
     DrillSchedule,
     DisclosureEvent,
@@ -125,6 +126,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("company_positions", "position_id", CompanyPosition),
     ("company_database_build_runs", "run_id", CompanyDatabaseBuildRun),
     ("company_profiles", "issuer_id", CompanyProfile),
+    ("company_profile_field_assertions", "assertion_id", CompanyProfileFieldAssertion),
     ("company_events", "event_id", CompanyEvent),
     ("company_relationships", "relationship_id", CompanyRelationship),
     ("hotspot_lexicons", "lexicon_id", HotspotLexicon),
@@ -214,6 +216,8 @@ def _candidate_collections_for_resource(resource_type: str) -> list[str]:
         "company_position": "company_positions",
         "company_database_build_run": "company_database_build_runs",
         "company_profile": "company_profiles",
+        "company_profile_field_assertion": "company_profile_field_assertions",
+        "company_profile_field": "company_profile_field_assertions",
         "company_event": "company_events",
         "company_relationship": "company_relationships",
         "hotspot_lexicon": "hotspot_lexicons",
@@ -303,6 +307,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     CompanyPosition: ("created_at",),
     CompanyDatabaseBuildRun: ("started_at", "completed_at", "created_at"),
     CompanyProfile: ("updated_at",),
+    CompanyProfileFieldAssertion: ("as_of_date", "created_at", "updated_at"),
     CompanyEvent: ("occurred_at", "detected_at", "created_at"),
     CompanyRelationship: ("valid_from", "valid_to", "created_at"),
     HotspotLexicon: ("created_at",),
@@ -358,6 +363,7 @@ OPTIONAL_DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     IndustryChain: ("published_at",),
     IndustryChainTemplateCandidate: ("submitted_at", "published_at"),
     CompanyRelationship: ("valid_from", "valid_to"),
+    CompanyProfileFieldAssertion: ("as_of_date",),
     SourceReviewRecord: ("next_review_due_at",),
     AStockConnectorDefinition: ("last_checked_at",),
     ReadinessCheckRecord: ("expires_at",),
@@ -443,6 +449,7 @@ class InMemoryStore:
     company_positions: dict[str, CompanyPosition] = field(default_factory=dict)
     company_database_build_runs: dict[str, CompanyDatabaseBuildRun] = field(default_factory=dict)
     company_profiles: dict[str, CompanyProfile] = field(default_factory=dict)
+    company_profile_field_assertions: dict[str, CompanyProfileFieldAssertion] = field(default_factory=dict)
     company_events: dict[str, CompanyEvent] = field(default_factory=dict)
     company_relationships: dict[str, CompanyRelationship] = field(default_factory=dict)
     hotspot_lexicons: dict[str, HotspotLexicon] = field(default_factory=dict)

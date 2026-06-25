@@ -726,6 +726,31 @@ class CompanyProfile:
 
 
 @dataclass(slots=True)
+class CompanyProfileFieldAssertion:
+    assertion_id: str
+    issuer_id: str
+    field_name: str
+    value: Any
+    normalized_value: str = ""
+    security_id: str = ""
+    period: str = ""
+    as_of_date: Any = None
+    source_ids: list[str] = field(default_factory=list)
+    document_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    source_policy: str = "fact_or_governed_record"
+    fact_status: str = "verified"
+    review_status: str = "auto_generated"
+    assertion_status: str = "active"
+    extraction_method: str = ""
+    supersedes: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
 class CompanyDatabaseBuildRun:
     run_id: str
     actor: str = "system"

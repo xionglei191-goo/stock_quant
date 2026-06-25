@@ -636,6 +636,8 @@ class ApiRouter:
             ("GET", r"^/api/company-profiles$", self._list_company_profiles),
             ("POST", r"^/api/company-profiles$", self._register_company_profile),
             ("POST", r"^/api/company-profiles/fields/extract$", self._extract_company_profile_fields),
+            ("GET", r"^/api/company-profiles/field-assertions$", self._company_profile_field_assertions),
+            ("POST", r"^/api/company-profiles/field-assertions$", self._company_profile_field_assertions),
             ("GET", r"^/api/company-profiles/coverage/audit$", self._company_profile_coverage_audit),
             ("POST", r"^/api/company-profiles/coverage/audit$", self._company_profile_coverage_audit),
             ("GET", r"^/api/company-profiles/schema$", self._company_profile_schema),
@@ -651,6 +653,8 @@ class ApiRouter:
             ("POST", r"^/api/company-database/quality/reconcile$", self._reconcile_company_database_quality),
             ("GET", r"^/api/company-database/profile-field-coverage/audit$", self._company_profile_coverage_audit),
             ("POST", r"^/api/company-database/profile-field-coverage/audit$", self._company_profile_coverage_audit),
+            ("GET", r"^/api/company-database/profile-field-assertions$", self._company_profile_field_assertions),
+            ("POST", r"^/api/company-database/profile-field-assertions$", self._company_profile_field_assertions),
             ("POST", r"^/api/company-database/profile-fields/extract$", self._extract_company_profile_fields),
             ("POST", r"^/api/company-database/events/build$", self._build_company_events),
             ("POST", r"^/api/company-database/relationships/build$", self._build_company_relationships),
@@ -1862,6 +1866,9 @@ class ApiRouter:
 
     def _extract_company_profile_fields(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.extract_company_profile_fields(body, actor=actor)
+
+    def _company_profile_field_assertions(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_profile_field_assertions_payload(body)
 
     def _build_company_database(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.build_company_database(body, actor=actor)

@@ -2282,8 +2282,10 @@
 | `/api/company-profiles` | `GET` / `POST` | 查询或登记 `CompanyProfile`，可由 `Issuer`、`Security`、行情、事件、关系和研报覆盖计算画像质量 |
 | `/api/company-profiles/schema` | `GET` | 返回公司画像核心字段、来源优先级和质量指标 |
 | `/api/company-profiles/fields/extract` | `POST` | 从已入库官方披露、公司 IR、公司官网或监管/交易所文档抽取公司画像字段；默认 dry-run，显式 `execute=true` 才写入 |
+| `/api/company-profiles/field-assertions` | `GET` / `POST` | 查询公司画像字段级事实断言，按字段返回来源、文档、证据、置信度和状态 |
 | `/api/company-profiles/coverage/audit` | `GET` / `POST` | 按公司输出画像深字段覆盖率、缺失字段、来源记录、证据回链和推荐补齐来源 |
 | `/api/company-database/profile-field-coverage/audit` | `GET` / `POST` | `company-profiles/coverage/audit` 的兼容别名，用于公司数据库补齐任务按深字段审计 |
+| `/api/company-database/profile-field-assertions` | `GET` / `POST` | `company-profiles/field-assertions` 的兼容别名，用于公司数据库补齐任务查询字段级 provenance |
 | `/api/company-database/profile-fields/extract` | `POST` | `company-profiles/fields/extract` 的公司数据库兼容入口，用于补库流程先抽取画像字段再审计覆盖 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
@@ -2321,7 +2323,7 @@
 请求字段：
 
 - `issuer_ids` / `symbols` / `symbol` / `ticker` / `q`：目标公司解析字段，复用公司数据库目标解析规则。
-- `fields` / `required_fields`：可选；默认抽取 `business_summary`、`products`、`country`、`region`、`sector`、`industry`、`period`、`revenue`、`net_income`、`gross_margin`、`cash`、`debt`。
+- `fields` / `required_fields`：可选；默认抽取 `business_summary`、`products`、`website_url`、`ir_url`、`headquarters`、`employee_count`、`management`、`key_customers`、`key_suppliers`、`country`、`region`、`sector`、`industry`、`period`、`revenue`、`net_income`、`gross_margin`、`cash`、`debt`。
 - `document_ids`：可选；只从指定文档抽取。
 - `limit`：目标公司数量上限，默认 100。
 - `document_limit` / `max_documents`：每家公司扫描的合规文档数量上限，默认 20。
@@ -2337,10 +2339,32 @@
 - `status`：`dry_run` 或 `executed`。
 - `totals.documents_scanned` / `evidence_scanned` / `candidates_found` / `fields_planned` / `fields_updated` / `profiles_saved`。
 - `companies[].candidates[]`：字段候选，包含 `field`、`value`、`confidence`、`document_id`、`source_id`、`evidence_ids`、`section`、`extraction_method`、`source_policy` 和 `status`。
-- `companies[].applied`：执行时返回写入字段、是否保存 `CompanyProfile` 和保存后的 profile 摘要。
+- `companies[].applied`：执行时返回写入字段、字段级 `assertion_ids`、是否保存 `CompanyProfile` 和保存后的 profile 摘要。
 - `source_rules.research_reports`：固定为 `ignored_for_fact_fields_opinion_only`。
 
-边界：抽取只接受 `_company_profile_document_is_fact_source` 和 `_evidence_is_official_public` 认可的官方披露、公司 IR、公司官网、交易所/监管披露或公开公司披露记录。`research_report`、`broker_research`、`local_reference`、`manual_reference`、`news` 和 `curated_public_profile` 不会写入事实字段。
+边界：抽取只接受 `_company_profile_document_is_fact_source` 和 `_evidence_is_official_public` 认可的官方披露、公司 IR、公司官网、交易所/监管披露或公开公司披露记录。`research_report`、`broker_research`、`local_reference`、`manual_reference`、`news` 和 `curated_public_profile` 不会写入事实字段，也不会生成 `CompanyProfileFieldAssertion`。
+
+执行语义：`execute=true` 后，每个成功应用的字段会生成或更新一条幂等 `CompanyProfileFieldAssertion`，记录 `field_name`、`value`、`document_ids`、`evidence_ids`、`source_ids`、`confidence`、`source_policy`、`fact_status` 和 `review_status`。这些断言用于后续字段级证据审计、冲突处理和公司情报页 provenance 展示。
+
+#### `GET|POST /api/company-profiles/field-assertions`
+
+查询公司画像字段级事实断言。兼容别名：`GET|POST /api/company-database/profile-field-assertions`。
+
+请求字段：
+
+- `issuer_id` / `issuer_ids` / `symbols` / `symbol` / `ticker` / `q`：目标公司过滤字段。
+- `field_name`：可选；只查询某个画像字段。
+- `security_id`：可选；按证券过滤。
+- `source_policy` / `fact_status` / `review_status` / `assertion_status`：可选；按断言状态过滤。
+- `limit`：返回上限，默认 100。
+
+返回字段：
+
+- `schema_id`：当前为 `company-profile-field-assertions-v1`。
+- `count`：匹配断言总数。
+- `assertions[]`：字段级事实记录，包含 `assertion_id`、`issuer_id`、`field_name`、`value`、`source_ids`、`document_ids`、`evidence_ids`、`confidence`、`source_policy`、`fact_status`、`review_status`、`assertion_status`、`extraction_method`、`created_at` 和 `updated_at`。
+
+边界：字段断言是本地公司数据库 provenance，不是投资建议，不连接券商，不触发真实交易。
 
 #### `GET|POST /api/company-profiles/coverage/audit`
 
@@ -2362,7 +2386,7 @@
 - `schema_id`：当前为 `company-profile-deep-field-coverage-v1`。
 - `required_fields` / `field_missing_counts`：本次审计字段和字段级缺失统计。
 - `companies[].field_coverage_score`、`coverage_level`、`missing_fields`：公司级字段覆盖率。
-- `companies[].fields[field]`：字段状态，包含 `group`、`present`、`source_records`、`evidence_ids`、`missing_reason` 和 `source_policy`。
+- `companies[].fields[field]`：字段状态，包含 `group`、`present`、`source_records`、`evidence_ids`、`assertion_ids`、`missing_reason` 和 `source_policy`。
 - `companies[].research_tasks`：缺失字段的补齐任务建议，列出推荐来源类型。
 - `source_plan`：字段组到优先来源的映射，包括官方披露、公司 IR、交易所/监管目录、公开行情、已治理本地记录和人工参考边界。
 - `rules.research_reports`：固定为 `opinion_and_attention_slots_only_not_fact_source`。
