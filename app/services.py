@@ -25599,6 +25599,24 @@ class SystemService:
                 if not available
             ],
         }
+        database_coverage_row = self._company_database_coverage_row(primary_issuer) if primary_issuer is not None else {}
+        profile_field_coverage_row = (
+            self._company_profile_deep_coverage_row(
+                primary_issuer,
+                required_fields=self._company_profile_deep_coverage_fields(include_optional=False),
+                require_evidence=True,
+                include_research_opinion_slots=False,
+            )
+            if primary_issuer is not None
+            else {}
+        )
+        completeness_verdict = self._company_intelligence_completeness_verdict(
+            raw_symbol,
+            data_quality,
+            section_counts,
+            database_coverage=database_coverage_row,
+            profile_field_coverage=profile_field_coverage_row,
+        )
 
         return {
             "status": "available" if any(section_counts.values()) else "not_found",
@@ -25676,6 +25694,7 @@ class SystemService:
                 "compatibility_legacy_sources": ["ExecutionIntent", "SimulatedExecution", "PortfolioTransaction"],
             },
             "data_quality": data_quality,
+            "completeness_verdict": completeness_verdict,
             "section_counts": section_counts,
             "next_actions": self._company_intelligence_next_actions(raw_symbol, data_quality),
             "usage_boundary": "company_intelligence_research_only_simulation_feedback_only_no_broker_execution",
@@ -25715,6 +25734,166 @@ class SystemService:
     def _company_intelligence_issuer_matches(self, issuer: Issuer, symbol_tokens: set[str]) -> bool:
         values = {issuer.issuer_id, issuer.legal_name, issuer.cik, issuer.lei, *issuer.aliases}
         return any(str(value).strip().upper() in symbol_tokens for value in values if str(value).strip())
+
+    def _company_intelligence_completeness_verdict(
+        self,
+        symbol: str,
+        data_quality: Mapping[str, Any],
+        section_counts: Mapping[str, Any],
+        *,
+        database_coverage: Mapping[str, Any],
+        profile_field_coverage: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        section_specs = [
+            ("company_profile", "公司画像", "profile_available", 0.22, True, "fact_or_governed_record", "运行单标的研究或登记主体/证券"),
+            ("market_data", "行情快照", "market_data_available", 0.14, True, "public_or_local_market_data", "导入公开/本地 EOD 行情"),
+            ("events", "事件时间线", "event_timeline_available", 0.16, True, "official_public_fact_or_reviewed_event", "执行事件构建或补充公告证据"),
+            ("relationships", "关系图谱", "relationship_graph_available", 0.16, True, "fact_or_reviewed_relationship_candidate", "执行关系构建并审核候选"),
+            ("research_results", "研究观点", "research_results_available", 0.16, False, "opinion_layer_not_fact_source", "结构化研报或记录研究答案"),
+            ("simulation_feedback", "模拟反馈", "simulation_feedback_available", 0.10, False, "paper_only_feedback", "记录 paper-only 模拟反馈"),
+        ]
+        profile_coverage = max(0.0, min(1.0, float(data_quality.get("profile_coverage", 0.0) or 0.0)))
+        event_backlink_rate = max(0.0, min(1.0, float(data_quality.get("event_backlink_rate", 0.0) or 0.0)))
+        relationship_backlink_rate = max(0.0, min(1.0, float(data_quality.get("relationship_backlink_rate", 0.0) or 0.0)))
+        evidence_score = round(((event_backlink_rate + relationship_backlink_rate) / 2.0) if (event_backlink_rate or relationship_backlink_rate) else 0.0, 4)
+        sections: list[dict[str, Any]] = []
+        score = 0.0
+        blocking_gaps: list[str] = []
+        warning_gaps: list[str] = []
+        for section, label, quality_key, weight, blocking, source_policy, action in section_specs:
+            available = bool(data_quality.get(quality_key))
+            if section == "company_profile" and available:
+                contribution = weight * max(0.5, profile_coverage)
+            else:
+                contribution = weight if available else 0.0
+            score += contribution
+            gap = not available
+            if gap and blocking:
+                blocking_gaps.append(section)
+            elif gap:
+                warning_gaps.append(section)
+            sections.append(
+                {
+                    "section": section,
+                    "label": label,
+                    "available": available,
+                    "blocking": blocking,
+                    "weight": weight,
+                    "score_contribution": round(contribution, 4),
+                    "source_policy": source_policy,
+                    "recommended_action": action,
+                    "record_count": int(section_counts.get(section, 0) or 0)
+                    if section in section_counts
+                    else self._company_intelligence_verdict_section_count(section, section_counts),
+                }
+            )
+        if event_backlink_rate == 0.0 and data_quality.get("event_timeline_available"):
+            warning_gaps.append("event_evidence_backlinks")
+        if relationship_backlink_rate == 0.0 and data_quality.get("relationship_graph_available"):
+            warning_gaps.append("relationship_evidence_backlinks")
+        score = min(1.0, score + (0.06 * evidence_score))
+        ready_for_fact_review = not blocking_gaps
+        ready_for_analysis = ready_for_fact_review and bool(data_quality.get("research_results_available"))
+        ready_for_feedback_review = ready_for_analysis and bool(data_quality.get("simulation_feedback_available"))
+        required_layers = [section for section, _label, _quality_key, _weight, _blocking, _source_policy, _action in section_specs]
+        missing_layers = list(dict.fromkeys([*blocking_gaps, *warning_gaps]))
+        database_coverage_score = max(0.0, min(1.0, float(database_coverage.get("coverage_score", 0.0) or 0.0)))
+        profile_field_coverage_score = max(0.0, min(1.0, float(profile_field_coverage.get("field_coverage_score", 0.0) or 0.0)))
+        required_fact_fields = [str(field) for field in (profile_field_coverage.get("required_fields") or self._company_profile_deep_coverage_fields(include_optional=False))]
+        missing_fact_fields = [str(field) for field in profile_field_coverage.get("missing_fields", [])]
+        if score >= 0.9 and not missing_layers:
+            level = "complete"
+        elif score >= 0.7:
+            level = "near_complete"
+        elif score >= 0.35:
+            level = "partial"
+        else:
+            level = "sparse"
+        if not data_quality.get("profile_available"):
+            status = "not_found"
+            label = "未建档"
+        elif blocking_gaps:
+            status = "incomplete"
+            label = "需要补库"
+        elif ready_for_feedback_review and score >= 0.9 and not warning_gaps:
+            status = "complete"
+            label = "完整"
+        else:
+            status = "usable_with_gaps"
+            if ready_for_feedback_review:
+                label = "可复盘"
+            elif ready_for_analysis:
+                label = "可分析"
+            elif ready_for_fact_review:
+                label = "事实层可用"
+            else:
+                label = "可用但有缺口"
+        recommended_next_action = self._company_intelligence_verdict_next_action(symbol, blocking_gaps, warning_gaps, data_quality)
+        return {
+            "schema_id": "company-intelligence-completeness-verdict-v1",
+            "status": status,
+            "label": label,
+            "is_complete": status == "complete",
+            "level": level,
+            "score": round(score, 4),
+            "required_layers": required_layers,
+            "missing_layers": missing_layers,
+            "database_coverage_score": database_coverage_score,
+            "profile_field_coverage_score": profile_field_coverage_score,
+            "required_fact_fields": required_fact_fields,
+            "missing_fact_fields": missing_fact_fields,
+            "blocking_gaps": list(dict.fromkeys(blocking_gaps)),
+            "warning_gaps": list(dict.fromkeys(warning_gaps)),
+            "ready_for_fact_review": ready_for_fact_review,
+            "ready_for_analysis": ready_for_analysis,
+            "ready_for_feedback_review": ready_for_feedback_review,
+            "sections": sections,
+            "evidence_backlink_score": evidence_score,
+            "profile_coverage": profile_coverage,
+            "source_policy_summary": {
+                "fact_fields": "official_disclosure_company_ir_public_market_or_governed_local_records_only",
+                "research_reports": "opinion_and_attention_slots_only_not_fact_source",
+                "research_reports_can_complete_fact_fields": False,
+            },
+            "recommended_actions": [recommended_next_action] if recommended_next_action.get("action") != "none" else [],
+            "usage_boundary": "completeness_verdict_is_data_readiness_only_not_investment_advice_no_live_trading",
+            "recommended_next_action": recommended_next_action,
+        }
+
+    def _company_intelligence_verdict_section_count(self, section: str, section_counts: Mapping[str, Any]) -> int:
+        if section == "company_profile":
+            return int(section_counts.get("company_profiles", 0) or 0) + int(section_counts.get("securities", 0) or 0)
+        if section == "market_data":
+            return int(section_counts.get("market_data", 0) or 0)
+        if section == "events":
+            return int(section_counts.get("company_events", 0) or 0) + int(section_counts.get("disclosure_events", 0) or 0)
+        if section == "relationships":
+            return int(section_counts.get("company_relationships", 0) or 0) + int(section_counts.get("graph_edges", 0) or 0)
+        if section == "research_results":
+            return int(section_counts.get("research_reports", 0) or 0) + int(section_counts.get("structured_research_reports", 0) or 0) + int(section_counts.get("report_viewpoints", 0) or 0) + int(section_counts.get("analysis_conclusions", 0) or 0)
+        if section == "simulation_feedback":
+            return int(section_counts.get("simulation_feedback_records", 0) or 0) + int(section_counts.get("simulated_executions", 0) or 0) + int(section_counts.get("portfolio_transactions", 0) or 0)
+        return 0
+
+    def _company_intelligence_verdict_next_action(self, symbol: str, blocking_gaps: list[str], warning_gaps: list[str], data_quality: Mapping[str, Any]) -> dict[str, str]:
+        action_map = {
+            "company_profile": ("run_single_name_research", f"为 {symbol.upper()} 建立公司画像"),
+            "market_data": ("coverage_audit", "补齐公开或本地行情"),
+            "events": ("preview_batch_build", "生成公司事件时间线"),
+            "relationships": ("preview_batch_build", "生成并审核公司关系"),
+            "research_results": ("preview_research_structure", "结构化研报观点"),
+            "simulation_feedback": ("record_simulation_feedback", "记录 paper-only 模拟反馈"),
+            "event_evidence_backlinks": ("coverage_audit", "补齐事件证据回链"),
+            "relationship_evidence_backlinks": ("coverage_audit", "补齐关系证据回链"),
+        }
+        for gap in [*blocking_gaps, *warning_gaps]:
+            action, label = action_map.get(gap, ("coverage_audit", "查看覆盖审计"))
+            return {"action": action, "label": label, "reason": f"完整度判断仍缺 {gap}"}
+        if not data_quality.get("research_results_available"):
+            return {"action": "preview_research_structure", "label": "结构化研报观点", "reason": "事实层可用后需要观点层支撑分析"}
+        if not data_quality.get("simulation_feedback_available"):
+            return {"action": "record_simulation_feedback", "label": "记录模拟反馈", "reason": "分析结果需要 paper-only 反馈验证"}
+        return {"action": "none", "label": "继续复盘", "reason": "主要公司情报层已可用"}
 
     def _company_intelligence_next_actions(self, symbol: str, data_quality: Mapping[str, Any]) -> list[dict[str, str]]:
         actions: list[dict[str, str]] = []

@@ -392,6 +392,9 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(empty.data["symbol"], "SPCX")
         self.assertEqual(empty.data["status"], "not_found")
         self.assertIn("company_profile", empty.data["data_quality"]["missing_sections"])
+        self.assertEqual(empty.data["completeness_verdict"]["status"], "not_found")
+        self.assertIn("company_profile", empty.data["completeness_verdict"]["blocking_gaps"])
+        self.assertFalse(empty.data["completeness_verdict"]["is_complete"])
         self.assertTrue(any(item["action"] == "run_single_name_research" for item in empty.data["next_actions"]))
         self.assertFalse(empty.data["simulation_feedback"]["live_execution_allowed"])
 
@@ -445,6 +448,12 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(view.data["data_quality"]["profile_available"])
         self.assertTrue(view.data["data_quality"]["research_results_available"])
         self.assertTrue(view.data["data_quality"]["simulation_feedback_available"])
+        verdict = view.data["completeness_verdict"]
+        self.assertEqual(verdict["schema_id"], "company-intelligence-completeness-verdict-v1")
+        self.assertFalse(verdict["is_complete"])
+        self.assertIn("events", verdict["blocking_gaps"])
+        self.assertIn("research_results", verdict["required_layers"])
+        self.assertFalse(verdict["source_policy_summary"]["research_reports_can_complete_fact_fields"])
         self.assertTrue(any(item["report_id"] == "rr_spcx_local" for item in view.data["research_results"]["research_reports"]))
         self.assertTrue(any(item["resource_type"] == "research_report" for item in view.data["research_results"]["search"]["results"]))
         self.assertEqual(view.data["usage_boundary"], "company_intelligence_research_only_simulation_feedback_only_no_broker_execution")
@@ -670,6 +679,15 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(aggregated.data["analysis_workflow"]["analysis_conclusions"][0]["analysis_conclusion_id"], "ac_demo_001")
         self.assertEqual(aggregated.data["simulation_feedback"]["feedback_records"][0]["simulation_feedback_id"], "sf_demo_001")
         self.assertFalse(aggregated.data["simulation_feedback"]["live_execution_allowed"])
+        verdict = aggregated.data["completeness_verdict"]
+        self.assertEqual(verdict["status"], "incomplete")
+        self.assertFalse(verdict["is_complete"])
+        self.assertIn("market_data", verdict["blocking_gaps"])
+        self.assertIn("company_profile", verdict["required_layers"])
+        self.assertIn("simulation_feedback", verdict["required_layers"])
+        self.assertFalse(verdict["ready_for_analysis"])
+        self.assertEqual(verdict["recommended_next_action"]["action"], "coverage_audit")
+        self.assertFalse(verdict["source_policy_summary"]["research_reports_can_complete_fact_fields"])
 
         graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_001"}, role="analyst")
         self.assertTrue(graph.success, graph.error)

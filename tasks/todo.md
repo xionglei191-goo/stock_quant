@@ -331,6 +331,15 @@
   - 验收：单测覆盖 dry-run 不落库、execute 完成 source/document/evidence/profile-field assertion 回填、研报/manual 边界拒绝；脚本输出本地 artifact，固定 `local-only` 使用边界。
   - 后续增强：T-462 公司情报页完整度总判断和执行路径验收；T-463 多字段冲突/替代断言处理。
 
+- `DONE` T-462 公司情报完整度总判断
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-456 至 T-461 已补齐深字段覆盖、字段级证据、材料 inbox 和公司数据库补库入口，但用户仍需要一个清晰的“当前公司数据库是否完整可用”的总判断，而不是只看多个空表或 raw JSON。
+  - **已完成（本轮）**：`GET|POST /api/company-intelligence/{symbol}` 新增 `completeness_verdict`，按公司画像、行情快照、事件时间线、关系图谱、研究观点和模拟反馈六层输出完整度状态、分数、缺失层、阻塞缺口、提醒缺口和下一步动作。
+  - **已完成（本轮）**：完整度判断接入公司数据库覆盖率和画像深字段 coverage，返回 `database_coverage_score`、`profile_field_coverage_score`、必需事实字段和缺失事实字段，避免只用研报或观点把事实层误判为完整。
+  - **已完成（本轮）**：研报边界在 verdict 中显式声明为 `opinion_and_attention_slots_only_not_fact_source`，`research_reports_can_complete_fact_fields=false`；模拟反馈仍固定为 paper-only 验证层。
+  - 验收：单测覆盖未建档公司返回 `not_found` 和建档但缺事件/行情等事实层时返回 `incomplete`；现有公司情报聚合测试通过。
+  - 后续增强：UI 需要把 `completeness_verdict` 从 raw JSON 提升为可视化状态条/缺口清单，并增加浏览器执行路径验收；T-463 可继续处理多字段冲突/替代断言。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。
