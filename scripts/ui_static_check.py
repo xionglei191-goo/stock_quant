@@ -139,6 +139,10 @@ REQUIRED_IDS = [
     "companyIntelProfileAssertionReviewStatus",
     "companyIntelProfileAssertionConflictCount",
     "companyIntelProfileAssertionSupersededCount",
+    "companyIntelProfileAssertionRecommendationStatus",
+    "companyIntelProfileAssertionReviewNote",
+    "batchApproveCompanyProfileAssertions",
+    "batchRejectCompanyProfileAssertions",
     "companyIntelQualityReconcileStatus",
     "companyIntelEventDuplicateCount",
     "companyIntelRelationshipDuplicateCount",
@@ -261,7 +265,11 @@ REQUIRED_IDS = [
     "cpConclusionConfidence",
     "cpConclusionTaskCount",
     "cpConclusionBox",
+    "syncCpVerification",
     "refreshCpConclusion",
+    "cpVerificationClosedCount",
+    "cpFalsificationStatus",
+    "cpVerificationTaskRows",
 ]
 
 REQUIRED_JS_FUNCTIONS = [
@@ -296,8 +304,10 @@ REQUIRED_JS_FUNCTIONS = [
     "renderCompanyProfileFieldExtraction",
     "companyIntelProfileAssertionPayload",
     "renderCompanyProfileAssertionConflicts",
+    "selectedCompanyProfileAssertionIds",
     "loadCompanyProfileAssertionConflicts",
     "reviewCompanyProfileFieldAssertion",
+    "batchReviewCompanyProfileFieldAssertions",
     "extractCompanyProfileFields",
     "renderCompanyDatabaseQualityReconcile",
     "reconcileCompanyDatabaseQuality",
@@ -343,6 +353,7 @@ REQUIRED_JS_FUNCTIONS = [
     "notifySourceReviews",
     "renderChokepointConclusion",
     "finalizeChokepointRun",
+    "updateChokepointVerificationTask",
 ]
 
 REQUIRED_INTERACTION_MARKERS = [
@@ -352,6 +363,8 @@ REQUIRED_INTERACTION_MARKERS = [
     'data-action="open-hotspot"',
     'data-action="open-ingestion"',
     'data-action="review-company-profile-assertion"',
+    'data-action="review-chokepoint-verification-task"',
+    "data-company-profile-assertion-select",
     'document.addEventListener("click"',
 ]
 

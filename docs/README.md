@@ -6,11 +6,11 @@
 - [product-requirements-document.md](./product-requirements-document.md): 公司情报平台 PRD，定义产品定位、目标用户、主流程、研报边界和成功指标
 - [system-architecture.md](./system-architecture.md): 公司情报平台目标架构，主线为数据、实体、事件、关系、观点和反馈
 - [data-structure-design.md](./data-structure-design.md): 公司画像、画像字段抽取、画像字段级证据断言、字段断言冲突复核、本地公司材料 inbox、画像深字段覆盖审计、事件/关系质量归并、研报观点、观察任务、分析结论、模拟反馈、补库运行历史、retry/resume、覆盖率趋势和工作台操作数据结构
-- [../tasks/todo.md](../tasks/todo.md): 执行待办清单；T-431 至 T-464 记录公司情报平台重定位、公司数据库构建、事实事件层、关系候选抽取与审核、覆盖率审计、批量补库、模拟反馈表现更新、研报兑现复盘、工作台操作面板、细粒度披露事件抽取、空状态缺口诊断、补库运行历史、运行历史 UI、覆盖率趋势报告、补库断点续跑/失败重试、覆盖趋势 UI 接入、画像深字段覆盖审计、官方/IR 画像字段抽取、事件/关系质量归并、深字段/抽取/质量归并 UI 接入、画像字段级证据断言、本地公司材料 inbox、完整度总判断、字段断言冲突复核和字段冲突复核工作台
+- [../tasks/todo.md](../tasks/todo.md): 执行待办清单；T-431 至 T-465 记录公司情报平台重定位、公司数据库构建、事实事件层、关系候选抽取与审核、覆盖率审计、批量补库、模拟反馈表现更新、研报兑现复盘、工作台操作面板、细粒度披露事件抽取、空状态缺口诊断、补库运行历史、运行历史 UI、覆盖率趋势报告、补库断点续跑/失败重试、覆盖趋势 UI 接入、画像深字段覆盖审计、官方/IR 画像字段抽取、事件/关系质量归并、深字段/抽取/质量归并 UI 接入、画像字段级证据断言、本地公司材料 inbox、完整度总判断、字段断言冲突复核、字段冲突复核工作台和字段断言批量复核推荐增强
 
 ## 研报、观点和数据边界
 
-- [chokepoint-research-module.md](./chokepoint-research-module.md): 瓶颈研究模块方向文档，后续归入观点与观察池能力
+- [chokepoint-research-module.md](./chokepoint-research-module.md): 瓶颈研究模块方向文档，包含 T-406C 本地质量包和版本化人工 review 基线
 - [transcript-research-citation-policy.md](./transcript-research-citation-policy.md): 电话会、转录稿、卖方研报引用和训练边界策略
 - [us-compliance-open-questions.md](./us-compliance-open-questions.md): Reg FD、Non-Display、投顾、券商、衍生品和跨境合规开放问题
 - [risk-register.md](./risk-register.md): 风险与依赖登记册
@@ -27,7 +27,7 @@
 
 ## 架构和运维附录
 
-- [api-contracts.md](./api-contracts.md): 接口契约；包含公司画像、画像字段抽取、字段断言冲突复核、本地公司材料 inbox 脚本、画像深字段覆盖审计、事件/关系质量归并、研报观点、观察结论和模拟反馈 API
+- [api-contracts.md](./api-contracts.md): 接口契约；包含公司画像、画像字段抽取、字段断言冲突/批量复核、本地公司材料 inbox 脚本、画像深字段覆盖审计、事件/关系质量归并、研报观点、观察结论和模拟反馈 API
 - [postgresql-schema.sql](./postgresql-schema.sql): PostgreSQL 状态库基线 schema
 - [postgresql-migrations.md](./postgresql-migrations.md): PostgreSQL schema 迁移、dry-run、迁移记录和回滚策略
 - [systemservice-modularization-adr.md](./systemservice-modularization-adr.md): `SystemService` 模块化拆分 ADR 与迁移顺序

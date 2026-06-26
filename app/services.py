@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from email.message import EmailMessage
 from smtplib import SMTP, SMTPException, SMTP_SSL
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -19336,14 +19336,9 @@ class SystemService:
                 break
         facts = [self._chokepoint_evidence_row(item) for item in evidence_rows if item.section != "research_report_citation"]
         opinions = [self._chokepoint_evidence_row(item) for item in evidence_rows if item.section == "research_report_citation"]
-        tasks = []
-        for task in self.store.research_tasks.values():
-            if task.source not in {"chokepoint_research", "hotspot_expansion"}:
-                continue
-            if not topic_terms or any(term in (task.reason + json.dumps(task.metadata, ensure_ascii=False)).lower() for term in topic_terms[:6]):
-                tasks.append(to_plain(task))
-            if len(tasks) >= 20:
-                break
+        tasks = self._chokepoint_validation_tasks(context, topic_terms)
+        open_tasks = [item for item in tasks if str(item.get("status", "")).lower() in {"open", "in_progress"}]
+        task_status_counts = self._count_by_key(tasks, "status")
         return {
             "market_data": {
                 "role": "market_pricing_validation_only",
@@ -19368,10 +19363,34 @@ class SystemService:
             },
             "needs_verification": {
                 "role": "open_research_tasks",
-                "count": len(tasks),
-                "items": tasks,
+                "count": len(open_tasks),
+                "items": open_tasks[:20],
+                "all_items": tasks[:20],
+                "closed_count": max(0, len(tasks) - len(open_tasks)),
+                "status_counts": task_status_counts,
             },
         }
+
+    def _chokepoint_validation_tasks(self, context: Mapping[str, Any], topic_terms: list[str]) -> list[dict[str, Any]]:
+        tasks: list[dict[str, Any]] = []
+        for task in self.store.research_tasks.values():
+            if task.source not in {"chokepoint_research", "hotspot_expansion"}:
+                continue
+            combined = (task.reason + json.dumps(task.metadata, ensure_ascii=False)).lower()
+            if topic_terms and not any(term in combined for term in topic_terms[:6]):
+                continue
+            tasks.append(to_plain(task))
+            if len(tasks) >= 20:
+                break
+        tasks.sort(key=lambda item: (str(item.get("status", "")) != "open", -int(item.get("priority", 0) or 0), str(item.get("updated_at", ""))), reverse=False)
+        return tasks
+
+    def _count_by_key(self, rows: Iterable[Mapping[str, Any]], key: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in rows:
+            label = str(row.get(key, "") or "unknown")
+            counts[label] = counts.get(label, 0) + 1
+        return dict(sorted(counts.items()))
 
     def _chokepoint_light_evidence_match(self, evidence: Evidence, topic_terms: list[str]) -> bool:
         haystack = " ".join(
@@ -19439,6 +19458,40 @@ class SystemService:
             )
         return rows
 
+    def _chokepoint_run_tasks_summary(self, run: ChokepointResearchRun) -> dict[str, Any]:
+        tasks = [
+            to_plain(task)
+            for task in self.store.research_tasks.values()
+            if task.source in {"chokepoint_research", "hotspot_expansion"}
+            and str(task.metadata.get("run_id", "")).strip() == run.run_id
+        ]
+        tasks.sort(key=lambda item: (str(item.get("status", "")) != "open", -int(item.get("priority", 0) or 0), str(item.get("updated_at", ""))), reverse=False)
+        status_counts = self._count_by_key(tasks, "status")
+        open_tasks = [item for item in tasks if str(item.get("status", "")) in {"open", "in_progress"}]
+        closed_tasks = [item for item in tasks if str(item.get("status", "")) in {"done", "dismissed"}]
+        dismissed_tasks = [item for item in tasks if str(item.get("status", "")) == "dismissed"]
+        done_tasks = [item for item in tasks if str(item.get("status", "")) == "done"]
+        total = len(tasks)
+        closed_count = len(closed_tasks)
+        open_count = len(open_tasks)
+        completion_rate = round(closed_count / max(1, total), 4)
+        return {
+            "total_count": total,
+            "open_count": open_count,
+            "closed_count": closed_count,
+            "done_count": len(done_tasks),
+            "dismissed_count": len(dismissed_tasks),
+            "status_counts": status_counts,
+            "completion_rate": completion_rate,
+            "open_tasks": open_tasks[:12],
+            "closed_tasks": closed_tasks[:12],
+            "resolved_by_status": {
+                "verified": len(done_tasks),
+                "falsified": len(dismissed_tasks),
+            },
+            "usage_boundary": "verification_tasks_are_research_only_not_trade_signal",
+        }
+
     def _chokepoint_rule_conclusion(
         self,
         run: ChokepointResearchRun,
@@ -19446,6 +19499,7 @@ class SystemService:
         verification_tasks: Mapping[str, Any],
     ) -> dict[str, Any]:
         summaries = self._chokepoint_steps_summary(run)
+        task_summary = self._chokepoint_run_tasks_summary(run)
         completed_count = sum(1 for item in summaries if str(item.get("status")) in {"done", "review"})
         review_count = sum(1 for item in summaries if str(item.get("status")) == "review")
         failed_count = sum(1 for item in summaries if str(item.get("status")) == "failed")
@@ -19461,14 +19515,22 @@ class SystemService:
         facts_count = int((validation_context.get("facts") or {}).get("count") or 0)
         opinion_count = int((validation_context.get("opinions") or {}).get("count") or 0)
         task_count = int((validation_context.get("needs_verification") or {}).get("count") or 0)
+        task_total_count = int(task_summary.get("total_count", 0) or 0)
+        task_open_count = int(task_summary.get("open_count", 0) or 0)
+        task_closed_count = int(task_summary.get("closed_count", 0) or 0)
+        task_done_count = int(task_summary.get("done_count", 0) or 0)
+        task_dismissed_count = int(task_summary.get("dismissed_count", 0) or 0)
         status = "failed" if failed_count or run.status == "failed" else "ready_for_review"
-        if status != "failed" and (block_count or review_count or fallback_count or unknown_count or url_count == 0 or confirmed_count == 0 or facts_count == 0):
+        if status != "failed" and (block_count or task_open_count or review_count or fallback_count or unknown_count or url_count == 0 or confirmed_count == 0 or facts_count == 0):
             status = "needs_evidence"
         score = 5.0
         score += min(2.0, confirmed_count / 4)
         score += min(1.0, facts_count / 3)
         score += min(1.0, completed_count / max(1, len(run.steps)))
+        score += min(1.0, task_closed_count * 0.2)
         score -= min(2.0, block_count * 0.7)
+        score -= min(1.5, task_open_count * 0.35)
+        score -= min(1.0, task_dismissed_count * 0.2)
         score -= min(1.5, fallback_count * 0.5)
         score -= min(1.0, unknown_count * 0.12)
         score -= min(0.8, opinion_count * 0.05)
@@ -19484,15 +19546,118 @@ class SystemService:
             "created_count": int(verification_tasks.get("created_count", 0) or 0),
             "existing_count": int(verification_tasks.get("existing_count", 0) or 0),
             "created_tasks": [
-                {"task_id": item.get("task_id", ""), "reason": self._sanitize_chokepoint_conclusion_text(str(item.get("reason", ""))[:180]), "priority": item.get("priority")}
+                {
+                    "task_id": item.get("task_id", ""),
+                    "reason": self._sanitize_chokepoint_conclusion_text(str(item.get("reason", ""))[:180]),
+                    "priority": item.get("priority"),
+                    "status": item.get("status", ""),
+                }
                 for item in verification_tasks.get("created_tasks", [])[:8]
             ],
             "existing_tasks": [
-                {"task_id": item.get("task_id", ""), "reason": self._sanitize_chokepoint_conclusion_text(str(item.get("reason", ""))[:180]), "priority": item.get("priority")}
+                {
+                    "task_id": item.get("task_id", ""),
+                    "reason": self._sanitize_chokepoint_conclusion_text(str(item.get("reason", ""))[:180]),
+                    "priority": item.get("priority"),
+                    "status": item.get("status", ""),
+                }
                 for item in verification_tasks.get("existing_tasks", [])[:8]
             ],
+            "status_counts": task_summary["status_counts"],
+            "open_count": task_open_count,
+            "closed_count": task_closed_count,
+            "done_count": task_done_count,
+            "dismissed_count": task_dismissed_count,
+            "completion_rate": task_summary["completion_rate"],
             "usage_boundary": verification_tasks.get("usage_boundary", "research_only_not_trade_signal"),
         }
+        next_verification_tasks = [
+            {
+                "task_id": item.get("task_id", ""),
+                "reason": self._sanitize_chokepoint_conclusion_text(str(item.get("reason", ""))[:260]),
+                "priority": item.get("priority", 0),
+                "status": item.get("status", ""),
+                "required_slots": list(item.get("required_slots", [])),
+            }
+            for item in task_summary["open_tasks"][:12]
+        ]
+        evidence_gaps = []
+        for issue in open_issues:
+            if issue.get("severity") in {"block", "warn"}:
+                evidence_gaps.append(
+                    {
+                        "type": "issue",
+                        "step": issue.get("step", ""),
+                        "message": self._sanitize_chokepoint_conclusion_text(str(issue.get("message", ""))),
+                        "suggestion": self._sanitize_chokepoint_conclusion_text(str(issue.get("suggestion", ""))),
+                    }
+                )
+        for item in task_summary["open_tasks"][:8]:
+            evidence_gaps.append(
+                {
+                    "type": "verification_task",
+                    "task_id": item.get("task_id", ""),
+                    "reason": self._sanitize_chokepoint_conclusion_text(str(item.get("reason", ""))[:220]),
+                    "required_slots": list(item.get("required_slots", [])),
+                }
+            )
+        core_facts = [
+            {
+                "text": self._sanitize_chokepoint_conclusion_text(str(item.get("snippet", ""))),
+                "evidence_id": item.get("evidence_id", ""),
+                "document_id": item.get("document_id", ""),
+                "source_uri": item.get("source_uri", ""),
+                "page_no": item.get("page_no", ""),
+                "confidence": item.get("confidence", 0),
+                "layer": "confirmed",
+            }
+            for item in (validation_context.get("facts") or {}).get("items", [])[:8]
+        ]
+        inference_entries = self._chokepoint_extract_step_entries(run, r"\binferred\b|推断|假设", layer="inferred", limit=8)
+        speculative_entries = self._chokepoint_extract_step_entries(run, r"\bspeculative\b|猜测|想象|早期假设", layer="speculative", limit=8)
+        unknown_entries = [
+            {
+                "text": self._sanitize_chokepoint_conclusion_text(str(item)),
+                "source": "step_output",
+                "layer": "unknown",
+                "verification_status": "closed" if task_closed_count and not task_open_count else "open",
+            }
+            for item in self._chokepoint_extract_lines(run, r"unknown|未知|待验证|无法确认|needs_verification|P0", limit=8)
+        ]
+        if not unknown_entries:
+            unknown_entries = [
+                {
+                    "text": self._sanitize_chokepoint_conclusion_text(str(item.get("message", ""))),
+                    "source": "issue",
+                    "layer": "unknown",
+                    "verification_status": "open",
+                }
+                for item in open_issues[:5]
+            ]
+        market_data_items = (validation_context.get("market_data") or {}).get("latest", [])[:6]
+        market_pricing_context = {
+            "role": (validation_context.get("market_data") or {}).get("role", ""),
+            "count": market_count,
+            "items": [
+                {
+                    "security_id": item.get("security_id", ""),
+                    "as_of_date": item.get("as_of_date", ""),
+                    "close": item.get("close", ""),
+                    "adjusted_close": item.get("adjusted_close", ""),
+                    "volume": item.get("volume", ""),
+                    "source_id": item.get("source_id", ""),
+                }
+                for item in market_data_items
+            ],
+        }
+        if task_open_count:
+            falsification_status = "needs_verification"
+        elif task_dismissed_count > 0 and task_done_count == 0:
+            falsification_status = "falsified"
+        elif task_done_count > 0:
+            falsification_status = "verified"
+        else:
+            falsification_status = "pending"
         next_actions = [
             "人工复核来源台账，补齐 P0 官方/监管/公司原始链接。",
             "把 unknown、needs_verification 和反方问题逐条关闭或降级。",
@@ -19529,18 +19694,27 @@ class SystemService:
             "confirmed_summary": self._chokepoint_layer_summary(run, "confirmed", confirmed_count),
             "inferred_summary": self._chokepoint_layer_summary(run, "inferred", inferred_count),
             "speculative_summary": self._chokepoint_layer_summary(run, "speculative", speculative_count),
-            "unknowns": self._chokepoint_extract_lines(run, r"unknown|未知|待验证|无法确认|needs_verification|P0", limit=8)
-            or [item.get("message", "") for item in open_issues[:5]],
+            "core_facts": core_facts,
+            "inferences": inference_entries,
+            "speculations": speculative_entries,
+            "unknowns": unknown_entries,
+            "evidence_gaps": evidence_gaps,
+            "market_pricing_context": market_pricing_context,
             "key_chokepoints": self._chokepoint_extract_lines(run, r"chokepoint|瓶颈|咽喉|卡点|Strait", limit=8)
             or ([run.chokepoint_node] if run.chokepoint_node else []),
             "catalysts": self._chokepoint_extract_lines(run, r"催化|里程碑|合同|订单|审批|许可|qualification|ramp|M&A|政策", limit=8),
             "falsification_conditions": self._chokepoint_extract_lines(run, r"证伪|反方|风险|替代|失败|推迟|取消|falsification|bear case", limit=8),
+            "falsification_status": falsification_status,
             "validation_summary": {
                 "market_data": {"count": market_count, "role": (validation_context.get("market_data") or {}).get("role", "")},
                 "facts": {"count": facts_count, "role": (validation_context.get("facts") or {}).get("role", "")},
                 "opinions": {"count": opinion_count, "role": (validation_context.get("opinions") or {}).get("role", "")},
                 "knowledge_graph": validation_context.get("knowledge_graph", {}),
-                "needs_verification": {"count": task_count},
+                "needs_verification": {
+                    "count": task_count,
+                    "status_counts": (validation_context.get("needs_verification") or {}).get("status_counts", {}),
+                    "closed_count": task_summary["closed_count"],
+                },
             },
             "open_issues": [
                 {
@@ -19552,6 +19726,7 @@ class SystemService:
                 }
                 for item in open_issues[:12]
             ],
+            "next_verification_tasks": next_verification_tasks,
             "next_actions": next_actions,
             "verification_tasks": verification_compact,
             "llm_run_id": "",
@@ -19581,6 +19756,32 @@ class SystemService:
                     continue
                 seen.add(key)
                 rows.append(normalized)
+                if len(rows) >= limit:
+                    return rows
+        return rows
+
+    def _chokepoint_extract_step_entries(self, run: ChokepointResearchRun, pattern: str, *, layer: str, limit: int = 6) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        compiled = re.compile(pattern, flags=re.I)
+        for step in run.steps:
+            for line in str(step.get("output_text", "")).splitlines():
+                normalized = " ".join(line.strip().split())
+                if len(normalized) < 12 or not compiled.search(normalized):
+                    continue
+                normalized = self._sanitize_chokepoint_conclusion_text(normalized[:260])
+                key = normalized.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(
+                    {
+                        "text": normalized,
+                        "step": step.get("label", ""),
+                        "step_id": step.get("step_id", ""),
+                        "layer": layer,
+                    }
+                )
                 if len(rows) >= limit:
                     return rows
         return rows
@@ -20710,10 +20911,11 @@ class SystemService:
         for assertion in rows:
             status_counts[assertion.assertion_status] = status_counts.get(assertion.assertion_status, 0) + 1
             review_counts[assertion.review_status] = review_counts.get(assertion.review_status, 0) + 1
+        assertion_rows = [self._company_profile_field_assertion_review_row(item) for item in rows[:limit]]
         return {
             "schema_id": "company-profile-field-assertions-v1",
             "count": len(rows),
-            "assertions": [to_plain(item) for item in rows[:limit]],
+            "assertions": assertion_rows,
             "status_counts": status_counts,
             "review_status_counts": review_counts,
             "conflict_count": status_counts.get("conflict_candidate", 0),
@@ -20723,6 +20925,32 @@ class SystemService:
 
     def review_company_profile_field_assertion(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
+        assertion_ids = self._unique_strings(self._string_list(payload.get("assertion_ids", [])))
+        if assertion_ids:
+            results = []
+            changed_ids: list[str] = []
+            superseded_ids: list[str] = []
+            for assertion_id in assertion_ids:
+                item_payload = {**dict(payload), "assertion_id": assertion_id}
+                item_payload.pop("assertion_ids", None)
+                result = self._review_single_company_profile_field_assertion(item_payload, actor=actor)
+                results.append(result)
+                changed_ids.extend(result.get("changed_assertion_ids", []))
+                superseded_ids.extend(result.get("superseded_assertion_ids", []))
+            return {
+                "schema_id": "company-profile-field-assertion-batch-review-v1",
+                "status": "reviewed_batch",
+                "action": str(payload.get("action", "")).strip().lower(),
+                "reviewed_count": len(results),
+                "results": results,
+                "superseded_assertion_ids": self._unique_strings(superseded_ids),
+                "changed_assertion_ids": self._unique_strings(changed_ids),
+                "usage_boundary": "profile_field_assertion_review_updates_local_fact_provenance_only_no_live_trading",
+            }
+
+        return self._review_single_company_profile_field_assertion(payload, actor=actor)
+
+    def _review_single_company_profile_field_assertion(self, payload: Mapping[str, Any], *, actor: str) -> dict[str, Any]:
         assertion_id = str(payload.get("assertion_id", "")).strip()
         action = str(payload.get("action", "")).strip().lower()
         if not assertion_id:
@@ -20795,6 +21023,101 @@ class SystemService:
             "changed_assertion_ids": self._unique_strings(changed_ids),
             "usage_boundary": "profile_field_assertion_review_updates_local_fact_provenance_only_no_live_trading",
         }
+
+    def _company_profile_field_assertion_review_row(self, assertion: CompanyProfileFieldAssertion) -> dict[str, Any]:
+        row = to_plain(assertion)
+        conflicting_rows = []
+        for conflict_id in assertion.conflicts_with[:5]:
+            conflict = self.store.company_profile_field_assertions.get(conflict_id)
+            if conflict is None:
+                continue
+            conflicting_rows.append(
+                {
+                    "assertion_id": conflict.assertion_id,
+                    "field_name": conflict.field_name,
+                    "value": to_plain(conflict.value),
+                    "source_ids": list(conflict.source_ids),
+                    "document_ids": list(conflict.document_ids),
+                    "evidence_ids": list(conflict.evidence_ids),
+                    "confidence": conflict.confidence,
+                    "review_status": conflict.review_status,
+                    "assertion_status": conflict.assertion_status,
+                    "updated_at": to_plain(conflict.updated_at),
+                }
+            )
+        row["conflicting_assertions"] = conflicting_rows
+        row["review_recommendation"] = self._company_profile_field_assertion_recommendation(assertion, conflicting_rows)
+        return row
+
+    def _company_profile_field_assertion_recommendation(self, assertion: CompanyProfileFieldAssertion, conflicting_rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+        candidate_score = self._company_profile_field_assertion_review_score(assertion)
+        conflict_scores = []
+        for row in conflicting_rows:
+            conflict = self.store.company_profile_field_assertions.get(str(row.get("assertion_id", "")))
+            if conflict is not None:
+                conflict_scores.append(self._company_profile_field_assertion_review_score(conflict))
+        best_conflict_score = max(conflict_scores, default=0.0)
+        if assertion.assertion_status != "conflict_candidate":
+            action = "no_review_needed"
+            reason = "assertion_is_not_a_pending_conflict_candidate"
+        elif candidate_score > best_conflict_score + 0.05:
+            action = "prefer_candidate_after_review"
+            reason = "candidate_has_better_source_priority_confidence_or_freshness"
+        elif candidate_score + 0.05 < best_conflict_score:
+            action = "prefer_existing_after_review"
+            reason = "existing_assertion_scores_higher_than_candidate"
+        else:
+            action = "manual_compare_required"
+            reason = "candidate_and_existing_assertions_have_similar_scores"
+        return {
+            "recommended_action": action,
+            "reason": reason,
+            "candidate_score": round(candidate_score, 4),
+            "best_conflict_score": round(best_conflict_score, 4),
+            "confidence": round(float(assertion.confidence or 0.0), 4),
+            "source_priority_rank": self._company_profile_field_assertion_source_priority_rank(assertion),
+            "freshness_score": self._company_profile_field_assertion_freshness_score(assertion),
+            "usage_boundary": "recommendation_is_review_assist_only_not_automatic_replacement",
+        }
+
+    def _company_profile_field_assertion_review_score(self, assertion: CompanyProfileFieldAssertion) -> float:
+        rank = self._company_profile_field_assertion_source_priority_rank(assertion)
+        source_component = max(0.0, (10 - min(rank, 10)) / 10)
+        confidence_component = min(1.0, max(0.0, float(assertion.confidence or 0.0)))
+        freshness_component = self._company_profile_field_assertion_freshness_score(assertion)
+        return round(source_component * 0.45 + confidence_component * 0.35 + freshness_component * 0.20, 6)
+
+    def _company_profile_field_assertion_source_priority_rank(self, assertion: CompanyProfileFieldAssertion) -> int:
+        source_type = str((assertion.metadata or {}).get("source_type", "")).strip()
+        if not source_type:
+            for source_id in assertion.source_ids:
+                source = self.store.sources.get(source_id)
+                if source is not None:
+                    source_type = source.source_type
+                    break
+        priority = [
+            "official_disclosure",
+            "regulatory",
+            "exchange_disclosure",
+            "company_ir",
+            "company_official",
+            "public_market_data",
+            "local_reference",
+            "manual_reference",
+        ]
+        if source_type in priority:
+            return priority.index(source_type) + 1
+        return 9
+
+    def _company_profile_field_assertion_freshness_score(self, assertion: CompanyProfileFieldAssertion) -> float:
+        raw = str(assertion.as_of_date or assertion.updated_at or assertion.created_at or "")
+        match = re.search(r"(20\d{2})", raw)
+        if not match:
+            return 0.5
+        year = int(match.group(1))
+        current_year = int(str(utcnow())[:4])
+        age = max(0, current_year - year)
+        return round(max(0.0, 1.0 - min(age, 10) / 10), 4)
 
     def company_profile_schema_payload(self, _filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         return {

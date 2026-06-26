@@ -24,7 +24,7 @@ from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, CompanyDatabaseBuildRun, DecisionPack, DisclosureEvent, Document, Evidence, ResearchReportAsset, RightsTag, SystemAlert
+from app.models import AlertNotification, CompanyDatabaseBuildRun, CompanyProfileFieldAssertion, DecisionPack, DisclosureEvent, Document, Evidence, ResearchReportAsset, RightsTag, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
 from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
@@ -1381,6 +1381,213 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(website_field["present"])
         self.assertEqual(website_field["assertion_ids"], [old_assertion_id])
         self.assertEqual(website_field["evidence_ids"], ["evi_demo_website_reject_old"])
+
+    def test_company_profile_field_assertion_query_recommends_and_batch_rejects_conflicts(self) -> None:
+        old_document = Document(
+            document_id="doc_demo_batch_old",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="official_business_overview",
+            source_id="src_company_ir_batch_old",
+            source_type="company_ir",
+            source_uri="https://example.test/batch-old",
+            rights_tag=RightsTag("public"),
+            body="",
+            title="Demo batch old profile",
+        )
+        self.service.store.documents[old_document.document_id] = old_document
+        self.service.store.evidence["evi_demo_batch_old"] = Evidence(
+            evidence_id="evi_demo_batch_old",
+            document_id=old_document.document_id,
+            section="business_overview",
+            page_no=1,
+            bbox="p1",
+            span_text="Official website: https://batch-old.example.com. Investor relations: https://batch-old.example.com/ir.",
+            canonical_text="Official website: https://batch-old.example.com. Investor relations: https://batch-old.example.com/ir.",
+            confidence=0.86,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+        first = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-fields/extract",
+            {"symbols": ["DEMO"], "fields": ["website_url", "ir_url"], "require_evidence": True, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(first.success, first.error)
+
+        new_document = Document(
+            document_id="doc_demo_batch_new",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            document_type="official_business_overview",
+            source_id="src_company_ir_batch_new",
+            source_type="company_ir",
+            source_uri="https://example.test/batch-new",
+            rights_tag=RightsTag("public"),
+            body="",
+            title="Demo batch new profile",
+        )
+        self.service.store.documents[new_document.document_id] = new_document
+        self.service.store.evidence["evi_demo_batch_new"] = Evidence(
+            evidence_id="evi_demo_batch_new",
+            document_id=new_document.document_id,
+            section="business_overview",
+            page_no=1,
+            bbox="p1",
+            span_text="Official website: https://batch-new.example.com. Investor relations: https://batch-new.example.com/ir.",
+            canonical_text="Official website: https://batch-new.example.com. Investor relations: https://batch-new.example.com/ir.",
+            confidence=0.98,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+        conflict = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-fields/extract",
+            {
+                "symbols": ["DEMO"],
+                "fields": ["website_url", "ir_url"],
+                "require_evidence": True,
+                "refresh_existing": True,
+                "execute": True,
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(conflict.success, conflict.error)
+        conflict_ids = conflict.data["companies"][0]["applied"]["assertion_ids"]
+        self.assertEqual(len(conflict_ids), 2)
+
+        query = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-assertions",
+            {"symbols": ["DEMO"], "assertion_status": "conflict_candidate", "limit": 10},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(query.success, query.error)
+        self.assertEqual(query.data["conflict_count"], 2)
+        first_conflict = query.data["assertions"][0]
+        self.assertTrue(first_conflict["conflicting_assertions"])
+        self.assertIn("review_recommendation", first_conflict)
+        self.assertIn(first_conflict["review_recommendation"]["recommended_action"], {"prefer_candidate_after_review", "manual_compare_required", "prefer_existing_after_review"})
+
+        rejected = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-assertions/review",
+            {"assertion_ids": conflict_ids, "action": "reject", "note": "batch reject from review workbench"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(rejected.success, rejected.error)
+        self.assertEqual(rejected.data["status"], "reviewed_batch")
+        self.assertEqual(rejected.data["reviewed_count"], 2)
+        self.assertEqual(self.service.store.issuers["issuer_001"].company_details["website_url"], "https://batch-old.example.com")
+        self.assertEqual(self.service.store.issuers["issuer_001"].company_details["ir_url"], "https://batch-old.example.com/ir")
+        for assertion_id in conflict_ids:
+            self.assertEqual(self.service.store.company_profile_field_assertions[assertion_id].assertion_status, "rejected")
+            self.assertEqual(self.service.store.company_profile_field_assertions[assertion_id].metadata["resolution_note"], "batch reject from review workbench")
+
+    def test_company_profile_field_assertion_batch_approve_supersedes_old_values(self) -> None:
+        issuer = self.service.store.issuers["issuer_001"]
+        issuer.company_details = {
+            **dict(issuer.company_details),
+            "website_url": "https://batch-approve-old.example.com",
+            "ir_url": "https://batch-approve-old.example.com/ir",
+        }
+        old_website = CompanyProfileFieldAssertion(
+            assertion_id="cpfa_batch_approve_old_website",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            field_name="website_url",
+            value="https://batch-approve-old.example.com",
+            normalized_value=json.dumps("https://batch-approve-old.example.com"),
+            source_ids=["src_company_ir_batch_approve_old"],
+            document_ids=["doc_batch_approve_old"],
+            evidence_ids=["evi_batch_approve_old_website"],
+            confidence=0.82,
+            assertion_status="active",
+            review_status="auto_generated",
+            metadata={"source_type": "company_ir"},
+        )
+        old_ir = CompanyProfileFieldAssertion(
+            assertion_id="cpfa_batch_approve_old_ir",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            field_name="ir_url",
+            value="https://batch-approve-old.example.com/ir",
+            normalized_value=json.dumps("https://batch-approve-old.example.com/ir"),
+            source_ids=["src_company_ir_batch_approve_old"],
+            document_ids=["doc_batch_approve_old"],
+            evidence_ids=["evi_batch_approve_old_ir"],
+            confidence=0.82,
+            assertion_status="active",
+            review_status="auto_generated",
+            metadata={"source_type": "company_ir"},
+        )
+        new_website = CompanyProfileFieldAssertion(
+            assertion_id="cpfa_batch_approve_new_website",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            field_name="website_url",
+            value="https://batch-approve-new.example.com",
+            normalized_value=json.dumps("https://batch-approve-new.example.com"),
+            source_ids=["src_company_ir_batch_approve_new"],
+            document_ids=["doc_batch_approve_new"],
+            evidence_ids=["evi_batch_approve_new_website"],
+            confidence=0.97,
+            assertion_status="conflict_candidate",
+            review_status="needs_review",
+            conflicts_with=[old_website.assertion_id],
+            metadata={"source_type": "company_ir"},
+        )
+        new_ir = CompanyProfileFieldAssertion(
+            assertion_id="cpfa_batch_approve_new_ir",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            field_name="ir_url",
+            value="https://batch-approve-new.example.com/ir",
+            normalized_value=json.dumps("https://batch-approve-new.example.com/ir"),
+            source_ids=["src_company_ir_batch_approve_new"],
+            document_ids=["doc_batch_approve_new"],
+            evidence_ids=["evi_batch_approve_new_ir"],
+            confidence=0.97,
+            assertion_status="conflict_candidate",
+            review_status="needs_review",
+            conflicts_with=[old_ir.assertion_id],
+            metadata={"source_type": "company_ir"},
+        )
+        for assertion in [old_website, old_ir, new_website, new_ir]:
+            self.service.store.company_profile_field_assertions[assertion.assertion_id] = assertion
+
+        reviewed = self.router.dispatch(
+            "POST",
+            "/api/company-database/profile-field-assertions/review",
+            {
+                "assertion_ids": [new_website.assertion_id, new_ir.assertion_id],
+                "action": "approve",
+                "note": "batch approve from review workbench",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(reviewed.success, reviewed.error)
+        self.assertEqual(reviewed.data["status"], "reviewed_batch")
+        self.assertEqual(reviewed.data["reviewed_count"], 2)
+        self.assertEqual(set(reviewed.data["superseded_assertion_ids"]), {old_website.assertion_id, old_ir.assertion_id})
+        self.assertEqual(issuer.company_details["website_url"], "https://batch-approve-new.example.com")
+        self.assertEqual(issuer.company_details["ir_url"], "https://batch-approve-new.example.com/ir")
+        for assertion_id in [new_website.assertion_id, new_ir.assertion_id]:
+            assertion = self.service.store.company_profile_field_assertions[assertion_id]
+            self.assertEqual(assertion.assertion_status, "active")
+            self.assertEqual(assertion.review_status, "approved")
+            self.assertEqual(assertion.metadata["resolution_note"], "batch approve from review workbench")
+        for assertion_id in [old_website.assertion_id, old_ir.assertion_id]:
+            assertion = self.service.store.company_profile_field_assertions[assertion_id]
+            self.assertEqual(assertion.assertion_status, "superseded")
+            self.assertEqual(assertion.review_status, "superseded")
+            self.assertIn(assertion.resolved_by, {new_website.assertion_id, new_ir.assertion_id})
 
     def test_company_profile_field_extraction_keeps_research_reports_opinion_only(self) -> None:
         research_document = Document(
@@ -7813,6 +8020,153 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(second.data["conclusion"]["verification_tasks"]["created_count"], 0)
         self.assertGreaterEqual(second.data["conclusion"]["verification_tasks"]["existing_count"], 1)
 
+    def test_chokepoint_structured_conclusion_reflects_verification_closure(self) -> None:
+        def structured_send(request, timeout):
+            body = json.loads(request.data.decode("utf-8"))
+            content = body["messages"][-1]["content"]
+            if "流水线结论" in content or "规则结论" in content:
+                return json.dumps({"id": "chatcmpl_cp_conclusion", "choices": [{"message": {"content": "结论：研究辅助，不构成投资建议。"}}]}).encode("utf-8")
+            return json.dumps(
+                {
+                    "id": "chatcmpl_cp_structured_step",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "\n".join(
+                                    [
+                                        "事实 | URL | 分层",
+                                        "Grid interconnect queue constrains AI power chokepoint | https://example.com/grid | confirmed",
+                                        "Switching cost inferred from customer qualification | https://example.com/customer | inferred",
+                                        "Customer ramp speculative until filing confirms timing | https://example.com/ramp | speculative",
+                                        "P0 unknown: verify capacity date and customer qualification timing needs_verification",
+                                        "证伪条件: utility releases capacity ahead of expected ramp",
+                                    ]
+                                )
+                            }
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+
+        self.service.llm_gateway = LLMGateway(
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            default_model="qwen3.6-plus",
+            http_send=structured_send,
+        )
+        self.service.store.market_data["md_demo_chokepoint"] = services_module.MarketDataPoint(
+            data_id="md_demo_chokepoint",
+            security_id="sec_001",
+            market="A",
+            as_of_date="2026-06-26",
+            close=42.0,
+            adjusted_close=42.0,
+            volume=1000,
+            source_id="public_eod_market_data",
+            data_type="eod",
+            rights_tag=RightsTag("public"),
+        )
+        self.service.store.documents["doc_demo_chokepoint_fact"] = Document(
+            document_id="doc_demo_chokepoint_fact",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            source_id="src_sec",
+            source_type="regulatory",
+            document_type="10-K",
+            source_uri="https://example.com/filing",
+            title="Demo Corp filing",
+            body="Public filing fact about AI power capacity.",
+            rights_tag=RightsTag("public"),
+        )
+        self.service.store.evidence["evi_demo_chokepoint_fact"] = Evidence(
+            evidence_id="evi_demo_chokepoint_fact",
+            document_id="doc_demo_chokepoint_fact",
+            section="filing_fact",
+            page_no=3,
+            bbox="p3",
+            span_text="Demo Corp discloses capacity constraints for AI power infrastructure.",
+            canonical_text="Demo Corp discloses capacity constraints for AI power infrastructure.",
+            confidence=0.92,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+
+        created = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs",
+            {
+                "run_id": "cprun_structured",
+                "topic": "AI power chokepoint",
+                "ticker": "DEMO",
+                "theme": "AI power infrastructure",
+                "chokepoint_node": "grid interconnect",
+                "mode": "strict",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(created.success, created.error)
+        first = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs/cprun_structured/run",
+            {"step_limit": 7},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(first.success, first.error)
+        conclusion = first.data["conclusion"]
+        for key in [
+            "core_facts",
+            "inferences",
+            "speculations",
+            "unknowns",
+            "evidence_gaps",
+            "market_pricing_context",
+            "falsification_status",
+            "next_verification_tasks",
+        ]:
+            self.assertIn(key, conclusion)
+        self.assertGreaterEqual(len(conclusion["core_facts"]), 1)
+        self.assertGreaterEqual(conclusion["verification_tasks"]["open_count"], 1)
+        self.assertEqual(conclusion["falsification_status"], "needs_verification")
+
+        run_tasks = [
+            task
+            for task in self.service.store.research_tasks.values()
+            if task.metadata.get("run_id") == "cprun_structured"
+        ]
+        self.assertGreaterEqual(len(run_tasks), 1)
+        for task in run_tasks:
+            updated = self.router.dispatch(
+                "POST",
+                f"/api/research/tasks/{task.task_id}/status",
+                {
+                    "status": "done",
+                    "reason": "confirmed by public filing evidence",
+                    "evidence_ids": ["evi_demo_chokepoint_fact"],
+                    "metadata": {"verification_result": "confirmed"},
+                },
+                actor="analyst",
+                role="analyst",
+            )
+            self.assertTrue(updated.success, updated.error)
+
+        refreshed = self.router.dispatch(
+            "POST",
+            "/api/chokepoint/runs/cprun_structured/finalize",
+            {},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(refreshed.success, refreshed.error)
+        refreshed_conclusion = refreshed.data["conclusion"]
+        self.assertEqual(refreshed_conclusion["verification_tasks"]["open_count"], 0)
+        self.assertGreaterEqual(refreshed_conclusion["verification_tasks"]["closed_count"], 1)
+        self.assertEqual(refreshed_conclusion["falsification_status"], "verified")
+        self.assertTrue(all(item.get("verification_status") == "closed" for item in refreshed_conclusion["unknowns"]))
+        self.assertFalse(refreshed_conclusion["next_verification_tasks"])
+        self.assertEqual(refreshed_conclusion["usage_boundary"], "research_only_not_investment_advice")
+
     def test_chokepoint_step_passes_request_timeout_to_llm_gateway(self) -> None:
         sent = []
 
@@ -7996,6 +8350,26 @@ class SystemServiceTests(unittest.TestCase):
             self.assertEqual(summary["manual_review_summary"]["issue_counts"], {"missing_url": 1})
             self.assertEqual(summary["quality_baseline"]["manual_review_close_rate"], 0.3)
             self.assertFalse((cli_output / ".quality-package.json.tmp").exists())
+
+    def test_local_chokepoint_quality_package_bundled_manual_review_baseline_closes_samples(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "chokepoint-quality"
+            package = build_local_chokepoint_quality_package(
+                output_dir=output_dir,
+                artifact_prefix="artifact://local/test-chokepoint-quality",
+                manual_review_input=Path("docs/examples/chokepoint-manual-review-baseline.jsonl"),
+            )
+
+            self.assertTrue(package["manual_review_ready_for_local_baseline"])
+            self.assertEqual(package["manual_review_summary"]["sample_coverage_count"], 5)
+            self.assertEqual(package["manual_review_summary"]["label_count"], 10)
+            self.assertEqual(package["manual_review_summary"]["closed_label_count"], 10)
+            self.assertEqual(package["quality_baseline"]["manual_review_close_rate"], 1.0)
+            self.assertEqual(package["quality_baseline"]["manual_review_sample_coverage_rate"], 1.0)
+            self.assertEqual(package["manual_review_summary"]["label_status_counts"]["confirmed"], 2)
+            self.assertEqual(package["manual_review_summary"]["label_status_counts"]["unknown"], 4)
+            self.assertEqual(package["manual_review_summary"]["label_status_counts"]["inferred"], 3)
+            self.assertEqual(package["manual_review_summary"]["label_status_counts"]["speculative"], 1)
 
     def test_llm_readiness_report_tracks_prompt_quality_budget_and_challenger_evidence(self) -> None:
         self.router.dispatch("POST", "/api/llm/task-templates/seed", {}, actor="ml", role="nlp_ml")

@@ -2,7 +2,7 @@
 
 - Status: active
 - Owner group: Research and AI Workflows
-- Last updated: 2026-05-28
+- Last updated: 2026-06-26
 - Related tasks: T-406B, T-406C, T-406D, T-406E
 - Scope: 瓶颈研究模块的方法论、边界、自动化流水线和本地质量基线
 - Non-goals: 不定义真实交易策略，不替代人工研究复核
@@ -107,6 +107,8 @@ AI 在本模块中的角色是研究脚手架，而不是最终裁判。流水�
 - 脚本：`scripts/local_chokepoint_quality_package.py`
 - 默认产物目录：`artifacts/chokepoint-quality-package/`
 - 本地 smoke 命令：`python3 scripts/local_chokepoint_quality_package.py --output-dir /tmp/chokepoint-quality-package-smoke`
+- 版本化人工 review 基线：`docs/examples/chokepoint-manual-review-baseline.jsonl`
+- 本地完成态基线命令：`python3 scripts/local_chokepoint_quality_package.py --use-bundled-manual-review-baseline --output-dir /tmp/chokepoint-quality-package-baseline`
 
 当前脚本会使用 5 个真实主题模板样本，批量创建并执行现有 7 步 chokepoint 流水线，并导出以下本地 `local-only` 产物：
 
@@ -116,11 +118,7 @@ AI 在本模块中的角色是研究脚手架，而不是最终裁判。流水�
 - `quality-summary.json`：本机基线指标汇总
 - `quality-package.json`：质量包入口清单
 
-当前本地基线只解决“可重跑、可归档、可对比”的第一步，不等同于 `T-406C` 最终完成。仍需后续补齐：
-
-- 人工标注闭环和 review 关闭率
-- 样本级错分、无 URL、无日期、边界违规和 fallback 的人工判定
-- 与 `T-406D/T-406E` 新结构化结论/回写闭环保持口径一致
+当前本地基线已完成 `T-406C` 的最窄人工复核闭环：5 个样本均有本地 `completed_manual_review` 输入，label 状态覆盖 `confirmed` / `inferred` / `speculative` / `unknown`，并记录样本级问题标记。该基线仍是 `local-only` 质量证据，不是外部 staging/production release evidence。
 
 `T-406C` 当前已实现最窄人工复核导入 contract，继续沿用 `manual-review-seed.json` 的样本和 label 粒度，不提前发明 `T-406D/T-406E` 的新 schema。
 
@@ -147,7 +145,7 @@ AI 在本模块中的角色是研究脚手架，而不是最终裁判。流水�
   - `manual_issues`: 可选；问题数组，按 `issue_type` 聚合
 - 每个 label override 当前支持：
   - `label_id`: 必填；必须匹配 seed 中的 `label_id`
-  - `manual_status`: 当前脚本接受 `pending_manual_review`、`confirmed`、`dismissed`
+  - `manual_status`: 当前脚本接受 `pending_manual_review`、`confirmed`、`inferred`、`speculative`、`unknown`、`dismissed`
   - `notes`: 可选
 
 当前聚合输出：
@@ -160,14 +158,17 @@ AI 在本模块中的角色是研究脚手架，而不是最终裁判。流水�
 - `manual_review_summary.label_count`
 - `manual_review_summary.closed_label_count`
 - `manual_review_summary.review_status_counts`
+- `manual_review_summary.label_status_counts`
 - `manual_review_summary.issue_counts`
+- `manual_review_ready_for_local_baseline`
 
-明确 out of scope：
+T-406C 质量包本身的 out of scope：
 
-- 不新增 `core_facts`、`market_pricing_context`、`falsification_status` 等 `T-406D/T-406E` 字段
 - 不把人工复核结果直接回写 chokepoint run、`ResearchTask` 或 `conclusion`
-- 不引入新的 7 维 scorecard 或 verification task 生命周期状态机
+- 不引入新的 7 维 scorecard
 - 不要求逐证据对象 schema；本轮只复核样本级 label 和问题标记
+
+T-406D/T-406E 当前已经开始单独落地，不再属于 T-406C 质量包 contract：`conclusion` 已增加 `core_facts`、`inferences`、`speculations`、`evidence_gaps`、`market_pricing_context`、`falsification_status` 和 `next_verification_tasks`；UI 也可以把验证任务标记为完成或忽略并刷新结论。剩余缺口是 7 维 evidence-backed scorecard、严格事实来源门禁和模拟反馈复盘连接。
 
 短期方向：
 

@@ -2369,6 +2369,8 @@
 - `status_counts` / `review_status_counts`：按断言状态和复核状态聚合的数量。
 - `conflict_count` / `superseded_count`：待复核冲突候选和已被替代断言数量。
 - `assertions[]`：字段级事实记录，包含 `assertion_id`、`issuer_id`、`field_name`、`value`、`source_ids`、`document_ids`、`evidence_ids`、`confidence`、`source_policy`、`fact_status`、`review_status`、`assertion_status`、`conflicts_with`、`resolved_by`、`extraction_method`、`created_at` 和 `updated_at`。
+- `assertions[].conflicting_assertions[]`：冲突旧断言摘要，包含旧断言 ID、字段、旧值、来源、证据、置信度和状态，用于 UI 新旧值对比。
+- `assertions[].review_recommendation`：本地复核辅助建议，包含 `recommended_action`、`candidate_score`、`best_conflict_score`、`source_priority_rank`、`freshness_score` 和 `reason`。该建议只用于人工复核排序，不会自动替换字段。
 
 边界：字段断言是本地公司数据库 provenance，不是投资建议，不连接券商，不触发真实交易。
 
@@ -2378,7 +2380,8 @@
 
 请求字段：
 
-- `assertion_id`：必填；要复核的字段断言。
+- `assertion_id`：单条复核时必填；要复核的字段断言。
+- `assertion_ids`：批量复核时使用；与 `assertion_id` 二选一。批量复核会逐条应用相同 `action` 和 `note`。
 - `action`：必填；允许 `approve`、`supersede`、`reject`。
 - `supersedes`：可选；手工指定被替代的断言 ID。系统也会读取当前断言的 `conflicts_with`。
 - `note`：可选；复核说明。
@@ -2386,9 +2389,10 @@
 返回字段：
 
 - `schema_id`：当前为 `company-profile-field-assertion-review-v1`。
-- `status`：固定为 `reviewed`。
+- `status`：单条固定为 `reviewed`；批量固定为 `reviewed_batch`。
 - `action`：实际复核动作。
 - `assertion`：复核后的断言。
+- `reviewed_count` / `results[]`：批量复核时返回，表示处理数量和逐条结果。
 - `superseded_assertion_ids`：被替代的旧断言。
 - `changed_assertion_ids`：本次复核改动的断言 ID。
 
@@ -3119,14 +3123,21 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 - `confirmed_summary`
 - `inferred_summary`
 - `speculative_summary`
-- `unknowns`
+- `core_facts`：事实层条目，只来自公告、财报、监管披露、公开行情或其他可信 evidence；包含 `evidence_id`、`document_id`、`source_uri` 和置信度。
+- `inferences`：推断层条目，保留 step 来源，不升级为事实。
+- `speculations`：投机/早期假设层条目，必须继续进入验证或证伪。
+- `unknowns`：未知或待验证条目，包含 `verification_status`。
+- `evidence_gaps`：由 open issue 和验证任务组成的证据缺口。
+- `market_pricing_context`：行情上下文，只用于验证市场定价，不是买卖信号。
 - `key_chokepoints`
 - `catalysts`
 - `falsification_conditions`
+- `falsification_status`：`pending`、`needs_verification`、`verified` 或 `falsified`
 - `validation_summary`
 - `open_issues`
+- `next_verification_tasks`
 - `next_actions`
-- `verification_tasks`
+- `verification_tasks`：包含 `created_count`、`existing_count`、`open_count`、`closed_count`、`done_count`、`dismissed_count`、`status_counts` 和 `completion_rate`
 - `llm_run_id`
 - `fallback_used`
 - `usage_boundary=research_only_not_investment_advice`

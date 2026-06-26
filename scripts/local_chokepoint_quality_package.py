@@ -20,6 +20,7 @@ from app.services import SystemService
 
 DEFAULT_ARTIFACT_PREFIX = "artifact://local/chokepoint-quality"
 DEFAULT_OUTPUT_DIR = ROOT / "artifacts/chokepoint-quality-package"
+DEFAULT_MANUAL_REVIEW_BASELINE = ROOT / "docs/examples/chokepoint-manual-review-baseline.jsonl"
 DEFAULT_SAMPLES: list[dict[str, Any]] = [
     {
         "sample_id": "cpq_nuclear_haleu",
@@ -367,10 +368,10 @@ def _merge_manual_review(
         combined = dict(item)
         combined.update({key: value for key, value in override.items() if key != "label_id"})
         status = str(combined.get("manual_status", "pending_manual_review"))
-        if status not in {"pending_manual_review", "confirmed", "dismissed"}:
+        if status not in {"pending_manual_review", "confirmed", "inferred", "speculative", "unknown", "dismissed"}:
             status = "pending_manual_review"
             combined["manual_status"] = status
-        if status in {"confirmed", "dismissed"}:
+        if status != "pending_manual_review":
             closed_count += 1
         merged_labels.append(combined)
 
@@ -383,6 +384,7 @@ def _merge_manual_review(
         [item for item in latest.get("manual_issues", []) if isinstance(item, Mapping)] if isinstance(latest.get("manual_issues"), list) else [],
         "issue_type",
     )
+    merged["manual_label_status_counts"] = _count_by_key(merged_labels, "manual_status")
     merged["manual_issues"] = [dict(item) for item in latest.get("manual_issues", []) if isinstance(item, Mapping)] if isinstance(latest.get("manual_issues"), list) else []
     merged["closed_label_count"] = closed_count
     merged["label_count"] = len(merged_labels)
@@ -488,12 +490,18 @@ def _build_summary(
         if str(item.get("review_status", "")) in {"partial_manual_review", "completed_manual_review"}
     )
     manual_issue_rows: list[dict[str, Any]] = []
+    manual_label_status_rows: list[dict[str, Any]] = []
     for item in review_rows:
         issue_counts = item.get("manual_issue_counts", {})
         if isinstance(issue_counts, Mapping):
             for issue_type, count in issue_counts.items():
                 manual_issue_rows.extend([{"issue_type": issue_type}] * int(count or 0))
+        label_status_counts = item.get("manual_label_status_counts", {})
+        if isinstance(label_status_counts, Mapping):
+            for manual_status, count in label_status_counts.items():
+                manual_label_status_rows.extend([{"manual_status": manual_status}] * int(count or 0))
     manual_issue_counts = _count_by_key(manual_issue_rows, "issue_type")
+    manual_label_status_counts = _count_by_key(manual_label_status_rows, "manual_status")
     boundary_violations = 0
     for item in results:
         if item.get("usage_boundary") != "research_only_not_investment_advice":
@@ -534,6 +542,7 @@ def _build_summary(
             "label_count": total_review_labels,
             "closed_label_count": closed_review_labels,
             "review_status_counts": _count_by_key(review_rows, "review_status"),
+            "label_status_counts": manual_label_status_counts,
             "issue_counts": manual_issue_counts,
         },
         "quality_baseline": quality_baseline,
@@ -626,6 +635,11 @@ def build_local_chokepoint_quality_package(
         "sample_count": len(manifest_rows),
         "run_result_count": len(result_rows),
         "ready_for_local_baseline": summary["ready_for_local_baseline"],
+        "manual_review_ready_for_local_baseline": (
+            summary["manual_review_summary"]["sample_coverage_count"] >= len(manifest_rows)
+            and summary["manual_review_summary"]["label_count"] > 0
+            and summary["manual_review_summary"]["closed_label_count"] == summary["manual_review_summary"]["label_count"]
+        ),
         "quality_baseline": summary["quality_baseline"],
         "manual_review_summary": summary["manual_review_summary"],
         "artifacts": {
@@ -646,12 +660,20 @@ def main() -> None:
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--artifact-prefix", default=DEFAULT_ARTIFACT_PREFIX)
     parser.add_argument("--manual-review-input", default=None)
+    parser.add_argument(
+        "--use-bundled-manual-review-baseline",
+        action="store_true",
+        help="Use the versioned local-only manual review baseline under docs/examples when no explicit input is provided.",
+    )
     args = parser.parse_args()
+    manual_review_input = args.manual_review_input
+    if args.use_bundled_manual_review_baseline and manual_review_input is None:
+        manual_review_input = DEFAULT_MANUAL_REVIEW_BASELINE
 
     result = build_local_chokepoint_quality_package(
         output_dir=args.output_dir,
         artifact_prefix=args.artifact_prefix,
-        manual_review_input=args.manual_review_input,
+        manual_review_input=manual_review_input,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
 

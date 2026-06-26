@@ -362,6 +362,15 @@
   - 验收：UI 静态检查通过；浏览器验收能看到字段冲突复核队列、计数和批准按钮；单测覆盖 reject 后旧画像值和旧 evidence 仍保持 active。
   - 后续增强：批量批准/拒绝、复核备注输入框、字段级来源优先级和 freshness 推荐规则。
 
+- `DONE` T-465 公司画像字段断言批量复核与推荐增强
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-464 已让字段冲突进入工作台，但高频复核仍需要批量处理、复核备注和旧值/推荐对比，避免分析用户逐条操作。
+  - **已完成（本轮）**：`/api/company-database/profile-field-assertions` 返回 `conflicting_assertions` 和 `review_recommendation`，把旧值摘要、来源优先级、freshness、候选分数和建议动作一并返回。
+  - **已完成（本轮）**：`POST /api/company-database/profile-field-assertions/review` 支持 `assertion_ids` 批量复核，保留单条 `assertion_id` 兼容语义，并记录 `note` 到复核 metadata。
+  - **已完成（本轮）**：公司情报工作台新增批量批准/拒绝按钮、复核备注输入框、选择框和推荐状态条；冲突表展示旧值摘要与推荐。
+  - **已完成（本轮）**：`scripts/ui_static_check.py`、`scripts/ui_interaction_acceptance.py` 和单测覆盖批量复核与推荐信息。
+  - 验收：静态契约、浏览器验收和后端回归都能证明批量 review、推荐展示和备注写入可用，且仍不触发真实交易。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。
@@ -603,20 +612,21 @@
   - 文档：`docs/chokepoint-research-module.md`
   - 验收：给定一个行业或主题，系统能自动生成可复核的来源台账、价值链地图、瓶颈候选排名、催化剂时间线、反方论点、证伪条件和待验证任务；所有结论能区分事实、推断、投机和未知；所有输出固定 `automation_allowed=false`、`live_execution_allowed=false`，不得把 AI 输出、社交媒体或研报观点直接当成核心事实或投资建议
 
-- `TODO` T-406C 瓶颈研究真实样本质量包与可复验基线
+- `DONE` T-406C 瓶颈研究真实样本质量包与可复验基线
   - 对应：E3-US2, E4-US1, E5-US1, E6-US3, E8-US2；愿景扩展/生产化增强
   - 目标：把瓶颈研究从“能生成流水线”推进到“能用真实主题复验质量”。优先选择 5-10 个真实赛道/主题样本，例如核燃料链、AI 数据中心电力、CPO/光模块、药械审批、稀缺材料和消费渠道入口，批量跑完整 7 步流水线并归档质量报告。
   - **已完成（本轮）**：新增 `scripts/local_chokepoint_quality_package.py`，内置 5 个真实主题样本模板，自动创建/运行 chokepoint run，导出 `sample-manifest.json`、`run-results.json`、`manual-review-seed.json`、`quality-summary.json` 和 `quality-package.json` 本地产物；输出固定 `automation_allowed=false` / `live_execution_allowed=false`
   - **已完成（本轮）**：形成首版本机质量基线口径，汇总 URL 覆盖率、confirmed run rate、unknown run rate、verification task 生成率、fallback 率、边界违规率、平均 URL/confirmed/verification task 数，并保留人工复核关闭率占位
   - **已完成（本轮）**：质量包脚本支持 `manual_review_input` 导入，接受内联对象、`.json` 或 `.jsonl`；会按 `sample_id` 合并人工复核到 `manual-review-seed.json`，并汇总 `manual_review_close_rate`、`manual_review_sample_coverage_rate`、`manual_review_issue_count`、`manual_review_summary.review_status_counts`、`manual_review_summary.issue_counts`
-  - 待做：为每个样本人工标注核心结论的 `confirmed` / `inferred` / `speculative` / `unknown`，记录错分、无 URL、无日期、事实升级、投资建议越界和 LLM fallback 问题。
-  - 待做：把 `manual-review-seed.json` 从标注骨架推进到真实人工 review 结果，继续沿用当前最窄导入 contract，只做样本级 label 判定与问题标记；同时收敛 `unknown`、verification task 和关闭率口径，形成可复验人工基线。
-  - 验收：质量包能在本机一条命令重跑；至少 5 个真实主题样本有完整 run、结论、验证任务和人工标注摘要；所有样本输出保持 `automation_allowed=false` / `live_execution_allowed=false`。
+  - **已完成（本轮）**：新增 `docs/examples/chokepoint-manual-review-baseline.jsonl`，把 5 个真实主题样本推进为可复验的本地人工 review 基线，label 粒度覆盖 `confirmed` / `inferred` / `speculative` / `unknown`
+  - **已完成（本轮）**：脚本增加 `--use-bundled-manual-review-baseline`，可在不额外提供输入时直接复现版本化人工 review 基线，并导出 `manual_review_ready_for_local_baseline`
+  - 验收：质量包能在本机一条命令重跑；至少 5 个真实主题样本有完整 run、结论、验证任务和人工标注摘要；所有样本输出保持 `automation_allowed=false` / `live_execution_allowed=false`
 
 - `TODO` T-406D 瓶颈研究结构化结论、评分模型和证据门禁
   - 对应：E3-US2, E5-US1, E5-US2, E6-US3, E8-US2；愿景扩展/生产化增强
   - 目标：把 `conclusion` 从可读文本升级为结构化研究档案，明确区分核心事实、推断、投机、未知、证伪条件和下一步验证，并引入可解释 chokepoint 评分模型。
-  - 待做：扩展 `conclusion` schema，固定输出 `core_facts`、`inferences`、`speculations`、`unknowns`、`falsification_conditions`、`next_verification_tasks`、`evidence_gaps`、`market_pricing_context` 和 `usage_boundary`。
+  - **已完成（本轮部分）**：`conclusion` schema 已固定输出 `core_facts`、`inferences`、`speculations`、`unknowns`、`falsification_conditions`、`next_verification_tasks`、`evidence_gaps`、`market_pricing_context`、`falsification_status` 和 `usage_boundary`。
+  - **已完成（本轮部分）**：结构化结论会把事实层 evidence、推断/投机 step 输出、unknown 缺口、行情验证上下文和验证任务状态拆开；研报/观点仍不升级为核心事实。
   - 待做：新增 chokepoint 评分维度：供应集中度、切换成本、供给扩张周期、客户依赖、监管/认证壁垒、利润池错配、催化剂可验证性；每个分数必须带 evidence refs、置信度和缺口说明。
   - 待做：强化来源台账硬门禁；缺 URL、发布日期、来源类型或事实层级的内容不得进入 `core_facts`，研报/社媒只能进入 `opinions` 或 `clues`。
   - 验收：任一 run 的结论可机器读取并追溯到证据或验证任务；无来源事实不会进入核心事实区；评分不是裸数字，而是可解释的 evidence-backed scorecard。
@@ -624,9 +634,10 @@
 - `TODO` T-406E 瓶颈研究验证任务闭环与复盘反馈
   - 对应：E5-US1, E5-US2, E6-US4, E7-US1, E8-US1；愿景扩展/生产化增强
   - 目标：让瓶颈研究从“一次性 AI 报告”升级为可持续复盘的研究档案。验证任务关闭后应反向刷新 run 的结论、置信度、证据缺口和证伪状态。
-  - 待做：把 `ResearchTask` 的完成结果回写到 chokepoint run，更新 `unknowns`、`core_facts`、`confidence`、`thesis_strength_score` 和 `falsification_status`。
+  - **已完成（本轮部分）**：`ResearchTask` 关闭状态会被 `finalize` 汇总到 `verification_tasks.open_count/closed_count/status_counts/completion_rate`，并刷新 `unknowns.verification_status`、`thesis_strength_score` 和 `falsification_status`。
+  - **已完成（本轮部分）**：瓶颈研究 UI 新增验证任务表、已关闭任务计数、证伪状态和“标记完成/忽略”操作，操作后自动刷新结论。
   - 待做：记录每个 run 创建时的价格、估值、行情上下文、关键催化剂、证伪条件和后续事件，连接模拟组合反馈和策略复盘。
-  - 待做：新增 UI “质量门禁 / 证据缺口 / 复盘”面板，展示 verification task 关闭率、已证实/已证伪项、仍待验证项和下一步动作。
+  - 待做：把当前验证任务表扩展为完整 UI “质量门禁 / 证据缺口 / 复盘”面板，展示 verification task 关闭率、已证实/已证伪项、仍待验证项、下一步动作和模拟反馈。
   - 验收：关闭验证任务后，run 结论能幂等刷新；被证伪的 thesis 不会继续显示为 ready；复盘档案可展示当时假设、后续证据和模拟反馈，不触发真实交易。
 
 ## 历史能力与兼容附录 / M7 经营驾驶舱和投研闭环
