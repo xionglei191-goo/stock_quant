@@ -415,6 +415,15 @@
   - **已完成（本轮）**：`docs/api-contracts.md`、`scripts/ui_static_check.py`、`scripts/ui_interaction_acceptance.py` 和单测覆盖新 API、UI contract 和浏览器预览路径。
   - 验收：`python3 -m py_compile app/api.py app/services.py tests/test_system.py scripts/ui_static_check.py scripts/ui_interaction_acceptance.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_intelligence_cycle_runs_local_workflow_feedback_loop`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
 
+- `DONE` T-471 公司财务指标事实层与画像快照回链
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：公司画像已能保存 `latest_financial_snapshot`，但财务字段仍缺一等事实记录，导致收入、净利、毛利率、现金、债务等数据无法按期间、来源、证据和状态独立查询，也不利于后续完整公司数据库审计。
+  - **已完成（本轮）**：新增 `FinancialMetric` 模型和 `financial_metrics` 存储集合，字段包含公司、证券、指标名、期间、数值、单位、币种、报表类型、来源、文档、证据、置信度和复核状态。
+  - **已完成（本轮）**：新增 `GET|POST /api/company-financial-metrics`，支持按公司、证券、指标、期间和状态查询或登记财务事实；登记时拒绝研报、新闻、人工参考和红色风险来源作为事实源。
+  - **已完成（本轮）**：官方/IR/监管材料画像字段抽取在 `execute=true` 时，会把 `revenue`、`net_income`、`gross_margin`、`cash`、`debt` 同步物化为 `FinancialMetric`，并回写公司最新财务快照。
+  - **已完成（本轮）**：公司情报聚合和深字段覆盖审计读取 `FinancialMetric`，让财务字段的 source_records 优先回链到指标事实记录，而不是只指向 issuer 快照。
+  - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_profile_field_extraction_updates_from_official_evidence`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

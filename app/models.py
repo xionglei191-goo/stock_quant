@@ -753,6 +753,36 @@ class CompanyProfileFieldAssertion:
 
 
 @dataclass(slots=True)
+class FinancialMetric:
+    metric_id: str
+    issuer_id: str
+    metric_name: str
+    period: str
+    value: float
+    security_id: str = ""
+    period_start: Any = None
+    period_end: Any = None
+    fiscal_year: str = ""
+    fiscal_period: str = ""
+    unit: str = ""
+    currency: str = ""
+    statement_type: str = "actual"
+    source_ids: list[str] = field(default_factory=list)
+    document_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    source_policy: str = "fact_or_governed_record"
+    fact_status: str = "verified"
+    review_status: str = "unreviewed"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: Any = field(default_factory=utcnow)
+    updated_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.statement_type, {"actual", "guidance", "restated", "preliminary"}, "statement_type")
+
+
+@dataclass(slots=True)
 class CompanyDatabaseBuildRun:
     run_id: str
     actor: str = "system"

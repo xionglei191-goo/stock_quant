@@ -951,6 +951,22 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(audit.data["rules"]["research_reports"], "opinion_and_attention_slots_only_not_fact_source")
 
     def test_company_profile_field_extraction_updates_from_official_evidence(self) -> None:
+        self.service.register_source(
+            {
+                "source_id": "src_company_ir",
+                "source_type": "company_ir",
+                "allowed_document_types": ["official_business_overview"],
+                "rights_tag": {
+                    "license_class": "public",
+                    "training_allowed": False,
+                    "redistribution_allowed": False,
+                    "display_use": "allowed",
+                    "non_display_use": "restricted",
+                    "derived_data_use": "restricted",
+                },
+            },
+            actor="risk",
+        )
         document = Document(
             document_id="doc_demo_ir_profile",
             issuer_id="issuer_001",
@@ -1072,6 +1088,26 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(website_assertion["evidence_ids"], ["evi_demo_ir_profile"])
         self.assertEqual(website_assertion["source_policy"], "fact_or_governed_record")
 
+        metrics = self.router.dispatch(
+            "GET",
+            "/api/company-financial-metrics",
+            {"symbols": ["DEMO"], "limit": 10},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(metrics.success, metrics.error)
+        self.assertEqual(metrics.data["schema_id"], "financial-metrics-v1")
+        metrics_by_name = {item["metric_name"]: item for item in metrics.data["metrics"]}
+        self.assertEqual(metrics_by_name["revenue"]["period"], "FY2026")
+        self.assertEqual(metrics_by_name["revenue"]["value"], 1200000000.0)
+        self.assertEqual(metrics_by_name["net_income"]["value"], 180000000.0)
+        self.assertEqual(metrics_by_name["gross_margin"]["unit"], "ratio")
+        self.assertEqual(metrics_by_name["revenue"]["source_ids"], ["src_company_ir"])
+        self.assertEqual(metrics_by_name["revenue"]["evidence_ids"], ["evi_demo_ir_profile"])
+        intelligence = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {}, actor="data", role="analyst")
+        self.assertTrue(intelligence.success, intelligence.error)
+        self.assertEqual(intelligence.data["facts_and_events"]["latest_financial_snapshot"]["revenue"], 1200000000.0)
+
         audit = self.router.dispatch(
             "POST",
             "/api/company-profiles/coverage/audit",
@@ -1086,6 +1122,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(fields["revenue"]["present"])
         self.assertTrue(fields["net_income"]["present"])
         self.assertTrue(fields["field_evidence_ids"]["present"])
+        self.assertTrue(any(item["resource_type"] == "financial_metric" for item in fields["revenue"]["source_records"]))
 
     def test_company_profile_coverage_requires_field_specific_evidence(self) -> None:
         issuer = self.service.store.issuers["issuer_001"]

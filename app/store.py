@@ -42,6 +42,7 @@ from .models import (
     ExecutionIntent,
     ExtractionResult,
     ExceptionItem,
+    FinancialMetric,
     IngestionJob,
     IngestionSchedule,
     IncidentPlaybook,
@@ -127,6 +128,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("company_database_build_runs", "run_id", CompanyDatabaseBuildRun),
     ("company_profiles", "issuer_id", CompanyProfile),
     ("company_profile_field_assertions", "assertion_id", CompanyProfileFieldAssertion),
+    ("financial_metrics", "metric_id", FinancialMetric),
     ("company_events", "event_id", CompanyEvent),
     ("company_relationships", "relationship_id", CompanyRelationship),
     ("hotspot_lexicons", "lexicon_id", HotspotLexicon),
@@ -218,6 +220,7 @@ def _candidate_collections_for_resource(resource_type: str) -> list[str]:
         "company_profile": "company_profiles",
         "company_profile_field_assertion": "company_profile_field_assertions",
         "company_profile_field": "company_profile_field_assertions",
+        "financial_metric": "financial_metrics",
         "company_event": "company_events",
         "company_relationship": "company_relationships",
         "hotspot_lexicon": "hotspot_lexicons",
@@ -308,6 +311,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     CompanyDatabaseBuildRun: ("started_at", "completed_at", "created_at"),
     CompanyProfile: ("updated_at",),
     CompanyProfileFieldAssertion: ("as_of_date", "created_at", "updated_at"),
+    FinancialMetric: ("period_start", "period_end", "created_at", "updated_at"),
     CompanyEvent: ("occurred_at", "detected_at", "created_at"),
     CompanyRelationship: ("valid_from", "valid_to", "created_at"),
     HotspotLexicon: ("created_at",),
@@ -450,6 +454,7 @@ class InMemoryStore:
     company_database_build_runs: dict[str, CompanyDatabaseBuildRun] = field(default_factory=dict)
     company_profiles: dict[str, CompanyProfile] = field(default_factory=dict)
     company_profile_field_assertions: dict[str, CompanyProfileFieldAssertion] = field(default_factory=dict)
+    financial_metrics: dict[str, FinancialMetric] = field(default_factory=dict)
     company_events: dict[str, CompanyEvent] = field(default_factory=dict)
     company_relationships: dict[str, CompanyRelationship] = field(default_factory=dict)
     hotspot_lexicons: dict[str, HotspotLexicon] = field(default_factory=dict)

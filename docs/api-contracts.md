@@ -2281,6 +2281,7 @@
 |---|---|---|
 | `/api/company-profiles` | `GET` / `POST` | 查询或登记 `CompanyProfile`，可由 `Issuer`、`Security`、行情、事件、关系和研报覆盖计算画像质量 |
 | `/api/company-profiles/schema` | `GET` | 返回公司画像核心字段、来源优先级和质量指标 |
+| `/api/company-financial-metrics` | `GET` / `POST` | 查询或登记公司财务指标事实记录；只接受治理后的事实来源，不接受研报/新闻/人工参考作为事实源 |
 | `/api/company-profiles/fields/extract` | `POST` | 从已入库官方披露、公司 IR、公司官网或监管/交易所文档抽取公司画像字段；默认 dry-run，显式 `execute=true` 才写入 |
 | `/api/company-profiles/field-assertions` | `GET` / `POST` | 查询公司画像字段级事实断言，按字段返回来源、文档、证据、置信度和状态 |
 | `/api/company-profiles/field-assertions/review` | `POST` | 复核画像字段断言冲突，支持 approve、supersede、reject，批准后才替换公司画像字段 |
@@ -2352,9 +2353,37 @@
 
 边界：抽取只接受 `_company_profile_document_is_fact_source` 和 `_evidence_is_official_public` 认可的官方披露、公司 IR、公司官网、交易所/监管披露或公开公司披露记录。`research_report`、`broker_research`、`local_reference`、`manual_reference`、`news` 和 `curated_public_profile` 不会写入事实字段，也不会生成 `CompanyProfileFieldAssertion`。
 
-执行语义：`execute=true` 后，每个成功应用的字段会生成或更新一条幂等 `CompanyProfileFieldAssertion`，记录 `field_name`、`value`、`document_ids`、`evidence_ids`、`source_ids`、`confidence`、`source_policy`、`fact_status` 和 `review_status`。这些断言用于后续字段级证据审计、冲突处理和公司情报页 provenance 展示。
+执行语义：`execute=true` 后，每个成功应用的字段会生成或更新一条幂等 `CompanyProfileFieldAssertion`，记录 `field_name`、`value`、`document_ids`、`evidence_ids`、`source_ids`、`confidence`、`source_policy`、`fact_status` 和 `review_status`。这些断言用于后续字段级证据审计、冲突处理和公司情报页 provenance 展示。财务字段 `revenue`、`net_income`、`gross_margin`、`cash`、`debt` 在同一轮存在 `period` 时，还会同步物化为 `FinancialMetric`，供公司情报页和深字段覆盖审计读取最新财务快照。
 
 冲突语义：当 `refresh_existing=true` / `overwrite=true` 且同一公司、同一字段、同一 period 已存在 active 断言但新值不同，接口不会立即覆盖 `Issuer` 或 `CompanyProfile` 当前字段。它会生成 `assertion_status=conflict_candidate`、`review_status=needs_review` 的新断言，并在 `conflicts_with` 中记录被冲突的旧断言 ID。只有复核接口批准后，新值才会应用到公司画像。
+
+#### `GET|POST /api/company-financial-metrics`
+
+公司财务指标事实记录入口。`GET` 用于查询；`POST` 用于登记单条治理后的财务指标。财务指标可以由官方/IR/监管材料抽取画像字段时自动物化，也可以由本地已治理事实管道显式登记。
+
+查询字段：
+
+- `issuer_id` / `issuer_ids` / `symbols` / `symbol` / `ticker` / `q`：目标公司过滤字段。
+- `security_id`：可选；按证券过滤。
+- `metric_name`：可选；如 `revenue`、`net_income`、`gross_margin`、`cash`、`debt`。
+- `period` / `currency` / `unit` / `statement_type` / `fact_status` / `review_status`：可选过滤字段。
+- `limit`：返回上限，默认 100。
+
+登记字段：
+
+- 必填：`issuer_id`、`metric_name`、`period`、`value`。
+- 可选：`security_id`、`period_start`、`period_end`、`fiscal_year`、`fiscal_period`、`unit`、`currency`、`statement_type`、`confidence`、`source_ids`、`document_ids`、`evidence_ids`、`metadata`。
+- `statement_type` 允许 `actual`、`guidance`、`restated`、`preliminary`，默认 `actual`。
+- 必须至少提供 `source_ids`、`document_ids` 或 `evidence_ids` 之一，且来源必须能回链到治理后的事实源。
+
+返回字段：
+
+- `schema_id`：当前为 `financial-metrics-v1`。
+- `count`：匹配指标总数。
+- `metrics[]`：财务事实记录，包含 `metric_id`、`issuer_id`、`security_id`、`metric_name`、`period`、`value`、`period_start`、`period_end`、`unit`、`currency`、`statement_type`、`source_ids`、`document_ids`、`evidence_ids`、`confidence`、`fact_status` 和 `review_status`。
+- `metric_counts` / `period_counts`：按指标和期间聚合的数量。
+
+边界：研报、券商研究、新闻、人工参考、红色风险来源或任何 `source_type` 包含 research 的来源不能登记 `FinancialMetric`。研报里的盈利预测、目标价和估值方法应进入 `ReportForecast` / `ReportViewpoint`，只有经公告、财报、监管披露或其他治理事实源回链后的实际财务数据才进入 `FinancialMetric`。
 
 #### `GET|POST /api/company-profiles/field-assertions`
 

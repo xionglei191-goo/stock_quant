@@ -333,7 +333,48 @@
 
 复核规则：批准冲突候选后，新断言变为 `active` / `approved` 并应用字段值；被替代断言变为 `superseded`，`resolved_by` 指向新断言。驳回候选时，新断言变为 `rejected`，不修改公司画像。
 
-### 6.1.3 CompanyProfileFieldExtractionResult
+### 6.1.3 FinancialMetric
+
+`FinancialMetric` 是公司数据库里的财务事实记录。它把 `CompanyProfile.latest_financial_snapshot` 从一个画像快照字段提升为可查询、可审计、可回链的指标表。它只能由已治理事实来源生成或登记；研报预测和观点不能直接写入该表。
+
+```json
+{
+  "metric_id": "fin_issuer_001_xxx",
+  "issuer_id": "issuer_001",
+  "security_id": "sec_001",
+  "metric_name": "revenue",
+  "period": "FY2026",
+  "value": 1200000000.0,
+  "period_start": "datetime|null",
+  "period_end": "datetime|null",
+  "fiscal_year": "2026",
+  "fiscal_period": "FY",
+  "unit": "CNY",
+  "currency": "CNY",
+  "statement_type": "actual|guidance|restated|preliminary",
+  "source_ids": ["src_company_ir"],
+  "document_ids": ["doc_company_ir_profile"],
+  "evidence_ids": ["evi_company_ir_profile"],
+  "confidence": 0.98,
+  "source_policy": "fact_or_governed_record",
+  "fact_status": "verified|provisional|disputed",
+  "review_status": "unreviewed|auto_generated|approved|rejected",
+  "metadata": {
+    "profile_field_assertion_id": "cpfa_xxx",
+    "extraction_method": "rule_company_profile_official_ir_v1"
+  },
+  "created_at": "datetime",
+  "updated_at": "datetime"
+}
+```
+
+主键规则：默认 `metric_id` 由 `issuer_id`、`security_id`、`metric_name`、`period` 和 `statement_type` 的稳定 hash 生成，保证同一公司同一期间同一类型指标幂等更新。查询主键仍以 `metric_id` 为准，业务过滤优先使用 `issuer_id`、`security_id`、`metric_name` 和 `period`。
+
+来源规则：`source_ids`、`document_ids`、`evidence_ids` 至少需要一个可回链事实来源。`research_report`、`broker_research`、`news`、`manual_reference`、`local_reference`、红色风险来源或包含 research 语义的来源不能写入财务事实表。研报中的盈利预测应进入 `ReportForecast`，不是 `FinancialMetric`。
+
+派生规则：公司画像字段抽取执行时，如果从官方/IR/监管材料中同时抽出 `period` 和 `revenue`、`net_income`、`gross_margin`、`cash`、`debt`，系统会为这些数值同步物化 `FinancialMetric`，再反向更新 `Issuer.fundamentals` 和 `CompanyProfile.latest_financial_snapshot` 的最新视图。
+
+### 6.1.4 CompanyProfileFieldExtractionResult
 
 `CompanyProfileFieldExtractionResult` 是一次本地抽取运行的 API 返回结构，不新增运行表。它从已入库并通过治理边界的 `Document` / `Evidence` 中生成画像字段候选；默认 dry-run，显式 `execute=true` 时才把候选写入 `Issuer` / `CompanyProfile`，并为每个已应用字段写入 `CompanyProfileFieldAssertion`。
 

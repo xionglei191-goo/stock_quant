@@ -58,6 +58,7 @@ from .models import (
     ExecutionIntent,
     ExtractionResult,
     ExceptionItem,
+    FinancialMetric,
     IngestionJob,
     IngestionSchedule,
     IncidentPlaybook,
@@ -20890,6 +20891,167 @@ class SystemService:
         profiles.sort(key=lambda item: str(item.updated_at), reverse=True)
         return {"count": len(profiles), "profiles": [to_plain(item) for item in profiles[:limit]]}
 
+    def register_financial_metric(self, payload: Mapping[str, Any], *, actor: str = "system") -> FinancialMetric:
+        issuer_id = str(payload["issuer_id"]).strip()
+        if issuer_id not in self.store.issuers:
+            raise NotFoundError(f"issuer {issuer_id} not found")
+        security_id = str(payload.get("security_id", "")).strip()
+        if security_id:
+            security = self.store.securities.get(security_id)
+            if security is None:
+                raise NotFoundError(f"security {security_id} not found")
+            if security.issuer_id != issuer_id:
+                raise ValidationError(f"security {security_id} does not belong to issuer {issuer_id}")
+        metric_name = str(payload["metric_name"]).strip().lower()
+        if not metric_name:
+            raise ValidationError("financial metric requires metric_name")
+        period = str(payload["period"]).strip()
+        if not period:
+            raise ValidationError("financial metric requires period")
+        source_ids = self._financial_metric_source_ids(payload)
+        if not source_ids and not payload.get("document_ids") and not payload.get("evidence_ids"):
+            raise ValidationError("financial metric requires source_ids, document_ids, or evidence_ids")
+        self._validate_financial_metric_sources(source_ids)
+        metric_id = str(payload.get("metric_id") or self._financial_metric_id(issuer_id, security_id, metric_name, period, str(payload.get("statement_type", "actual"))))
+        if metric_id in self.store.financial_metrics:
+            raise ConflictError(f"financial metric {metric_id} already exists")
+        metric = FinancialMetric(
+            metric_id=metric_id,
+            issuer_id=issuer_id,
+            security_id=security_id,
+            metric_name=metric_name,
+            period=period,
+            value=float(payload["value"]),
+            period_start=parse_datetime(payload.get("period_start")) if payload.get("period_start") else None,
+            period_end=parse_datetime(payload.get("period_end")) if payload.get("period_end") else None,
+            fiscal_year=str(payload.get("fiscal_year", "")),
+            fiscal_period=str(payload.get("fiscal_period", "")),
+            unit=str(payload.get("unit", "")),
+            currency=str(payload.get("currency", "")),
+            statement_type=str(payload.get("statement_type", "actual")),
+            source_ids=source_ids,
+            document_ids=self._unique_strings(self._string_list(payload.get("document_ids", []))),
+            evidence_ids=self._unique_strings(self._string_list(payload.get("evidence_ids", []))),
+            confidence=float(payload.get("confidence", 0.0) or 0.0),
+            source_policy=str(payload.get("source_policy", "fact_or_governed_record")),
+            fact_status=str(payload.get("fact_status", "verified")),
+            review_status=str(payload.get("review_status", "unreviewed")),
+            metadata=dict(payload.get("metadata", {})),
+        )
+        self.store.financial_metrics[metric.metric_id] = metric
+        self._sync_latest_financial_snapshot_from_metrics(issuer_id)
+        marker = getattr(self.store, "mark_dirty_for_resource", None)
+        if callable(marker):
+            marker("financial_metric")
+            marker("company_profile")
+        self.store.commit()
+        self._audit(actor, "register_financial_metric", "financial_metric", metric.metric_id, approval_state=metric.fact_status)
+        return metric
+
+    def financial_metrics_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        rows = list(self.store.financial_metrics.values())
+        issuer_ids = set(self._string_list(filters.get("issuer_ids", [])))
+        if any(str(filters.get(field_name, "")).strip() for field_name in ["symbol", "ticker", "q"]) or filters.get("symbols"):
+            issuer_ids.update(issuer.issuer_id for issuer in self._company_database_target_issuers(filters, limit=self._bounded_limit(filters.get("limit", 100), 5000)))
+        issuer_id = str(filters.get("issuer_id", "")).strip()
+        if issuer_id:
+            issuer_ids.add(issuer_id)
+        if issuer_ids:
+            rows = [item for item in rows if item.issuer_id in issuer_ids]
+        for field_name in ["security_id", "metric_name", "period", "currency", "unit", "statement_type", "fact_status", "review_status"]:
+            value = str(filters.get(field_name, "")).strip()
+            if value:
+                rows = [item for item in rows if str(getattr(item, field_name, "")) == value]
+        rows.sort(key=self._financial_metric_sort_key, reverse=True)
+        limit = self._bounded_limit(filters.get("limit", 100), 5000)
+        metric_counts: dict[str, int] = {}
+        period_counts: dict[str, int] = {}
+        for metric in rows:
+            metric_counts[metric.metric_name] = metric_counts.get(metric.metric_name, 0) + 1
+            period_counts[metric.period] = period_counts.get(metric.period, 0) + 1
+        return {
+            "schema_id": "financial-metrics-v1",
+            "count": len(rows),
+            "metrics": [to_plain(item) for item in rows[:limit]],
+            "metric_counts": metric_counts,
+            "period_counts": period_counts,
+            "usage_boundary": "financial_metrics_are_fact_records_from_governed_sources_not_research_report_opinions",
+        }
+
+    def _financial_metric_source_ids(self, payload: Mapping[str, Any]) -> list[str]:
+        source_ids = self._string_list(payload.get("source_ids", []))
+        source_id = str(payload.get("source_id", "")).strip()
+        if source_id:
+            source_ids.append(source_id)
+        for document_id in self._string_list(payload.get("document_ids", [])):
+            document = self.store.documents.get(document_id)
+            if document is not None and document.source_id:
+                source_ids.append(document.source_id)
+        for evidence_id in self._string_list(payload.get("evidence_ids", [])):
+            evidence = self.store.evidence.get(evidence_id)
+            document = self.store.documents.get(evidence.document_id) if evidence is not None else None
+            if document is not None and document.source_id:
+                source_ids.append(document.source_id)
+        return self._unique_strings(source_ids)
+
+    def _validate_financial_metric_sources(self, source_ids: list[str]) -> None:
+        disallowed = {"research_report", "broker_research", "research", "local_research_reports", "news", "manual_reference", "local_reference"}
+        for source_id in source_ids:
+            source = self.store.sources.get(source_id)
+            if source is None:
+                raise NotFoundError(f"source {source_id} not found")
+            source_type = str(source.source_type or source_id).strip().lower()
+            if source.risk_level == "red" or source_type in disallowed or "research" in source_type:
+                raise PermissionDenied("research/manual/news sources cannot register factual financial metrics")
+
+    def _financial_metric_id(self, issuer_id: str, security_id: str, metric_name: str, period: str, statement_type: str) -> str:
+        raw = "|".join([issuer_id, security_id, metric_name, period, statement_type])
+        return f"fin_{safe_source_part(issuer_id)}_{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}"
+
+    def _financial_metric_sort_key(self, metric: FinancialMetric) -> tuple[str, str, str, str]:
+        period_end = str(to_plain(metric.period_end) or "")
+        return (period_end, metric.period, str(to_plain(metric.updated_at)), metric.metric_id)
+
+    def _financial_metrics_for_issuer(self, issuer_id: str, security_ids: set[str] | None = None) -> list[FinancialMetric]:
+        security_ids = security_ids or set()
+        rows = [
+            metric
+            for metric in self.store.financial_metrics.values()
+            if metric.issuer_id == issuer_id or (metric.security_id and metric.security_id in security_ids)
+        ]
+        rows.sort(key=self._financial_metric_sort_key, reverse=True)
+        return rows
+
+    def _latest_financial_snapshot_from_metrics(self, issuer_id: str, security_ids: set[str] | None = None) -> dict[str, Any]:
+        rows = self._financial_metrics_for_issuer(issuer_id, security_ids)
+        snapshot: dict[str, Any] = {}
+        for metric in rows:
+            if metric.metric_name not in snapshot:
+                snapshot[metric.metric_name] = metric.value
+            if "period" not in snapshot and metric.period:
+                snapshot["period"] = metric.period
+            if "currency" not in snapshot and metric.currency:
+                snapshot["currency"] = metric.currency
+            if "period_end" not in snapshot and metric.period_end:
+                snapshot["period_end"] = to_plain(metric.period_end)
+        return snapshot
+
+    def _sync_latest_financial_snapshot_from_metrics(self, issuer_id: str) -> None:
+        issuer = self.store.issuers.get(issuer_id)
+        if issuer is None:
+            return
+        security_ids = {security.security_id for security in self.store.securities.values() if security.issuer_id == issuer_id}
+        snapshot = self._latest_financial_snapshot_from_metrics(issuer_id, security_ids)
+        if not snapshot:
+            return
+        issuer.fundamentals = {**dict(issuer.fundamentals), **snapshot}
+        issuer.updated_at = utcnow()
+        profile = self.store.company_profiles.get(issuer_id)
+        if profile is not None:
+            profile.latest_financial_snapshot = {**dict(profile.latest_financial_snapshot), **snapshot}
+            profile.updated_at = utcnow()
+
     def company_profile_field_assertions_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         limit = self._bounded_limit(filters.get("limit", 100), 5000)
@@ -21907,7 +22069,9 @@ class SystemService:
         if field_name in {"country", "region", "sector", "industry"}:
             return getattr(issuer, field_name)
         if field_name in {"period", "revenue", "net_income", "gross_margin", "cash", "debt"}:
-            return (issuer.fundamentals or profile.latest_financial_snapshot or {}).get(field_name)
+            security_ids = {security.security_id for security in self.store.securities.values() if security.issuer_id == issuer.issuer_id}
+            metric_snapshot = self._latest_financial_snapshot_from_metrics(issuer.issuer_id, security_ids)
+            return ({**dict(issuer.fundamentals or profile.latest_financial_snapshot or {}), **metric_snapshot}).get(field_name)
         return None
 
     def _company_profile_best_field_candidate(self, field_name: str, text_units: list[dict[str, Any]], *, require_evidence: bool, min_confidence: float) -> dict[str, Any] | None:
@@ -22153,6 +22317,16 @@ class SystemService:
         company_details = dict(issuer.company_details)
         fundamentals = dict(issuer.fundamentals)
         financial_snapshot = dict(overlay.get("latest_financial_snapshot", {}))
+        pending_period = str(fundamentals.get("period") or financial_snapshot.get("period") or "").strip()
+        if not pending_period:
+            pending_period = next(
+                (
+                    str(candidate.get("value", "")).strip()
+                    for candidate in planned
+                    if str(candidate.get("field", "")) == "period" and str(candidate.get("value", "")).strip()
+                ),
+                "",
+            )
         assertion_ids: list[str] = []
         for candidate in planned:
             field_name = str(candidate["field"])
@@ -22161,7 +22335,10 @@ class SystemService:
                 candidate["status"] = "skipped_existing"
                 continue
             normalized_value = self._company_profile_assertion_normalized_value(value)
-            period = self._company_profile_assertion_period(issuer, field_name, value)
+            period_snapshot = {**financial_snapshot, **fundamentals}
+            if pending_period:
+                period_snapshot.setdefault("period", pending_period)
+            period = self._company_profile_assertion_period(issuer, field_name, value, period_snapshot)
             conflicts = self._company_profile_field_assertion_conflicts(
                 issuer_id=issuer.issuer_id,
                 field_name=field_name,
@@ -22177,6 +22354,7 @@ class SystemService:
                     assertion_status="conflict_candidate",
                     review_status="needs_review",
                     conflicts_with=[item.assertion_id for item in conflicts],
+                    period=period,
                 )
                 assertion_ids.append(assertion.assertion_id)
                 candidate["status"] = "conflict_needs_review"
@@ -22211,6 +22389,8 @@ class SystemService:
             elif field_name in {"period", "revenue", "net_income", "gross_margin", "cash", "debt"}:
                 fundamentals[field_name] = value
                 financial_snapshot[field_name] = value
+                if field_name == "period":
+                    pending_period = str(value)
                 applied = True
             else:
                 continue
@@ -22220,8 +22400,10 @@ class SystemService:
             updated_fields.append(field_name)
             source_ids = self._unique_strings([*source_ids, str(candidate.get("source_id", ""))])
             evidence_ids = self._unique_strings([*evidence_ids, *(str(evidence_id) for evidence_id in candidate.get("evidence_ids", []))])
-            assertion = self._record_company_profile_field_assertion(issuer, candidate, value)
+            assertion = self._record_company_profile_field_assertion(issuer, candidate, value, period=period)
             assertion_ids.append(assertion.assertion_id)
+            if field_name in {"revenue", "net_income", "gross_margin", "cash", "debt"}:
+                self._record_financial_metric_from_profile_candidate(issuer, candidate, value, assertion)
         if updated_fields:
             issuer.company_details = company_details
             issuer.fundamentals = fundamentals
@@ -22245,10 +22427,10 @@ class SystemService:
     def _company_profile_assertion_normalized_value(self, value: Any) -> str:
         return json.dumps(to_plain(value), ensure_ascii=False, sort_keys=True, default=str)[:1000]
 
-    def _company_profile_assertion_period(self, issuer: Issuer, field_name: str, value: Any) -> str:
+    def _company_profile_assertion_period(self, issuer: Issuer, field_name: str, value: Any, snapshot: Mapping[str, Any] | None = None) -> str:
         if field_name == "period":
             return str(value)
-        return str((issuer.fundamentals or {}).get("period", ""))
+        return str((snapshot or issuer.fundamentals or {}).get("period", ""))
 
     def _company_profile_field_assertion_conflicts(
         self,
@@ -22331,6 +22513,7 @@ class SystemService:
         review_status: str = "auto_generated",
         conflicts_with: list[str] | None = None,
         supersedes: list[str] | None = None,
+        period: str | None = None,
     ) -> CompanyProfileFieldAssertion:
         field_name = str(candidate.get("field", ""))
         document_id = str(candidate.get("document_id", ""))
@@ -22339,7 +22522,7 @@ class SystemService:
         normalized_value = self._company_profile_assertion_normalized_value(value)
         seed = "|".join([issuer.issuer_id, field_name, document_id, ",".join(evidence_ids), normalized_value])
         assertion_id = f"cpfa_{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:24]}"
-        period = self._company_profile_assertion_period(issuer, field_name, value)
+        period = period if period is not None else self._company_profile_assertion_period(issuer, field_name, value)
         assertion = CompanyProfileFieldAssertion(
             assertion_id=assertion_id,
             issuer_id=issuer.issuer_id,
@@ -22368,6 +22551,61 @@ class SystemService:
         )
         self.store.company_profile_field_assertions[assertion_id] = assertion
         return assertion
+
+    def _record_financial_metric_from_profile_candidate(
+        self,
+        issuer: Issuer,
+        candidate: Mapping[str, Any],
+        value: Any,
+        assertion: CompanyProfileFieldAssertion,
+    ) -> None:
+        period = assertion.period or str((issuer.fundamentals or {}).get("period", "")).strip()
+        if not period:
+            return
+        metric_name = assertion.field_name
+        source_ids = self._unique_strings(assertion.source_ids)
+        if not source_ids:
+            return
+        try:
+            self._validate_financial_metric_sources(source_ids)
+        except (NotFoundError, PermissionDenied):
+            return
+        metric_id = self._financial_metric_id(issuer.issuer_id, assertion.security_id, metric_name, period, "actual")
+        metric = self.store.financial_metrics.get(metric_id)
+        metric_payload = {
+            "metric_id": metric_id,
+            "issuer_id": issuer.issuer_id,
+            "security_id": assertion.security_id,
+            "metric_name": metric_name,
+            "period": period,
+            "value": float(value),
+            "unit": "ratio" if metric_name == "gross_margin" else "",
+            "currency": str(candidate.get("currency", "")),
+            "statement_type": "actual",
+            "source_ids": source_ids,
+            "document_ids": assertion.document_ids,
+            "evidence_ids": assertion.evidence_ids,
+            "confidence": assertion.confidence,
+            "source_policy": assertion.source_policy,
+            "fact_status": assertion.fact_status,
+            "review_status": assertion.review_status,
+            "metadata": {
+                "profile_field_assertion_id": assertion.assertion_id,
+                "extraction_method": assertion.extraction_method,
+                "source_type": assertion.metadata.get("source_type", ""),
+                "section": assertion.metadata.get("section", ""),
+            },
+        }
+        if metric is None:
+            self.store.financial_metrics[metric_id] = FinancialMetric(**metric_payload)
+            return
+        metric.value = float(value)
+        metric.source_ids = self._unique_strings([*metric.source_ids, *source_ids])
+        metric.document_ids = self._unique_strings([*metric.document_ids, *assertion.document_ids])
+        metric.evidence_ids = self._unique_strings([*metric.evidence_ids, *assertion.evidence_ids])
+        metric.confidence = max(float(metric.confidence), float(assertion.confidence))
+        metric.updated_at = utcnow()
+        metric.metadata.update(metric_payload["metadata"])
 
     def _company_profile_deep_coverage_fields(self, *, include_optional: bool = False) -> list[str]:
         required = [
@@ -22496,6 +22734,9 @@ class SystemService:
             or (self.store.documents.get(evidence.document_id) is not None and self.store.documents[evidence.document_id].document_type == "research_report")
         ]
         latest_market = next((point for point in [self._latest_market_point_for_security(security.security_id) for security in securities] if point is not None), None)
+        financial_metrics = self._financial_metrics_for_issuer(issuer.issuer_id, security_ids)
+        financial_snapshot_from_metrics = self._latest_financial_snapshot_from_metrics(issuer.issuer_id, security_ids)
+        financial_metric_records = [{"resource_type": "financial_metric", "resource_id": metric.metric_id} for metric in financial_metrics[:10]]
         reports = [report for report in self.store.research_reports.values() if report.issuer_id == issuer.issuer_id or report.security_id in security_ids]
         structured_reports = [report for report in self.store.structured_research_reports.values() if report.issuer_id == issuer.issuer_id or report.security_id in security_ids]
         structured_report_ids = {report.research_report_id for report in structured_reports}
@@ -22524,9 +22765,10 @@ class SystemService:
                 *profile.source_ids,
                 *(document.source_id for document in fact_documents),
                 *(point.source_id for point in [latest_market] if point is not None),
+                *(source_id for metric in financial_metrics for source_id in metric.source_ids),
             ]
         )
-        fundamentals = dict(issuer.fundamentals or profile.latest_financial_snapshot or {})
+        fundamentals = {**dict(issuer.fundamentals or profile.latest_financial_snapshot or {}), **financial_snapshot_from_metrics}
         company_details = dict(issuer.company_details or {})
         latest_report_at = max([str(to_plain(report.published_at)) for report in structured_reports] + [f"{report.year}-{report.month or '01'}" for report in reports if report.year], default="")
         field_defs = {
@@ -22563,12 +22805,12 @@ class SystemService:
             "volume": ("market_snapshot", latest_market is not None and float(latest_market.volume or 0) != 0, [{"resource_type": "market_data", "resource_id": latest_market.data_id}] if latest_market else []),
             "amount": ("market_snapshot", latest_market is not None and float(latest_market.amount or 0) != 0, [{"resource_type": "market_data", "resource_id": latest_market.data_id}] if latest_market else []),
             "valuation_metrics": ("market_snapshot", bool(issuer.valuation_metrics), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
-            "period": ("financial_snapshot", any(fundamentals.get(key) for key in ["period", "report_period", "fiscal_period", "date"]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
-            "revenue": ("financial_snapshot", any(fundamentals.get(key) for key in ["revenue", "operating_revenue", "total_revenue"]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
-            "net_income": ("financial_snapshot", any(fundamentals.get(key) for key in ["net_income", "net_profit", "profit"]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
-            "gross_margin": ("financial_snapshot", bool(fundamentals.get("gross_margin")), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
-            "cash": ("financial_snapshot", any(fundamentals.get(key) for key in ["cash", "cash_and_equivalents"]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
-            "debt": ("financial_snapshot", any(fundamentals.get(key) for key in ["debt", "total_debt"]), [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "period": ("financial_snapshot", any(fundamentals.get(key) for key in ["period", "report_period", "fiscal_period", "date"]), financial_metric_records or [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "revenue": ("financial_snapshot", any(fundamentals.get(key) for key in ["revenue", "operating_revenue", "total_revenue"]), financial_metric_records or [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "net_income": ("financial_snapshot", any(fundamentals.get(key) for key in ["net_income", "net_profit", "profit"]), financial_metric_records or [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "gross_margin": ("financial_snapshot", bool(fundamentals.get("gross_margin")), financial_metric_records or [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "cash": ("financial_snapshot", any(fundamentals.get(key) for key in ["cash", "cash_and_equivalents"]), financial_metric_records or [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
+            "debt": ("financial_snapshot", any(fundamentals.get(key) for key in ["debt", "total_debt"]), financial_metric_records or [{"resource_type": "issuer", "resource_id": issuer.issuer_id}]),
             "source_ids": ("source_evidence", bool(source_ids), [{"resource_type": "source", "resource_id": source_id} for source_id in source_ids]),
             "authorized_documents": ("source_evidence", bool(fact_documents), [{"resource_type": "document", "resource_id": document.document_id} for document in fact_documents]),
             "field_evidence_ids": ("source_evidence", bool(official_evidence_ids), [{"resource_type": "evidence", "resource_id": evidence_id} for evidence_id in official_evidence_ids[:10]]),
@@ -22730,6 +22972,7 @@ class SystemService:
         securities = [item for item in self.store.securities.values() if item.issuer_id == issuer.issuer_id]
         security_ids = {security.security_id for security in securities}
         has_market_data = any(self._latest_market_point_for_security(security.security_id) is not None for security in securities)
+        financial_metrics = self._financial_metrics_for_issuer(issuer.issuer_id, security_ids)
         documents = [
             document
             for document in self.store.documents.values()
@@ -22790,7 +23033,7 @@ class SystemService:
             "company_profile": issuer.issuer_id in self.store.company_profiles,
             "security": bool(securities),
             "market_data": has_market_data,
-            "financial_snapshot": bool(issuer.fundamentals),
+            "financial_snapshot": bool(issuer.fundamentals or financial_metrics),
             "documents": bool(documents),
             "disclosure_events": bool(disclosure_events),
             "company_events": bool(company_events),
@@ -22816,6 +23059,7 @@ class SystemService:
                 "disclosure_events": len(disclosure_events),
                 "company_events": len(company_events),
                 "company_relationships": len(relationships),
+                "financial_metrics": len(financial_metrics),
                 "research_reports": len(reports),
                 "structured_research_reports": len(structured_reports),
                 "report_viewpoints": len(viewpoints),
@@ -24825,6 +25069,7 @@ class SystemService:
         for resource_type in [
             "company_profile",
             "company_profile_field_assertion",
+            "financial_metric",
             "company_event",
             "company_relationship",
             "research_report",
@@ -26528,6 +26773,12 @@ class SystemService:
             if action.security_id in security_ids or text_matches(action)
         ]
         corporate_actions.sort(key=lambda item: (str(item.ex_date), item.action_id), reverse=True)
+        financial_metrics = [
+            metric
+            for metric in self.store.financial_metrics.values()
+            if metric.issuer_id in issuer_ids or metric.security_id in security_ids or text_matches(metric)
+        ]
+        financial_metrics.sort(key=self._financial_metric_sort_key, reverse=True)
 
         documents = [
             document
@@ -26758,6 +27009,7 @@ class SystemService:
             "securities": len(securities),
             "market_data": len(market_data),
             "corporate_actions": len(corporate_actions),
+            "financial_metrics": len(financial_metrics),
             "documents": len(documents),
             "evidence": len(evidence),
             "research_reports": len(research_reports),
@@ -26889,6 +27141,8 @@ class SystemService:
                 "market_data": plain_rows(market_data),
                 "latest_market_snapshot": to_plain(market_data[0]) if market_data else {},
                 "corporate_actions": plain_rows(corporate_actions),
+                "financial_metrics": plain_rows(financial_metrics),
+                "latest_financial_snapshot": self._latest_financial_snapshot_from_metrics(primary_issuer.issuer_id, security_ids) if primary_issuer else {},
                 "documents": plain_rows(documents),
                 "evidence": plain_rows(evidence),
                 "company_events": plain_rows(company_events),
