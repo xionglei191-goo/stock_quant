@@ -2295,6 +2295,8 @@
 | `/api/company-database/watchlist/import` | `POST` | `company-database/package/import` 的兼容别名，用于直接导入观察池 symbol 列表 |
 | `/api/company-database/package/import/runs` | `GET` / `POST` | 查询本地 watchlist / 公司包导入运行历史，用于审计、失败复盘和后续材料 inbox 准备 |
 | `/api/company-database/watchlist/import/runs` | `GET` / `POST` | `company-database/package/import/runs` 的兼容别名 |
+| `/api/company-database/package/import/runs/{run_id}/material-manifests` | `POST` | 从公司包导入 run 生成本地 material inbox manifest sidecar 模板；默认 dry-run，显式 execute 才写入本地文件 |
+| `/api/company-database/watchlist/import/runs/{run_id}/material-manifests` | `POST` | `company-database/package/import/runs/{run_id}/material-manifests` 的兼容别名 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
 | `/api/company-database/batch/runs` | `GET` / `POST` | 查询公司数据库批量补齐运行历史，用于审计、复盘和后续断点续跑 |
@@ -2444,6 +2446,50 @@
 - `usage_boundary`：固定为本地 watchlist 历史、无外部下载、无真实交易。
 
 不支持：该接口不做 retry/resume，不重跑导入，不读取或下载外部公司包。需要再次导入时，重新调用 `POST /api/company-database/package/import`。
+
+#### `POST /api/company-database/package/import/runs/{run_id}/material-manifests`
+
+从已持久化的公司包导入 run 生成本地 material inbox manifest sidecar 模板，帮助用户把“公司包导入后的公司清单”转成“下一步需要补的官方/IR/公告材料清单”。兼容别名：`POST /api/company-database/watchlist/import/runs/{run_id}/material-manifests`。
+
+请求字段：
+
+- `output_root` / `root_path`：可选；manifest 输出目录。dry-run 可为空；`execute=true` 时必填。
+- `limit`：生成数量上限，默认 200，最大 1000。
+- `execute` / `dry_run`：默认 dry-run；`execute=true` 且 `dry_run` 非真时才写入本地 `*.manifest.json` 文件。
+- `overwrite`：默认 `false`；目标 manifest 已存在时默认跳过并返回 `skipped_existing`。
+- `source_uri_template`：可选；支持 `{symbol}`、`{raw_symbol}`、`{issuer_id}`、`{security_id}`。未传时优先使用本地公司画像里的 `ir_url` / `website_url` 或已登记官方 source provenance，仍无可用 URL 时才回退到示例 IR URL。
+- `manifest_name_template`：可选；默认 `{symbol}-company-profile.manifest.json`。
+- `file_path_template`：可选；默认 `./{symbol}-company-profile.md`，指向用户后续放入 inbox 的正文文件。
+- `title_template`：可选；默认 `{raw_symbol} official company profile`。
+
+返回字段：
+
+- `schema_id`：当前为 `company-material-manifest-export-v1`。
+- `status`：`dry_run` 或 `executed`。
+- `manifest_count` / `written_count` / `skipped_count`：模板数量、实际写入数量和跳过数量。
+- `items[]`：每个公司一条 manifest 模板，包含 `issuer_id`、`security_id`、`symbol`、`manifest_path`、`template`、`status` 和 `errors`。
+
+#### `GET|POST /api/company-database/material-inbox/pending`
+
+从本地公司包导入历史派生待补材料队列，帮助用户确认“已导入公司清单”里哪些公司还缺 manifest sidecar、哪些已经有 manifest 但缺正文文件、哪些已准备好进入材料 inbox 入库。
+
+请求字段：
+
+- `run_id`：可选；限定某次公司包导入 run。
+- `symbol` / `ticker` / `code`：可选；限定某个公司代码。
+- `material_root` / `output_root` / `root_path`：可选；本地材料目录，用于检查 `*.manifest.json` 和正文文件是否存在。
+- `limit`：返回数量上限，默认 200，最大 1000。
+
+返回字段：
+
+- `schema_id`：当前为 `company-material-inbox-pending-v1`。
+- `pending_count` / `status_counts`：待补队列数量和状态分布。
+- `items[]`：包含 `run_id`、`issuer_id`、`security_id`、`symbol`、`status`、`manifest_path`、`material_path`、`manifest_exists`、`material_exists`、`source_uri` 和 `next_action`。
+- `usage_boundary`：固定声明本地材料准备队列、无外部下载、无训练、无真实交易。
+- `next_actions`：提示用户补正文文件后调用 `/api/company-database/material-inbox/ingest`。
+- `usage_boundary`：固定为本地 manifest 导出、无外部下载、无训练、无真实交易。
+
+边界：该接口只生成 sidecar 模板或写入本地 manifest JSON，不下载公司资料，不访问外网，不把研报当事实源，也不写入 `Source` / `Document` / `Evidence`。真正入库仍必须由 material inbox 在用户准备好官方/IR/公告正文后执行。
 
 #### `GET|POST /api/company-financial-metrics`
 
@@ -3092,11 +3138,13 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 - `include_feedback_performance`：默认 `true`。
 - `refresh_existing`：默认 `true`；已有基线观察/结论/反馈可刷新回链。
 - `recompute_analyst_scores`：默认 `true`；执行研报兑现时重算分析师可靠性。
+- `record_run`：默认随 `execute` 为真；执行模式会持久化一条本地闭环刷新历史，dry-run 只有显式 `record_run=true` 才记录。
 
 返回字段：
 
 - `schema_id`：当前为 `company-intelligence-cycle-v1`。
 - `status`：`dry_run`、`executed` 或 `not_found`。
+- `run_id` / `recorded`：本次闭环刷新 run ID 和是否写入历史。
 - `issuer_ids`：本次解析到的公司主体；未知 symbol 为空。
 - `steps`：三个子步骤的原始摘要：`research_report_realization`、`workflow_build`、`simulation_feedback_performance`。
 - `summary`：完整度/覆盖率前后变化、兑现项、workflow 项和反馈更新项。
@@ -3104,6 +3152,25 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 - `usage_boundary`：固定声明本地记录、paper feedback、无券商执行。
 
 边界：该 runner 是复盘和本地公司数据库维护动作，不生成投资建议，不把研报升级为事实源，不下单，不连接真实券商。
+
+#### `GET|POST /api/company-intelligence/cycle/runs`
+
+查询公司情报闭环刷新历史。该历史只记录本地 runner 的完整度变化、覆盖率变化、子步骤摘要和 paper-only 反馈数量，用于复盘刷新是否发生以及刷新后是否改善公司情报完整度。
+
+请求字段：
+
+- `run_id`：可选；限定单次闭环刷新。
+- `symbol` / `ticker` / `code`：可选；按公司代码过滤。
+- `issuer_id`：可选；按本地主体过滤。
+- `status`：可选；`dry_run`、`executed`、`not_found` 或 `failed`。
+- `limit`：返回数量上限，默认 20，最大 200。
+
+返回字段：
+
+- `schema_id`：当前为 `company-intelligence-cycle-runs-v1`。
+- `count` / `summary`：过滤后 run 数和状态摘要。
+- `runs[]`：闭环刷新历史，字段见 `CompanyIntelligenceCycleRun`。
+- `usage_boundary`：固定声明本地历史、paper feedback、无真实交易。
 
 #### `GET /api/graph/query`
 

@@ -652,6 +652,10 @@ class ApiRouter:
             ("POST", r"^/api/company-database/package/import/runs$", self._company_package_import_runs),
             ("GET", r"^/api/company-database/watchlist/import/runs$", self._company_package_import_runs),
             ("POST", r"^/api/company-database/watchlist/import/runs$", self._company_package_import_runs),
+            ("POST", r"^/api/company-database/package/import/runs/(?P<run_id>[^/]+)/material-manifests$", self._company_package_import_material_manifests),
+            ("POST", r"^/api/company-database/watchlist/import/runs/(?P<run_id>[^/]+)/material-manifests$", self._company_package_import_material_manifests),
+            ("GET", r"^/api/company-database/material-inbox/pending$", self._company_material_inbox_pending),
+            ("POST", r"^/api/company-database/material-inbox/pending$", self._company_material_inbox_pending),
             ("POST", r"^/api/company-database/build$", self._build_company_database),
             ("POST", r"^/api/company-database/batch/build$", self._build_company_database_batch),
             ("POST", r"^/api/company-database/batch/runs/(?P<run_id>[^/]+)/retry$", self._retry_company_database_build_run),
@@ -715,6 +719,8 @@ class ApiRouter:
             ("GET", r"^/api/graph-vector/readiness-report$", self._graph_vector_readiness_report),
             ("POST", r"^/api/graph-vector/readiness-report$", self._graph_vector_readiness_report),
             ("POST", r"^/api/company-intelligence/(?P<symbol>[^/]+)/cycle/run$", self._run_company_intelligence_cycle),
+            ("GET", r"^/api/company-intelligence/cycle/runs$", self._company_intelligence_cycle_runs),
+            ("POST", r"^/api/company-intelligence/cycle/runs$", self._company_intelligence_cycle_runs),
             ("GET", r"^/api/company-intelligence/(?P<symbol>[^/]+)$", self._company_intelligence_by_symbol),
             ("POST", r"^/api/company-intelligence/(?P<symbol>[^/]+)$", self._company_intelligence_by_symbol),
             ("GET", r"^/api/graph/query$", self._query_graph),
@@ -1923,6 +1929,13 @@ class ApiRouter:
     def _company_package_import_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_package_import_runs_payload(body)
 
+    def _company_package_import_material_manifests(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/company-database/(?:package|watchlist)/import/runs/(?P<run_id>[^/]+)/material-manifests$", path)
+        return self.service.company_package_import_material_manifests(match["run_id"], body, actor=actor)
+
+    def _company_material_inbox_pending(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_material_inbox_pending(body, actor=actor)
+
     def _company_database_coverage_trends(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_database_coverage_trends(body, actor=actor)
 
@@ -2100,6 +2113,9 @@ class ApiRouter:
         payload = dict(body)
         payload["symbol"] = match["symbol"] if match else payload.get("symbol", "")
         return self.service.run_company_intelligence_cycle(payload, actor=actor)
+
+    def _company_intelligence_cycle_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_intelligence_cycle_runs_payload(body)
 
     def _graph_traceability_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.graph_traceability_report(body)

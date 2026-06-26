@@ -1146,6 +1146,47 @@ Retry/resume 语义：
 }
 ```
 
+### 10.5 CompanyIntelligenceCycleRun
+
+`CompanyIntelligenceCycleRun` 记录公司情报闭环刷新历史，用于复盘某家公司在本地执行研报兑现、workflow 重建和 paper-only 反馈更新后，完整度和覆盖率是否改善。它不是交易指令，也不是生产发布证据。
+
+```json
+{
+  "run_id": "string",
+  "actor": "string",
+  "status": "dry_run|executed|not_found|failed",
+  "execute": false,
+  "dry_run": true,
+  "symbol": "string",
+  "issuer_ids": ["issuer_id"],
+  "summary": {
+    "completeness_before": 0.0,
+    "completeness_after": 0.0,
+    "completeness_delta": 0.0,
+    "coverage_before": 0.0,
+    "coverage_after": 0.0,
+    "coverage_delta": 0.0,
+    "realization_items": 0,
+    "workflow_items": 0,
+    "feedback_items": 0
+  },
+  "before": {},
+  "after": {},
+  "step_status": {},
+  "error": "",
+  "usage_boundary": "company_intelligence_cycle_runs_are_local_history_paper_feedback_no_live_trading",
+  "started_at": "datetime",
+  "completed_at": "datetime",
+  "created_at": "datetime"
+}
+```
+
+记录规则：
+
+- `POST /api/company-intelligence/{symbol}/cycle/run` 在 `execute=true` 时默认记录。
+- dry-run 只有显式 `record_run=true` 才记录。
+- `GET|POST /api/company-intelligence/cycle/runs` 可按 `run_id`、`symbol`、`issuer_id` 和 `status` 查询。
+
 本地 artifact 输出只用于个人研究复盘，固定 `classification=local-only`，不得当作非本机生产发布证据。
 
 ## 11. Relationship Model

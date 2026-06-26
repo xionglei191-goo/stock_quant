@@ -1544,6 +1544,7 @@
               <button id="runCompanyReportRealization" class="primary">更新兑现</button>
               <button id="previewCompanyIntelCycle">预览闭环刷新</button>
               <button id="runCompanyIntelCycle" class="primary">执行闭环刷新</button>
+              <button id="loadCompanyIntelCycleRuns">查看闭环历史</button>
             </div>
             <div class="row">
               <div class="field">
@@ -1588,6 +1589,16 @@
             </div>
             <div class="row">
               <div class="field">
+                <label for="companyIntelPackageManifestOutputRoot">材料 manifest 输出目录</label>
+                <input id="companyIntelPackageManifestOutputRoot" value="" aria-label="材料 manifest 输出目录" placeholder="/home/xionglei/文档/company_materials/inbox">
+                <span class="hint">从最近导入 run 生成本地 sidecar，不下载资料</span>
+              </div>
+              <button id="previewCompanyPackageMaterialManifests">预览材料 manifest</button>
+              <button id="runCompanyPackageMaterialManifests" class="primary">写入材料 manifest</button>
+              <button id="loadCompanyMaterialPending">查看待补材料</button>
+            </div>
+            <div class="row">
+              <div class="field">
                 <label for="companyIntelMaterialRootPath">本地材料 inbox</label>
                 <input id="companyIntelMaterialRootPath" value="" aria-label="本地公司材料 inbox 路径" placeholder="/home/xionglei/文档/company_materials/inbox">
                 <span class="hint">只读取 manifest sidecar，不按文件名猜公司</span>
@@ -1618,6 +1629,8 @@
               <div class="system-box"><strong>闭环刷新</strong><span id="companyIntelCycleStatus">待预览</span></div>
               <div class="system-box"><strong>完整度变化</strong><span id="companyIntelCycleDelta">0%</span></div>
               <div class="system-box"><strong>反馈更新</strong><span id="companyIntelCycleFeedbackCount">0</span></div>
+              <div class="system-box"><strong>闭环历史</strong><span id="companyIntelCycleRunHistoryStatus">待载入</span></div>
+              <div class="system-box"><strong>闭环次数</strong><span id="companyIntelCycleRunHistoryCount">0</span></div>
             </div>
             <div class="system-strip">
               <div class="system-box"><strong>深字段</strong><span id="companyIntelProfileFieldCoverageStatus">待审计</span></div>
@@ -1637,6 +1650,10 @@
               <div class="system-box"><strong>导入历史</strong><span id="companyIntelPackageRunHistoryStatus">待载入</span></div>
               <div class="system-box"><strong>导入次数</strong><span id="companyIntelPackageRunHistoryCount">0</span></div>
               <div class="system-box"><strong>最近导入</strong><span id="companyIntelPackageRunHistoryLatest">-</span></div>
+              <div class="system-box"><strong>Manifest</strong><span id="companyIntelPackageManifestExportStatus">待预览</span></div>
+              <div class="system-box"><strong>Manifest 写入</strong><span id="companyIntelPackageManifestWrittenCount">0</span></div>
+              <div class="system-box"><strong>待补材料</strong><span id="companyIntelMaterialPendingStatus">待载入</span></div>
+              <div class="system-box"><strong>材料缺口</strong><span id="companyIntelMaterialPendingCount">0</span></div>
               <div class="system-box"><strong>材料入库</strong><span id="companyIntelMaterialInboxStatus">待预览</span></div>
               <div class="system-box"><strong>材料计划</strong><span id="companyIntelMaterialPlannedCount">0</span></div>
               <div class="system-box"><strong>材料写入</strong><span id="companyIntelMaterialIngestedCount">0</span></div>
@@ -1647,12 +1664,15 @@
               <div class="system-box"><strong>来源评分</strong><span id="companyIntelSourceQualityCount">0</span></div>
             </div>
             <table><thead><tr><th>运行</th><th>目标/批次</th><th>覆盖变化</th><th>汇总</th></tr></thead><tbody id="companyIntelRunRows"></tbody></table>
+            <table><thead><tr><th>闭环 run</th><th>公司</th><th>完整度变化</th><th>反馈</th></tr></thead><tbody id="companyIntelCycleRunRows"></tbody></table>
             <table><thead><tr><th>运行</th><th>覆盖趋势</th><th>缺失变化</th><th>状态/边界</th></tr></thead><tbody id="companyIntelTrendRows"></tbody></table>
             <table><thead><tr><th>公司</th><th>覆盖率</th><th>缺失层</th><th>计数</th></tr></thead><tbody id="companyIntelCoverageRows"></tbody></table>
             <table><thead><tr><th>字段</th><th>分组</th><th>状态</th><th>来源/原因</th></tr></thead><tbody id="companyIntelProfileFieldRows"></tbody></table>
             <table><thead><tr><th>候选字段</th><th>值</th><th>来源</th><th>状态</th></tr></thead><tbody id="companyIntelProfileFieldExtractRows"></tbody></table>
             <table><thead><tr><th>公司包</th><th>本地主体</th><th>状态</th><th>下一步</th></tr></thead><tbody id="companyIntelPackageImportRows"></tbody></table>
             <table><thead><tr><th>导入 run</th><th>目标</th><th>结果</th><th>边界</th></tr></thead><tbody id="companyIntelPackageImportRunRows"></tbody></table>
+            <table><thead><tr><th>Manifest</th><th>公司/证券</th><th>文件模板</th><th>状态</th></tr></thead><tbody id="companyIntelPackageManifestRows"></tbody></table>
+            <table><thead><tr><th>待补材料</th><th>公司/证券</th><th>本地文件</th><th>下一步</th></tr></thead><tbody id="companyIntelMaterialPendingRows"></tbody></table>
             <table><thead><tr><th>材料</th><th>公司/来源</th><th>状态</th><th>说明</th></tr></thead><tbody id="companyIntelMaterialInboxRows"></tbody></table>
             <div class="row">
               <button id="batchApproveCompanyProfileAssertions">批量批准</button>
@@ -5462,6 +5482,7 @@
     function renderCompanyPackageImport(data, showDetails = true) {
       const totals = data.totals || {};
       const companies = data.companies || data.items || [];
+      if (data.run_id) document.body.dataset.companyPackageImportRunId = data.run_id;
       $("companyIntelPackageImportStatus").textContent = data.execute ? "已执行" : (data.status === "failed" ? "失败" : "预览");
       $("companyIntelPackagePlannedCount").textContent = `${totals.planned_count || companies.filter((item) => item.status === "dry_run").length || 0}`;
       $("companyIntelPackageImportedCount").textContent = `${totals.executed_count || totals.already_exists_count || 0}`;
@@ -5506,6 +5527,7 @@
     function renderCompanyPackageImportRuns(data, showDetails = false) {
       const runs = data.runs || [];
       const latest = runs[0] || {};
+      if (latest.run_id) document.body.dataset.companyPackageImportRunId = latest.run_id;
       $("companyIntelPackageRunHistoryStatus").textContent = runs.length ? statusLabel(latest.status || "") : "无记录";
       $("companyIntelPackageRunHistoryCount").textContent = `${data.count || runs.length || 0}`;
       $("companyIntelPackageRunHistoryLatest").textContent = latest.completed_at ? String(latest.completed_at).slice(0, 19) : "-";
@@ -5550,6 +5572,107 @@
         if (showDetails) setStatus(`公司包导入历史已载入 · ${data.count || 0} 条 · ${trace_id}`);
       } catch (error) {
         $("companyIntelPackageRunHistoryStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    function companyPackageMaterialManifestPayload(execute = false) {
+      return {
+        output_root: formValue("companyIntelPackageManifestOutputRoot", ""),
+        limit: 200,
+        execute,
+        dry_run: !execute
+      };
+    }
+
+    function companyPackageImportRunIdForManifestExport() {
+      const runId = document.body.dataset.companyPackageImportRunId || "";
+      if (!runId) throw new Error("请先执行或载入公司包导入历史，再生成材料 manifest。");
+      return runId;
+    }
+
+    function renderCompanyPackageMaterialManifests(data, showDetails = true) {
+      const items = data.items || [];
+      $("companyIntelPackageManifestExportStatus").textContent = data.execute ? "已写入" : "预览";
+      $("companyIntelPackageManifestWrittenCount").textContent = `${data.written_count || 0}/${data.manifest_count || items.length || 0}`;
+      $("companyIntelPackageManifestRows").innerHTML = rows(items.slice(0, 80), "暂无材料 manifest 模板。请先导入公司包并载入导入历史。", (item) => {
+        const template = item.template || {};
+        const filePath = template.file_path || "";
+        const sourceUri = template.source_uri || "";
+        const explanation = (item.errors || []).join(", ") || sourceUri || data.usage_boundary || "";
+        return `<tr><td>${compactId(item.manifest_path || item.symbol || "")}${metaLine("run", compactId(item.run_id || data.run_id || ""))}</td><td>${compactId(item.issuer_id || "")}${metaLine("证券", compactId(item.security_id || ""))}${metaLine("代码", item.symbol || "")}</td><td>${String(filePath).slice(-100)}${metaLine("类型", statusLabel(template.source_type || ""))}${metaLine("来源", String(sourceUri).slice(0, 120))}</td><td>${statusLabel(item.status || data.status || "")}${metaLine("说明", String(explanation).slice(0, 160))}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          schema_id: data.schema_id,
+          status: data.status,
+          run_id: data.run_id,
+          output_root: data.output_root,
+          manifest_count: data.manifest_count,
+          written_count: data.written_count,
+          skipped_count: data.skipped_count,
+          next_actions: data.next_actions,
+          usage_boundary: data.usage_boundary,
+          items: items.slice(0, 10)
+        });
+      }
+    }
+
+    function renderCompanyMaterialPending(data, showDetails = true) {
+      const items = data.items || [];
+      $("companyIntelMaterialPendingStatus").textContent = items.length ? "待处理" : "无缺口";
+      $("companyIntelMaterialPendingCount").textContent = `${data.pending_count || items.length || 0}`;
+      $("companyIntelMaterialPendingRows").innerHTML = rows(items.slice(0, 80), "暂无待补材料。先导入公司包或载入导入历史。", (item) => {
+        return `<tr><td>${compactId(item.run_id || "")}${metaLine("状态", statusLabel(item.status || ""))}</td><td>${compactId(item.issuer_id || "")}${metaLine("证券", compactId(item.security_id || ""))}${metaLine("代码", item.symbol || "")}</td><td>${String(item.material_path || "").slice(-120)}${metaLine("manifest", item.manifest_exists ? "已存在" : "缺失")}${metaLine("正文", item.material_exists ? "已存在" : "缺失")}</td><td>${statusLabel(item.next_action || "")}${metaLine("来源", String(item.source_uri || "").slice(0, 120))}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          schema_id: data.schema_id,
+          pending_count: data.pending_count,
+          status_counts: data.status_counts,
+          material_root: data.material_root,
+          next_actions: data.next_actions,
+          usage_boundary: data.usage_boundary,
+          items: items.slice(0, 12)
+        });
+      }
+    }
+
+    async function loadCompanyMaterialPending(showDetails = true) {
+      try {
+        $("companyIntelMaterialPendingStatus").textContent = "载入中";
+        const payload = {
+          symbol: companyIntelCurrentSymbol(),
+          material_root: formValue("companyIntelPackageManifestOutputRoot", "") || formValue("companyIntelMaterialRootPath", ""),
+          limit: 200
+        };
+        const { data, trace_id } = await api("/api/company-database/material-inbox/pending", {
+          method: "POST",
+          role: "data_engineer",
+          body: payload
+        });
+        renderCompanyMaterialPending(data, showDetails);
+        if (showDetails) setStatus(`待补材料队列已载入 · ${data.pending_count || 0} 项 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelMaterialPendingStatus").textContent = "错误";
+        if (showDetails) setStatus(error.message, true);
+      }
+    }
+
+    async function exportCompanyPackageMaterialManifests(execute = false) {
+      try {
+        $("companyIntelPackageManifestExportStatus").textContent = execute ? "写入中" : "预览中";
+        const runId = companyPackageImportRunIdForManifestExport();
+        const { data, trace_id } = await api(`/api/company-database/package/import/runs/${encodeURIComponent(runId)}/material-manifests`, {
+          method: "POST",
+          role: "data_engineer",
+          body: companyPackageMaterialManifestPayload(execute)
+        });
+        renderCompanyPackageMaterialManifests(data, true);
+        await loadCompanyMaterialPending(false);
+        setStatus(`${execute ? "材料 manifest 已写入" : "材料 manifest 预览完成"} · ${data.written_count || 0}/${data.manifest_count || 0} · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelPackageManifestExportStatus").textContent = "错误";
         setStatus(error.message, true);
       }
     }
@@ -6043,6 +6166,46 @@
       });
     }
 
+    function renderCompanyIntelligenceCycleRuns(data, showDetails = true) {
+      const runs = data.runs || [];
+      const latest = runs[0] || {};
+      $("companyIntelCycleRunHistoryStatus").textContent = runs.length ? statusLabel(latest.status || "") : "无记录";
+      $("companyIntelCycleRunHistoryCount").textContent = `${data.count || runs.length || 0}`;
+      $("companyIntelCycleRunRows").innerHTML = rows(runs.slice(0, 50), "暂无闭环刷新历史。执行一次闭环刷新后会出现在这里。", (run) => {
+        const summary = run.summary || {};
+        const delta = Number(summary.completeness_delta || 0);
+        return `<tr><td>${compactId(run.run_id || "")}${metaLine("状态", statusLabel(run.status || ""))}${metaLine("时间", String(run.completed_at || "").slice(0, 19))}</td><td>${run.symbol || ""}${metaLine("主体", (run.issuer_ids || []).slice(0, 3).map(compactId).join(", "))}</td><td>${delta >= 0 ? "+" : ""}${pct(delta)}${metaLine("覆盖", `${pct(summary.coverage_before || 0)} -> ${pct(summary.coverage_after || 0)}`)}</td><td>${summary.feedback_items || 0}${metaLine("workflow", summary.workflow_items || 0)}${metaLine("兑现", summary.realization_items || 0)}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          schema_id: data.schema_id,
+          count: data.count,
+          summary: data.summary,
+          usage_boundary: data.usage_boundary,
+          runs: runs.slice(0, 10)
+        });
+      }
+    }
+
+    async function loadCompanyIntelligenceCycleRuns(showDetails = true) {
+      try {
+        $("companyIntelCycleRunHistoryStatus").textContent = "载入中";
+        const { data, trace_id } = await api("/api/company-intelligence/cycle/runs", {
+          method: "POST",
+          role: "data_engineer",
+          body: {
+            symbol: companyIntelCurrentSymbol(),
+            limit: 50
+          }
+        });
+        renderCompanyIntelligenceCycleRuns(data, showDetails);
+        if (showDetails) setStatus(`闭环刷新历史已载入 · ${data.count || 0} 条 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelCycleRunHistoryStatus").textContent = "错误";
+        if (showDetails) setStatus(error.message, true);
+      }
+    }
+
     async function runCompanyIntelligenceCycle(execute = false) {
       try {
         $("companyIntelCycleStatus").textContent = execute ? "刷新中" : "预览中";
@@ -6057,6 +6220,7 @@
           await loadCompanyIntelligence(false);
           await loadCompanyBuildRuns(false);
           await loadCompanyCoverageTrends(false);
+          await loadCompanyIntelligenceCycleRuns(false);
         }
         setStatus(`${execute ? "公司情报闭环刷新已执行" : "公司情报闭环刷新预览完成"} · 反馈 ${data.summary?.feedback_items || 0} · ${trace_id}`);
       } catch (error) {
@@ -7016,6 +7180,9 @@
     $("previewCompanyPackageImport").addEventListener("click", () => importCompanyPackage(false));
     $("runCompanyPackageImport").addEventListener("click", () => importCompanyPackage(true));
     $("loadCompanyPackageImportRuns").addEventListener("click", () => loadCompanyPackageImportRuns(true));
+    $("previewCompanyPackageMaterialManifests").addEventListener("click", () => exportCompanyPackageMaterialManifests(false));
+    $("runCompanyPackageMaterialManifests").addEventListener("click", () => exportCompanyPackageMaterialManifests(true));
+    $("loadCompanyMaterialPending").addEventListener("click", () => loadCompanyMaterialPending(true));
     $("previewCompanyMaterialInbox").addEventListener("click", () => ingestCompanyMaterialInbox(false));
     $("runCompanyMaterialInbox").addEventListener("click", () => ingestCompanyMaterialInbox(true));
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));
@@ -7024,6 +7191,7 @@
     $("runCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(true));
     $("previewCompanyIntelCycle").addEventListener("click", () => runCompanyIntelligenceCycle(false));
     $("runCompanyIntelCycle").addEventListener("click", () => runCompanyIntelligenceCycle(true));
+    $("loadCompanyIntelCycleRuns").addEventListener("click", () => loadCompanyIntelligenceCycleRuns(true));
     $("previewCompanyReportStructure").addEventListener("click", () => structureCompanyReports(false));
     $("runCompanyReportStructure").addEventListener("click", () => structureCompanyReports(true));
     $("companyIntelSymbol").addEventListener("keydown", (event) => {

@@ -168,7 +168,7 @@ T-406C 质量包本身的 out of scope：
 - 不引入新的 7 维 scorecard
 - 不要求逐证据对象 schema；本轮只复核样本级 label 和问题标记
 
-T-406D/T-406E 当前已经开始单独落地，不再属于 T-406C 质量包 contract：`conclusion` 已增加 `core_facts`、`inferences`、`speculations`、`evidence_gaps`、`market_pricing_context`、`falsification_status` 和 `next_verification_tasks`；UI 也可以把验证任务标记为完成或忽略并刷新结论。剩余缺口是 7 维 evidence-backed scorecard、严格事实来源门禁和模拟反馈复盘连接。
+T-406D/T-406E 已单独收口，不再属于 T-406C 质量包 contract：`conclusion` 已增加 `core_facts`、`inferences`、`speculations`、`evidence_gaps`、`market_pricing_context`、`falsification_status`、`next_verification_tasks`、`source_gate`、`chokepoint_scorecard` 和 `review_feedback`；UI 也可以把验证任务标记为完成或忽略并刷新结论。7 维 scorecard、严格事实来源门禁和 paper-only 复盘摘要已经进入结构化结论。
 
 短期方向：
 

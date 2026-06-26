@@ -460,6 +460,36 @@
   - **已完成（本轮 UI）**：执行公司包导入后自动刷新导入历史，方便立即确认 run 是否落盘。
   - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`；浏览器交互验收新增 `company_package_import_run_history_render`。
 
+- `DONE` T-476 公司包导入 run 到材料 inbox manifest 模板导出
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-474/T-475 已能持久化和查看本地 watchlist / 公司包导入 run，但“导入公司清单 -> 准备官方/IR/公告材料 -> material inbox 入库”的数据源链路仍需要手工拼 sidecar manifest。
+  - **已完成（本轮）**：新增 `POST /api/company-database/package/import/runs/{run_id}/material-manifests` 和 watchlist 兼容别名，从导入 run 生成本地 material inbox manifest 模板。
+  - **已完成（本轮）**：接口默认 dry-run，仅返回模板；`execute=true` 且提供 `output_root` 时才写入本地 `*.manifest.json`，默认不覆盖已有文件。
+  - **已完成（本轮 UI）**：公司情报工作台新增材料 manifest 输出目录、预览 manifest、写入 manifest、状态卡和 manifest 结果表；从最近导入 run 生成模板。
+  - **已完成（本轮边界）**：manifest 模板固定用于官方/IR/公告等本地材料准备，不下载外部数据，不把研报当事实源，不训练模型，不触发真实交易。
+  - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_package_import_run_exports_material_manifest_templates`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`；浏览器交互验收新增 `company_package_material_manifest_render`。
+
+- `DONE` T-477 公司情报闭环刷新运行历史与工作台入口
+  - 对应：E3-US4, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-470 已有公司级闭环刷新 runner，但执行结果此前只存在于一次 API 响应，无法复盘某家公司什么时候刷新过、完整度是否改善、workflow/反馈是否更新。
+  - **已完成（本轮）**：新增 `CompanyIntelligenceCycleRun` 持久对象和 `GET|POST /api/company-intelligence/cycle/runs`，执行闭环刷新默认记录本地历史，dry-run 需显式 `record_run=true` 才记录。
+  - **已完成（本轮 UI）**：公司情报工作台新增“查看闭环历史”、闭环次数、闭环历史表，展示 run、公司、完整度变化、覆盖变化、workflow、兑现和反馈摘要。
+  - 验收：单测覆盖执行闭环刷新后落历史并可按 symbol 查询；UI 静态检查覆盖新增 DOM/JS；历史固定本地-only、paper feedback、no live trading。
+
+- `DONE` T-478 公司材料 URL 自动填充与 manifest 源候选
+  - 对应：E3-US1, E5-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-476 能生成 material inbox sidecar，但 `source_uri` 默认只能是示例 URL，用户仍需重复手填公司 IR 或官网链接。
+  - **已完成（本轮）**：manifest 导出在未传 `source_uri_template` 时，优先读取本地 `Issuer.company_details.ir_url`、`website_url`、官方 source provenance 或 TOS URL；均不可用时才回退示例 IR URL。
+  - **已完成（本轮）**：单测覆盖公司画像里已有 IR URL 时，dry-run 和写入的 manifest 都自动使用真实 URL。
+  - 边界：该能力只使用本地已有公司画像/source 元数据，不下载外部网页，不把研报当事实源。
+
+- `DONE` T-479 公司包导入后的待补材料队列
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：导入公司包、生成 manifest 和执行材料 inbox 之间仍缺一个任务化队列，用户难以判断哪些公司还缺 sidecar、哪些缺正文、哪些可以入库。
+  - **已完成（本轮）**：新增 `GET|POST /api/company-database/material-inbox/pending`，从公司包导入 run 派生待补材料队列，按本地目录检查 manifest 和正文文件是否存在。
+  - **已完成（本轮 UI）**：公司情报工作台新增“查看待补材料”、待补材料计数和队列表，区分 `needs_manifest`、`needs_material_file`、`ready_to_ingest`。
+  - 验收：单测覆盖 manifest 写入后显示缺正文，补正文文件后显示可入库；UI 静态检查覆盖新增 DOM/JS。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。
@@ -711,22 +741,22 @@
   - **已完成（本轮）**：脚本增加 `--use-bundled-manual-review-baseline`，可在不额外提供输入时直接复现版本化人工 review 基线，并导出 `manual_review_ready_for_local_baseline`
   - 验收：质量包能在本机一条命令重跑；至少 5 个真实主题样本有完整 run、结论、验证任务和人工标注摘要；所有样本输出保持 `automation_allowed=false` / `live_execution_allowed=false`
 
-- `TODO` T-406D 瓶颈研究结构化结论、评分模型和证据门禁
+- `DONE` T-406D 瓶颈研究结构化结论、评分模型和证据门禁
   - 对应：E3-US2, E5-US1, E5-US2, E6-US3, E8-US2；愿景扩展/生产化增强
   - 目标：把 `conclusion` 从可读文本升级为结构化研究档案，明确区分核心事实、推断、投机、未知、证伪条件和下一步验证，并引入可解释 chokepoint 评分模型。
   - **已完成（本轮部分）**：`conclusion` schema 已固定输出 `core_facts`、`inferences`、`speculations`、`unknowns`、`falsification_conditions`、`next_verification_tasks`、`evidence_gaps`、`market_pricing_context`、`falsification_status` 和 `usage_boundary`。
   - **已完成（本轮部分）**：结构化结论会把事实层 evidence、推断/投机 step 输出、unknown 缺口、行情验证上下文和验证任务状态拆开；研报/观点仍不升级为核心事实。
-  - 待做：新增 chokepoint 评分维度：供应集中度、切换成本、供给扩张周期、客户依赖、监管/认证壁垒、利润池错配、催化剂可验证性；每个分数必须带 evidence refs、置信度和缺口说明。
-  - 待做：强化来源台账硬门禁；缺 URL、发布日期、来源类型或事实层级的内容不得进入 `core_facts`，研报/社媒只能进入 `opinions` 或 `clues`。
+  - **已完成（本轮）**：新增 `chokepoint_scorecard`，覆盖供应集中度、切换成本、供给扩张周期、客户依赖、监管/认证壁垒、利润池错配、催化剂可验证性 7 维，每个维度输出分数、置信度、evidence refs、证据缺口和可读 rationale。
+  - **已完成（本轮）**：新增 `source_gate`，`core_facts` 必须同时具备 evidence、document 和 URL 回链；未通过硬门禁的事实不会进入核心事实区，研报/观点仍只能停留在 opinions/clues。
   - 验收：任一 run 的结论可机器读取并追溯到证据或验证任务；无来源事实不会进入核心事实区；评分不是裸数字，而是可解释的 evidence-backed scorecard。
 
-- `TODO` T-406E 瓶颈研究验证任务闭环与复盘反馈
+- `DONE` T-406E 瓶颈研究验证任务闭环与复盘反馈
   - 对应：E5-US1, E5-US2, E6-US4, E7-US1, E8-US1；愿景扩展/生产化增强
   - 目标：让瓶颈研究从“一次性 AI 报告”升级为可持续复盘的研究档案。验证任务关闭后应反向刷新 run 的结论、置信度、证据缺口和证伪状态。
   - **已完成（本轮部分）**：`ResearchTask` 关闭状态会被 `finalize` 汇总到 `verification_tasks.open_count/closed_count/status_counts/completion_rate`，并刷新 `unknowns.verification_status`、`thesis_strength_score` 和 `falsification_status`。
   - **已完成（本轮部分）**：瓶颈研究 UI 新增验证任务表、已关闭任务计数、证伪状态和“标记完成/忽略”操作，操作后自动刷新结论。
-  - 待做：记录每个 run 创建时的价格、估值、行情上下文、关键催化剂、证伪条件和后续事件，连接模拟组合反馈和策略复盘。
-  - 待做：把当前验证任务表扩展为完整 UI “质量门禁 / 证据缺口 / 复盘”面板，展示 verification task 关闭率、已证实/已证伪项、仍待验证项、下一步动作和模拟反馈。
+  - **已完成（本轮）**：结构化结论新增 `review_feedback`，汇总验证任务关闭率、open/closed 计数、行情上下文数量、paper-only 模拟反馈数量和下一步复盘动作。
+  - **已完成（本轮）**：结论继续展示关键催化剂、证伪条件、市场定价上下文、证据缺口和下一步动作；验证任务关闭后 `finalize` 会幂等刷新结论、证伪状态和复盘摘要。
   - 验收：关闭验证任务后，run 结论能幂等刷新；被证伪的 thesis 不会继续显示为 ready；复盘档案可展示当时假设、后续证据和模拟反馈，不触发真实交易。
 
 ## 历史能力与兼容附录 / M7 经营驾驶舱和投研闭环

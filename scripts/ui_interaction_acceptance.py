@@ -412,6 +412,13 @@ def run_ui_interaction_acceptance(
             ),
             _run_check(
                 client,
+                "company_package_material_manifest_render",
+                "(() => { renderCompanyPackageMaterialManifests({schema_id:'company-material-manifest-export-v1', status:'dry_run', execute:false, dry_run:true, run_id:'pkg_import_demo', output_root:'/tmp/company_materials/inbox', manifest_count:1, written_count:0, skipped_count:0, items:[{run_id:'pkg_import_demo', issuer_id:'issuer_bootstrap_pkga', security_id:'sec_bootstrap_pkga', symbol:'PKGA', status:'planned', manifest_path:'/tmp/company_materials/inbox/pkga-company-profile.manifest.json', template:{issuer_id:'issuer_bootstrap_pkga', security_id:'sec_bootstrap_pkga', source_type:'company_ir', document_type:'official_business_overview', source_uri:'https://example.com/investor-relations', file_path:'./pkga-company-profile.md'}}], usage_boundary:'local_company_material_manifest_export_only_no_external_download_no_training_no_live_trading'}, true); return true; })()",
+                "document.querySelector('#companyIntelPackageManifestExportStatus').textContent.includes('预览') && document.querySelector('#companyIntelPackageManifestWrittenCount').textContent.includes('0/1') && document.querySelector('#companyIntelPackageManifestRows').textContent.includes('pkga company profile') && document.querySelector('#companyIntelPackageManifestRows').textContent.includes('company_ir') && document.querySelector('#companyIntelOperationBox').textContent.includes('company-material-manifest-export-v1')",
+                wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
                 "company_database_quality_reconcile_preview",
                 "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#previewCompanyQualityReconcile').click(); true",
                 "document.querySelector('#companyIntelQualityReconcileStatus').textContent.includes('预览') && document.querySelector('#companyIntelSourceQualityCount').textContent.trim().length > 0 && document.querySelector('#companyIntelQualityReconcileRows').textContent.trim().length > 0",

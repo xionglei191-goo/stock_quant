@@ -847,6 +847,29 @@ class CompanyPackageImportRun:
 
 
 @dataclass(slots=True)
+class CompanyIntelligenceCycleRun:
+    run_id: str
+    actor: str = "system"
+    status: str = "dry_run"
+    execute: bool = False
+    dry_run: bool = True
+    symbol: str = ""
+    issuer_ids: list[str] = field(default_factory=list)
+    summary: dict[str, Any] = field(default_factory=dict)
+    before: dict[str, Any] = field(default_factory=dict)
+    after: dict[str, Any] = field(default_factory=dict)
+    step_status: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+    usage_boundary: str = "company_intelligence_cycle_runs_are_local_history_paper_feedback_no_live_trading"
+    started_at: Any = field(default_factory=utcnow)
+    completed_at: Any = field(default_factory=utcnow)
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"dry_run", "executed", "not_found", "failed"}, "status")
+
+
+@dataclass(slots=True)
 class CompanyRelationship:
     relationship_id: str
     subject_type: str

@@ -39,6 +39,7 @@ from .models import (
     CacheRetentionRunRecord,
     ChokepointResearchRun,
     CompanyDatabaseBuildRun,
+    CompanyIntelligenceCycleRun,
     CompanyPackageImportRun,
     CompanyEvent,
     CompanyPosition,
@@ -19603,7 +19604,7 @@ class SystemService:
                     "required_slots": list(item.get("required_slots", [])),
                 }
             )
-        core_facts = [
+        raw_core_facts = [
             {
                 "text": self._sanitize_chokepoint_conclusion_text(str(item.get("snippet", ""))),
                 "evidence_id": item.get("evidence_id", ""),
@@ -19615,6 +19616,18 @@ class SystemService:
             }
             for item in (validation_context.get("facts") or {}).get("items", [])[:8]
         ]
+        core_facts = [
+            item
+            for item in raw_core_facts
+            if item.get("evidence_id") and item.get("document_id") and str(item.get("source_uri", "")).startswith(("http://", "https://"))
+        ]
+        source_gate = {
+            "schema_id": "chokepoint-core-fact-source-gate-v1",
+            "accepted_count": len(core_facts),
+            "rejected_count": max(0, len(raw_core_facts) - len(core_facts)),
+            "required_fields": ["evidence_id", "document_id", "source_uri"],
+            "rejected_reason": "core_facts_require_url_document_and_evidence_refs",
+        }
         inference_entries = self._chokepoint_extract_step_entries(run, r"\binferred\b|推断|假设", layer="inferred", limit=8)
         speculative_entries = self._chokepoint_extract_step_entries(run, r"\bspeculative\b|猜测|想象|早期假设", layer="speculative", limit=8)
         unknown_entries = [
@@ -19670,6 +19683,12 @@ class SystemService:
             next_actions.insert(0, "LLM 曾使用 fallback，需重跑相关步骤或人工确认后再进入 thesis。")
         if facts_count == 0:
             next_actions.insert(0, "当前没有公告/财报/监管 fact evidence，必须先补证据层。")
+        if source_gate["accepted_count"] == 0:
+            next_actions.insert(0, "核心事实未通过 URL/document/evidence 硬门禁，不能进入 ready 状态。")
+            status = "needs_evidence" if status != "failed" else status
+            confidence = "low"
+        chokepoint_scorecard = self._chokepoint_evidence_scorecard(run, validation_context, core_facts, task_summary)
+        review_feedback = self._chokepoint_review_feedback_summary(run, task_summary, market_pricing_context)
         return {
             "status": status,
             "one_line_conclusion": one_line,
@@ -19697,6 +19716,8 @@ class SystemService:
             "inferred_summary": self._chokepoint_layer_summary(run, "inferred", inferred_count),
             "speculative_summary": self._chokepoint_layer_summary(run, "speculative", speculative_count),
             "core_facts": core_facts,
+            "source_gate": source_gate,
+            "chokepoint_scorecard": chokepoint_scorecard,
             "inferences": inference_entries,
             "speculations": speculative_entries,
             "unknowns": unknown_entries,
@@ -19731,9 +19752,94 @@ class SystemService:
             "next_verification_tasks": next_verification_tasks,
             "next_actions": next_actions,
             "verification_tasks": verification_compact,
+            "review_feedback": review_feedback,
             "llm_run_id": "",
             "fallback_used": "",
             "usage_boundary": "research_only_not_investment_advice",
+        }
+
+    def _chokepoint_evidence_scorecard(
+        self,
+        run: ChokepointResearchRun,
+        validation_context: Mapping[str, Any],
+        core_facts: list[dict[str, Any]],
+        task_summary: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        step_text = "\n".join(str(step.get("output", "")) for step in run.steps)
+        evidence_refs = [
+            {
+                "evidence_id": item.get("evidence_id", ""),
+                "document_id": item.get("document_id", ""),
+                "source_uri": item.get("source_uri", ""),
+            }
+            for item in core_facts[:5]
+        ]
+        facts_count = int((validation_context.get("facts") or {}).get("count") or 0)
+        open_count = int(task_summary.get("open_count", 0) or 0)
+        closed_count = int(task_summary.get("closed_count", 0) or 0)
+        dimensions = [
+            ("supply_concentration", r"集中|concentrat|single source|唯一|寡头|limited supplier", "供应集中度"),
+            ("switching_cost", r"切换|qualification|认证|design[- ]?in|lock[- ]?in|验证周期", "切换成本"),
+            ("supply_expansion_cycle", r"扩产|产能|ramp|lead time|建设周期|许可|capacity", "供给扩张周期"),
+            ("customer_dependency", r"客户|customer|订单|contract|offtake|依赖", "客户依赖"),
+            ("regulatory_certification_barrier", r"监管|许可|审批|certification|license|regulatory", "监管/认证壁垒"),
+            ("profit_pool_mismatch", r"利润池|毛利|margin|pricing power|错配|bottleneck rent", "利润池错配"),
+            ("catalyst_verifiability", r"催化|milestone|里程碑|验证|filing|公告|交付|qualification", "催化剂可验证性"),
+        ]
+        rows: list[dict[str, Any]] = []
+        for key, pattern, label in dimensions:
+            matches = self._chokepoint_extract_lines(run, pattern, limit=3)
+            base = 1.0
+            base += min(2.0, len(matches) * 0.6)
+            base += min(1.0, facts_count * 0.2)
+            base += min(0.6, closed_count * 0.15)
+            base -= min(1.2, open_count * 0.2)
+            score = round(max(1.0, min(5.0, base)), 1)
+            refs = evidence_refs if matches or facts_count else []
+            rows.append(
+                {
+                    "dimension": key,
+                    "label": label,
+                    "score": score,
+                    "confidence": "medium" if refs and score >= 3 else ("low" if not refs else "medium_low"),
+                    "evidence_refs": refs,
+                    "evidence_gap": "" if refs else f"{label} 缺少可回链 fact evidence。",
+                    "rationale": self._sanitize_chokepoint_conclusion_text(matches[0]) if matches else f"未在当前 run 中找到稳定的{label}证据。",
+                }
+            )
+        average_score = round(sum(float(item["score"]) for item in rows) / max(1, len(rows)), 2)
+        return {
+            "schema_id": "chokepoint-evidence-scorecard-v1",
+            "scale": "1_to_5",
+            "average_score": average_score,
+            "dimension_count": len(rows),
+            "evidence_backed_dimension_count": sum(1 for item in rows if item["evidence_refs"]),
+            "dimensions": rows,
+            "usage_boundary": "research_scorecard_for_human_review_not_investment_advice",
+        }
+
+    def _chokepoint_review_feedback_summary(
+        self,
+        run: ChokepointResearchRun,
+        task_summary: Mapping[str, Any],
+        market_pricing_context: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        security_ids = {str(item.get("security_id", "")) for item in market_pricing_context.get("items", []) if str(item.get("security_id", ""))}
+        feedback_rows = [
+            item
+            for item in self.store.simulation_feedback.values()
+            if item.security_id in security_ids
+        ]
+        return {
+            "schema_id": "chokepoint-review-feedback-v1",
+            "verification_completion_rate": task_summary.get("completion_rate", 0.0),
+            "open_verification_count": int(task_summary.get("open_count", 0) or 0),
+            "closed_verification_count": int(task_summary.get("closed_count", 0) or 0),
+            "simulation_feedback_count": len(feedback_rows),
+            "simulation_feedback_ids": [item.simulation_feedback_id for item in feedback_rows[:8]],
+            "market_context_count": len(market_pricing_context.get("items", []) or []),
+            "next_action": "connect_paper_feedback" if not feedback_rows else "review_paper_feedback_outcome",
+            "usage_boundary": "review_feedback_is_paper_only_no_live_trading",
         }
 
     def _chokepoint_layer_summary(self, run: ChokepointResearchRun, layer: str, count: int) -> str:
@@ -23696,6 +23802,225 @@ class SystemService:
             "usage_boundary": "company_package_import_runs_are_local_watchlist_history_no_external_download_no_live_trading",
         }
 
+    def _company_official_source_uri_for_issuer(self, issuer_id: str, *, fallback: str = "https://example.com/investor-relations") -> str:
+        issuer = self.store.issuers.get(issuer_id)
+        if issuer is not None:
+            details = issuer.company_details or {}
+            for key in ["ir_url", "investor_relations_url", "website_url", "official_url", "homepage"]:
+                value = str(details.get(key, "")).strip()
+                if value.startswith(("http://", "https://")):
+                    return value
+            for source_id in issuer.data_sources:
+                source = self.store.sources.get(str(source_id))
+                if source is None:
+                    continue
+                if source.source_type in {"company_ir", "company_official", "issuer_disclosure", "official_public", "exchange_disclosure", "regulatory"}:
+                    for attr_name in ["provenance_ref", "source_tos_uri"]:
+                        value = str(getattr(source, attr_name, "")).strip()
+                        if value.startswith(("http://", "https://")):
+                            return value
+        return fallback
+
+    def company_package_import_material_manifests(self, run_id: str, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        run = self.store.company_package_import_runs.get(str(run_id))
+        if run is None:
+            raise NotFoundError(f"company package import run not found: {run_id}")
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        output_root = str(payload.get("output_root") or payload.get("root_path") or "").strip()
+        if execute and not output_root:
+            raise ValidationError("output_root is required when execute=true")
+        limit = self._bounded_limit(payload.get("limit", 200), 1000)
+        overwrite = self._truthy(payload.get("overwrite", False))
+        source_uri_template = str(payload.get("source_uri_template") or "").strip()
+        manifest_name_template = str(payload.get("manifest_name_template") or "{symbol}-company-profile.manifest.json")
+        file_path_template = str(payload.get("file_path_template") or "./{symbol}-company-profile.md")
+        title_template = str(payload.get("title_template") or "{raw_symbol} official company profile")
+        output_dir = Path(output_root).expanduser() if output_root else None
+        if execute and output_dir is not None:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        items: list[dict[str, Any]] = []
+        seen_issuer_ids: set[str] = set()
+        for item in run.items:
+            if len(items) >= limit:
+                break
+            if not isinstance(item, Mapping):
+                continue
+            issuer_id = str(item.get("issuer_id", "")).strip()
+            security_id = str(item.get("security_id", "")).strip()
+            symbol = str(item.get("symbol", "")).strip()
+            if not issuer_id or issuer_id in seen_issuer_ids:
+                continue
+            seen_issuer_ids.add(issuer_id)
+            security = self.store.securities.get(security_id) if security_id else None
+            if security is None:
+                securities = [row for row in self.store.securities.values() if row.issuer_id == issuer_id]
+                security = securities[0] if securities else None
+            if security is not None:
+                security_id = security.security_id
+                symbol = symbol or security.ticker
+            if not symbol:
+                symbol = issuer_id
+            template_vars = {
+                "symbol": self._company_database_id_part(symbol),
+                "raw_symbol": symbol,
+                "issuer_id": issuer_id,
+                "security_id": security_id,
+            }
+            def render_template(template: str, field_name: str) -> str:
+                try:
+                    return template.format(**template_vars)
+                except (KeyError, ValueError) as exc:
+                    raise ValidationError(f"{field_name} has unsupported placeholder: {exc}") from None
+
+            manifest = self._company_database_bootstrap_manifest_template(issuer_id, security_id, symbol)
+            manifest["source_uri"] = render_template(source_uri_template, "source_uri_template") if source_uri_template else self._company_official_source_uri_for_issuer(issuer_id)
+            manifest["file_path"] = render_template(file_path_template, "file_path_template")
+            manifest["title"] = render_template(title_template, "title_template")
+            manifest_path = ""
+            errors: list[str] = []
+            status = "planned"
+            if output_dir is not None:
+                manifest_name = render_template(manifest_name_template, "manifest_name_template")
+                manifest_path = str(output_dir / manifest_name)
+                if Path(manifest_path).exists() and not overwrite:
+                    status = "skipped_existing"
+                    errors.append("manifest_exists")
+                elif execute:
+                    Path(manifest_path).write_text(json.dumps(to_plain(manifest), ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+                    status = "written"
+            items.append(
+                {
+                    "run_id": run.run_id,
+                    "issuer_id": issuer_id,
+                    "security_id": security_id,
+                    "symbol": symbol,
+                    "status": status,
+                    "manifest_path": manifest_path,
+                    "template": manifest,
+                    "errors": errors,
+                }
+            )
+        written_count = sum(1 for item in items if item["status"] == "written")
+        skipped_count = sum(1 for item in items if item["status"] == "skipped_existing")
+        self._audit(
+            actor,
+            "company_package_import_material_manifests",
+            "company_package_import_run",
+            run.run_id,
+            approval_state=f"execute={execute};templates={len(items)};written={written_count};skipped={skipped_count}",
+        )
+        return {
+            "schema_id": "company-material-manifest-export-v1",
+            "status": "executed" if execute else "dry_run",
+            "execute": execute,
+            "dry_run": not execute,
+            "run_id": run.run_id,
+            "output_root": output_root,
+            "manifest_glob": "*.manifest.json",
+            "manifest_count": len(items),
+            "written_count": written_count,
+            "skipped_count": skipped_count,
+            "items": items,
+            "next_actions": [
+                {
+                    "action": "fill_material_files",
+                    "reason": "把每个 manifest 中 file_path 指向的官方/IR/公告正文文件放入本地 inbox。",
+                },
+                {
+                    "action": "ingest_material_inbox",
+                    "endpoint": "/api/company-database/material-inbox/ingest",
+                    "reason": "材料文件补齐后执行本地材料入库、证据抽取和画像字段抽取。",
+                },
+            ],
+            "usage_boundary": "local_company_material_manifest_export_only_no_external_download_no_training_no_live_trading",
+        }
+
+    def company_material_inbox_pending(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        filters = filters or {}
+        limit = self._bounded_limit(filters.get("limit", 200), 1000)
+        run_id = str(filters.get("run_id", "")).strip()
+        symbol = str(filters.get("symbol") or filters.get("ticker") or filters.get("code") or "").strip().upper()
+        material_root = str(filters.get("material_root") or filters.get("output_root") or filters.get("root_path") or "").strip()
+        root_path = Path(material_root).expanduser() if material_root else None
+        runs = list(self.store.company_package_import_runs.values())
+        if run_id:
+            runs = [run for run in runs if run.run_id == run_id]
+        if symbol:
+            runs = [run for run in runs if symbol in self._company_package_import_run_symbols(run)]
+        runs.sort(key=lambda item: (str(to_plain(item.completed_at)), item.run_id), reverse=True)
+        pending: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for run in runs:
+            for item in run.items:
+                if len(pending) >= limit:
+                    break
+                if not isinstance(item, Mapping):
+                    continue
+                issuer_id = str(item.get("issuer_id", "")).strip()
+                security_id = str(item.get("security_id", "")).strip()
+                item_symbol = str(item.get("symbol", "")).strip()
+                if not issuer_id:
+                    continue
+                key = (run.run_id, issuer_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                security = self.store.securities.get(security_id) if security_id else None
+                if security is not None:
+                    item_symbol = item_symbol or security.ticker
+                    security_id = security.security_id
+                item_symbol = item_symbol or issuer_id
+                manifest = self._company_database_bootstrap_manifest_template(issuer_id, security_id, item_symbol)
+                manifest["source_uri"] = self._company_official_source_uri_for_issuer(issuer_id)
+                safe_symbol = self._company_database_id_part(item_symbol)
+                manifest_name = f"{safe_symbol}-company-profile.manifest.json"
+                material_name = f"{safe_symbol}-company-profile.md"
+                manifest_path = str(root_path / manifest_name) if root_path else ""
+                material_path = str(root_path / material_name) if root_path else manifest["file_path"]
+                manifest_exists = bool(manifest_path and Path(manifest_path).exists())
+                material_exists = bool(material_path and Path(material_path).exists())
+                status = "ready_to_ingest" if manifest_exists and material_exists else ("needs_material_file" if manifest_exists else "needs_manifest")
+                pending.append(
+                    {
+                        "run_id": run.run_id,
+                        "issuer_id": issuer_id,
+                        "security_id": security_id,
+                        "symbol": item_symbol,
+                        "status": status,
+                        "manifest_path": manifest_path,
+                        "material_path": material_path,
+                        "manifest_exists": manifest_exists,
+                        "material_exists": material_exists,
+                        "source_uri": manifest["source_uri"],
+                        "next_action": "ingest_material_inbox" if status == "ready_to_ingest" else ("fill_material_file" if status == "needs_material_file" else "export_material_manifest"),
+                        "template": manifest,
+                    }
+                )
+            if len(pending) >= limit:
+                break
+        status_counts: dict[str, int] = {}
+        for item in pending:
+            status_counts[item["status"]] = status_counts.get(item["status"], 0) + 1
+        self._audit(actor, "company_material_inbox_pending", "company_material_inbox", run_id or symbol or "latest", approval_state=f"pending={len(pending)}")
+        return {
+            "schema_id": "company-material-inbox-pending-v1",
+            "status": "ok",
+            "run_count": len(runs),
+            "pending_count": len(pending),
+            "status_counts": status_counts,
+            "material_root": material_root,
+            "items": pending,
+            "next_actions": [
+                {"action": "export_material_manifest", "endpoint": "/api/company-database/package/import/runs/{run_id}/material-manifests"},
+                {"action": "ingest_material_inbox", "endpoint": "/api/company-database/material-inbox/ingest"},
+            ],
+            "usage_boundary": "local_material_inbox_pending_queue_no_external_download_no_training_no_live_trading",
+        }
+
     def company_database_coverage_trends(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
         limit = self._bounded_limit(payload.get("limit", 50), 500)
@@ -27252,8 +27577,87 @@ class SystemService:
                 rows = [item for item in rows if str(getattr(item, field_name, "")) == value]
         return rows
 
+    def _new_company_intelligence_cycle_run_id(self, symbol: str) -> str:
+        safe_symbol = self._company_database_id_part(symbol or "company")
+        raw = f"{symbol}:{utcnow().isoformat()}:{time.time()}"
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
+        return f"cicycle_{safe_symbol}_{utcnow().strftime('%Y%m%d%H%M%S')}_{digest}"
+
+    def _record_company_intelligence_cycle_run(
+        self,
+        *,
+        run_id: str,
+        actor: str,
+        status: str,
+        execute: bool,
+        dry_run: bool,
+        symbol: str,
+        issuer_ids: list[str],
+        summary: dict[str, Any],
+        before: dict[str, Any],
+        after: dict[str, Any],
+        step_status: dict[str, Any],
+        error: str,
+        started_at: Any,
+    ) -> CompanyIntelligenceCycleRun:
+        run_record = CompanyIntelligenceCycleRun(
+            run_id=run_id,
+            actor=actor,
+            status=status,
+            execute=execute,
+            dry_run=dry_run,
+            symbol=symbol,
+            issuer_ids=list(issuer_ids),
+            summary=dict(summary),
+            before=dict(before),
+            after=dict(after),
+            step_status=dict(step_status),
+            error=error,
+            started_at=started_at,
+            completed_at=utcnow(),
+        )
+        self.store.company_intelligence_cycle_runs[run_id] = run_record
+        marker = getattr(self.store, "mark_dirty_for_resource", None)
+        if callable(marker):
+            marker("company_intelligence_cycle_run")
+        self.store.commit()
+        return run_record
+
+    def company_intelligence_cycle_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        limit = self._bounded_limit(filters.get("limit", 20), 200)
+        run_id = str(filters.get("run_id", "")).strip()
+        issuer_id = str(filters.get("issuer_id", "")).strip()
+        symbol = str(filters.get("symbol") or filters.get("ticker") or filters.get("code") or "").strip().upper()
+        status = str(filters.get("status", "")).strip()
+        runs = list(self.store.company_intelligence_cycle_runs.values())
+        if run_id:
+            runs = [run for run in runs if run.run_id == run_id]
+        if issuer_id:
+            runs = [run for run in runs if issuer_id in run.issuer_ids]
+        if symbol:
+            runs = [run for run in runs if str(run.symbol).upper() == symbol]
+        if status:
+            runs = [run for run in runs if run.status == status]
+        runs.sort(key=lambda item: (str(to_plain(item.completed_at)), item.run_id), reverse=True)
+        rows = [to_plain(run) for run in runs[:limit]]
+        summary = {
+            "executed_count": sum(1 for run in runs if run.status == "executed"),
+            "dry_run_count": sum(1 for run in runs if run.status == "dry_run"),
+            "not_found_count": sum(1 for run in runs if run.status == "not_found"),
+            "latest_run_id": rows[0]["run_id"] if rows else "",
+        }
+        return {
+            "schema_id": "company-intelligence-cycle-runs-v1",
+            "count": len(runs),
+            "summary": summary,
+            "runs": rows,
+            "usage_boundary": "company_intelligence_cycle_runs_are_local_history_paper_feedback_no_live_trading",
+        }
+
     def run_company_intelligence_cycle(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
+        started_at = utcnow()
         raw_symbol = str(payload.get("symbol") or payload.get("ticker") or payload.get("q") or "").strip()
         if not raw_symbol:
             raise ValidationError("company intelligence cycle requires symbol")
@@ -27261,6 +27665,8 @@ class SystemService:
         dry_run = self._truthy(payload.get("dry_run", not execute))
         if dry_run:
             execute = False
+        record_run = self._truthy(payload.get("record_run", execute))
+        cycle_run_id = str(payload.get("run_id") or self._new_company_intelligence_cycle_run_id(raw_symbol)).strip()
         limit = self._bounded_limit(payload.get("limit", 20), 200)
         link_limit = self._bounded_limit(payload.get("link_limit", payload.get("workflow_link_limit", 5)), 50)
         include_realization = self._truthy(payload.get("include_realization", True))
@@ -27270,6 +27676,27 @@ class SystemService:
         before = self.company_intelligence({"symbol": raw_symbol, "limit": limit})
         issuer_ids = [str(item).strip() for item in before.get("resolution", {}).get("issuer_ids", []) if str(item).strip()]
         if not issuer_ids:
+            before_payload = {
+                "status": before.get("status"),
+                "section_counts": before.get("section_counts", {}),
+                "completeness_verdict": before.get("completeness_verdict", {}),
+            }
+            if record_run:
+                self._record_company_intelligence_cycle_run(
+                    run_id=cycle_run_id,
+                    actor=actor,
+                    status="not_found",
+                    execute=execute,
+                    dry_run=not execute,
+                    symbol=raw_symbol,
+                    issuer_ids=[],
+                    summary={},
+                    before=before_payload,
+                    after={},
+                    step_status={},
+                    error="symbol_not_found",
+                    started_at=started_at,
+                )
             self._audit(
                 actor,
                 "run_company_intelligence_cycle",
@@ -27280,16 +27707,13 @@ class SystemService:
             return {
                 "schema_id": "company-intelligence-cycle-v1",
                 "status": "not_found",
+                "run_id": cycle_run_id,
                 "execute": execute,
                 "dry_run": not execute,
                 "symbol": raw_symbol,
                 "issuer_ids": [],
                 "steps": {},
-                "before": {
-                    "status": before.get("status"),
-                    "section_counts": before.get("section_counts", {}),
-                    "completeness_verdict": before.get("completeness_verdict", {}),
-                },
+                "before": before_payload,
                 "after": {},
                 "next_actions": before.get("next_actions", []),
                 "usage_boundary": "company_intelligence_cycle_uses_local_records_only_paper_feedback_no_broker_execution",
@@ -27353,6 +27777,45 @@ class SystemService:
             + int(workflow_step.get("feedback_updated", 0) or 0),
             "feedback_items": int(feedback_step.get("feedback_updated" if execute else "feedback_planned", 0) or 0),
         }
+        before_payload = {
+            "status": before.get("status"),
+            "section_counts": before.get("section_counts", {}),
+            "completeness_verdict": before.get("completeness_verdict", {}),
+            "coverage": coverage_before,
+        }
+        after_payload = {
+            "status": after.get("status"),
+            "section_counts": after.get("section_counts", {}),
+            "completeness_verdict": after.get("completeness_verdict", {}),
+            "coverage": coverage_after,
+        }
+        step_status = {
+            name: {
+                "schema_id": step.get("schema_id", ""),
+                "status": step.get("status", ""),
+                "execute": step.get("execute", execute),
+                "planned": step.get("planned_count", step.get("feedback_planned", step.get("forecast_planned", ""))),
+                "updated": step.get("updated_count", step.get("feedback_updated", step.get("forecast_updated", ""))),
+            }
+            for name, step in steps.items()
+            if isinstance(step, Mapping)
+        }
+        if record_run:
+            self._record_company_intelligence_cycle_run(
+                run_id=cycle_run_id,
+                actor=actor,
+                status="executed" if execute else "dry_run",
+                execute=execute,
+                dry_run=not execute,
+                symbol=raw_symbol,
+                issuer_ids=issuer_ids,
+                summary=summary,
+                before=before_payload,
+                after=after_payload,
+                step_status=step_status,
+                error="",
+                started_at=started_at,
+            )
         self._audit(
             actor,
             "run_company_intelligence_cycle",
@@ -27363,24 +27826,16 @@ class SystemService:
         return {
             "schema_id": "company-intelligence-cycle-v1",
             "status": "executed" if execute else "dry_run",
+            "run_id": cycle_run_id,
+            "recorded": record_run,
             "execute": execute,
             "dry_run": not execute,
             "symbol": raw_symbol,
             "issuer_ids": issuer_ids,
             "steps": steps,
             "summary": summary,
-            "before": {
-                "status": before.get("status"),
-                "section_counts": before.get("section_counts", {}),
-                "completeness_verdict": before.get("completeness_verdict", {}),
-                "coverage": coverage_before,
-            },
-            "after": {
-                "status": after.get("status"),
-                "section_counts": after.get("section_counts", {}),
-                "completeness_verdict": after.get("completeness_verdict", {}),
-                "coverage": coverage_after,
-            },
+            "before": before_payload,
+            "after": after_payload,
             "usage_boundary": "company_intelligence_cycle_uses_local_records_only_paper_feedback_no_broker_execution",
         }
 

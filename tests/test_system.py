@@ -645,6 +645,94 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(listed.data["runs"][0]["status"], "dry_run")
         self.assertEqual(listed.data["runs"][0]["items"][0]["symbol"], "DRYPKG")
 
+    def test_company_package_import_run_exports_material_manifest_templates(self) -> None:
+        imported = self.router.dispatch(
+            "POST",
+            "/api/company-database/package/import",
+            {"symbols": ["MFST"], "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(imported.success, imported.error)
+        run_id = imported.data["run_id"]
+        self.service.store.issuers["issuer_bootstrap_mfst"].company_details["ir_url"] = "https://mfst.example.com/ir"
+
+        with TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            preview = self.router.dispatch(
+                "POST",
+                f"/api/company-database/package/import/runs/{run_id}/material-manifests",
+                {"output_root": str(output_root)},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(preview.success, preview.error)
+            self.assertEqual(preview.data["schema_id"], "company-material-manifest-export-v1")
+            self.assertEqual(preview.data["status"], "dry_run")
+            self.assertEqual(preview.data["manifest_count"], 1)
+            self.assertEqual(preview.data["written_count"], 0)
+            manifest_path = Path(preview.data["items"][0]["manifest_path"])
+            self.assertFalse(manifest_path.exists())
+            self.assertEqual(preview.data["items"][0]["template"]["source_type"], "company_ir")
+            self.assertEqual(preview.data["items"][0]["template"]["issuer_id"], "issuer_bootstrap_mfst")
+            self.assertEqual(preview.data["items"][0]["template"]["source_uri"], "https://mfst.example.com/ir")
+
+            executed = self.router.dispatch(
+                "POST",
+                f"/api/company-database/package/import/runs/{run_id}/material-manifests",
+                {"output_root": str(output_root), "execute": True, "dry_run": False},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(executed.success, executed.error)
+            self.assertEqual(executed.data["status"], "executed")
+            self.assertEqual(executed.data["written_count"], 1)
+            written_path = Path(executed.data["items"][0]["manifest_path"])
+            self.assertTrue(written_path.exists())
+            written = json.loads(written_path.read_text(encoding="utf-8"))
+            self.assertEqual(written["issuer_id"], "issuer_bootstrap_mfst")
+            self.assertEqual(written["security_id"], "sec_bootstrap_mfst")
+            self.assertEqual(written["source_type"], "company_ir")
+            self.assertEqual(written["source_uri"], "https://mfst.example.com/ir")
+            self.assertFalse(written["rights_tag"]["training_allowed"])
+
+            pending = self.router.dispatch(
+                "POST",
+                "/api/company-database/material-inbox/pending",
+                {"run_id": run_id, "material_root": str(output_root)},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(pending.success, pending.error)
+            self.assertEqual(pending.data["schema_id"], "company-material-inbox-pending-v1")
+            self.assertEqual(pending.data["pending_count"], 1)
+            self.assertEqual(pending.data["items"][0]["status"], "needs_material_file")
+            self.assertEqual(pending.data["items"][0]["next_action"], "fill_material_file")
+
+            (output_root / "mfst-company-profile.md").write_text("MFST official profile.", encoding="utf-8")
+            ready = self.router.dispatch(
+                "POST",
+                "/api/company-database/material-inbox/pending",
+                {"run_id": run_id, "material_root": str(output_root)},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(ready.success, ready.error)
+            self.assertEqual(ready.data["items"][0]["status"], "ready_to_ingest")
+            self.assertEqual(ready.data["items"][0]["next_action"], "ingest_material_inbox")
+
+            skipped = self.router.dispatch(
+                "POST",
+                f"/api/company-database/package/import/runs/{run_id}/material-manifests",
+                {"output_root": str(output_root), "execute": True, "dry_run": False},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(skipped.success, skipped.error)
+            self.assertEqual(skipped.data["written_count"], 0)
+            self.assertEqual(skipped.data["skipped_count"], 1)
+            self.assertEqual(skipped.data["items"][0]["status"], "skipped_existing")
+
     def test_company_database_package_import_does_not_fallback_to_all_issuers(self) -> None:
         result = self.router.dispatch(
             "POST",
@@ -3370,6 +3458,8 @@ class SystemServiceTests(unittest.TestCase):
         )
         self.assertTrue(executed.success, executed.error)
         self.assertEqual(executed.data["status"], "executed")
+        self.assertTrue(executed.data["recorded"])
+        self.assertIn(executed.data["run_id"], self.service.store.company_intelligence_cycle_runs)
         self.assertGreaterEqual(executed.data["summary"]["workflow_items"], 1)
         self.assertIn("simulation_feedback_performance", executed.data["steps"])
         self.assertTrue(self.service.store.observation_items)
@@ -3379,6 +3469,18 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(feedback.paper_only)
         self.assertFalse(feedback.live_execution_allowed)
         self.assertIn("no_broker_execution", executed.data["usage_boundary"])
+        history = self.router.dispatch(
+            "POST",
+            "/api/company-intelligence/cycle/runs",
+            {"symbol": "DEMO"},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(history.success, history.error)
+        self.assertEqual(history.data["schema_id"], "company-intelligence-cycle-runs-v1")
+        self.assertEqual(history.data["count"], 1)
+        self.assertEqual(history.data["runs"][0]["run_id"], executed.data["run_id"])
+        self.assertEqual(history.data["runs"][0]["summary"]["feedback_items"], executed.data["summary"]["feedback_items"])
 
     def test_research_report_realization_update_recomputes_target_price_and_analyst_score(self) -> None:
         self.service.register_market_data_point(
@@ -8729,9 +8831,16 @@ class SystemServiceTests(unittest.TestCase):
             "market_pricing_context",
             "falsification_status",
             "next_verification_tasks",
+            "source_gate",
+            "chokepoint_scorecard",
+            "review_feedback",
         ]:
             self.assertIn(key, conclusion)
         self.assertGreaterEqual(len(conclusion["core_facts"]), 1)
+        self.assertEqual(conclusion["source_gate"]["accepted_count"], len(conclusion["core_facts"]))
+        self.assertEqual(conclusion["chokepoint_scorecard"]["dimension_count"], 7)
+        self.assertGreaterEqual(conclusion["chokepoint_scorecard"]["evidence_backed_dimension_count"], 1)
+        self.assertEqual(conclusion["review_feedback"]["usage_boundary"], "review_feedback_is_paper_only_no_live_trading")
         self.assertGreaterEqual(conclusion["verification_tasks"]["open_count"], 1)
         self.assertEqual(conclusion["falsification_status"], "needs_verification")
 
