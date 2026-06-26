@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>@aleabitoreddit 长文链接整理</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f5ef;
+      --panel: #ffffff;
+      --ink: #1c1d20;
+      --muted: #666a73;
+      --line: #ded8cc;
+      --accent: #0f766e;
+      --accent-soft: #e7f3f1;
+      --warn: #9a5b12;
+      --warn-soft: #fff2d9;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.55;
+    }
+
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 40px 0 56px;
+    }
+
+    header {
+      margin-bottom: 28px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 44px);
+      letter-spacing: 0;
+      line-height: 1.12;
+    }
+
+    .subtitle {
+      max-width: 760px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .reading-order {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 22px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .reading-order li {
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 6px;
+      color: #303238;
+      font-size: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      display: flex;
+      flex-direction: column;
+      min-height: 230px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .card h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    .meta {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .links {
+      display: grid;
+      gap: 8px;
+      margin-top: auto;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: #075e57;
+      font-weight: 650;
+      text-decoration: none;
+    }
+
+    .button.secondary {
+      border-color: var(--line);
+      background: #fafafa;
+      color: #42464d;
+    }
+
+    .note {
+      margin: 28px 0 0;
+      padding: 14px 16px;
+      border: 1px solid #e0bc76;
+      border-radius: 8px;
+      background: var(--warn-soft);
+      color: var(--warn);
+      font-size: 14px;
+    }
+
+    @media (max-width: 640px) {
+      main {
+        width: min(100% - 20px, 1120px);
+        padding-top: 24px;
+      }
+
+      .card {
+        min-height: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>@aleabitoreddit 长文链接整理</h1>
+      <p class="subtitle">按投研价值整理的原帖与备份入口。优先打开 X 原帖；如果 X 加载失败，再用 Twiscan / YouMind / Twstalker 镜像。</p>
+      <ul class="reading-order" aria-label="建议阅读顺序">
+        <li>NeoCloud</li>
+        <li>SIVE CPO</li>
+        <li>Photonics</li>
+        <li>AXTI</li>
+        <li>SOI</li>
+        <li>BOT / PENG</li>
+      </ul>
+    </header>
+
+    <section class="grid" aria-label="文章链接">
+      <article class="card">
+        <h2>NeoCloud Thesis / Hyperscaler Capex Funnel</h2>
+        <p class="meta">AI capex 外溢到 Neocloud 的核心框架。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/1972016308662513748" target="_blank" rel="noopener">打开 X 原帖</a>
+          <a class="button secondary" href="https://w.twstalker.com/aleabitoreddit/status/1972016308662513748" target="_blank" rel="noopener">打开镜像</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Oracle / OpenAI 信用风险与 Neocloud</h2>
+        <p class="meta">对 Neocloud thesis 的压力测试，区分不同公司客户暴露。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/1998925429890261130" target="_blank" rel="noopener">打开 X 原帖</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>EWY 韩国 ETF / 波动率复盘</h2>
+        <p class="meta">韩国 memory supercycle 与 ETF 长期期权波动率复盘入口。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/2059160035117216106" target="_blank" rel="noopener">打开 X 原帖</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>SIVE: CPO Laser Chokepoint</h2>
+        <p class="meta">Sivers Photonics 作为 CPO 激光器瓶颈的完整长文。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/2056691097594925522" target="_blank" rel="noopener">打开 X 原帖</a>
+          <a class="button secondary" href="https://youmind.com/landing/x-viral-articles/sivers-photonics-cpo-laser-chokepoint" target="_blank" rel="noopener">打开 YouMind 备份</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>SIVE 2025 年报分析</h2>
+        <p class="meta">年报里关于 pluggable transceivers、DFB lasers、Win Semi 和量产节奏的线索。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/2054868760629272850" target="_blank" rel="noopener">打开 X 原帖</a>
+          <a class="button secondary" href="https://twiscan.com/en/x/aleabitoreddit/2054868760629272850" target="_blank" rel="noopener">打开 Twiscan</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Photonics: SIVE / LPK / AAOI / IQE</h2>
+        <p class="meta">从 TAM 扩张、玻璃基板、光模块和 epiwafer 角度拆 photonics 链条。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/2055822766600016238" target="_blank" rel="noopener">打开 X 原帖</a>
+          <a class="button secondary" href="https://twiscan.com/en/x/aleabitoreddit/2055822766600016238" target="_blank" rel="noopener">打开 Twiscan</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>AXTI / SMTOY: InP Substrate 瓶颈</h2>
+        <p class="meta">InP 衬底供应集中度与 AI photonics 上游材料卡点。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/2004569946492453003" target="_blank" rel="noopener">打开 X 原帖</a>
+          <a class="button secondary" href="https://twiscan.com/en/x/aleabitoreddit/2004569946492453003" target="_blank" rel="noopener">打开 Twiscan</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>SOI / Soitec: CPO Substrate Monopoly</h2>
+        <p class="meta">Soitec 在 CPO substrate 侧的垄断属性、估值与 GTC 催化。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/2031648475310616604" target="_blank" rel="noopener">打开 X 原帖</a>
+          <a class="button secondary" href="https://twiscan.com/en/x/aleabitoreddit/2031648475310616604" target="_blank" rel="noopener">打开 Twiscan</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>BOT: NAV / 稀释风险反面案例</h2>
+        <p class="meta">用 NAV、ATM 稀释和隐含估值拆解 hype 风险。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/2055970949762302055" target="_blank" rel="noopener">打开 X 原帖</a>
+          <a class="button secondary" href="https://twiscan.com/en/x/aleabitoreddit/2055970949762302055" target="_blank" rel="noopener">打开 Twiscan</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>PENG: Photonic Memory / CXL 辨析</h2>
+        <p class="meta">区分 photonic memory 叙事、CXL memory pooling 与真实营收来源。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/2056011024982282674" target="_blank" rel="noopener">打开 X 原帖</a>
+          <a class="button secondary" href="https://twiscan.com/en/x/aleabitoreddit/2056011024982282674" target="_blank" rel="noopener">打开 Twiscan</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>AI Capex Keys: AXTI / SOI 框架</h2>
+        <p class="meta">把 AI capex、材料 buildout、silicon photonics 和关键上游资产串起来。</p>
+        <div class="links">
+          <a class="button" href="https://x.com/aleabitoreddit/status/2058618801554604040" target="_blank" rel="noopener">打开 X 原帖</a>
+          <a class="button secondary" href="https://twiscan.com/en/x/aleabitoreddit/2058618801554604040" target="_blank" rel="noopener">打开 Twiscan</a>
+        </div>
+      </article>
+    </section>
+
+    <p class="note">提示：这些链接是投研材料入口，不是买入清单。X 原帖可能需要登录或会加载失败，镜像内容也可能不完整，关键结论最好回到财报、电话会和产业链资料交叉验证。</p>
+  </main>
+</body>
+</html>
