@@ -443,6 +443,15 @@
   - **已完成（本轮回归）**：新增 material inbox API execute 测试，直接调用 `/api/company-database/material-inbox/ingest` 验证 source 注册、document 写入、evidence 抽取和 `CompanyProfileFieldAssertion` 回填。
   - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_database_package_import_bootstraps_watchlist_companies tests.test_system.SystemServiceTests.test_company_database_package_import_does_not_fallback_to_all_issuers tests.test_system.SystemServiceTests.test_company_material_inbox_api_execute_backfills_profile_fields`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
 
+- `DONE` T-474 本地 watchlist / 公司包导入运行历史与审计查询
+  - 对应：E3-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-473 已支持本地 watchlist / 公司包导入，但导入结果此前只存在于接口响应和 audit log；长期使用需要持久化每次 package import run，支持查询、审计、失败复盘和后续 material inbox 准备。
+  - **已完成（本轮）**：新增 `CompanyPackageImportRun` 模型和 `company_package_import_runs` 存储集合，独立于 `CompanyDatabaseBuildRun`，避免把导入语义混入补库 batch/retry/resume 历史。
+  - **已完成（本轮）**：`POST /api/company-database/package/import` 和兼容别名在 `execute=true` 时默认记录 run；dry-run 默认不记录，显式 `record_run=true` 时才落盘。
+  - **已完成（本轮）**：新增 `GET|POST /api/company-database/package/import/runs` 和兼容别名 `/api/company-database/watchlist/import/runs`，支持按 `run_id`、`issuer_id`、`symbol`、`status`、`limit` 和 `include_items` 查询。
+  - **已完成（本轮）**：运行历史只保存 slim 行级审计字段，不保存即时响应中的覆盖详情、材料模板和 next_actions，固定本地-only、no external download、no live trading 边界。
+  - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_database_package_import_bootstraps_watchlist_companies tests.test_system.SystemServiceTests.test_company_database_package_import_dry_run_history_is_explicit tests.test_system.SystemServiceTests.test_company_database_package_import_does_not_fallback_to_all_issuers`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

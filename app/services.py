@@ -39,6 +39,7 @@ from .models import (
     CacheRetentionRunRecord,
     ChokepointResearchRun,
     CompanyDatabaseBuildRun,
+    CompanyPackageImportRun,
     CompanyEvent,
     CompanyPosition,
     CompanyProfile,
@@ -23530,6 +23531,10 @@ class SystemService:
         raw = f"{actor}:{','.join(issuer_ids)}:{to_plain(started_at)}:{time.time()}"
         return f"cdb_run_{utcnow().strftime('%Y%m%d%H%M%S')}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:10]}"
 
+    def _company_package_import_run_id(self, actor: str, symbols: list[str], started_at: Any) -> str:
+        raw = f"{actor}:{','.join(symbols)}:{to_plain(started_at)}:{time.time()}"
+        return f"pkg_import_{utcnow().strftime('%Y%m%d%H%M%S')}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:10]}"
+
     def _company_database_batch_idempotency_key(self, actor: str, issuer_ids: list[str], options: Mapping[str, Any], *, retry_of: str = "", resume_of: str = "", attempt: int = 1) -> str:
         raw = {
             "actor": actor,
@@ -23572,6 +23577,123 @@ class SystemService:
             "include_batches": include_batches,
             "runs": rows,
             "usage_boundary": "company_database_build_runs_are_local_operations_history_no_live_trading",
+        }
+
+    def _company_package_import_run_symbols(self, run: CompanyPackageImportRun) -> set[str]:
+        symbols = {str(symbol).strip().upper() for symbol in run.target_symbols if str(symbol).strip()}
+        for item in run.items:
+            if not isinstance(item, Mapping):
+                continue
+            symbol = str(item.get("symbol", "")).strip()
+            if symbol:
+                symbols.add(symbol.upper())
+        return symbols
+
+    def _company_package_import_slim_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        slim_items: list[dict[str, Any]] = []
+        for item in items:
+            ids = item.get("ids", {}) if isinstance(item.get("ids", {}), Mapping) else {}
+            slim_items.append(
+                {
+                    "index": item.get("index"),
+                    "input_source": item.get("input_source", ""),
+                    "symbol": item.get("symbol", ""),
+                    "status": item.get("status", ""),
+                    "issuer_id": ids.get("issuer_id", ""),
+                    "security_id": ids.get("security_id", ""),
+                    "created": item.get("created", {}),
+                    "existing": item.get("existing", {}),
+                    "errors": list(item.get("errors", []) or []),
+                }
+            )
+        return slim_items
+
+    def _record_company_package_import_run(
+        self,
+        *,
+        run_id: str,
+        actor: str,
+        status: str,
+        execute: bool,
+        dry_run: bool,
+        root_path: str,
+        manifest_glob: str,
+        input_count: int,
+        company_count: int,
+        target_symbols: list[str],
+        target_issuer_ids: list[str],
+        created_issuer_ids: list[str],
+        existing_issuer_ids: list[str],
+        invalid_symbols: list[str],
+        duplicate_symbols: list[str],
+        totals: dict[str, Any],
+        options: dict[str, Any],
+        items: list[dict[str, Any]],
+        coverage_after: dict[str, Any],
+        error: str,
+        started_at: Any,
+    ) -> CompanyPackageImportRun:
+        run_record = CompanyPackageImportRun(
+            run_id=run_id,
+            actor=actor,
+            status=status,
+            execute=execute,
+            dry_run=dry_run,
+            root_path=root_path,
+            manifest_glob=manifest_glob,
+            input_count=input_count,
+            company_count=company_count,
+            target_symbols=list(target_symbols),
+            target_issuer_ids=list(target_issuer_ids),
+            created_issuer_ids=list(created_issuer_ids),
+            existing_issuer_ids=list(existing_issuer_ids),
+            invalid_symbols=list(invalid_symbols),
+            duplicate_symbols=list(duplicate_symbols),
+            totals=dict(totals),
+            options=dict(options),
+            items=self._company_package_import_slim_items(items),
+            coverage_after=dict(coverage_after),
+            error=error,
+            started_at=started_at,
+            completed_at=utcnow(),
+        )
+        self.store.company_package_import_runs[run_id] = run_record
+        marker = getattr(self.store, "mark_dirty_for_resource", None)
+        if callable(marker):
+            marker("company_package_import_run")
+        self.store.commit()
+        return run_record
+
+    def company_package_import_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        limit = self._bounded_limit(filters.get("limit", 20), 200)
+        run_id = str(filters.get("run_id", "")).strip()
+        issuer_id = str(filters.get("issuer_id", "")).strip()
+        symbol = str(filters.get("symbol") or filters.get("ticker") or filters.get("code") or "").strip().upper()
+        status = str(filters.get("status", "")).strip()
+        include_items = self._truthy(filters.get("include_items", False))
+        runs = list(self.store.company_package_import_runs.values())
+        if run_id:
+            runs = [run for run in runs if run.run_id == run_id]
+        if issuer_id:
+            runs = [run for run in runs if issuer_id in run.target_issuer_ids]
+        if symbol:
+            runs = [run for run in runs if symbol in self._company_package_import_run_symbols(run)]
+        if status:
+            runs = [run for run in runs if run.status == status]
+        runs.sort(key=lambda item: (str(to_plain(item.completed_at)), item.run_id), reverse=True)
+        rows: list[dict[str, Any]] = []
+        for run in runs[:limit]:
+            row = to_plain(run)
+            if not include_items:
+                row["item_details_omitted"] = bool(row.get("items"))
+                row["items"] = []
+            rows.append(row)
+        return {
+            "count": len(runs),
+            "include_items": include_items,
+            "runs": rows,
+            "usage_boundary": "company_package_import_runs_are_local_watchlist_history_no_external_download_no_live_trading",
         }
 
     def company_database_coverage_trends(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
@@ -25305,10 +25427,14 @@ class SystemService:
         dry_run = self._truthy(payload.get("dry_run", not execute))
         if dry_run:
             execute = False
+        record_run = execute or self._truthy(payload.get("record_run", False))
+        started_at = utcnow()
         limit = self._bounded_limit(payload.get("limit", payload.get("scan_limit", 200)), 1000)
         records = self._company_watchlist_import_records(payload, limit=limit)
         if not records:
             raise ValidationError("company watchlist import requires symbols, companies, items, watchlist, or csv_text")
+        root_path = str(payload.get("root_path") or payload.get("package_root") or "")
+        manifest_glob = str(payload.get("manifest_glob") or "*.watchlist.*")
         defaults = {
             key: payload.get(key)
             for key in [
@@ -25343,6 +25469,11 @@ class SystemService:
         }
         seen_symbols: set[str] = set()
         target_issuer_ids: list[str] = []
+        target_symbols: list[str] = []
+        created_issuer_ids: list[str] = []
+        existing_issuer_ids: list[str] = []
+        invalid_symbols: list[str] = []
+        duplicate_symbols: list[str] = []
         for index, record in enumerate(records, start=1):
             symbol = self._company_watchlist_import_symbol(record)
             item = {
@@ -25356,6 +25487,7 @@ class SystemService:
                 item["status"] = "invalid"
                 item["errors"] = ["missing_symbol"]
                 totals["invalid_count"] += 1
+                invalid_symbols.append(f"row_{index}")
                 items.append(item)
                 continue
             dedupe_key = symbol.upper()
@@ -25363,9 +25495,11 @@ class SystemService:
                 item["status"] = "duplicate"
                 item["errors"] = ["duplicate_symbol"]
                 totals["duplicate_count"] += 1
+                duplicate_symbols.append(symbol)
                 items.append(item)
                 continue
             seen_symbols.add(dedupe_key)
+            target_symbols.append(symbol)
             totals["valid_count"] += 1
             try:
                 result = self.bootstrap_company_database(self._company_watchlist_bootstrap_payload(record, defaults, execute=execute), actor=actor)
@@ -25384,6 +25518,12 @@ class SystemService:
                 issuer_id = str(ids.get("issuer_id", "")).strip()
                 if issuer_id:
                     target_issuer_ids.append(issuer_id)
+                    created = result.get("created", {}) if isinstance(result.get("created", {}), Mapping) else {}
+                    existing = result.get("existing", {}) if isinstance(result.get("existing", {}), Mapping) else {}
+                    if created.get("issuer"):
+                        created_issuer_ids.append(issuer_id)
+                    if existing.get("issuer"):
+                        existing_issuer_ids.append(issuer_id)
                 if execute and result.get("status") == "executed":
                     totals["executed_count"] += 1
                 elif result.get("status") == "already_exists":
@@ -25406,6 +25546,42 @@ class SystemService:
         if execute and target_issuer_ids:
             coverage_after = self.company_database_coverage_audit({"issuer_ids": self._unique_strings(target_issuer_ids), "limit": len(target_issuer_ids)}, actor=actor)
         status = "failed" if totals["failed_count"] and not totals["executed_count"] else ("partial" if totals["failed_count"] else ("executed" if execute else "dry_run"))
+        target_issuer_ids = self._unique_strings(target_issuer_ids)
+        target_symbols = self._unique_strings(target_symbols)
+        run_id = str(payload.get("run_id") or self._company_package_import_run_id(actor, target_symbols, started_at))
+        options = {
+            "limit": limit,
+            "root_path": root_path,
+            "manifest_glob": manifest_glob,
+            "record_run": record_run,
+            "source_fields": [key for key in ["companies", "items", "watchlist", "symbols", "tickers", "codes", "csv_text", "csv"] if payload.get(key)],
+            "defaults": defaults,
+        }
+        run_record: CompanyPackageImportRun | None = None
+        if record_run:
+            run_record = self._record_company_package_import_run(
+                run_id=run_id,
+                actor=actor,
+                status=status,
+                execute=execute,
+                dry_run=not execute,
+                root_path=root_path,
+                manifest_glob=manifest_glob,
+                input_count=len(records),
+                company_count=totals["valid_count"],
+                target_symbols=target_symbols,
+                target_issuer_ids=target_issuer_ids,
+                created_issuer_ids=self._unique_strings(created_issuer_ids),
+                existing_issuer_ids=self._unique_strings(existing_issuer_ids),
+                invalid_symbols=self._unique_strings(invalid_symbols),
+                duplicate_symbols=self._unique_strings(duplicate_symbols),
+                totals=totals,
+                options=options,
+                items=items,
+                coverage_after=coverage_after,
+                error="",
+                started_at=started_at,
+            )
         self._audit(
             actor,
             "import_company_watchlist",
@@ -25422,12 +25598,15 @@ class SystemService:
             "input_count": len(records),
             "company_count": totals["valid_count"],
             "limit": limit,
-            "root_path": str(payload.get("root_path") or payload.get("package_root") or ""),
-            "manifest_glob": str(payload.get("manifest_glob") or "*.watchlist.*"),
+            "root_path": root_path,
+            "manifest_glob": manifest_glob,
             "totals": totals,
             "items": items,
             "companies": items,
             "coverage_after": coverage_after,
+            "run_id": run_id,
+            "run_recorded": record_run,
+            "run": to_plain(run_record) if run_record else {},
             "next_actions": [
                 {
                     "action": "prepare_material_inbox",

@@ -24,6 +24,7 @@ from .models import (
     ChokepointResearchRun,
     CorporateAction,
     CompanyDatabaseBuildRun,
+    CompanyPackageImportRun,
     CompanyEvent,
     CompanyPosition,
     CompanyProfile,
@@ -126,6 +127,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("industry_chain_template_reviews", "review_id", IndustryChainTemplateReview),
     ("company_positions", "position_id", CompanyPosition),
     ("company_database_build_runs", "run_id", CompanyDatabaseBuildRun),
+    ("company_package_import_runs", "run_id", CompanyPackageImportRun),
     ("company_profiles", "issuer_id", CompanyProfile),
     ("company_profile_field_assertions", "assertion_id", CompanyProfileFieldAssertion),
     ("financial_metrics", "metric_id", FinancialMetric),
@@ -217,6 +219,7 @@ def _candidate_collections_for_resource(resource_type: str) -> list[str]:
         "industry_chain_template_review": "industry_chain_template_reviews",
         "company_position": "company_positions",
         "company_database_build_run": "company_database_build_runs",
+        "company_package_import_run": "company_package_import_runs",
         "company_profile": "company_profiles",
         "company_profile_field_assertion": "company_profile_field_assertions",
         "company_profile_field": "company_profile_field_assertions",
@@ -309,6 +312,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     IndustryChainTemplateReview: ("created_at",),
     CompanyPosition: ("created_at",),
     CompanyDatabaseBuildRun: ("started_at", "completed_at", "created_at"),
+    CompanyPackageImportRun: ("started_at", "completed_at", "created_at"),
     CompanyProfile: ("updated_at",),
     CompanyProfileFieldAssertion: ("as_of_date", "created_at", "updated_at"),
     FinancialMetric: ("period_start", "period_end", "created_at", "updated_at"),
@@ -452,6 +456,7 @@ class InMemoryStore:
     industry_chain_template_reviews: dict[str, IndustryChainTemplateReview] = field(default_factory=dict)
     company_positions: dict[str, CompanyPosition] = field(default_factory=dict)
     company_database_build_runs: dict[str, CompanyDatabaseBuildRun] = field(default_factory=dict)
+    company_package_import_runs: dict[str, CompanyPackageImportRun] = field(default_factory=dict)
     company_profiles: dict[str, CompanyProfile] = field(default_factory=dict)
     company_profile_field_assertions: dict[str, CompanyProfileFieldAssertion] = field(default_factory=dict)
     financial_metrics: dict[str, FinancialMetric] = field(default_factory=dict)

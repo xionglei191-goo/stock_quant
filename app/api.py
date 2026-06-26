@@ -648,6 +648,10 @@ class ApiRouter:
             ("POST", r"^/api/company-database/bootstrap$", self._bootstrap_company_database),
             ("POST", r"^/api/company-database/package/import$", self._import_company_watchlist),
             ("POST", r"^/api/company-database/watchlist/import$", self._import_company_watchlist),
+            ("GET", r"^/api/company-database/package/import/runs$", self._company_package_import_runs),
+            ("POST", r"^/api/company-database/package/import/runs$", self._company_package_import_runs),
+            ("GET", r"^/api/company-database/watchlist/import/runs$", self._company_package_import_runs),
+            ("POST", r"^/api/company-database/watchlist/import/runs$", self._company_package_import_runs),
             ("POST", r"^/api/company-database/build$", self._build_company_database),
             ("POST", r"^/api/company-database/batch/build$", self._build_company_database_batch),
             ("POST", r"^/api/company-database/batch/runs/(?P<run_id>[^/]+)/retry$", self._retry_company_database_build_run),
@@ -1915,6 +1919,9 @@ class ApiRouter:
 
     def _company_database_build_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_database_build_runs_payload(body)
+
+    def _company_package_import_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_package_import_runs_payload(body)
 
     def _company_database_coverage_trends(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_database_coverage_trends(body, actor=actor)

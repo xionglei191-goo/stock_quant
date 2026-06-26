@@ -816,6 +816,37 @@ class CompanyDatabaseBuildRun:
 
 
 @dataclass(slots=True)
+class CompanyPackageImportRun:
+    run_id: str
+    actor: str = "system"
+    status: str = "dry_run"
+    execute: bool = False
+    dry_run: bool = True
+    root_path: str = ""
+    manifest_glob: str = "*.watchlist.*"
+    input_count: int = 0
+    company_count: int = 0
+    target_symbols: list[str] = field(default_factory=list)
+    target_issuer_ids: list[str] = field(default_factory=list)
+    created_issuer_ids: list[str] = field(default_factory=list)
+    existing_issuer_ids: list[str] = field(default_factory=list)
+    invalid_symbols: list[str] = field(default_factory=list)
+    duplicate_symbols: list[str] = field(default_factory=list)
+    totals: dict[str, Any] = field(default_factory=dict)
+    options: dict[str, Any] = field(default_factory=dict)
+    items: list[dict[str, Any]] = field(default_factory=list)
+    coverage_after: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+    usage_boundary: str = "company_package_import_run_is_local_watchlist_history_no_external_download_no_live_trading"
+    started_at: Any = field(default_factory=utcnow)
+    completed_at: Any = field(default_factory=utcnow)
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"dry_run", "executed", "failed", "partial"}, "status")
+
+
+@dataclass(slots=True)
 class CompanyRelationship:
     relationship_id: str
     subject_type: str

@@ -543,6 +543,8 @@ class SystemServiceTests(unittest.TestCase):
             self.assertEqual(dry_run.data["totals"]["manifest_templates"], 3)
             self.assertNotIn("issuer_bootstrap_pkga", self.service.store.issuers)
             self.assertIn("/api/company-database/material-inbox/ingest", [item["endpoint"] for item in dry_run.data["next_actions"]])
+            self.assertFalse(dry_run.data["run_recorded"])
+            self.assertFalse(self.service.store.company_package_import_runs)
 
             executed = self.router.dispatch(
                 "POST",
@@ -562,6 +564,43 @@ class SystemServiceTests(unittest.TestCase):
             self.assertEqual(self.service.store.securities["sec_bootstrap_pkga"].ticker, "PKGA")
             self.assertIn("coverage_after", executed.data)
             self.assertEqual(executed.data["usage_boundary"], "local_company_database_package_import_only_no_external_download_no_research_report_fact_promotion_no_live_trading")
+            self.assertTrue(executed.data["run_recorded"])
+            run_id = executed.data["run_id"]
+            self.assertIn(run_id, self.service.store.company_package_import_runs)
+            self.assertNotIn(run_id, self.service.store.company_database_build_runs)
+            run = self.service.store.company_package_import_runs[run_id]
+            self.assertEqual(run.status, "executed")
+            self.assertEqual(run.target_symbols, ["PKGA", "PKGB", "PKGC"])
+            self.assertEqual(run.created_issuer_ids, ["issuer_bootstrap_pkga", "issuer_bootstrap_pkgb", "issuer_bootstrap_pkgc"])
+            self.assertEqual(run.duplicate_symbols, ["PKGA"])
+            self.assertEqual(len(run.items), 4)
+            self.assertNotIn("material_inbox_manifest_template", run.items[0])
+
+            listed = self.router.dispatch(
+                "POST",
+                "/api/company-database/package/import/runs",
+                {"symbol": "PKGB", "status": "executed", "limit": 5},
+                actor="data",
+                role="analyst",
+            )
+            self.assertTrue(listed.success, listed.error)
+            self.assertEqual(listed.data["count"], 1)
+            self.assertFalse(listed.data["include_items"])
+            self.assertEqual(listed.data["runs"][0]["run_id"], run_id)
+            self.assertEqual(listed.data["runs"][0]["items"], [])
+            self.assertTrue(listed.data["runs"][0]["item_details_omitted"])
+
+            listed_by_issuer = self.router.dispatch(
+                "GET",
+                "/api/company-database/watchlist/import/runs",
+                {"issuer_id": "issuer_bootstrap_pkgc", "include_items": True},
+                actor="data",
+                role="analyst",
+            )
+            self.assertTrue(listed_by_issuer.success, listed_by_issuer.error)
+            self.assertTrue(listed_by_issuer.data["include_items"])
+            self.assertEqual(listed_by_issuer.data["runs"][0]["run_id"], run_id)
+            self.assertEqual(len(listed_by_issuer.data["runs"][0]["items"]), 4)
 
             again = self.router.dispatch(
                 "POST",
@@ -573,6 +612,38 @@ class SystemServiceTests(unittest.TestCase):
             self.assertTrue(again.success, again.error)
             self.assertEqual(again.data["totals"]["already_exists_count"], 3)
             self.assertEqual(again.data["totals"]["created_issuers"], 0)
+
+    def test_company_database_package_import_dry_run_history_is_explicit(self) -> None:
+        preview = self.router.dispatch(
+            "POST",
+            "/api/company-database/package/import",
+            {"symbols": ["DRYPKG"], "record_run": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(preview.success, preview.error)
+        self.assertEqual(preview.data["status"], "dry_run")
+        self.assertTrue(preview.data["run_recorded"])
+        run = self.service.store.company_package_import_runs[preview.data["run_id"]]
+        self.assertEqual(run.status, "dry_run")
+        self.assertFalse(run.execute)
+        self.assertTrue(run.dry_run)
+        self.assertEqual(run.target_symbols, ["DRYPKG"])
+        self.assertEqual(run.target_issuer_ids, ["issuer_bootstrap_drypkg"])
+        self.assertFalse(run.created_issuer_ids)
+        self.assertNotIn("issuer_bootstrap_drypkg", self.service.store.issuers)
+
+        listed = self.router.dispatch(
+            "POST",
+            "/api/company-database/package/import/runs",
+            {"run_id": run.run_id, "include_items": True},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(listed.success, listed.error)
+        self.assertEqual(listed.data["count"], 1)
+        self.assertEqual(listed.data["runs"][0]["status"], "dry_run")
+        self.assertEqual(listed.data["runs"][0]["items"][0]["symbol"], "DRYPKG")
 
     def test_company_database_package_import_does_not_fallback_to_all_issuers(self) -> None:
         result = self.router.dispatch(

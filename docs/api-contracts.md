@@ -2293,6 +2293,8 @@
 | `/api/company-database/bootstrap` | `POST` | 为未知 symbol 创建本地 issuer/security/profile stub；默认 dry-run，返回材料 inbox manifest 模板和覆盖预览 |
 | `/api/company-database/package/import` | `POST` | 从本地 watchlist / 公司包 JSON 或 CSV 批量创建本地 issuer/security/profile stub；默认 dry-run，返回每家公司材料 inbox 模板 |
 | `/api/company-database/watchlist/import` | `POST` | `company-database/package/import` 的兼容别名，用于直接导入观察池 symbol 列表 |
+| `/api/company-database/package/import/runs` | `GET` / `POST` | 查询本地 watchlist / 公司包导入运行历史，用于审计、失败复盘和后续材料 inbox 准备 |
+| `/api/company-database/watchlist/import/runs` | `GET` / `POST` | `company-database/package/import/runs` 的兼容别名 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
 | `/api/company-database/batch/runs` | `GET` / `POST` | 查询公司数据库批量补齐运行历史，用于审计、复盘和后续断点续跑 |
@@ -2401,6 +2403,7 @@
 - `market` / `exchange` / `currency` / `country` / `sector` / `industry` / `region` / `security_type` / `create_profile`：可选默认值，会传递给每家公司 bootstrap。
 - `limit` / `scan_limit`：导入上限，默认 200，最大 1000。
 - `execute` / `dry_run`：默认 dry-run；`execute=true` 且 `dry_run` 非真时才写入。
+- `record_run`：可选；`execute=true` 默认记录导入运行历史，dry-run 默认不记录。dry-run 如需审计留痕，显式传 `record_run=true`。
 
 返回字段：
 
@@ -2409,9 +2412,38 @@
 - `totals`：包含 `input_count`、`valid_count`、`planned_count`、`executed_count`、`already_exists_count`、`invalid_count`、`duplicate_count`、`failed_count`、`created_issuers`、`created_securities`、`created_company_profiles` 和 `manifest_templates`。
 - `companies[]` / `items[]`：逐家公司结果，包含 `symbol`、`status`、`ids`、`created`、`existing`、`coverage`、`material_inbox_manifest_template`、`next_actions` 和 `errors`。
 - `coverage_after`：执行模式下，对本次导入公司做一次覆盖率审计。
+- `run_id` / `run_recorded` / `run`：导入运行历史元数据。`execute=true` 或 `record_run=true` 时写入 `CompanyPackageImportRun`；否则只返回本次生成的 `run_id`，不落盘。
 - `next_actions`：导入后建议先准备官方/IR/公告材料，再执行材料 inbox、批量补库和覆盖审计。
 
 边界：该接口只处理本地 watchlist / 公司包，不下载外部数据，不把研报、新闻或人工参考提升为事实字段，不触发真实交易。它不会在空输入时 fallback 到全量 issuer；缺 symbol 的行会进入 `invalid`。
+
+运行历史语义：
+
+- `CompanyPackageImportRun` 独立于 `CompanyDatabaseBuildRun`，不复用补库 run；导入 run 只描述 watchlist / 公司包导入，不包含 retry/resume/batch 语义。
+- 存储字段包括 `run_id`、`actor`、`status`、`execute`、`dry_run`、`root_path`、`manifest_glob`、`input_count`、`company_count`、`target_symbols`、`target_issuer_ids`、`created_issuer_ids`、`existing_issuer_ids`、`invalid_symbols`、`duplicate_symbols`、`totals`、`options`、`items`、`coverage_after`、`error`、`started_at`、`completed_at` 和 `usage_boundary`。
+- `items` 只保存 slim 审计行：`index`、`input_source`、`symbol`、`status`、`issuer_id`、`security_id`、`created`、`existing`、`errors`。即时响应中的 `coverage`、`material_inbox_manifest_template` 和 `next_actions` 不进入运行历史，避免膨胀。
+
+#### `GET|POST /api/company-database/package/import/runs`
+
+查询本地 watchlist / 公司包导入运行历史。兼容别名：`GET|POST /api/company-database/watchlist/import/runs`。
+
+查询字段：
+
+- `run_id`：按单次导入运行过滤。
+- `issuer_id`：按本次导入涉及的公司主体过滤。
+- `symbol` / `ticker` / `code`：按本次导入涉及的证券代码过滤。
+- `status`：可选，`dry_run`、`executed`、`partial` 或 `failed`。
+- `limit`：返回数量上限，默认 20，最大 200。
+- `include_items`：默认 `false`；为 `true` 时返回 slim `items` 明细。默认列表会返回 `items=[]` 和 `item_details_omitted=true`。
+
+返回字段：
+
+- `count`：过滤后的 run 总数。
+- `include_items`：是否返回逐行明细。
+- `runs[]`：导入运行历史，字段见 `CompanyPackageImportRun`。
+- `usage_boundary`：固定为本地 watchlist 历史、无外部下载、无真实交易。
+
+不支持：该接口不做 retry/resume，不重跑导入，不读取或下载外部公司包。需要再次导入时，重新调用 `POST /api/company-database/package/import`。
 
 #### `GET|POST /api/company-financial-metrics`
 
