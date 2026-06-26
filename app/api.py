@@ -659,11 +659,14 @@ class ApiRouter:
             ("POST", r"^/api/company-database/profile-field-assertions/review$", self._review_company_profile_field_assertion),
             ("POST", r"^/api/company-database/profile-fields/extract$", self._extract_company_profile_fields),
             ("POST", r"^/api/company-database/events/build$", self._build_company_events),
+            ("POST", r"^/api/company-database/events/review$", self._review_company_events),
             ("POST", r"^/api/company-database/relationships/build$", self._build_company_relationships),
             ("POST", r"^/api/company-database/relationships/review$", self._review_company_relationships),
             ("POST", r"^/api/company-database/workflow/build$", self._build_company_workflow),
             ("GET", r"^/api/company-events$", self._list_company_events),
             ("POST", r"^/api/company-events$", self._register_company_event),
+            ("POST", r"^/api/company-events/review$", self._review_company_events),
+            ("POST", r"^/api/company-events/(?P<event_id>[^/]+)/review$", self._review_company_event),
             ("GET", r"^/api/company-relationships$", self._list_company_relationships),
             ("POST", r"^/api/company-relationships$", self._register_company_relationship),
             ("POST", r"^/api/company-relationships/review$", self._review_company_relationships),
@@ -1916,6 +1919,13 @@ class ApiRouter:
 
     def _list_company_events(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_events_payload(body)
+
+    def _review_company_events(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.review_company_events(body, actor=actor)
+
+    def _review_company_event(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/company-events/(?P<event_id>[^/]+)/review$", path)
+        return to_plain(self.service.review_company_event(match["event_id"], body, actor=actor))
 
     def _register_company_relationship(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.register_company_relationship(body, actor=actor))

@@ -2299,6 +2299,169 @@ class SystemServiceTests(unittest.TestCase):
             self.assertEqual(event.metadata["classification_status"], "candidate_needs_review")
             self.assertEqual(event.metadata["rights_boundary"], "official_disclosure_fact_with_classification_review")
 
+    def test_company_event_review_approves_reclassifies_merges_and_batches_candidates(self) -> None:
+        approved = self.service.register_company_event(
+            {
+                "event_id": "ce_review_approve",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "event_type": "earnings_result",
+                "title": "Revenue increased",
+                "summary": "Revenue increased and margin improved.",
+                "source_ids": ["src_sec"],
+                "document_ids": ["doc_event_review"],
+                "evidence_ids": ["ev_event_review"],
+                "confidence": 0.76,
+                "fact_status": "verified",
+                "review_status": "needs_review",
+                "metadata": {"classification_status": "candidate_needs_review", "source_layer": "official_disclosure_text_classification"},
+            },
+            actor="data",
+        )
+        reclassified = self.service.register_company_event(
+            {
+                "event_id": "ce_review_reclassify",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "event_type": "other",
+                "title": "Management appointment",
+                "summary": "The board appointed a new CFO.",
+                "confidence": 0.65,
+                "fact_status": "verified",
+                "review_status": "needs_review",
+                "metadata": {"classification_status": "candidate_needs_review"},
+            },
+            actor="data",
+        )
+        target = self.service.register_company_event(
+            {
+                "event_id": "ce_review_target",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "event_type": "major_order_contract",
+                "title": "Supply agreement",
+                "summary": "Signed supply agreement.",
+                "document_ids": ["doc_target"],
+                "evidence_ids": ["ev_target"],
+                "fact_status": "verified",
+                "review_status": "needs_review",
+                "metadata": {"classification_status": "candidate_needs_review"},
+            },
+            actor="data",
+        )
+        source = self.service.register_company_event(
+            {
+                "event_id": "ce_review_merge",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "event_type": "major_order_contract",
+                "title": "Supply agreement duplicate",
+                "summary": "Duplicate supply agreement.",
+                "document_ids": ["doc_source"],
+                "evidence_ids": ["ev_source"],
+                "impact_tags": ["contract"],
+                "fact_status": "verified",
+                "review_status": "needs_review",
+                "metadata": {"classification_status": "candidate_needs_review"},
+            },
+            actor="data",
+        )
+        batch_a = self.service.register_company_event(
+            {
+                "event_id": "ce_review_batch_a",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "event_type": "policy_impact",
+                "title": "Policy impact candidate",
+                "summary": "Policy impact candidate.",
+                "fact_status": "verified",
+                "review_status": "needs_review",
+                "metadata": {"classification_status": "candidate_needs_review"},
+            },
+            actor="data",
+        )
+        batch_b = self.service.register_company_event(
+            {
+                "event_id": "ce_review_batch_b",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "event_type": "capacity_supply_demand",
+                "title": "Capacity candidate",
+                "summary": "Capacity candidate.",
+                "fact_status": "verified",
+                "review_status": "needs_review",
+                "metadata": {"classification_status": "candidate_needs_review"},
+            },
+            actor="data",
+        )
+
+        candidate_payload = self.router.dispatch(
+            "GET",
+            "/api/company-events",
+            {"issuer_id": "issuer_001", "review_status": "needs_review", "limit": 20},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(candidate_payload.success, candidate_payload.error)
+        candidate_rows = {item["event_id"]: item for item in candidate_payload.data["events"]}
+        self.assertGreaterEqual(candidate_payload.data["candidate_count"], 6)
+        self.assertEqual(candidate_rows[approved.event_id]["review_recommendation"]["recommended_action"], "prefer_approve_after_review")
+
+        approved_response = self.router.dispatch(
+            "POST",
+            f"/api/company-events/{approved.event_id}/review",
+            {"action": "approve", "reason": "official evidence checked"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(approved_response.success, approved_response.error)
+        self.assertEqual(approved_response.data["review_status"], "approved")
+        self.assertGreaterEqual(approved_response.data["confidence"], 0.8)
+
+        reclassify_response = self.router.dispatch(
+            "POST",
+            f"/api/company-events/{reclassified.event_id}/review",
+            {"action": "reclassify", "event_type": "management_change", "reason": "CFO appointment"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(reclassify_response.success, reclassify_response.error)
+        self.assertEqual(reclassify_response.data["event_type"], "management_change")
+        self.assertEqual(reclassify_response.data["review_status"], "approved")
+        self.assertEqual(self.service.store.company_events[reclassified.event_id].metadata["event_type_history"][0]["from"], "other")
+
+        merge_response = self.router.dispatch(
+            "POST",
+            f"/api/company-events/{source.event_id}/review",
+            {"action": "merge", "target_event_id": target.event_id, "reason": "duplicate contract event"},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(merge_response.success, merge_response.error)
+        self.assertEqual(merge_response.data["review_status"], "merged")
+        self.assertEqual(self.service.store.company_events[target.event_id].evidence_ids, ["ev_target", "ev_source"])
+        self.assertIn(source.event_id, self.service.store.company_events[target.event_id].metadata["merged_from"])
+
+        batch_response = self.router.dispatch(
+            "POST",
+            "/api/company-database/events/review",
+            {
+                "event_ids": [batch_a.event_id, batch_b.event_id],
+                "action": "reject",
+                "reason": "batch false positive",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(batch_response.success, batch_response.error)
+        self.assertEqual(batch_response.data["schema_id"], "company-event-batch-review-v1")
+        self.assertEqual(batch_response.data["reviewed_count"], 2)
+        self.assertEqual(self.service.store.company_events[batch_a.event_id].review_status, "rejected")
+        self.assertEqual(
+            self.service.store.company_events[batch_a.event_id].metadata["review_history"][-1]["reason"],
+            "batch false positive",
+        )
+
     def test_company_relationship_builder_creates_listing_and_coverage_links(self) -> None:
         self.service.store.research_reports["rr_demo_bound"] = ResearchReportAsset(
             report_id="rr_demo_bound",

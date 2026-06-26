@@ -2297,10 +2297,13 @@
 | `/api/company-database/coverage/audit` | `GET` / `POST` | 按公司审计画像、证券、行情、财务、文档、事件、关系、研报、观察结论和模拟反馈覆盖情况 |
 | `/api/company-database/quality/reconcile` | `POST` | 对公司事件和关系做本地去重、实体别名归并候选和来源质量评分；默认 dry-run，显式 `execute=true` 才标记 merge 或写入 source quality |
 | `/api/company-database/events/build` | `POST` | 从已入库公开披露、披露正文证据、公开行情和研报覆盖生成公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
+| `/api/company-database/events/review` | `POST` | 批量复核公司事件候选，支持 approve/reject/merge/reclassify，返回本地人工复核结果和推荐摘要 |
 | `/api/company-database/relationships/build` | `POST` | 从证券上市关系、研报覆盖记录和公开披露文本生成最小公司关系层；研报覆盖关系固定为观点/关注度关系，公开披露抽取关系默认待复核 |
 | `/api/company-database/relationships/review` | `POST` | 批量复核公司关系候选，支持 approve/reject/merge，返回本地人工复核结果和推荐摘要 |
 | `/api/company-database/workflow/build` | `POST` | 从事件、关系和研报观点生成观察任务、公司情报基线结论和 paper-only 模拟反馈；默认 dry-run |
 | `/api/company-events` | `GET` / `POST` | 查询或登记 `CompanyEvent`，覆盖公告、财报、新闻、政策、订单、诉讼、价格、供需等事件 |
+| `/api/company-events/review` | `POST` | 批量复核 `CompanyEvent` 候选；用于人工时间线质量处理，不触发交易 |
+| `/api/company-events/{event_id}/review` | `POST` | 人工审核事件候选，支持 approve、reject、merge、reclassify，保留审核历史和证据回链 |
 | `/api/company-relationships` | `GET` / `POST` | 查询或登记 `CompanyRelationship`，覆盖客户、供应商、竞争、股权、机构覆盖、分析师覆盖和上下游 |
 | `/api/company-relationships/review` | `POST` | 批量复核 `CompanyRelationship` 候选；用于人工图谱质量处理，不触发交易 |
 | `/api/company-relationships/{relationship_id}/review` | `POST` | 人工审核关系候选，支持 approve、reject、merge，保留审核历史和证据回链 |
@@ -2700,6 +2703,52 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 - `companies`：每家公司事件数量、市场事件数、官方披露事件数、研报覆盖事件数、结构化披露事件数和样本事件 ID。
 
 结构化披露事件的 `metadata.source_layer=official_disclosure_text_classification`，会记录 `classification_rule`、`matched_terms`、`classification_status=candidate_needs_review` 和 `rights_boundary=official_disclosure_fact_with_classification_review`。后续新闻、官网、行业政策网页和更强实体抽取仍应通过该事件层扩展，并要求来源治理、证据回链和人工复核。
+
+#### `POST /api/company-events/{event_id}/review`
+
+审核公司事件候选。该接口用于把结构化披露事件、事件分类候选或重复事件纳入可信时间线、拒绝误抽取、合并重复事件或修正事件分类；不会把研报观点升级为公司事实，也不会触发真实交易。
+
+请求字段：
+
+- `action` / `review_action`：必填；`approve`、`reject`、`merge` 或 `reclassify`。
+- `reason`：可选；审核说明。
+- `reviewed_by`：可选；默认使用请求 actor。
+- `confidence`：可选；`approve` 时用于提高置信度，默认至少提升到 0.8。
+- `fact_status`：可选；只有显式传入时才改写事实状态。
+- `target_event_id`：`merge` 必填；目标事件 ID。
+- `event_type` / `new_event_type`：`reclassify` 必填；修正后的事件分类。
+
+行为：
+
+- `approve`：设置 `review_status=approved`、`metadata.candidate_status=approved`，并记录审核人和审核时间。
+- `reject`：设置 `review_status=rejected`、`metadata.candidate_status=rejected`。
+- `reclassify`：更新 `event_type`，在 `metadata.event_type_history` 中保留旧分类和新分类，默认设置 `review_status=approved`。
+- `merge`：源事件设置为 `review_status=merged`，并把 source/document/evidence/impact tags 回链合并到目标事件。
+
+所有审核动作都会在 `metadata.review_history` 中保留审核时间、审核人、动作、理由、旧分类、旧事实状态和旧置信度。
+
+#### `POST /api/company-events/review`
+
+批量复核公司事件候选。兼容别名：`POST /api/company-database/events/review`。该接口面向公司数据库补库后的人工时间线质量处理，仍只更新本地事件 provenance，不连接真实券商、不生成投资建议。
+
+请求字段：
+
+- `event_ids`：批量复核时必填；事件 ID 列表。
+- `event_id`：单条复核兼容字段；可与 `event_ids` 合并去重。
+- `action` / `review_action`：必填；`approve`、`reject`、`merge` 或 `reclassify`。
+- `reason`：可选；批量复核备注，会进入每条事件的 `metadata.review_history`。
+- `target_event_id`：`merge` 时必填；多条合并会使用同一目标事件。
+- `event_type` / `new_event_type`：`reclassify` 时必填；多条改分类会使用同一新分类。
+
+返回字段：
+
+- `schema_id`：`company-event-batch-review-v1`。
+- `reviewed_count`：本次复核的事件数量。
+- `events[]`：复核后的事件行，包含 `source_quality` 和 `review_recommendation`。
+- `changed_event_ids`：被修改的事件 ID。
+- `usage_boundary`：固定声明为本地时间线 provenance 更新，不涉及真实交易。
+
+`GET|POST /api/company-events` 返回的每条事件会补充 `source_quality` 与 `review_recommendation`。推荐字段只用于人工排序和复核提示，不会自动批准事件，也不会改变事实/观点边界。
 
 #### `POST /api/company-database/relationships/build`
 

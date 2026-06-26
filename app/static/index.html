@@ -1611,6 +1611,30 @@
             <pre id="companyIntelOperationBox">载入公司后可审计覆盖率、预览补齐和更新研报兑现。</pre>
           </div>
           <div class="panel span-12">
+            <h2>事件候选复核</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>事件复核</strong><span id="companyIntelEventReviewStatus">待载入</span></div>
+              <div class="system-box"><strong>候选事件</strong><span id="companyIntelEventCandidateCount">0</span></div>
+              <div class="system-box"><strong>事件推荐</strong><span id="companyIntelEventRecommendationStatus">待载入</span></div>
+            </div>
+            <div class="row">
+              <div class="field">
+                <label for="companyIntelEventMergeTarget">合并目标</label>
+                <input id="companyIntelEventMergeTarget" value="" aria-label="事件候选合并目标">
+                <span class="hint">填写目标事件 ID 后可执行合并</span>
+              </div>
+              <div class="field compact">
+                <label for="companyIntelEventTypeOverride">新分类</label>
+                <input id="companyIntelEventTypeOverride" value="" aria-label="事件候选新分类">
+                <span class="hint">用于单条改分类</span>
+              </div>
+              <button id="batchApproveCompanyEvents">批量批准</button>
+              <button id="batchRejectCompanyEvents">批量拒绝</button>
+              <input id="companyIntelEventReviewNote" placeholder="复核备注" />
+            </div>
+            <table><thead><tr><th>事件</th><th>摘要</th><th>状态</th><th>操作</th></tr></thead><tbody id="companyIntelEventReviewRows"></tbody></table>
+          </div>
+          <div class="panel span-12">
             <h2>关系候选审核</h2>
             <div class="system-strip">
               <div class="system-box"><strong>关系复核</strong><span id="companyIntelRelationshipReviewStatus">待载入</span></div>
@@ -5658,6 +5682,85 @@
       }
     }
 
+    function renderCompanyEventReview(data) {
+      const events = data.facts_and_events?.company_events || [];
+      const candidates = events.filter((item) => {
+        const reviewStatus = String(item.review_status || "");
+        const classificationStatus = String(item.metadata?.classification_status || "");
+        const candidateStatus = String(item.metadata?.candidate_status || "");
+        return reviewStatus === "needs_review" || classificationStatus.endsWith("needs_review") || candidateStatus === "candidate";
+      }).slice(0, 20);
+      const recommended = candidates.filter((item) => String(item.review_recommendation?.recommended_action || "").includes("approve")).length;
+      $("companyIntelEventReviewStatus").textContent = candidates.length ? "待复核" : "无候选";
+      $("companyIntelEventCandidateCount").textContent = `${candidates.length}`;
+      $("companyIntelEventRecommendationStatus").textContent = candidates.length ? `${recommended}/${candidates.length}` : "0/0";
+      $("companyIntelEventReviewRows").innerHTML = rows(candidates, "暂无待复核事件候选", (item) => {
+        const recommendation = item.review_recommendation || {};
+        const recommendText = `${recommendation.recommended_action || "manual_review"} ${formatScore(recommendation.candidate_score || 0)}`;
+        const actions = [
+          `<label class="inline"><input type="checkbox" data-company-event-select="${item.event_id}"> 选择</label>`,
+          `<button data-action="review-company-event" data-review-action="approve" data-event-id="${item.event_id}">批准</button>`,
+          `<button data-action="review-company-event" data-review-action="reject" data-event-id="${item.event_id}">拒绝</button>`,
+          `<button data-action="review-company-event" data-review-action="reclassify" data-event-id="${item.event_id}">改分类</button>`,
+          `<button data-action="review-company-event" data-review-action="merge" data-event-id="${item.event_id}">合并</button>`
+        ].join(" ");
+        return `<tr><td>${compactId(item.event_id)}${metaLine("类型", statusLabel(item.event_type || ""))}</td><td>${String(item.title || item.summary || "").slice(0, 160)}${metaLine("证据", `${(item.evidence_ids || []).length}`)}</td><td>${statusLabel(item.review_status || "")}${metaLine("事实", statusLabel(item.fact_status || ""))}${metaLine("推荐", recommendText)}</td><td>${actions}</td></tr>`;
+      });
+    }
+
+    function selectedCompanyEventIds() {
+      return [...document.querySelectorAll("[data-company-event-select]:checked")]
+        .map((item) => item.getAttribute("data-company-event-select"))
+        .filter(Boolean);
+    }
+
+    async function reviewCompanyEvent(eventId, action) {
+      if (!eventId) return;
+      const payload = { action, reason: formValue("companyIntelEventReviewNote", "").trim() };
+      if (action === "merge") {
+        const target = formValue("companyIntelEventMergeTarget", "").trim();
+        if (!target) {
+          setStatus("请先填写合并目标事件 ID。", true);
+          return;
+        }
+        payload.target_event_id = target;
+      }
+      if (action === "reclassify") {
+        const eventType = formValue("companyIntelEventTypeOverride", "").trim();
+        if (!eventType) {
+          setStatus("请先填写新事件分类。", true);
+          return;
+        }
+        payload.event_type = eventType;
+      }
+      const { data, trace_id } = await api(`/api/company-events/${encodeURIComponent(eventId)}/review`, {
+        method: "POST",
+        role: "analyst",
+        body: payload
+      });
+      setStatus(`事件候选已${action === "approve" ? "批准" : action === "reject" ? "拒绝" : action === "merge" ? "合并" : "改分类"} · ${compactId(data.event_id)} · ${trace_id}`);
+      await loadCompanyIntelligence(false);
+    }
+
+    async function batchReviewCompanyEvents(action) {
+      const eventIds = selectedCompanyEventIds();
+      if (!eventIds.length) {
+        setStatus("请先选择事件候选。", true);
+        return;
+      }
+      const { data, trace_id } = await api("/api/company-database/events/review", {
+        method: "POST",
+        role: "analyst",
+        body: {
+          event_ids: eventIds,
+          action,
+          reason: formValue("companyIntelEventReviewNote", "").trim()
+        }
+      });
+      setStatus(`事件候选批量${action === "approve" ? "批准" : "拒绝"} · ${data.reviewed_count || eventIds.length} 条 · ${trace_id}`);
+      await loadCompanyIntelligence(false);
+    }
+
     function renderCompanyRelationshipReview(data) {
       const relationships = data.relationships?.company_relationships || [];
       const candidates = relationships.filter((item) => {
@@ -5747,6 +5850,7 @@
       renderCompanyIntelCompletenessVerdict(data);
       renderCompanyIntelGuidance(data);
       renderCompanyProfileAssertionConflicts(data, false);
+      renderCompanyEventReview(data);
       const factRows = [
         ...((profile.profiles || []).slice(0, 5).map((item) => ({ type: "画像", id: item.issuer_id, status: `${Math.round((item.data_quality?.profile_coverage || 0) * 100)}%`, detail: `${item.display_name || item.legal_name || ""} ${item.industry || ""}` }))),
         ...(profile.issuers || []).map((item) => ({ type: "公司", id: item.issuer_id, status: item.status || "active", detail: `${item.legal_name || ""} ${item.country || ""}` })),
@@ -6430,6 +6534,8 @@
           await runHotspotExpansion();
         } else if (action === "review-company-profile-assertion") {
           await reviewCompanyProfileFieldAssertion(target.dataset.assertionId, target.dataset.reviewAction || "approve");
+        } else if (action === "review-company-event") {
+          await reviewCompanyEvent(target.dataset.eventId, target.dataset.reviewAction || "approve");
         } else if (action === "review-company-relationship") {
           await reviewCompanyRelationship(target.dataset.relationshipId, target.dataset.reviewAction || "approve");
         } else if (action === "review-chokepoint-verification-task") {
@@ -6517,6 +6623,8 @@
     $("loadCompanyProfileAssertionConflicts").addEventListener("click", () => loadCompanyProfileAssertionConflicts(true));
     $("batchApproveCompanyProfileAssertions").addEventListener("click", () => batchReviewCompanyProfileFieldAssertions("approve"));
     $("batchRejectCompanyProfileAssertions").addEventListener("click", () => batchReviewCompanyProfileFieldAssertions("reject"));
+    $("batchApproveCompanyEvents").addEventListener("click", () => batchReviewCompanyEvents("approve"));
+    $("batchRejectCompanyEvents").addEventListener("click", () => batchReviewCompanyEvents("reject"));
     $("batchApproveCompanyRelationships").addEventListener("click", () => batchReviewCompanyRelationships("approve"));
     $("batchRejectCompanyRelationships").addEventListener("click", () => batchReviewCompanyRelationships("reject"));
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));

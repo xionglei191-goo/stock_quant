@@ -24654,7 +24654,184 @@ class SystemService:
                 rows = [item for item in rows if str(getattr(item, field_name, "")) == value]
         rows.sort(key=lambda item: item.occurred_at, reverse=True)
         limit = self._bounded_limit(filters.get("limit", 50), 500)
-        return {"count": len(rows), "events": [to_plain(item) for item in rows[:limit]]}
+        fact_counts: dict[str, int] = {}
+        review_counts: dict[str, int] = {}
+        candidate_count = 0
+        for event in rows:
+            fact_counts[event.fact_status] = fact_counts.get(event.fact_status, 0) + 1
+            review_counts[event.review_status] = review_counts.get(event.review_status, 0) + 1
+            if self._company_event_is_review_candidate(event):
+                candidate_count += 1
+        return {
+            "count": len(rows),
+            "events": [self._company_event_review_row(item) for item in rows[:limit]],
+            "fact_status_counts": fact_counts,
+            "review_status_counts": review_counts,
+            "candidate_count": candidate_count,
+            "usage_boundary": "company_events_are_local_timeline_records_no_live_trading",
+        }
+
+    def review_company_events(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        event_ids = self._unique_strings(self._string_list(payload.get("event_ids", [])))
+        event_id = str(payload.get("event_id", "")).strip()
+        if event_id:
+            event_ids = self._unique_strings([*event_ids, event_id])
+        if not event_ids:
+            raise ValidationError("event_id or event_ids is required")
+        reviewed: list[dict[str, Any]] = []
+        changed_ids: list[str] = []
+        merged_ids: list[str] = []
+        for item_id in event_ids:
+            item_payload = {**dict(payload), "event_id": item_id}
+            item_payload.pop("event_ids", None)
+            event = self.review_company_event(item_id, item_payload, actor=actor)
+            reviewed.append(self._company_event_review_row(event))
+            changed_ids.append(event.event_id)
+            merged_into = str(event.metadata.get("merged_into", "")).strip()
+            if merged_into:
+                merged_ids.append(merged_into)
+        return {
+            "schema_id": "company-event-batch-review-v1",
+            "reviewed_count": len(reviewed),
+            "events": reviewed,
+            "changed_event_ids": self._unique_strings(changed_ids),
+            "merged_into_event_ids": self._unique_strings(merged_ids),
+            "usage_boundary": "company_event_review_updates_local_timeline_provenance_only_no_live_trading",
+        }
+
+    def review_company_event(self, event_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> CompanyEvent:
+        event = self.store.company_events.get(str(event_id))
+        if event is None:
+            raise NotFoundError(f"company event {event_id} not found")
+        action = str(payload.get("action", payload.get("review_action", "approve"))).strip().lower()
+        if action not in {"approve", "reject", "merge", "reclassify"}:
+            raise ValidationError("event review action must be approve, reject, merge, or reclassify")
+        now = utcnow()
+        review_record = {
+            "action": action,
+            "reviewed_by": str(payload.get("reviewed_by", actor)),
+            "reviewed_at": now.isoformat(),
+            "reason": str(payload.get("reason", "")),
+            "event_type_before": event.event_type,
+            "fact_status_before": event.fact_status,
+            "confidence_before": event.confidence,
+        }
+        event.metadata.setdefault("review_history", [])
+        if isinstance(event.metadata["review_history"], list):
+            event.metadata["review_history"].append(dict(review_record))
+        if action == "approve":
+            event.review_status = "approved"
+            event.confidence = max(float(event.confidence), float(payload.get("confidence", 0.8) or 0.8))
+            if payload.get("fact_status"):
+                event.fact_status = str(payload.get("fact_status"))
+            event.metadata["candidate_status"] = "approved"
+            event.metadata["verified_by"] = review_record["reviewed_by"]
+            event.metadata["verified_at"] = review_record["reviewed_at"]
+        elif action == "reject":
+            event.review_status = "rejected"
+            event.metadata["candidate_status"] = "rejected"
+            event.metadata["rejected_by"] = review_record["reviewed_by"]
+            event.metadata["rejected_at"] = review_record["reviewed_at"]
+        elif action == "reclassify":
+            new_event_type = str(payload.get("event_type", payload.get("new_event_type", ""))).strip()
+            if not new_event_type:
+                raise ValidationError("reclassify review requires event_type or new_event_type")
+            event.metadata.setdefault("event_type_history", [])
+            if isinstance(event.metadata["event_type_history"], list):
+                event.metadata["event_type_history"].append({"from": event.event_type, "to": new_event_type, "reviewed_at": review_record["reviewed_at"]})
+            event.event_type = new_event_type
+            event.review_status = str(payload.get("review_status", "approved"))
+            event.metadata["candidate_status"] = "reclassified"
+            event.metadata["reclassified_by"] = review_record["reviewed_by"]
+            event.metadata["reclassified_at"] = review_record["reviewed_at"]
+        else:
+            target_id = str(payload.get("target_event_id", "")).strip()
+            if not target_id:
+                raise ValidationError("merge review requires target_event_id")
+            target = self.store.company_events.get(target_id)
+            if target is None:
+                raise NotFoundError(f"target company event {target_id} not found")
+            event.review_status = "merged"
+            event.metadata["candidate_status"] = "merged"
+            event.metadata["merged_into"] = target_id
+            target.source_ids = self._unique_strings([*target.source_ids, *event.source_ids])
+            target.document_ids = self._unique_strings([*target.document_ids, *event.document_ids])
+            target.evidence_ids = self._unique_strings([*target.evidence_ids, *event.evidence_ids])
+            target.impact_tags = self._unique_strings([*target.impact_tags, *event.impact_tags])
+            target.metadata.setdefault("merged_from", [])
+            if isinstance(target.metadata["merged_from"], list) and event.event_id not in target.metadata["merged_from"]:
+                target.metadata["merged_from"].append(event.event_id)
+            target.review_status = target.review_status if target.review_status == "approved" else "needs_review"
+        self._audit(
+            actor,
+            "review_company_event",
+            "company_event",
+            event.event_id,
+            approval_state=f"{action}:{event.review_status}",
+        )
+        marker = getattr(self.store, "mark_dirty_for_resource", None)
+        if callable(marker):
+            marker("company_event")
+        self.store.commit()
+        return event
+
+    def _company_event_review_row(self, event: CompanyEvent) -> dict[str, Any]:
+        row = to_plain(event)
+        existing_source_quality = event.metadata.get("source_quality")
+        source_quality = dict(existing_source_quality) if isinstance(existing_source_quality, Mapping) else self._company_record_source_quality(event, record_type="company_event")
+        row["source_quality"] = source_quality
+        row["review_recommendation"] = self._company_event_review_recommendation(event, source_quality)
+        return row
+
+    def _company_event_is_review_candidate(self, event: CompanyEvent) -> bool:
+        classification_status = str((event.metadata or {}).get("classification_status", ""))
+        candidate_status = str((event.metadata or {}).get("candidate_status", ""))
+        return event.review_status == "needs_review" or classification_status.endswith("needs_review") or candidate_status == "candidate"
+
+    def _company_event_review_recommendation(self, event: CompanyEvent, source_quality: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        source_quality = source_quality or self._company_record_source_quality(event, record_type="company_event")
+        score = self._company_event_review_score(event, source_quality=source_quality)
+        if not self._company_event_is_review_candidate(event):
+            action = "already_reviewed_or_not_candidate"
+            reason = "event_is_not_pending_review_candidate"
+        elif score >= 0.74:
+            action = "prefer_approve_after_review"
+            reason = "candidate_event_has_official_source_or_evidence_backlinks"
+        elif score <= 0.38:
+            action = "prefer_reject_or_request_evidence"
+            reason = "candidate_event_has_weak_source_quality_or_missing_backlinks"
+        else:
+            action = "manual_review_required"
+            reason = "candidate_event_score_is_mixed"
+        return {
+            "recommended_action": action,
+            "candidate_score": round(score, 4),
+            "source_quality_score": round(float(source_quality.get("score", 0.0) or 0.0), 4),
+            "evidence_count": len(event.evidence_ids),
+            "document_count": len(event.document_ids),
+            "source_count": len(event.source_ids),
+            "reason": reason,
+            "boundary": "recommendation_is_for_human_event_review_not_investment_advice",
+        }
+
+    def _company_event_review_score(self, event: CompanyEvent, *, source_quality: Mapping[str, Any] | None = None) -> float:
+        source_quality = source_quality or self._company_record_source_quality(event, record_type="company_event")
+        score = 0.2
+        score += min(0.25, max(0.0, float(event.confidence or 0.0)) * 0.25)
+        score += min(0.35, max(0.0, float(source_quality.get("score", 0.0) or 0.0)) * 0.35)
+        backlink_count = len(event.evidence_ids) + len(event.document_ids) + len(event.source_ids)
+        score += min(0.15, backlink_count * 0.04)
+        source_layer = str((event.metadata or {}).get("source_layer", ""))
+        if source_layer in {"official_disclosure_text_classification", "disclosure_event", "company_ir"}:
+            score += 0.08
+        if event.fact_status == "opinion_signal":
+            score -= 0.08
+        if event.review_status == "approved":
+            score += 0.08
+        if event.review_status == "rejected":
+            score -= 0.15
+        return min(1.0, max(0.0, score))
 
     def register_company_relationship(self, payload: Mapping[str, Any], *, actor: str = "system") -> CompanyRelationship:
         relationship = CompanyRelationship(
