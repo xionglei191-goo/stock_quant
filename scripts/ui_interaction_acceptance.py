@@ -398,6 +398,13 @@ def run_ui_interaction_acceptance(
             ),
             _run_check(
                 client,
+                "company_package_import_preview_render",
+                "(() => { document.querySelector('#companyIntelPackageRootPath').value = '/tmp/company_packages'; document.querySelector('#companyIntelPackageManifestGlob').value = '*.watchlist.*'; document.querySelector('#companyIntelPackageScanLimit').value = '2'; const pkgPayload = companyPackageImportPayload(false); renderCompanyPackageImport({schema_id:'company-database-package-import-v1', status:'dry_run', execute:false, dry_run:true, root_path:pkgPayload.root_path, manifest_glob:pkgPayload.manifest_glob, totals:{valid_count:1, planned_count:1, executed_count:0, already_exists_count:0, invalid_count:1, duplicate_count:0, failed_count:0}, companies:[{input_source:'package:demo.watchlist.csv', symbol:'PKGA', status:'dry_run', ids:{issuer_id:'issuer_bootstrap_pkga', security_id:'sec_bootstrap_pkga'}, created:{issuer:false, security:false, company_profile:false}, material_inbox_manifest_template:{file_path:'./pkga-company-profile.md'}},{input_source:'companies', symbol:'', status:'invalid', errors:['missing_symbol']}], next_actions:[{endpoint:'/api/company-database/material-inbox/ingest'}], usage_boundary:'local_company_database_package_import_only_no_external_download_no_research_report_fact_promotion_no_live_trading'}, true); return true; })()",
+                "document.querySelector('#companyIntelPackageImportStatus').textContent.includes('预览') && document.querySelector('#companyIntelPackagePlannedCount').textContent.includes('1') && document.querySelector('#companyIntelPackageInvalidCount').textContent.includes('1') && document.querySelector('#companyIntelPackageImportRows').textContent.includes('PKGA') && document.querySelector('#companyIntelOperationBox').textContent.includes('local_company_database_package_import_only')",
+                wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
                 "company_database_quality_reconcile_preview",
                 "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#previewCompanyQualityReconcile').click(); true",
                 "document.querySelector('#companyIntelQualityReconcileStatus').textContent.includes('预览') && document.querySelector('#companyIntelSourceQualityCount').textContent.trim().length > 0 && document.querySelector('#companyIntelQualityReconcileRows').textContent.trim().length > 0",

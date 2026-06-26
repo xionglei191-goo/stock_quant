@@ -1570,6 +1570,23 @@
             </div>
             <div class="row">
               <div class="field">
+                <label for="companyIntelPackageRootPath">本地 watchlist / 公司包</label>
+                <input id="companyIntelPackageRootPath" value="" aria-label="本地 watchlist 或公司包路径" placeholder="/home/xionglei/文档/company_packages">
+                <span class="hint">读取本地 JSON/CSV manifest，默认只预览</span>
+              </div>
+              <div class="field compact">
+                <label for="companyIntelPackageManifestGlob">Package</label>
+                <input id="companyIntelPackageManifestGlob" value="*.watchlist.*" aria-label="本地 watchlist 公司包 glob">
+              </div>
+              <div class="field compact">
+                <label for="companyIntelPackageScanLimit">导入上限</label>
+                <input id="companyIntelPackageScanLimit" value="50" aria-label="本地 watchlist 公司包导入上限">
+              </div>
+              <button id="previewCompanyPackageImport">预览公司包导入</button>
+              <button id="runCompanyPackageImport" class="primary">执行公司包导入</button>
+            </div>
+            <div class="row">
+              <div class="field">
                 <label for="companyIntelMaterialRootPath">本地材料 inbox</label>
                 <input id="companyIntelMaterialRootPath" value="" aria-label="本地公司材料 inbox 路径" placeholder="/home/xionglei/文档/company_materials/inbox">
                 <span class="hint">只读取 manifest sidecar，不按文件名猜公司</span>
@@ -1612,6 +1629,10 @@
               <div class="system-box"><strong>字段冲突</strong><span id="companyIntelProfileAssertionConflictCount">0</span></div>
               <div class="system-box"><strong>已替代</strong><span id="companyIntelProfileAssertionSupersededCount">0</span></div>
               <div class="system-box"><strong>推荐</strong><span id="companyIntelProfileAssertionRecommendationStatus">待载入</span></div>
+              <div class="system-box"><strong>公司包</strong><span id="companyIntelPackageImportStatus">待预览</span></div>
+              <div class="system-box"><strong>公司计划</strong><span id="companyIntelPackagePlannedCount">0</span></div>
+              <div class="system-box"><strong>公司导入</strong><span id="companyIntelPackageImportedCount">0</span></div>
+              <div class="system-box"><strong>公司无效</strong><span id="companyIntelPackageInvalidCount">0</span></div>
               <div class="system-box"><strong>材料入库</strong><span id="companyIntelMaterialInboxStatus">待预览</span></div>
               <div class="system-box"><strong>材料计划</strong><span id="companyIntelMaterialPlannedCount">0</span></div>
               <div class="system-box"><strong>材料写入</strong><span id="companyIntelMaterialIngestedCount">0</span></div>
@@ -1626,6 +1647,7 @@
             <table><thead><tr><th>公司</th><th>覆盖率</th><th>缺失层</th><th>计数</th></tr></thead><tbody id="companyIntelCoverageRows"></tbody></table>
             <table><thead><tr><th>字段</th><th>分组</th><th>状态</th><th>来源/原因</th></tr></thead><tbody id="companyIntelProfileFieldRows"></tbody></table>
             <table><thead><tr><th>候选字段</th><th>值</th><th>来源</th><th>状态</th></tr></thead><tbody id="companyIntelProfileFieldExtractRows"></tbody></table>
+            <table><thead><tr><th>公司包</th><th>本地主体</th><th>状态</th><th>下一步</th></tr></thead><tbody id="companyIntelPackageImportRows"></tbody></table>
             <table><thead><tr><th>材料</th><th>公司/来源</th><th>状态</th><th>说明</th></tr></thead><tbody id="companyIntelMaterialInboxRows"></tbody></table>
             <div class="row">
               <button id="batchApproveCompanyProfileAssertions">批量批准</button>
@@ -5418,6 +5440,74 @@
       }
     }
 
+    function companyPackageImportPayload(execute = false) {
+      const rootPath = formValue("companyIntelPackageRootPath", "").trim();
+      const symbol = companyIntelCurrentSymbol();
+      const payload = {
+        root_path: rootPath,
+        manifest_glob: formValue("companyIntelPackageManifestGlob", "*.watchlist.*") || "*.watchlist.*",
+        limit: Number(formValue("companyIntelPackageScanLimit", "50")) || 50,
+        execute,
+        dry_run: !execute
+      };
+      if (!rootPath && symbol) payload.symbols = [symbol];
+      return payload;
+    }
+
+    function renderCompanyPackageImport(data, showDetails = true) {
+      const totals = data.totals || {};
+      const companies = data.companies || data.items || [];
+      $("companyIntelPackageImportStatus").textContent = data.execute ? "已执行" : (data.status === "failed" ? "失败" : "预览");
+      $("companyIntelPackagePlannedCount").textContent = `${totals.planned_count || companies.filter((item) => item.status === "dry_run").length || 0}`;
+      $("companyIntelPackageImportedCount").textContent = `${totals.executed_count || totals.already_exists_count || 0}`;
+      $("companyIntelPackageInvalidCount").textContent = `${totals.invalid_count || totals.duplicate_count || totals.failed_count || 0}`;
+      $("companyIntelPackageImportRows").innerHTML = rows(companies.slice(0, 80), "暂无本地 watchlist / 公司包结果。", (item) => {
+        const ids = item.ids || {};
+        const created = item.created || {};
+        const errors = (item.errors || []).join(", ");
+        const template = item.material_inbox_manifest_template || {};
+        const nextAction = errors || compactId(template.file_path || (item.next_actions || [])[0]?.endpoint || "");
+        const createdLine = [
+          created.issuer ? "issuer" : "",
+          created.security ? "security" : "",
+          created.company_profile ? "profile" : ""
+        ].filter(Boolean).join(", ") || statusLabel(item.status || "");
+        return `<tr><td>${statusLabel(item.symbol || "")}${metaLine("来源", item.input_source || "-")}</td><td>${compactId(ids.issuer_id || "")}${metaLine("证券", compactId(ids.security_id || ""))}</td><td>${statusLabel(item.status || "")}${metaLine("创建", createdLine)}</td><td>${String(nextAction || "").slice(0, 180)}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          schema_id: data.schema_id,
+          status: data.status,
+          root_path: data.root_path,
+          manifest_glob: data.manifest_glob,
+          totals,
+          next_actions: data.next_actions,
+          usage_boundary: data.usage_boundary,
+          companies: companies.slice(0, 10)
+        });
+      }
+    }
+
+    async function importCompanyPackage(execute = false) {
+      try {
+        $("companyIntelPackageImportStatus").textContent = execute ? "执行中" : "预览中";
+        const { data, trace_id } = await api("/api/company-database/package/import", {
+          method: "POST",
+          role: "data_engineer",
+          body: companyPackageImportPayload(execute)
+        });
+        renderCompanyPackageImport(data, true);
+        if (execute) {
+          await auditCompanyCoverage(false);
+          await loadCompanyIntelligence(false);
+        }
+        setStatus(`${execute ? "本地公司包导入已执行" : "本地公司包导入预览完成"} · valid ${data.totals?.valid_count || 0} · invalid ${data.totals?.invalid_count || 0} · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelPackageImportStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
     function companyMaterialInboxPayload(execute = false) {
       const payload = {
         root_path: formValue("companyIntelMaterialRootPath", ""),
@@ -6855,6 +6945,8 @@
     $("batchRejectCompanyEvents").addEventListener("click", () => batchReviewCompanyEvents("reject"));
     $("batchApproveCompanyRelationships").addEventListener("click", () => batchReviewCompanyRelationships("approve"));
     $("batchRejectCompanyRelationships").addEventListener("click", () => batchReviewCompanyRelationships("reject"));
+    $("previewCompanyPackageImport").addEventListener("click", () => importCompanyPackage(false));
+    $("runCompanyPackageImport").addEventListener("click", () => importCompanyPackage(true));
     $("previewCompanyMaterialInbox").addEventListener("click", () => ingestCompanyMaterialInbox(false));
     $("runCompanyMaterialInbox").addEventListener("click", () => ingestCompanyMaterialInbox(true));
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));

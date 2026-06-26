@@ -433,6 +433,16 @@
   - **已完成（本轮 UI）**：公司情报 unknown symbol 的下一步动作改为 bootstrap，并可从工作台触发 bootstrap dry-run 预览。
   - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_database_bootstrap_creates_local_stub_for_unknown_symbol tests.test_system.SystemServiceTests.test_company_intelligence_symbol_view_handles_spcx_before_and_after_research`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
 
+- `DONE` T-473 本地 watchlist / 公司包导入与材料 inbox execute 回归
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-472 已支持未知 symbol 单标的 bootstrap，但分析用户通常从 watchlist、CSV 或样例公司包开始；同时 T-467 的材料 inbox 需要路由级 execute 回归，证明本地官方/IR 材料能真正进入 source/document/evidence/画像字段断言链路。
+  - **已完成（本轮）**：新增 `POST /api/company-database/package/import` 和兼容别名 `POST /api/company-database/watchlist/import`，支持本地 JSON/CSV package manifest、`companies/items/watchlist`、`symbols/tickers/codes` 和 `csv_text`。
+  - **已完成（本轮）**：接口默认 dry-run，显式 `execute=true` 才逐家公司复用 `bootstrap_company_database` 创建本地 issuer/security/profile stub；重复 symbol 会被标记 duplicate，缺 symbol 会被标记 invalid，不会 fallback 到全量公司。
+  - **已完成（本轮）**：每家公司返回 `material_inbox_manifest_template` 和下一步动作，指导用户继续准备公司官网、IR、公告或监管披露材料；接口固定本地-only、no external download、no research-report fact promotion、no live trading 边界。
+  - **已完成（本轮 UI）**：公司情报工作台“公司数据库补齐”面板新增“本地 watchlist / 公司包”路径、glob、导入上限、预览和执行按钮，展示计划数、导入数、无效数和逐公司结果。
+  - **已完成（本轮回归）**：新增 material inbox API execute 测试，直接调用 `/api/company-database/material-inbox/ingest` 验证 source 注册、document 写入、evidence 抽取和 `CompanyProfileFieldAssertion` 回填。
+  - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_database_package_import_bootstraps_watchlist_companies tests.test_system.SystemServiceTests.test_company_database_package_import_does_not_fallback_to_all_issuers tests.test_system.SystemServiceTests.test_company_material_inbox_api_execute_backfills_profile_fields`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

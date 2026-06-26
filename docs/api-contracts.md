@@ -2291,6 +2291,8 @@
 | `/api/company-database/profile-field-assertions/review` | `POST` | `company-profiles/field-assertions/review` 的兼容别名，用于补库流程处理字段冲突候选 |
 | `/api/company-database/profile-fields/extract` | `POST` | `company-profiles/fields/extract` 的公司数据库兼容入口，用于补库流程先抽取画像字段再审计覆盖 |
 | `/api/company-database/bootstrap` | `POST` | 为未知 symbol 创建本地 issuer/security/profile stub；默认 dry-run，返回材料 inbox manifest 模板和覆盖预览 |
+| `/api/company-database/package/import` | `POST` | 从本地 watchlist / 公司包 JSON 或 CSV 批量创建本地 issuer/security/profile stub；默认 dry-run，返回每家公司材料 inbox 模板 |
+| `/api/company-database/watchlist/import` | `POST` | `company-database/package/import` 的兼容别名，用于直接导入观察池 symbol 列表 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
 | `/api/company-database/batch/runs` | `GET` / `POST` | 查询公司数据库批量补齐运行历史，用于审计、复盘和后续断点续跑 |
@@ -2385,6 +2387,32 @@
 
 边界：bootstrap 只建立本地研究对象骨架。它不会用研报补事实字段，不会把新闻/人工参考作为事实源，不会下载外部数据，也不会创建真实交易或订单。
 
+#### `POST /api/company-database/package/import`
+
+从本地 watchlist / 公司包导入一组待研究公司，并逐家公司复用 `company-database/bootstrap` 创建或预览本地 `Issuer`、`Security` 和 `CompanyProfile` stub。兼容别名：`POST /api/company-database/watchlist/import`。
+
+请求字段：
+
+- `root_path` / `package_root`：可选；本地公司包目录。仅读取本地文件，不访问外网。
+- `manifest_glob`：可选；默认 `*.watchlist.*`。支持 JSON 与 CSV。JSON 可为单对象、对象内 `companies[]` / `items[]` / `watchlist[]` 或数组；CSV 至少应包含 `symbol` / `ticker` / `code` 之一。
+- `companies` / `items` / `watchlist`：可选数组；元素可以是 symbol 字符串或公司对象。
+- `symbols` / `tickers` / `codes`：可选字符串或数组；用于直接导入观察池标的。
+- `csv_text` / `csv`：可选；内联 CSV 文本。
+- `market` / `exchange` / `currency` / `country` / `sector` / `industry` / `region` / `security_type` / `create_profile`：可选默认值，会传递给每家公司 bootstrap。
+- `limit` / `scan_limit`：导入上限，默认 200，最大 1000。
+- `execute` / `dry_run`：默认 dry-run；`execute=true` 且 `dry_run` 非真时才写入。
+
+返回字段：
+
+- `schema_id`：当前为 `company-database-package-import-v1`。
+- `status`：`dry_run`、`executed`、`partial` 或 `failed`。
+- `totals`：包含 `input_count`、`valid_count`、`planned_count`、`executed_count`、`already_exists_count`、`invalid_count`、`duplicate_count`、`failed_count`、`created_issuers`、`created_securities`、`created_company_profiles` 和 `manifest_templates`。
+- `companies[]` / `items[]`：逐家公司结果，包含 `symbol`、`status`、`ids`、`created`、`existing`、`coverage`、`material_inbox_manifest_template`、`next_actions` 和 `errors`。
+- `coverage_after`：执行模式下，对本次导入公司做一次覆盖率审计。
+- `next_actions`：导入后建议先准备官方/IR/公告材料，再执行材料 inbox、批量补库和覆盖审计。
+
+边界：该接口只处理本地 watchlist / 公司包，不下载外部数据，不把研报、新闻或人工参考提升为事实字段，不触发真实交易。它不会在空输入时 fallback 到全量 issuer；缺 symbol 的行会进入 `invalid`。
+
 #### `GET|POST /api/company-financial-metrics`
 
 公司财务指标事实记录入口。`GET` 用于查询；`POST` 用于登记单条治理后的财务指标。财务指标可以由官方/IR/监管材料抽取画像字段时自动物化，也可以由本地已治理事实管道显式登记。
@@ -2474,6 +2502,7 @@ T-467 工作台入口，用于把本机已经下载或手工保存的公司官�
 
 - `root_path`：可选；本地 inbox 目录。为空时使用 `AI_QUANT_COMPANY_MATERIAL_INBOX`，再回退到 `AI_QUANT_HOST_COMPANY_MATERIAL_ROOT/inbox`。
 - `manifest_glob`：可选；默认 `*.manifest.json`。
+- `extensions`：可选；允许读取的本地文件扩展名，默认 `.txt`、`.md`、`.html`、`.htm`。
 - `scan_limit` / `limit`：可选；扫描上限，默认 1000，最大 10000。
 - `execute`：可选；默认 `false`。仅 `true` 时写入 source/document/evidence/profile field assertion。
 - `dry_run`：可选；为 `true` 时强制预览，不写库。
@@ -2489,6 +2518,12 @@ T-467 工作台入口，用于把本机已经下载或手工保存的公司官�
 - `items[]`：每条 manifest 的计划、执行或拒绝结果。
 - `source_rules`：允许和拒绝的 source/document 类型。
 - `usage_boundary`：固定为本地公司官方/IR 材料补库边界。
+
+执行语义：
+
+- `execute=true` 后，每条有效 manifest 会按需注册 `Source`、写入 `Document`、抽取 `Evidence`，再调用画像字段抽取生成或更新 `CompanyProfileFieldAssertion`。
+- 返回的 `totals.sources_registered`、`documents_ingested`、`evidence_extracted`、`profile_fields_updated` 和 `profile_field_assertions_planned_or_written` 用于确认材料是否真正进入公司事实数据库。
+- `dry_run=true` 优先级高于 `execute=true`；dry-run 只返回计划，不写入任何 source、document、evidence 或字段断言。
 
 边界：
 

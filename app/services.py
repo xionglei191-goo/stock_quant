@@ -25190,6 +25190,264 @@ class SystemService:
             "usage_boundary": "local_company_database_bootstrap_only_no_external_download_no_research_report_fact_promotion_no_live_trading",
         }
 
+    def _company_watchlist_import_records(self, payload: Mapping[str, Any], *, limit: int) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+
+        def append_record(value: Any, *, input_source: str) -> None:
+            if len(records) >= limit:
+                return
+            if isinstance(value, Mapping):
+                row = dict(value)
+            else:
+                row = {"symbol": str(value).strip()}
+            row["_input_source"] = input_source
+            records.append(row)
+
+        def append_manifest_payload(value: Any, *, input_source: str) -> None:
+            if isinstance(value, Mapping):
+                if isinstance(value.get("companies"), list):
+                    for item in value["companies"]:
+                        append_record(item, input_source=input_source)
+                elif isinstance(value.get("items"), list):
+                    for item in value["items"]:
+                        append_record(item, input_source=input_source)
+                elif isinstance(value.get("watchlist"), list):
+                    for item in value["watchlist"]:
+                        append_record(item, input_source=input_source)
+                else:
+                    append_record(value, input_source=input_source)
+            elif isinstance(value, list):
+                for item in value:
+                    append_record(item, input_source=input_source)
+
+        raw_root = str(payload.get("root_path") or payload.get("package_root") or "").strip()
+        if raw_root:
+            root = Path(raw_root).expanduser()
+            if not root.exists() or not root.is_dir():
+                raise ValidationError(f"company watchlist package root not found: {root}")
+            manifest_glob = str(payload.get("manifest_glob") or "*.watchlist.*").strip() or "*.watchlist.*"
+            for manifest_path in sorted(root.rglob(manifest_glob)):
+                if len(records) >= limit:
+                    break
+                suffix = manifest_path.suffix.lower()
+                if suffix == ".json":
+                    append_manifest_payload(json.loads(manifest_path.read_text(encoding="utf-8")), input_source=f"package:{manifest_path.name}")
+                elif suffix == ".csv":
+                    reader = csv.DictReader(manifest_path.read_text(encoding="utf-8").splitlines())
+                    for row in reader:
+                        append_record({str(k).strip(): v for k, v in dict(row).items() if str(k).strip()}, input_source=f"package:{manifest_path.name}")
+
+        for key in ["companies", "items", "watchlist"]:
+            value = payload.get(key)
+            if isinstance(value, Mapping):
+                append_record(value, input_source=key)
+            elif isinstance(value, list | tuple | set):
+                for item in value:
+                    append_record(item, input_source=key)
+
+        for key in ["symbols", "tickers", "codes"]:
+            for symbol in self._string_list(payload.get(key, [])):
+                append_record({"symbol": symbol}, input_source=key)
+
+        csv_text = str(payload.get("csv_text") or payload.get("csv") or "").strip()
+        if csv_text:
+            reader = csv.DictReader(csv_text.splitlines())
+            for row in reader:
+                append_record({str(k).strip(): v for k, v in dict(row).items() if str(k).strip()}, input_source="csv_text")
+
+        return records[:limit]
+
+    def _company_watchlist_import_symbol(self, record: Mapping[str, Any]) -> str:
+        return str(record.get("symbol") or record.get("ticker") or record.get("code") or record.get("security_code") or "").strip()
+
+    def _company_watchlist_bootstrap_payload(self, record: Mapping[str, Any], defaults: Mapping[str, Any], *, execute: bool) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        for key in [
+            "symbol",
+            "ticker",
+            "code",
+            "company_name",
+            "legal_name",
+            "display_name",
+            "issuer_id",
+            "security_id",
+            "market",
+            "exchange",
+            "currency",
+            "country",
+            "sector",
+            "industry",
+            "region",
+            "board",
+            "listing_date",
+            "security_type",
+            "cik",
+            "lei",
+            "figi",
+            "isin",
+            "reason",
+            "aliases",
+            "company_details",
+            "data_sources",
+            "create_profile",
+        ]:
+            value = record.get(key, defaults.get(key))
+            if value not in (None, ""):
+                payload[key] = value
+        payload["symbol"] = self._company_watchlist_import_symbol(record)
+        payload["execute"] = execute
+        payload["dry_run"] = not execute
+        return payload
+
+    def import_company_watchlist(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        limit = self._bounded_limit(payload.get("limit", payload.get("scan_limit", 200)), 1000)
+        records = self._company_watchlist_import_records(payload, limit=limit)
+        if not records:
+            raise ValidationError("company watchlist import requires symbols, companies, items, watchlist, or csv_text")
+        defaults = {
+            key: payload.get(key)
+            for key in [
+                "market",
+                "exchange",
+                "currency",
+                "country",
+                "sector",
+                "industry",
+                "region",
+                "board",
+                "security_type",
+                "reason",
+                "create_profile",
+            ]
+            if key in payload
+        }
+        items: list[dict[str, Any]] = []
+        totals = {
+            "input_count": len(records),
+            "valid_count": 0,
+            "planned_count": 0,
+            "executed_count": 0,
+            "already_exists_count": 0,
+            "invalid_count": 0,
+            "duplicate_count": 0,
+            "failed_count": 0,
+            "created_issuers": 0,
+            "created_securities": 0,
+            "created_company_profiles": 0,
+            "manifest_templates": 0,
+        }
+        seen_symbols: set[str] = set()
+        target_issuer_ids: list[str] = []
+        for index, record in enumerate(records, start=1):
+            symbol = self._company_watchlist_import_symbol(record)
+            item = {
+                "index": index,
+                "input_source": str(record.get("_input_source", "unknown")),
+                "symbol": symbol,
+                "status": "pending",
+                "errors": [],
+            }
+            if not symbol:
+                item["status"] = "invalid"
+                item["errors"] = ["missing_symbol"]
+                totals["invalid_count"] += 1
+                items.append(item)
+                continue
+            dedupe_key = symbol.upper()
+            if dedupe_key in seen_symbols:
+                item["status"] = "duplicate"
+                item["errors"] = ["duplicate_symbol"]
+                totals["duplicate_count"] += 1
+                items.append(item)
+                continue
+            seen_symbols.add(dedupe_key)
+            totals["valid_count"] += 1
+            try:
+                result = self.bootstrap_company_database(self._company_watchlist_bootstrap_payload(record, defaults, execute=execute), actor=actor)
+                item.update(
+                    {
+                        "status": result.get("status", "executed" if execute else "dry_run"),
+                        "ids": result.get("ids", {}),
+                        "created": result.get("created", {}),
+                        "existing": result.get("existing", {}),
+                        "coverage": result.get("coverage", {}),
+                        "material_inbox_manifest_template": result.get("material_inbox_manifest_template", {}),
+                        "next_actions": result.get("next_actions", []),
+                    }
+                )
+                ids = result.get("ids", {}) if isinstance(result.get("ids", {}), Mapping) else {}
+                issuer_id = str(ids.get("issuer_id", "")).strip()
+                if issuer_id:
+                    target_issuer_ids.append(issuer_id)
+                if execute and result.get("status") == "executed":
+                    totals["executed_count"] += 1
+                elif result.get("status") == "already_exists":
+                    totals["already_exists_count"] += 1
+                else:
+                    totals["planned_count"] += 1
+                created = result.get("created", {}) if isinstance(result.get("created", {}), Mapping) else {}
+                totals["created_issuers"] += 1 if created.get("issuer") else 0
+                totals["created_securities"] += 1 if created.get("security") else 0
+                totals["created_company_profiles"] += 1 if created.get("company_profile") else 0
+                if result.get("material_inbox_manifest_template"):
+                    totals["manifest_templates"] += 1
+            except Exception as exc:
+                item["status"] = "failed"
+                item["errors"] = [str(exc)]
+                totals["failed_count"] += 1
+            items.append(item)
+
+        coverage_after: dict[str, Any] = {}
+        if execute and target_issuer_ids:
+            coverage_after = self.company_database_coverage_audit({"issuer_ids": self._unique_strings(target_issuer_ids), "limit": len(target_issuer_ids)}, actor=actor)
+        status = "failed" if totals["failed_count"] and not totals["executed_count"] else ("partial" if totals["failed_count"] else ("executed" if execute else "dry_run"))
+        self._audit(
+            actor,
+            "import_company_watchlist",
+            "company_database",
+            "watchlist",
+            approval_state=f"execute={execute};valid={totals['valid_count']};created_issuers={totals['created_issuers']}",
+        )
+        return {
+            "generated_at": utcnow().isoformat(),
+            "schema_id": "company-database-package-import-v1",
+            "status": status,
+            "execute": execute,
+            "dry_run": not execute,
+            "input_count": len(records),
+            "company_count": totals["valid_count"],
+            "limit": limit,
+            "root_path": str(payload.get("root_path") or payload.get("package_root") or ""),
+            "manifest_glob": str(payload.get("manifest_glob") or "*.watchlist.*"),
+            "totals": totals,
+            "items": items,
+            "companies": items,
+            "coverage_after": coverage_after,
+            "next_actions": [
+                {
+                    "action": "prepare_material_inbox",
+                    "endpoint": "/api/company-database/material-inbox/ingest",
+                    "reason": "按每个 item 返回的 manifest 模板准备官方/IR/公告材料。",
+                },
+                {
+                    "action": "batch_build_company_database",
+                    "endpoint": "/api/company-database/batch/build",
+                    "reason": "有本地主体后再补事件、关系、结构化观点和反馈闭环。",
+                },
+                {
+                    "action": "audit_company_coverage",
+                    "endpoint": "/api/company-database/coverage/audit",
+                    "reason": "批量建档后检查各公司事实层、观点层和反馈层缺口。",
+                },
+            ],
+            "usage_boundary": "local_company_database_package_import_only_no_external_download_no_research_report_fact_promotion_no_live_trading",
+        }
+
     def _company_database_target_issuers(self, payload: Mapping[str, Any], *, limit: int) -> list[Issuer]:
         issuer_ids: list[str] = []
         raw_issuer_ids = payload.get("issuer_ids", [])

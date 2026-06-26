@@ -518,6 +518,75 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(again.data["status"], "already_exists")
         self.assertFalse(any(again.data["created"].values()))
 
+    def test_company_database_package_import_bootstraps_watchlist_companies(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "sample.watchlist.csv").write_text(
+                "symbol,company_name,market,sector\nPKGA,Package Alpha,U,Technology\nPKGB,Package Beta,A,Manufacturing\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "root_path": str(root),
+                "manifest_glob": "*.watchlist.csv",
+                "symbols": ["PKGA", "PKGC"],
+                "execute": True,
+                "dry_run": True,
+            }
+
+            dry_run = self.router.dispatch("POST", "/api/company-database/package/import", payload, actor="data", role="data_engineer")
+            self.assertTrue(dry_run.success, dry_run.error)
+            self.assertEqual(dry_run.data["schema_id"], "company-database-package-import-v1")
+            self.assertEqual(dry_run.data["status"], "dry_run")
+            self.assertEqual(dry_run.data["totals"]["valid_count"], 3)
+            self.assertEqual(dry_run.data["totals"]["duplicate_count"], 1)
+            self.assertEqual(dry_run.data["totals"]["planned_count"], 3)
+            self.assertEqual(dry_run.data["totals"]["manifest_templates"], 3)
+            self.assertNotIn("issuer_bootstrap_pkga", self.service.store.issuers)
+            self.assertIn("/api/company-database/material-inbox/ingest", [item["endpoint"] for item in dry_run.data["next_actions"]])
+
+            executed = self.router.dispatch(
+                "POST",
+                "/api/company-database/package/import",
+                {**payload, "execute": True, "dry_run": False},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(executed.success, executed.error)
+            self.assertEqual(executed.data["status"], "executed")
+            self.assertEqual(executed.data["totals"]["executed_count"], 3)
+            self.assertEqual(executed.data["totals"]["created_issuers"], 3)
+            self.assertIn("issuer_bootstrap_pkga", self.service.store.issuers)
+            self.assertIn("issuer_bootstrap_pkgb", self.service.store.issuers)
+            self.assertIn("issuer_bootstrap_pkgc", self.service.store.issuers)
+            self.assertIn("sec_bootstrap_pkga", self.service.store.securities)
+            self.assertEqual(self.service.store.securities["sec_bootstrap_pkga"].ticker, "PKGA")
+            self.assertIn("coverage_after", executed.data)
+            self.assertEqual(executed.data["usage_boundary"], "local_company_database_package_import_only_no_external_download_no_research_report_fact_promotion_no_live_trading")
+
+            again = self.router.dispatch(
+                "POST",
+                "/api/company-database/watchlist/import",
+                {**payload, "execute": True, "dry_run": False},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(again.success, again.error)
+            self.assertEqual(again.data["totals"]["already_exists_count"], 3)
+            self.assertEqual(again.data["totals"]["created_issuers"], 0)
+
+    def test_company_database_package_import_does_not_fallback_to_all_issuers(self) -> None:
+        result = self.router.dispatch(
+            "POST",
+            "/api/company-database/package/import",
+            {"companies": [{"company_name": "Missing Symbol"}], "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.data["totals"]["invalid_count"], 1)
+        self.assertEqual(result.data["totals"]["created_issuers"], 0)
+        self.assertNotIn("issuer_001", json.dumps(result.data["companies"], ensure_ascii=False))
+
     def test_company_database_unknown_symbol_does_not_fallback_to_all_companies(self) -> None:
         build = self.router.dispatch(
             "POST",
@@ -5740,6 +5809,68 @@ class SystemServiceTests(unittest.TestCase):
             self.assertIn("Shanghai", issuer.company_details["headquarters"])
             self.assertGreater(len(self.service.store.company_profile_field_assertions), 0)
             self.assertTrue(all(assertion.source_ids == ["local_demo_ir"] for assertion in self.service.store.company_profile_field_assertions.values()))
+
+    def test_company_material_inbox_api_execute_backfills_profile_fields(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "company_materials"
+            root.mkdir()
+            material = root / "demo-ir.txt"
+            material.write_text(
+                "Business overview: Demo Corp makes industrial AI systems. Products include edge inference modules. "
+                "Official website: https://demo.example.com. Investor relations: https://demo.example.com/investors. "
+                "Headquarters: Shanghai, China. Employees 12,300. CEO Jane Doe.",
+                encoding="utf-8",
+            )
+            (root / "demo.manifest.json").write_text(
+                json.dumps(
+                    {
+                        "issuer_id": "issuer_001",
+                        "security_id": "sec_001",
+                        "source_id": "local_demo_ir_api",
+                        "source_type": "company_ir",
+                        "document_type": "official_business_overview",
+                        "source_uri": "https://demo.example.com/investors/profile",
+                        "file_path": "demo-ir.txt",
+                        "title": "Demo IR profile",
+                        "language": "en",
+                        "published_at": "2026-06-25",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            response = self.router.dispatch(
+                "POST",
+                "/api/company-database/material-inbox/ingest",
+                {
+                    "root_path": str(root),
+                    "manifest_glob": "*.manifest.json",
+                    "extensions": [".txt"],
+                    "fields": ["business_summary", "products", "website_url", "ir_url", "headquarters", "employee_count", "management"],
+                    "execute": True,
+                    "dry_run": False,
+                    "require_evidence": True,
+                },
+                actor="company_inbox_api_test",
+                role="data_engineer",
+            )
+
+            self.assertTrue(response.success, response.error)
+            self.assertEqual(response.data["schema_id"], "company-material-inbox-ingest-v1")
+            self.assertEqual(response.data["status"], "executed")
+            self.assertEqual(response.data["totals"]["sources_registered"], 1)
+            self.assertEqual(response.data["totals"]["documents_ingested"], 1)
+            self.assertGreater(response.data["totals"]["evidence_extracted"], 0)
+            self.assertGreaterEqual(response.data["totals"]["profile_fields_updated"], 5)
+            self.assertIn("local_demo_ir_api", self.service.store.sources)
+            self.assertTrue(any(document.source_id == "local_demo_ir_api" for document in self.service.store.documents.values()))
+            self.assertGreater(len(self.service.store.company_profile_field_assertions), 0)
+            issuer = self.service.store.issuers["issuer_001"]
+            self.assertEqual(issuer.company_details["website_url"], "https://demo.example.com")
+            self.assertEqual(issuer.company_details["ir_url"], "https://demo.example.com/investors")
+            self.assertIn("Shanghai", issuer.company_details["headquarters"])
+            self.assertFalse(response.data["source_rules"]["research_reports"] == "accepted_as_fact_source")
 
     def test_company_material_inbox_script_rejects_research_and_manual_sources(self) -> None:
         from scripts.company_material_inbox_ingest import run_company_material_inbox_ingest
