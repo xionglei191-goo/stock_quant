@@ -1612,12 +1612,20 @@
           </div>
           <div class="panel span-12">
             <h2>关系候选审核</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>关系复核</strong><span id="companyIntelRelationshipReviewStatus">待载入</span></div>
+              <div class="system-box"><strong>候选关系</strong><span id="companyIntelRelationshipCandidateCount">0</span></div>
+              <div class="system-box"><strong>关系推荐</strong><span id="companyIntelRelationshipRecommendationStatus">待载入</span></div>
+            </div>
             <div class="row">
               <div class="field">
                 <label for="companyIntelRelationshipMergeTarget">合并目标</label>
                 <input id="companyIntelRelationshipMergeTarget" value="" aria-label="关系候选合并目标">
                 <span class="hint">填写目标关系 ID 后可执行合并</span>
               </div>
+              <button id="batchApproveCompanyRelationships">批量通过</button>
+              <button id="batchRejectCompanyRelationships">批量拒绝</button>
+              <input id="companyIntelRelationshipReviewNote" placeholder="复核备注" />
             </div>
             <table><thead><tr><th>关系</th><th>对象</th><th>状态</th><th>操作</th></tr></thead><tbody id="companyIntelRelationshipReviewRows"></tbody></table>
           </div>
@@ -5658,20 +5666,33 @@
         const candidateStatus = String(item.metadata?.candidate_status || "");
         return type.endsWith("_candidate") || status === "needs_review" || candidateStatus === "candidate";
       }).slice(0, 20);
+      const recommended = candidates.filter((item) => String(item.review_recommendation?.recommended_action || "").includes("approve")).length;
+      $("companyIntelRelationshipReviewStatus").textContent = candidates.length ? "待复核" : "无候选";
+      $("companyIntelRelationshipCandidateCount").textContent = `${candidates.length}`;
+      $("companyIntelRelationshipRecommendationStatus").textContent = candidates.length ? `${recommended}/${candidates.length}` : "0/0";
       $("companyIntelRelationshipReviewRows").innerHTML = rows(candidates, "暂无待审核关系候选", (item) => {
         const objectName = item.metadata?.entity_name || item.object_id || "";
+        const recommendation = item.review_recommendation || {};
+        const recommendText = `${recommendation.recommended_action || "manual_review"} ${formatScore(recommendation.candidate_score || 0)}`;
         const actions = [
+          `<label class="inline"><input type="checkbox" data-company-relationship-select="${item.relationship_id}"> 选择</label>`,
           `<button data-action="review-company-relationship" data-review-action="approve" data-relationship-id="${item.relationship_id}">通过</button>`,
           `<button data-action="review-company-relationship" data-review-action="reject" data-relationship-id="${item.relationship_id}">拒绝</button>`,
           `<button data-action="review-company-relationship" data-review-action="merge" data-relationship-id="${item.relationship_id}">合并</button>`
         ].join(" ");
-        return `<tr><td>${compactId(item.relationship_id)}${metaLine("类型", statusLabel(item.relationship_type || ""))}</td><td>${String(objectName).slice(0, 120)}${metaLine("证据", `${(item.evidence_ids || []).length}`)}</td><td>${statusLabel(item.review_status || "")}${metaLine("置信", formatScore(item.confidence || 0))}</td><td>${actions}</td></tr>`;
+        return `<tr><td>${compactId(item.relationship_id)}${metaLine("类型", statusLabel(item.relationship_type || ""))}</td><td>${String(objectName).slice(0, 120)}${metaLine("证据", `${(item.evidence_ids || []).length}`)}</td><td>${statusLabel(item.review_status || "")}${metaLine("置信", formatScore(item.confidence || 0))}${metaLine("推荐", recommendText)}</td><td>${actions}</td></tr>`;
       });
+    }
+
+    function selectedCompanyRelationshipIds() {
+      return [...document.querySelectorAll("[data-company-relationship-select]:checked")]
+        .map((item) => item.getAttribute("data-company-relationship-select"))
+        .filter(Boolean);
     }
 
     async function reviewCompanyRelationship(relationshipId, action) {
       if (!relationshipId) return;
-      const payload = { action };
+      const payload = { action, reason: formValue("companyIntelRelationshipReviewNote", "").trim() };
       if (action === "merge") {
         const target = formValue("companyIntelRelationshipMergeTarget", "").trim();
         if (!target) {
@@ -5686,6 +5707,25 @@
         body: payload
       });
       setStatus(`关系候选已${action === "approve" ? "通过" : action === "reject" ? "拒绝" : "合并"} · ${compactId(data.relationship_id)} · ${trace_id}`);
+      await loadCompanyIntelligence(false);
+    }
+
+    async function batchReviewCompanyRelationships(action) {
+      const relationshipIds = selectedCompanyRelationshipIds();
+      if (!relationshipIds.length) {
+        setStatus("请先选择关系候选。", true);
+        return;
+      }
+      const { data, trace_id } = await api("/api/company-database/relationships/review", {
+        method: "POST",
+        role: "analyst",
+        body: {
+          relationship_ids: relationshipIds,
+          action,
+          reason: formValue("companyIntelRelationshipReviewNote", "").trim()
+        }
+      });
+      setStatus(`关系候选批量${action === "approve" ? "通过" : "拒绝"} · ${data.reviewed_count || relationshipIds.length} 条 · ${trace_id}`);
       await loadCompanyIntelligence(false);
     }
 
@@ -6477,6 +6517,8 @@
     $("loadCompanyProfileAssertionConflicts").addEventListener("click", () => loadCompanyProfileAssertionConflicts(true));
     $("batchApproveCompanyProfileAssertions").addEventListener("click", () => batchReviewCompanyProfileFieldAssertions("approve"));
     $("batchRejectCompanyProfileAssertions").addEventListener("click", () => batchReviewCompanyProfileFieldAssertions("reject"));
+    $("batchApproveCompanyRelationships").addEventListener("click", () => batchReviewCompanyRelationships("approve"));
+    $("batchRejectCompanyRelationships").addEventListener("click", () => batchReviewCompanyRelationships("reject"));
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));
     $("runCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(true));
     $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));

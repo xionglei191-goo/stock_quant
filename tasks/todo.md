@@ -371,6 +371,16 @@
   - **已完成（本轮）**：`scripts/ui_static_check.py`、`scripts/ui_interaction_acceptance.py` 和单测覆盖批量复核与推荐信息。
   - 验收：静态契约、浏览器验收和后端回归都能证明批量 review、推荐展示和备注写入可用，且仍不触发真实交易。
 
+- `DONE` T-466 公司关系候选批量复核与推荐增强
+  - 对应：E3-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-443/T-444/T-448 已能从公开披露抽取客户、供应商、合作方、子公司等 `CompanyRelationship` 候选并在工作台单条审核，但关系层仍缺少批量处理、复核备注和来源质量推荐，影响公司关系图谱长期补库效率。
+  - **已完成（本轮）**：`GET|POST /api/company-relationships` 返回 `source_quality`、`review_recommendation`、候选关系数和状态计数，推荐只用于人工排序，不自动批准关系。
+  - **已完成（本轮）**：新增 `POST /api/company-relationships/review` 和兼容入口 `POST /api/company-database/relationships/review`，支持 `relationship_ids` 批量 approve/reject/merge，并把复核备注写入每条关系的 `metadata.review_history`。
+  - **已完成（本轮）**：公司情报工作台“关系候选审核”新增推荐状态、候选计数、选择框、批量通过/拒绝和复核备注输入框；单条合并仍保留。
+  - **已完成（本轮）**：`scripts/ui_static_check.py`、`scripts/ui_interaction_acceptance.py` 和单测覆盖关系候选推荐、选择、批量复核和备注写入。
+  - 验收：关系复核仍只更新本地图谱 provenance，不触发真实交易；研报覆盖关系仍是观点/关注度关系，不会被提升为客户、供应商或竞争事实。
+  - 后续增强：T-467 本地公司 IR/官网/官方披露材料 inbox 工作台入口；T-468 公司事件候选复核 API 与工作台；T-469 补库 run retry/resume UI。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

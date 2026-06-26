@@ -2298,9 +2298,11 @@
 | `/api/company-database/quality/reconcile` | `POST` | 对公司事件和关系做本地去重、实体别名归并候选和来源质量评分；默认 dry-run，显式 `execute=true` 才标记 merge 或写入 source quality |
 | `/api/company-database/events/build` | `POST` | 从已入库公开披露、披露正文证据、公开行情和研报覆盖生成公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
 | `/api/company-database/relationships/build` | `POST` | 从证券上市关系、研报覆盖记录和公开披露文本生成最小公司关系层；研报覆盖关系固定为观点/关注度关系，公开披露抽取关系默认待复核 |
+| `/api/company-database/relationships/review` | `POST` | 批量复核公司关系候选，支持 approve/reject/merge，返回本地人工复核结果和推荐摘要 |
 | `/api/company-database/workflow/build` | `POST` | 从事件、关系和研报观点生成观察任务、公司情报基线结论和 paper-only 模拟反馈；默认 dry-run |
 | `/api/company-events` | `GET` / `POST` | 查询或登记 `CompanyEvent`，覆盖公告、财报、新闻、政策、订单、诉讼、价格、供需等事件 |
 | `/api/company-relationships` | `GET` / `POST` | 查询或登记 `CompanyRelationship`，覆盖客户、供应商、竞争、股权、机构覆盖、分析师覆盖和上下游 |
+| `/api/company-relationships/review` | `POST` | 批量复核 `CompanyRelationship` 候选；用于人工图谱质量处理，不触发交易 |
 | `/api/company-relationships/{relationship_id}/review` | `POST` | 人工审核关系候选，支持 approve、reject、merge，保留审核历史和证据回链 |
 | `/api/research-reports/structure` | `POST` | 把本地研报资产批量结构化为研报、观点、预测和分析师画像，固定观点层边界 |
 | `/api/research-reports/realization/update` | `POST` | 用本地最新行情更新研报目标价预测和观点兑现状态，并可重算分析师可靠性 |
@@ -2742,6 +2744,28 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 - `merge`：源关系设置为 `review_status=merged`、`relationship_status=inactive`，并把 evidence/document/source 回链合并到目标关系。
 
 所有审核动作都会在 `metadata.review_history` 中保留审核时间、审核人、动作和理由。
+
+#### `POST /api/company-relationships/review`
+
+批量复核公司关系候选。兼容别名：`POST /api/company-database/relationships/review`。该接口面向公司数据库补库后的人工图谱质量处理，仍只更新本地关系 provenance，不连接真实券商、不生成投资建议。
+
+请求字段：
+
+- `relationship_ids`：批量复核时必填；关系 ID 列表。
+- `relationship_id`：单条复核兼容字段；可与 `relationship_ids` 合并去重。
+- `action` / `review_action`：必填；`approve`、`reject` 或 `merge`。
+- `reason`：可选；批量复核备注，会进入每条关系的 `metadata.review_history`。
+- `target_relationship_id`：`merge` 时必填；多条合并会使用同一目标关系。
+
+返回字段：
+
+- `schema_id`：`company-relationship-batch-review-v1`。
+- `reviewed_count`：本次复核的关系数量。
+- `relationships[]`：复核后的关系行，包含 `source_quality` 和 `review_recommendation`。
+- `changed_relationship_ids`：被修改的关系 ID。
+- `usage_boundary`：固定声明为本地图谱 provenance 更新，不涉及真实交易。
+
+`GET|POST /api/company-relationships` 返回的每条关系会补充 `source_quality` 与 `review_recommendation`。推荐字段只用于人工排序和复核提示，不会自动批准关系，也不会把研报观点升级为事实关系。
 
 #### `POST /api/company-database/workflow/build`
 

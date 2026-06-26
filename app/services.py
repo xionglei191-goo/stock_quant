@@ -24690,13 +24690,57 @@ class SystemService:
         issuer_id = str(filters.get("issuer_id", "")).strip()
         if issuer_id:
             rows = [item for item in rows if item.issuer_id == issuer_id or item.subject_id == issuer_id or item.object_id == issuer_id]
-        for field_name in ["security_id", "relationship_type", "subject_type", "object_type", "relationship_status"]:
+        for field_name in ["security_id", "relationship_type", "subject_type", "object_type", "relationship_status", "review_status"]:
             value = str(filters.get(field_name, "")).strip()
             if value:
                 rows = [item for item in rows if str(getattr(item, field_name, "")) == value]
         rows.sort(key=lambda item: (str(item.valid_from), item.relationship_id), reverse=True)
         limit = self._bounded_limit(filters.get("limit", 50), 500)
-        return {"count": len(rows), "relationships": [to_plain(item) for item in rows[:limit]]}
+        status_counts: dict[str, int] = {}
+        review_counts: dict[str, int] = {}
+        candidate_count = 0
+        for relationship in rows:
+            status_counts[relationship.relationship_status] = status_counts.get(relationship.relationship_status, 0) + 1
+            review_counts[relationship.review_status] = review_counts.get(relationship.review_status, 0) + 1
+            if self._company_relationship_is_review_candidate(relationship):
+                candidate_count += 1
+        return {
+            "count": len(rows),
+            "relationships": [self._company_relationship_review_row(item) for item in rows[:limit]],
+            "relationship_status_counts": status_counts,
+            "review_status_counts": review_counts,
+            "candidate_count": candidate_count,
+            "usage_boundary": "company_relationships_are_local_graph_records_no_live_trading",
+        }
+
+    def review_company_relationships(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        relationship_ids = self._unique_strings(self._string_list(payload.get("relationship_ids", [])))
+        relationship_id = str(payload.get("relationship_id", "")).strip()
+        if relationship_id:
+            relationship_ids = self._unique_strings([*relationship_ids, relationship_id])
+        if not relationship_ids:
+            raise ValidationError("relationship_id or relationship_ids is required")
+        reviewed: list[dict[str, Any]] = []
+        changed_ids: list[str] = []
+        merged_ids: list[str] = []
+        for item_id in relationship_ids:
+            item_payload = {**dict(payload), "relationship_id": item_id}
+            item_payload.pop("relationship_ids", None)
+            relationship = self.review_company_relationship(item_id, item_payload, actor=actor)
+            reviewed.append(self._company_relationship_review_row(relationship))
+            changed_ids.append(relationship.relationship_id)
+            merged_into = str(relationship.metadata.get("merged_into", "")).strip()
+            if merged_into:
+                merged_ids.append(merged_into)
+        return {
+            "schema_id": "company-relationship-batch-review-v1",
+            "reviewed_count": len(reviewed),
+            "relationships": reviewed,
+            "changed_relationship_ids": self._unique_strings(changed_ids),
+            "merged_into_relationship_ids": self._unique_strings(merged_ids),
+            "usage_boundary": "company_relationship_review_updates_local_graph_provenance_only_no_live_trading",
+        }
 
     def review_company_relationship(self, relationship_id: str, payload: Mapping[str, Any], *, actor: str = "system") -> CompanyRelationship:
         relationship = self.store.company_relationships.get(str(relationship_id))
@@ -24759,6 +24803,63 @@ class SystemService:
             marker("company_relationship")
         self.store.commit()
         return relationship
+
+    def _company_relationship_review_row(self, relationship: CompanyRelationship) -> dict[str, Any]:
+        row = to_plain(relationship)
+        existing_source_quality = relationship.metadata.get("source_quality")
+        source_quality = dict(existing_source_quality) if isinstance(existing_source_quality, Mapping) else self._company_record_source_quality(relationship, record_type="company_relationship")
+        row["source_quality"] = source_quality
+        row["review_recommendation"] = self._company_relationship_review_recommendation(relationship, source_quality)
+        return row
+
+    def _company_relationship_is_review_candidate(self, relationship: CompanyRelationship) -> bool:
+        relationship_type = str(relationship.relationship_type or "")
+        candidate_status = str((relationship.metadata or {}).get("candidate_status", ""))
+        return relationship_type.endswith("_candidate") or relationship.review_status == "needs_review" or candidate_status == "candidate"
+
+    def _company_relationship_review_recommendation(self, relationship: CompanyRelationship, source_quality: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        source_quality = source_quality or self._company_record_source_quality(relationship, record_type="company_relationship")
+        score = self._company_relationship_review_score(relationship, source_quality=source_quality)
+        if not self._company_relationship_is_review_candidate(relationship):
+            action = "already_reviewed_or_not_candidate"
+            reason = "relationship_is_not_pending_review_candidate"
+        elif score >= 0.72:
+            action = "prefer_approve_after_review"
+            reason = "candidate_has_strong_source_quality_or_evidence_backlinks"
+        elif score <= 0.38:
+            action = "prefer_reject_or_request_evidence"
+            reason = "candidate_has_weak_source_quality_or_missing_backlinks"
+        else:
+            action = "manual_review_required"
+            reason = "candidate_score_is_mixed"
+        return {
+            "recommended_action": action,
+            "candidate_score": round(score, 4),
+            "source_quality_score": round(float(source_quality.get("score", 0.0) or 0.0), 4),
+            "evidence_count": len(relationship.evidence_ids),
+            "document_count": len(relationship.document_ids),
+            "source_count": len(relationship.source_ids),
+            "reason": reason,
+            "boundary": "recommendation_is_for_human_graph_review_not_investment_advice",
+        }
+
+    def _company_relationship_review_score(self, relationship: CompanyRelationship, *, source_quality: Mapping[str, Any] | None = None) -> float:
+        source_quality = source_quality or self._company_record_source_quality(relationship, record_type="company_relationship")
+        score = 0.2
+        score += min(0.25, max(0.0, float(relationship.confidence or 0.0)) * 0.25)
+        score += min(0.35, max(0.0, float(source_quality.get("score", 0.0) or 0.0)) * 0.35)
+        backlink_count = len(relationship.evidence_ids) + len(relationship.document_ids) + len(relationship.source_ids)
+        score += min(0.15, backlink_count * 0.04)
+        source_layer = str((relationship.metadata or {}).get("source_layer", ""))
+        if source_layer in {"official_disclosure_candidate", "public_company_disclosure_candidate"}:
+            score += 0.08
+        if "research" in source_layer or str(relationship.relationship_type).startswith("institution_coverage"):
+            score -= 0.08
+        if relationship.review_status == "approved":
+            score += 0.08
+        if relationship.review_status == "rejected" or relationship.relationship_status == "inactive":
+            score -= 0.15
+        return min(1.0, max(0.0, score))
 
     def _stable_research_child_id(self, prefix: str, *parts: str) -> str:
         raw = "_".join(str(part) for part in parts if str(part).strip())

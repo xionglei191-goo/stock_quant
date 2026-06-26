@@ -660,11 +660,13 @@ class ApiRouter:
             ("POST", r"^/api/company-database/profile-fields/extract$", self._extract_company_profile_fields),
             ("POST", r"^/api/company-database/events/build$", self._build_company_events),
             ("POST", r"^/api/company-database/relationships/build$", self._build_company_relationships),
+            ("POST", r"^/api/company-database/relationships/review$", self._review_company_relationships),
             ("POST", r"^/api/company-database/workflow/build$", self._build_company_workflow),
             ("GET", r"^/api/company-events$", self._list_company_events),
             ("POST", r"^/api/company-events$", self._register_company_event),
             ("GET", r"^/api/company-relationships$", self._list_company_relationships),
             ("POST", r"^/api/company-relationships$", self._register_company_relationship),
+            ("POST", r"^/api/company-relationships/review$", self._review_company_relationships),
             ("POST", r"^/api/company-relationships/(?P<relationship_id>[^/]+)/review$", self._review_company_relationship),
             ("GET", r"^/api/research-reports/structured$", self._list_structured_research_reports),
             ("POST", r"^/api/research-reports/structured$", self._register_structured_research_report),
@@ -1920,6 +1922,9 @@ class ApiRouter:
 
     def _list_company_relationships(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_relationships_payload(body)
+
+    def _review_company_relationships(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.review_company_relationships(body, actor=actor)
 
     def _review_company_relationship(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         match = re.fullmatch(r"^/api/company-relationships/(?P<relationship_id>[^/]+)/review$", path)

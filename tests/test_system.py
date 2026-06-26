@@ -2486,6 +2486,77 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(self.service.store.company_relationships[target.relationship_id].evidence_ids, ["ev_target", "ev_source"])
         self.assertIn(source.relationship_id, self.service.store.company_relationships[target.relationship_id].metadata["merged_from"])
 
+        batch_a = self.service.register_company_relationship(
+            {
+                "relationship_id": "rel_candidate_batch_a",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "company",
+                "object_id": "external_company_batch_a",
+                "relationship_type": "customer_candidate",
+                "relationship_status": "unknown",
+                "review_status": "needs_review",
+                "confidence": 0.72,
+                "source_ids": ["src_sec"],
+                "document_ids": ["doc_batch_a"],
+                "evidence_ids": ["ev_batch_a"],
+                "metadata": {"candidate_status": "candidate", "source_layer": "official_disclosure_candidate"},
+            },
+            actor="data",
+        )
+        batch_b = self.service.register_company_relationship(
+            {
+                "relationship_id": "rel_candidate_batch_b",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "company",
+                "object_id": "external_company_batch_b",
+                "relationship_type": "supplier_candidate",
+                "relationship_status": "unknown",
+                "review_status": "needs_review",
+                "confidence": 0.38,
+                "metadata": {"candidate_status": "candidate"},
+            },
+            actor="data",
+        )
+        candidate_payload = self.router.dispatch(
+            "GET",
+            "/api/company-relationships",
+            {"issuer_id": "issuer_001", "review_status": "needs_review", "limit": 20},
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(candidate_payload.success, candidate_payload.error)
+        candidate_rows = {item["relationship_id"]: item for item in candidate_payload.data["relationships"]}
+        self.assertGreaterEqual(candidate_payload.data["candidate_count"], 2)
+        self.assertIn("review_recommendation", candidate_rows[batch_a.relationship_id])
+        self.assertEqual(candidate_rows[batch_a.relationship_id]["review_recommendation"]["recommended_action"], "prefer_approve_after_review")
+
+        batch_response = self.router.dispatch(
+            "POST",
+            "/api/company-database/relationships/review",
+            {
+                "relationship_ids": [batch_a.relationship_id, batch_b.relationship_id],
+                "action": "reject",
+                "reason": "batch false positives",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self.assertTrue(batch_response.success, batch_response.error)
+        self.assertEqual(batch_response.data["schema_id"], "company-relationship-batch-review-v1")
+        self.assertEqual(batch_response.data["reviewed_count"], 2)
+        self.assertEqual(self.service.store.company_relationships[batch_a.relationship_id].review_status, "rejected")
+        self.assertEqual(self.service.store.company_relationships[batch_b.relationship_id].relationship_status, "inactive")
+        self.assertEqual(
+            self.service.store.company_relationships[batch_a.relationship_id].metadata["review_history"][-1]["reason"],
+            "batch false positives",
+        )
+
     def test_company_database_quality_reconcile_merges_duplicate_events(self) -> None:
         for event_id, evidence_id in [("ce_dup_event_a", "ev_event_a"), ("ce_dup_event_b", "ev_event_b")]:
             created = self.router.dispatch(
