@@ -5085,7 +5085,13 @@
       $("companyIntelMissingRows").innerHTML = rows(missing, "暂无缺失层。", (section) => `<tr><td>${companyIntelSectionLabel(section)}</td><td>${companyIntelSectionImpact(section)}</td><td>${companyIntelSectionAction(section)}</td></tr>`);
       $("companyIntelNextActionRows").innerHTML = rows(nextActions, "暂无下一步动作。", (item) => {
         const action = item.action || "coverage_audit";
-        const primaryAction = action === "run_single_name_research" || action === "record_simulation_feedback" ? "run_single_name_research" : action === "collect_research_views" ? "preview_research_structure" : "coverage_audit";
+        const primaryAction = action === "bootstrap_company_database"
+          ? "bootstrap_company_database"
+          : action === "run_single_name_research" || action === "record_simulation_feedback"
+            ? "run_single_name_research"
+            : action === "collect_research_views"
+              ? "preview_research_structure"
+              : "coverage_audit";
         const button = companyIntelGuidanceButton(primaryAction, item.label || "执行下一步");
         return `<tr><td>${statusLabel(item.action || "")}</td><td>${String(item.reason || "").slice(0, 180)}</td><td>${button}</td></tr>`;
       });
@@ -5096,6 +5102,8 @@
       if (action === "run_single_name_research") {
         setValue("secSingleTicker", symbol);
         await runSecSingleName();
+      } else if (action === "bootstrap_company_database") {
+        await bootstrapCompanyDatabase(false);
       } else if (action === "preview_research_structure") {
         setValue("companyIntelReportQuery", symbol);
         await structureCompanyReports(false);
@@ -5103,6 +5111,29 @@
         await buildCompanyDatabaseBatch(false);
       } else {
         await auditCompanyCoverage();
+      }
+    }
+
+    async function bootstrapCompanyDatabase(execute = false) {
+      try {
+        const symbol = companyIntelCurrentSymbol() || "SPCX";
+        $("companyIntelBatchBuildStatus").textContent = execute ? "建档中" : "建档预览中";
+        const { data, trace_id } = await api("/api/company-database/bootstrap", {
+          method: "POST",
+          role: "data_engineer",
+          body: {
+            symbol,
+            execute,
+            dry_run: !execute
+          }
+        });
+        $("companyIntelOperationBox").textContent = userPretty(data);
+        $("companyIntelBatchBuildStatus").textContent = execute ? "已建档" : "建档预览";
+        await loadCompanyIntelligence(false);
+        setStatus(`${execute ? "公司本地建档完成" : "公司本地建档预览完成"} · ${compactId(data.ids?.issuer_id || symbol)} · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelBatchBuildStatus").textContent = "错误";
+        setStatus(error.message, true);
       }
     }
 

@@ -395,7 +395,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(empty.data["completeness_verdict"]["status"], "not_found")
         self.assertIn("company_profile", empty.data["completeness_verdict"]["blocking_gaps"])
         self.assertFalse(empty.data["completeness_verdict"]["is_complete"])
-        self.assertTrue(any(item["action"] == "run_single_name_research" for item in empty.data["next_actions"]))
+        self.assertTrue(any(item["action"] == "bootstrap_company_database" for item in empty.data["next_actions"]))
         self.assertFalse(empty.data["simulation_feedback"]["live_execution_allowed"])
 
         run = self.router.dispatch(
@@ -457,6 +457,90 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(any(item["report_id"] == "rr_spcx_local" for item in view.data["research_results"]["research_reports"]))
         self.assertTrue(any(item["resource_type"] == "research_report" for item in view.data["research_results"]["search"]["results"]))
         self.assertEqual(view.data["usage_boundary"], "company_intelligence_research_only_simulation_feedback_only_no_broker_execution")
+
+    def test_company_database_bootstrap_creates_local_stub_for_unknown_symbol(self) -> None:
+        empty = self.router.dispatch("GET", "/api/company-intelligence/NEWC", {"limit": 10}, role="analyst")
+        self.assertTrue(empty.success, empty.error)
+        self.assertEqual(empty.data["status"], "not_found")
+        self.assertTrue(any(item["endpoint"] == "/api/company-database/bootstrap" for item in empty.data["next_actions"]))
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/company-database/bootstrap",
+            {"symbol": "NEWC", "company_name": "New Company Inc", "market": "U", "cik": "000NEWC", "lei": "LEI-NEWC", "figi": "FIGI-NEWC", "isin": "ISIN-NEWC"},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["schema_id"], "company-database-bootstrap-v1")
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertEqual(dry_run.data["ids"]["issuer_id"], "issuer_bootstrap_newc")
+        self.assertEqual(dry_run.data["material_inbox_manifest_template"]["source_type"], "company_ir")
+        self.assertNotIn("issuer_bootstrap_newc", self.service.store.issuers)
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/bootstrap",
+            {"symbol": "NEWC", "company_name": "New Company Inc", "market": "U", "cik": "000NEWC", "lei": "LEI-NEWC", "figi": "FIGI-NEWC", "isin": "ISIN-NEWC", "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["status"], "executed")
+        self.assertTrue(executed.data["created"]["issuer"])
+        self.assertTrue(executed.data["created"]["security"])
+        self.assertTrue(executed.data["created"]["company_profile"])
+        self.assertIn("issuer_bootstrap_newc", self.service.store.issuers)
+        self.assertIn("sec_bootstrap_newc", self.service.store.securities)
+        self.assertIn("issuer_bootstrap_newc", self.service.store.company_profiles)
+        self.assertEqual(self.service.store.securities["sec_bootstrap_newc"].ticker, "NEWC")
+        self.assertEqual(self.service.store.issuers["issuer_bootstrap_newc"].cik, "000NEWC")
+        self.assertEqual(self.service.store.issuers["issuer_bootstrap_newc"].lei, "LEI-NEWC")
+        self.assertEqual(self.service.store.securities["sec_bootstrap_newc"].figi, "FIGI-NEWC")
+        self.assertEqual(self.service.store.securities["sec_bootstrap_newc"].isin, "ISIN-NEWC")
+        self.assertFalse(executed.data["coverage"]["companies"][0]["section_available"]["documents"])
+
+        view = self.router.dispatch("GET", "/api/company-intelligence/NEWC", {"limit": 10}, role="analyst")
+        self.assertTrue(view.success, view.error)
+        self.assertEqual(view.data["status"], "available")
+        self.assertEqual(view.data["resolution"]["issuer_ids"], ["issuer_bootstrap_newc"])
+        self.assertTrue(view.data["data_quality"]["profile_available"])
+        self.assertFalse(any(item["action"] == "bootstrap_company_database" for item in view.data["next_actions"]))
+
+        again = self.router.dispatch(
+            "POST",
+            "/api/company-database/bootstrap",
+            {"symbol": "NEWC", "company_name": "New Company Inc", "market": "U", "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(again.success, again.error)
+        self.assertEqual(again.data["status"], "already_exists")
+        self.assertFalse(any(again.data["created"].values()))
+
+    def test_company_database_unknown_symbol_does_not_fallback_to_all_companies(self) -> None:
+        build = self.router.dispatch(
+            "POST",
+            "/api/company-database/build",
+            {"symbols": ["ZZZUNKNOWN"], "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(build.success, build.error)
+        self.assertEqual(build.data["target_count"], 0)
+        self.assertEqual(build.data["profiles_saved"], 0)
+        self.assertNotIn("ZZZUNKNOWN", json.dumps(build.data))
+
+        coverage = self.router.dispatch(
+            "POST",
+            "/api/company-database/coverage/audit",
+            {"symbols": ["ZZZUNKNOWN"], "limit": 10},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(coverage.success, coverage.error)
+        self.assertEqual(coverage.data["issuer_count"], 0)
+        self.assertEqual(coverage.data["companies"], [])
 
     def test_company_intelligence_first_class_models_are_exposed_and_aggregated(self) -> None:
         profile = self.router.dispatch("POST", "/api/company-profiles", {"issuer_id": "issuer_001", "business_summary": "Demo component supplier"}, role="analyst")

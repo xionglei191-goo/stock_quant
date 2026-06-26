@@ -424,6 +424,15 @@
   - **已完成（本轮）**：公司情报聚合和深字段覆盖审计读取 `FinancialMetric`，让财务字段的 source_records 优先回链到指标事实记录，而不是只指向 issuer 快照。
   - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_profile_field_extraction_updates_from_official_evidence`、`python3 scripts/check_handoffs.py`、`git diff --check`。
 
+- `DONE` T-472 本地单标的公司数据库 bootstrap
+  - 对应：E3-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：`company-intelligence/{symbol}` 对未知 symbol 只能返回空状态，`company-database/build` 又依赖已有 issuer/security，导致用户进入工作台后无法从一个新标的直接建立公司数据库。
+  - **已完成（本轮）**：新增 `POST /api/company-database/bootstrap`，默认 dry-run，按 symbol/company name 生成本地 issuer/security/profile stub 计划；显式 `execute=true` 才写入。
+  - **已完成（本轮）**：bootstrap 返回覆盖预览和 `material_inbox_manifest_template`，指导用户把公司官网、IR、公告材料放入本地 material inbox。
+  - **已完成（本轮）**：bootstrap 幂等处理已存在 issuer/security/profile，不重复创建；已建档公司情报页不再提示 bootstrap。
+  - **已完成（本轮 UI）**：公司情报 unknown symbol 的下一步动作改为 bootstrap，并可从工作台触发 bootstrap dry-run 预览。
+  - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_database_bootstrap_creates_local_stub_for_unknown_symbol tests.test_system.SystemServiceTests.test_company_intelligence_symbol_view_handles_spcx_before_and_after_research`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

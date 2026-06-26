@@ -2290,6 +2290,7 @@
 | `/api/company-database/profile-field-assertions` | `GET` / `POST` | `company-profiles/field-assertions` 的兼容别名，用于公司数据库补齐任务查询字段级 provenance |
 | `/api/company-database/profile-field-assertions/review` | `POST` | `company-profiles/field-assertions/review` 的兼容别名，用于补库流程处理字段冲突候选 |
 | `/api/company-database/profile-fields/extract` | `POST` | `company-profiles/fields/extract` 的公司数据库兼容入口，用于补库流程先抽取画像字段再审计覆盖 |
+| `/api/company-database/bootstrap` | `POST` | 为未知 symbol 创建本地 issuer/security/profile stub；默认 dry-run，返回材料 inbox manifest 模板和覆盖预览 |
 | `/api/company-database/build` | `POST` | 从现有主体、证券、行情和研报资产构建最小公司数据库；默认 dry-run，显式 `execute=true` 后才持久化公司画像和研报绑定 |
 | `/api/company-database/batch/build` | `POST` | 按批次编排公司画像、事件、关系、观察结论和模拟反馈构建，并返回批次汇总和覆盖率 |
 | `/api/company-database/batch/runs` | `GET` / `POST` | 查询公司数据库批量补齐运行历史，用于审计、复盘和后续断点续跑 |
@@ -2356,6 +2357,33 @@
 执行语义：`execute=true` 后，每个成功应用的字段会生成或更新一条幂等 `CompanyProfileFieldAssertion`，记录 `field_name`、`value`、`document_ids`、`evidence_ids`、`source_ids`、`confidence`、`source_policy`、`fact_status` 和 `review_status`。这些断言用于后续字段级证据审计、冲突处理和公司情报页 provenance 展示。财务字段 `revenue`、`net_income`、`gross_margin`、`cash`、`debt` 在同一轮存在 `period` 时，还会同步物化为 `FinancialMetric`，供公司情报页和深字段覆盖审计读取最新财务快照。
 
 冲突语义：当 `refresh_existing=true` / `overwrite=true` 且同一公司、同一字段、同一 period 已存在 active 断言但新值不同，接口不会立即覆盖 `Issuer` 或 `CompanyProfile` 当前字段。它会生成 `assertion_status=conflict_candidate`、`review_status=needs_review` 的新断言，并在 `conflicts_with` 中记录被冲突的旧断言 ID。只有复核接口批准后，新值才会应用到公司画像。
+
+#### `POST /api/company-database/bootstrap`
+
+为本地还没有 `issuer/security` 的 symbol 建立最小公司数据库入口。该接口不访问外网、不下载资料、不运行研究、不连接券商；默认 dry-run，只返回将创建的主体、证券、画像和材料入库模板。显式 `execute=true` 后才创建本地 `Issuer`、`Security` 和可选 `CompanyProfile` stub。
+
+请求字段：
+
+- `symbol` / `ticker` / `code`：必填其一；例如 `SPCX`、`NEWC`、`600000.SH`。
+- `company_name` / `legal_name` / `display_name`：可选；缺省使用 symbol。
+- `issuer_id` / `security_id`：可选；用于指定本地 ID。缺省按 symbol 生成稳定 `issuer_bootstrap_*` / `sec_bootstrap_*`。
+- `market` / `exchange` / `currency` / `country`：可选；未提供时按 A/H/U 简单推断。
+- `sector` / `industry` / `region` / `board` / `listing_date`：可选画像字段。
+- `create_profile`：默认 `true`；是否同步创建 `CompanyProfile` stub。
+- `execute` / `dry_run`：默认 dry-run；`execute=true` 且 `dry_run` 非真时才写入。
+
+返回字段：
+
+- `schema_id`：当前为 `company-database-bootstrap-v1`。
+- `status`：`dry_run`、`executed` 或 `already_exists`。
+- `ids.issuer_id` / `ids.security_id`：目标本地 ID。
+- `created` / `existing`：分别说明本次创建和已有对象。
+- `issuer` / `security` / `company_profile`：计划或已创建对象摘要。
+- `coverage`：执行后为真实覆盖审计；dry-run 时为本地覆盖预览。
+- `material_inbox_manifest_template`：可复制到本地材料 inbox 的 manifest sidecar 模板，默认来源类型为 `company_ir`。
+- `next_actions`：建档后建议先准备官方/IR/公告材料，再执行 material inbox、画像字段抽取和覆盖审计。
+
+边界：bootstrap 只建立本地研究对象骨架。它不会用研报补事实字段，不会把新闻/人工参考作为事实源，不会下载外部数据，也不会创建真实交易或订单。
 
 #### `GET|POST /api/company-financial-metrics`
 

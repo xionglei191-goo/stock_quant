@@ -645,6 +645,7 @@ class ApiRouter:
             ("GET", r"^/api/company-profiles/schema$", self._company_profile_schema),
             ("GET", r"^/api/company-financial-metrics$", self._list_financial_metrics),
             ("POST", r"^/api/company-financial-metrics$", self._register_financial_metric),
+            ("POST", r"^/api/company-database/bootstrap$", self._bootstrap_company_database),
             ("POST", r"^/api/company-database/build$", self._build_company_database),
             ("POST", r"^/api/company-database/batch/build$", self._build_company_database_batch),
             ("POST", r"^/api/company-database/batch/runs/(?P<run_id>[^/]+)/retry$", self._retry_company_database_build_run),
@@ -1881,6 +1882,9 @@ class ApiRouter:
 
     def _list_financial_metrics(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.financial_metrics_payload(body)
+
+    def _bootstrap_company_database(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.bootstrap_company_database(body, actor=actor)
 
     def _extract_company_profile_fields(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.extract_company_profile_fields(body, actor=actor)

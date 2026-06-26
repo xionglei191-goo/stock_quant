@@ -24950,6 +24950,246 @@ class SystemService:
             return safe
         return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
 
+    def _company_database_existing_issuers_for_symbol(self, symbol: str) -> list[Issuer]:
+        tokens = self._company_intelligence_symbol_tokens(symbol)
+        issuer_ids: list[str] = []
+        for security in self.store.securities.values():
+            if self._company_intelligence_security_matches(security, tokens) and security.issuer_id:
+                issuer_ids.append(security.issuer_id)
+        for mapping in self.store.entity_mappings.values():
+            if self._company_intelligence_mapping_matches(mapping, tokens) and mapping.issuer_id:
+                issuer_ids.append(mapping.issuer_id)
+        for issuer in self.store.issuers.values():
+            if self._company_intelligence_issuer_matches(issuer, tokens):
+                issuer_ids.append(issuer.issuer_id)
+        seen: set[str] = set()
+        issuers: list[Issuer] = []
+        for issuer_id in issuer_ids:
+            if issuer_id in seen:
+                continue
+            seen.add(issuer_id)
+            issuer = self.store.issuers.get(issuer_id)
+            if issuer is not None:
+                issuers.append(issuer)
+        return issuers
+
+    def _company_database_bootstrap_market_defaults(self, symbol: str, payload: Mapping[str, Any]) -> dict[str, str]:
+        raw = str(symbol).strip().upper()
+        market = str(payload.get("market", "")).strip().upper()
+        if not market:
+            if raw.endswith(".HK") or re.fullmatch(r"\d{4,5}\.HK", raw):
+                market = "H"
+            elif raw.endswith(".SH") or raw.endswith(".SZ") or re.fullmatch(r"\d{6}", raw):
+                market = "A"
+            else:
+                market = "U"
+        exchange = str(payload.get("exchange", "")).strip().upper()
+        if not exchange:
+            if raw.endswith(".SH") or re.fullmatch(r"6\d{5}", raw):
+                exchange = "SSE"
+            elif raw.endswith(".SZ") or re.fullmatch(r"[03]\d{5}", raw):
+                exchange = "SZSE"
+            elif raw.endswith(".HK") or market == "H":
+                exchange = "HKEX"
+            elif market == "U":
+                exchange = "US"
+            else:
+                exchange = "LOCAL"
+        currency = str(payload.get("currency", "")).strip().upper()
+        if not currency:
+            currency = "CNY" if market == "A" else ("HKD" if market == "H" else "USD")
+        country = str(payload.get("country", "")).strip().upper()
+        if not country:
+            country = "CN" if market == "A" else ("HK" if market == "H" else "US")
+        return {"market": market, "exchange": exchange, "currency": currency, "country": country}
+
+    def _company_database_bootstrap_manifest_template(self, issuer_id: str, security_id: str, symbol: str) -> dict[str, Any]:
+        safe_symbol = self._company_database_id_part(symbol)
+        return {
+            "issuer_id": issuer_id,
+            "security_id": security_id,
+            "source_id": f"src_{safe_symbol}_company_ir",
+            "source_type": "company_ir",
+            "document_type": "official_business_overview",
+            "source_uri": "https://example.com/investor-relations",
+            "file_path": f"./{safe_symbol}-company-profile.md",
+            "title": f"{symbol.upper()} official company profile",
+            "rights_tag": {
+                "license_class": "public",
+                "training_allowed": False,
+                "redistribution_allowed": False,
+                "display_use": "allowed",
+                "non_display_use": "restricted",
+                "derived_data_use": "restricted",
+            },
+            "usage_boundary": "template_for_local_official_ir_material_only_not_research_report",
+        }
+
+    def bootstrap_company_database(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        raw_symbol = str(payload.get("symbol") or payload.get("ticker") or payload.get("code") or "").strip()
+        if not raw_symbol:
+            raise ValidationError("company database bootstrap requires symbol or ticker")
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        create_profile = self._truthy(payload.get("create_profile", True))
+        defaults = self._company_database_bootstrap_market_defaults(raw_symbol, payload)
+        ticker = str(payload.get("ticker") or raw_symbol).strip().upper()
+        id_part = self._company_database_id_part(ticker or raw_symbol)
+        explicit_issuer_id = str(payload.get("issuer_id", "")).strip()
+        explicit_security_id = str(payload.get("security_id", "")).strip()
+        issuer = self.store.issuers.get(explicit_issuer_id) if explicit_issuer_id else None
+        if issuer is None and explicit_security_id and explicit_security_id in self.store.securities:
+            issuer = self.store.issuers.get(self.store.securities[explicit_security_id].issuer_id)
+        if issuer is None:
+            existing_issuers = self._company_database_existing_issuers_for_symbol(raw_symbol)
+            issuer = existing_issuers[0] if existing_issuers else None
+        issuer_id = issuer.issuer_id if issuer is not None else (explicit_issuer_id or f"issuer_bootstrap_{id_part}")
+        legal_name = str(payload.get("legal_name") or payload.get("company_name") or payload.get("display_name") or ticker or raw_symbol).strip()
+        aliases = self._unique_strings([raw_symbol, ticker, *self._string_list(payload.get("aliases", []))])
+        security = self.store.securities.get(explicit_security_id) if explicit_security_id else None
+        if security is not None and security.issuer_id != issuer_id:
+            raise ValidationError(f"security {security.security_id} does not belong to issuer {issuer_id}")
+        if security is None:
+            symbol_tokens = self._company_intelligence_symbol_tokens(raw_symbol)
+            securities_for_issuer = [item for item in self.store.securities.values() if item.issuer_id == issuer_id]
+            security = next((item for item in securities_for_issuer if self._company_intelligence_security_matches(item, symbol_tokens)), None)
+        security_id = security.security_id if security is not None else (explicit_security_id or f"sec_bootstrap_{id_part}")
+        if security_id in self.store.securities and self.store.securities[security_id].issuer_id != issuer_id:
+            raise ValidationError(f"security {security_id} already belongs to another issuer")
+        issuer_payload = {
+            "issuer_id": issuer_id,
+            "legal_name": legal_name,
+            "aliases": aliases,
+            "market": [defaults["market"]],
+            "lei": str(payload.get("lei", "")),
+            "cik": str(payload.get("cik", "")),
+            "country": defaults["country"],
+            "sector": str(payload.get("sector", "")),
+            "industry": str(payload.get("industry", "")),
+            "region": str(payload.get("region", "")),
+            "company_details": {
+                **dict(payload.get("company_details", {})),
+                "bootstrap_status": "stub_needs_official_materials",
+                "bootstrap_symbol": raw_symbol,
+            },
+            "data_sources": self._string_list(payload.get("data_sources", [])),
+        }
+        security_payload = {
+            "security_id": security_id,
+            "issuer_id": issuer_id,
+            "ticker": ticker,
+            "figi": str(payload.get("figi", "")),
+            "isin": str(payload.get("isin", "")),
+            "exchange": defaults["exchange"],
+            "currency": defaults["currency"],
+            "market": defaults["market"],
+            "security_type": str(payload.get("security_type", "equity")),
+            "sector": str(payload.get("sector", "")),
+            "industry": str(payload.get("industry", "")),
+            "board": str(payload.get("board", "")),
+            "listing_date": str(payload.get("listing_date", "")),
+            "company_universe_scope": "local_bootstrap_watchlist",
+            "company_universe_reason": str(payload.get("reason", "manual bootstrap from company intelligence workbench")),
+            "company_universe_classified_at": utcnow().isoformat(),
+        }
+        created = {"issuer": False, "security": False, "company_profile": False}
+        if execute:
+            if issuer is None:
+                issuer = self.register_issuer(issuer_payload, actor=actor)
+                created["issuer"] = True
+            if security is None:
+                security = self.register_security(security_payload, actor=actor)
+                created["security"] = True
+            if create_profile and issuer.issuer_id not in self.store.company_profiles:
+                self.store.company_profiles[issuer.issuer_id] = self._company_profile_from_existing_records(
+                    issuer.issuer_id,
+                    {
+                        "display_name": legal_name,
+                        "legal_name": legal_name,
+                        "security_ids": [security.security_id],
+                        "markets": [defaults["market"]],
+                    },
+                )
+                created["company_profile"] = True
+            self._mark_company_database_dirty()
+            self.store.commit()
+        existing = {
+            "issuer": issuer is not None and not created["issuer"],
+            "security": security is not None and not created["security"],
+            "company_profile": issuer_id in self.store.company_profiles and not created["company_profile"],
+        }
+        coverage: dict[str, Any]
+        if execute and issuer is not None:
+            coverage = self.company_database_coverage_audit({"issuer_ids": [issuer.issuer_id], "limit": 1}, actor=actor)
+        else:
+            coverage = {
+                "status": "planned",
+                "issuer_count": 1,
+                "companies": [
+                    {
+                        "issuer_id": issuer_id,
+                        "display_name": legal_name,
+                        "section_available": {
+                            "company_profile": create_profile,
+                            "security": True,
+                            "market_data": False,
+                            "financial_snapshot": False,
+                            "documents": False,
+                            "company_events": False,
+                            "company_relationships": False,
+                            "research_reports": False,
+                            "simulation_feedback": False,
+                        },
+                        "missing_sections": ["market_data", "financial_snapshot", "documents", "company_events", "company_relationships", "research_reports", "simulation_feedback"],
+                        "coverage_level": "sparse",
+                    }
+                ],
+            }
+        status = "executed" if execute and any(created.values()) else ("already_exists" if issuer is not None or security is not None else "dry_run")
+        self._audit(
+            actor,
+            "bootstrap_company_database",
+            "company_database",
+            issuer_id,
+            approval_state=f"execute={execute};issuer={created['issuer']};security={created['security']};profile={created['company_profile']}",
+        )
+        return {
+            "schema_id": "company-database-bootstrap-v1",
+            "status": status,
+            "execute": execute,
+            "dry_run": not execute,
+            "symbol": raw_symbol,
+            "ids": {"issuer_id": issuer_id, "security_id": security_id},
+            "created": created,
+            "existing": existing,
+            "issuer": to_plain(issuer) if issuer is not None else issuer_payload,
+            "security": to_plain(security) if security is not None else security_payload,
+            "company_profile": to_plain(self.store.company_profiles.get(issuer_id, {})) if execute else {},
+            "coverage": coverage,
+            "material_inbox_manifest_template": self._company_database_bootstrap_manifest_template(issuer_id, security_id, ticker),
+            "next_actions": [
+                {
+                    "action": "prepare_official_material_manifest",
+                    "endpoint": "/api/company-database/material-inbox/ingest",
+                    "reason": "把公司官网/IR/公告材料按返回的 manifest 模板放入本地 inbox。",
+                },
+                {
+                    "action": "audit_company_coverage",
+                    "endpoint": "/api/company-database/coverage/audit",
+                    "reason": "建档后检查行情、财务、事件、关系、研报和模拟反馈缺口。",
+                },
+                {
+                    "action": "extract_profile_fields",
+                    "endpoint": "/api/company-database/profile-fields/extract",
+                    "reason": "材料入库后抽取业务、产品、官网、IR、管理层和财务字段。",
+                },
+            ],
+            "usage_boundary": "local_company_database_bootstrap_only_no_external_download_no_research_report_fact_promotion_no_live_trading",
+        }
+
     def _company_database_target_issuers(self, payload: Mapping[str, Any], *, limit: int) -> list[Issuer]:
         issuer_ids: list[str] = []
         raw_issuer_ids = payload.get("issuer_ids", [])
@@ -24967,6 +25207,7 @@ class SystemService:
             value = str(payload.get(field_name, "")).strip()
             if value:
                 raw_symbols.append(value)
+        explicit_target_requested = bool(raw_issuer_ids or raw_symbols)
         for symbol in raw_symbols:
             tokens = self._company_intelligence_symbol_tokens(str(symbol))
             for security in self.store.securities.values():
@@ -24978,7 +25219,7 @@ class SystemService:
             for issuer in self.store.issuers.values():
                 if self._company_intelligence_issuer_matches(issuer, tokens):
                     issuer_ids.append(issuer.issuer_id)
-        if not issuer_ids:
+        if not issuer_ids and not explicit_target_requested:
             issuer_ids = [
                 issuer.issuer_id
                 for issuer in sorted(self.store.issuers.values(), key=lambda item: item.issuer_id)
@@ -27368,7 +27609,7 @@ class SystemService:
 
     def _company_intelligence_verdict_next_action(self, symbol: str, blocking_gaps: list[str], warning_gaps: list[str], data_quality: Mapping[str, Any]) -> dict[str, str]:
         action_map = {
-            "company_profile": ("run_single_name_research", f"为 {symbol.upper()} 建立公司画像"),
+            "company_profile": ("bootstrap_company_database", f"为 {symbol.upper()} 建立本地公司主体"),
             "market_data": ("coverage_audit", "补齐公开或本地行情"),
             "events": ("preview_batch_build", "生成公司事件时间线"),
             "relationships": ("preview_batch_build", "生成并审核公司关系"),
@@ -27391,10 +27632,10 @@ class SystemService:
         if not data_quality.get("profile_available"):
             actions.append(
                 {
-                    "action": "run_single_name_research",
+                    "action": "bootstrap_company_database",
                     "label": f"为 {symbol.upper()} 建立最小公司情报档案",
-                    "endpoint": "/api/research/tasks/sec-single-name/run",
-                    "reason": "本地还没有匹配的 issuer/security；先运行单标的研究或手工登记主体。",
+                    "endpoint": "/api/company-database/bootstrap",
+                    "reason": "本地还没有匹配的 issuer/security；先创建本地公司主体和证券 stub，再补官方/IR/公告材料。",
                 }
             )
         if not data_quality.get("research_results_available"):
