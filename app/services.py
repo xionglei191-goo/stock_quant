@@ -21130,6 +21130,303 @@ class SystemService:
             "compatibility_inputs": ["Issuer", "Security", "MarketDataPoint", "ResearchReportAsset", "DisclosureEvent", "CompanyPosition"],
         }
 
+    def company_material_inbox_ingest(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        raw_root = str(
+            payload.get("root_path")
+            or os.environ.get("AI_QUANT_COMPANY_MATERIAL_INBOX")
+            or str(Path(os.environ.get("AI_QUANT_HOST_COMPANY_MATERIAL_ROOT", "/home/xionglei/文档/company_materials")) / "inbox")
+        ).strip()
+        if not raw_root:
+            raise ValidationError("company material inbox requires root_path")
+        root = Path(raw_root).expanduser()
+        if not root.exists() or not root.is_dir():
+            raise ValidationError(f"company material inbox root not found: {root}")
+        manifest_glob = str(payload.get("manifest_glob", "*.manifest.json")).strip() or "*.manifest.json"
+        extensions = payload.get("extensions", [".txt", ".md", ".html", ".htm"])
+        if isinstance(extensions, str):
+            extensions = [item.strip() for item in extensions.split(",") if item.strip()]
+        allowed_extensions = {str(item).lower() if str(item).startswith(".") else f".{str(item).lower()}" for item in extensions}
+        scan_limit = self._bounded_limit(payload.get("scan_limit", payload.get("limit", 1000)), 10000)
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        require_evidence = self._truthy(payload.get("require_evidence", True))
+        refresh_existing = self._truthy(payload.get("refresh_existing", False))
+        fields = self._string_list(payload.get("fields", [])) or [
+            "business_summary",
+            "products",
+            "website_url",
+            "ir_url",
+            "headquarters",
+            "employee_count",
+            "management",
+            "key_customers",
+            "key_suppliers",
+            "period",
+            "revenue",
+            "net_income",
+            "gross_margin",
+            "cash",
+            "debt",
+        ]
+        items: list[dict[str, Any]] = []
+        totals = {
+            "manifests_scanned": 0,
+            "planned_count": 0,
+            "invalid_count": 0,
+            "sources_registered": 0,
+            "sources_existing": 0,
+            "documents_ingested": 0,
+            "documents_existing": 0,
+            "evidence_extracted": 0,
+            "profile_fields_updated": 0,
+            "profile_field_assertions_planned_or_written": 0,
+            "failed_count": 0,
+        }
+        ingested_document_ids: list[str] = []
+        affected_issuer_ids: list[str] = []
+        for record in self._company_material_inbox_manifest_records(root, manifest_glob, scan_limit):
+            totals["manifests_scanned"] += 1
+            item, material_path = self._company_material_inbox_plan_item(record, root, allowed_extensions)
+            if item["status"] == "invalid":
+                totals["invalid_count"] += 1
+                items.append(item)
+                continue
+            if not execute:
+                item["planned_actions"] = ["register_source_if_missing", "ingest_document", "extract_evidence", "extract_profile_fields"]
+                totals["planned_count"] += 1
+                items.append(item)
+                continue
+            try:
+                rights_tag = self._company_material_inbox_rights_tag(record)
+                source_id = str(record["source_id"]).strip()
+                if source_id in self.store.sources:
+                    totals["sources_existing"] += 1
+                else:
+                    self.register_source(self._company_material_inbox_source_payload(record, rights_tag), actor=actor)
+                    totals["sources_registered"] += 1
+                assert material_path is not None
+                body = self._company_material_inbox_text(material_path, str(record.get("encoding") or "utf-8"))
+                document_payload = self._company_material_inbox_document_payload(record, material_path, body, rights_tag)
+                document_id = str(document_payload["document_id"])
+                item["document_id"] = document_id
+                if document_id in self.store.documents:
+                    totals["documents_existing"] += 1
+                    item["document_status"] = "exists"
+                else:
+                    document = self.ingest_document(document_payload, actor=actor)
+                    totals["documents_ingested"] += 1
+                    ingested_document_ids.append(document.document_id)
+                    item["document_status"] = "ingested"
+                evidence_rows = self.extract_evidence(document_id, actor=actor, parser_version="company-material-inbox-v1", model_version="rule-company-material-inbox-v1")
+                item["evidence_count"] = len(evidence_rows)
+                totals["evidence_extracted"] += len(evidence_rows)
+                affected_issuer_ids.append(str(record["issuer_id"]).strip())
+                item["status"] = "executed"
+            except Exception as exc:
+                item["status"] = "failed"
+                item["errors"] = [str(exc)]
+                totals["failed_count"] += 1
+            items.append(item)
+        extraction: dict[str, Any] = {}
+        if execute and affected_issuer_ids and (ingested_document_ids or totals["documents_existing"]):
+            extraction = self.extract_company_profile_fields(
+                {
+                    "issuer_ids": self._unique_strings(affected_issuer_ids),
+                    "document_ids": self._unique_strings([*ingested_document_ids, *[str(item.get("document_id", "")) for item in items if item.get("document_status") == "exists"]]),
+                    "fields": fields,
+                    "require_evidence": require_evidence,
+                    "refresh_existing": refresh_existing,
+                    "execute": True,
+                },
+                actor=actor,
+            )
+            extraction_totals = extraction.get("totals", {})
+            totals["profile_fields_updated"] = int(extraction_totals.get("fields_updated", 0) or 0)
+            totals["profile_field_assertions_planned_or_written"] = int(extraction_totals.get("assertions_recorded", 0) or 0)
+        if execute:
+            self.store.commit()
+        self._audit(
+            actor,
+            "company_material_inbox_ingest",
+            "document",
+            str(root),
+            approval_state=f"execute={execute};planned={totals['planned_count']};documents={totals['documents_ingested']}",
+        )
+        return {
+            "generated_at": utcnow().isoformat(),
+            "schema_id": "company-material-inbox-ingest-v1",
+            "status": "executed" if execute and totals["failed_count"] == 0 else ("failed" if totals["failed_count"] else "dry_run"),
+            "execute": execute,
+            "dry_run": not execute,
+            "root_path": str(root),
+            "manifest_glob": manifest_glob,
+            "fields": fields,
+            "totals": totals,
+            "items": items,
+            "extraction": extraction,
+            "source_rules": {
+                "allowed_source_types": sorted(self._company_material_inbox_allowed_source_types()),
+                "allowed_document_types": sorted(self._company_material_inbox_allowed_document_types()),
+                "disallowed_source_types": sorted(self._company_material_inbox_disallowed_source_types()),
+                "research_reports": "skipped_opinion_only_not_fact_source",
+                "news_and_manual_reference": "skipped_not_fact_source",
+            },
+            "usage_boundary": "local_company_material_inbox_only_official_ir_public_materials_no_external_download_no_training_no_live_trading",
+        }
+
+    def _company_material_inbox_manifest_records(self, root: Path, manifest_glob: str, scan_limit: int) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for manifest_path in sorted(root.rglob(manifest_glob)):
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(payload, list):
+                manifest_records = payload
+            elif isinstance(payload, dict) and isinstance(payload.get("documents"), list):
+                shared = {key: value for key, value in payload.items() if key != "documents"}
+                manifest_records = [{**shared, **dict(item)} for item in payload["documents"] if isinstance(item, Mapping)]
+            elif isinstance(payload, dict):
+                manifest_records = [payload]
+            else:
+                manifest_records = []
+            for record in manifest_records:
+                if len(records) >= scan_limit:
+                    return records
+                records.append({**dict(record), "manifest_path": str(manifest_path)})
+        return records
+
+    def _company_material_inbox_plan_item(self, record: Mapping[str, Any], root: Path, allowed_extensions: set[str]) -> tuple[dict[str, Any], Path | None]:
+        errors: list[str] = []
+        for field_name in ["issuer_id", "source_id", "source_type", "document_type", "source_uri", "file_path"]:
+            if not str(record.get(field_name, "")).strip():
+                errors.append(f"missing_{field_name}")
+        source_type = str(record.get("source_type", "")).strip()
+        document_type = str(record.get("document_type", "")).strip()
+        if source_type in self._company_material_inbox_disallowed_source_types():
+            errors.append("disallowed_source_type")
+        elif source_type and source_type not in self._company_material_inbox_allowed_source_types():
+            errors.append("unsupported_source_type")
+        if document_type in {"research_report", "broker_research", "news", "manual_reference"}:
+            errors.append("disallowed_document_type")
+        elif document_type and document_type not in self._company_material_inbox_allowed_document_types():
+            errors.append("unsupported_document_type")
+        rights_tag = self._company_material_inbox_rights_tag(record)
+        if rights_tag.get("training_allowed"):
+            errors.append("training_allowed_not_permitted")
+        material_path: Path | None = None
+        raw_file_path = str(record.get("file_path", "")).strip()
+        if raw_file_path:
+            material_path = self._company_material_inbox_resolve_path(root, Path(str(record.get("manifest_path", ""))), raw_file_path)
+            if not material_path.exists() or not material_path.is_file():
+                errors.append("file_not_found")
+            elif material_path.suffix.lower() not in allowed_extensions:
+                errors.append("unsupported_extension")
+        issuer_id = str(record.get("issuer_id", "")).strip()
+        if issuer_id and issuer_id not in self.store.issuers:
+            errors.append("issuer_not_found")
+        security_id = str(record.get("security_id", "")).strip()
+        if security_id and security_id not in self.store.securities:
+            errors.append("security_not_found")
+        item = {
+            "manifest_path": str(record.get("manifest_path", "")),
+            "file_path": str(material_path) if material_path is not None else raw_file_path,
+            "issuer_id": issuer_id,
+            "security_id": security_id,
+            "source_id": str(record.get("source_id", "")).strip(),
+            "source_type": source_type,
+            "document_type": document_type,
+            "source_uri": str(record.get("source_uri", "")).strip(),
+            "status": "invalid" if errors else "planned",
+            "errors": errors,
+            "document_id": "",
+            "evidence_count": 0,
+            "fields_updated": 0,
+            "profile_field_assertions": 0,
+        }
+        if material_path is not None and not errors:
+            body = self._company_material_inbox_text(material_path, str(record.get("encoding") or "utf-8"))
+            item["document_id"] = str(self._company_material_inbox_document_payload(record, material_path, body, rights_tag)["document_id"])
+        return item, material_path
+
+    def _company_material_inbox_resolve_path(self, root: Path, manifest_path: Path, raw_path: str) -> Path:
+        candidate = Path(raw_path).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        near_manifest = manifest_path.parent / candidate
+        if near_manifest.exists():
+            return near_manifest
+        return root / candidate
+
+    def _company_material_inbox_allowed_source_types(self) -> set[str]:
+        return {"company_ir", "company_official", "official_public", "issuer_disclosure", "exchange_disclosure", "regulatory", "public_company_disclosure"}
+
+    def _company_material_inbox_disallowed_source_types(self) -> set[str]:
+        return {"research_report", "broker_research", "local_reference", "manual_reference", "news", "curated_public_profile"}
+
+    def _company_material_inbox_allowed_document_types(self) -> set[str]:
+        return {"annual_report", "10-K", "10-Q", "8-K", "20-F", "6-K", "prospectus", "registration_statement", "company_announcement", "official_product_page", "official_business_overview", "official_governance_page", "presentation", "transcript", "webcast"}
+
+    def _company_material_inbox_rights_tag(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        rights = dict(record.get("rights_tag", {}) if isinstance(record.get("rights_tag", {}), Mapping) else {})
+        merged = {
+            "license_class": "public_company_ir_reference",
+            "training_allowed": False,
+            "redistribution_allowed": False,
+            "display_use": "allowed",
+            "non_display_use": "restricted",
+            "derived_data_use": "restricted",
+        }
+        merged.update(rights)
+        merged["training_allowed"] = bool(merged.get("training_allowed", False))
+        merged["redistribution_allowed"] = bool(merged.get("redistribution_allowed", False))
+        return merged
+
+    def _company_material_inbox_source_payload(self, record: Mapping[str, Any], rights_tag: Mapping[str, Any]) -> dict[str, Any]:
+        allowed_types = record.get("allowed_document_types") or sorted(self._company_material_inbox_allowed_document_types())
+        return {
+            "source_id": str(record["source_id"]).strip(),
+            "source_type": str(record["source_type"]).strip(),
+            "description": str(record.get("source_description") or "Local company official/IR material inbox source."),
+            "risk_level": str(record.get("risk_level") or "green"),
+            "allowed_document_types": [str(item).strip() for item in allowed_types if str(item).strip()],
+            "provenance_ref": str(record.get("provenance_ref") or record.get("source_uri") or record.get("source_home") or ""),
+            "source_tos_uri": str(record.get("source_tos_uri", "")),
+            "usage_scope": str(record.get("usage_scope") or "company_official_ir_local_inbox_fact_backfill_only_no_training_no_live_trading"),
+            "collection_method": str(record.get("collection_method") or "local_manifest_sidecar_official_public_material"),
+            "robots_policy": str(record.get("robots_policy") or "reviewed_public_or_local_source"),
+            "review_owner_role": str(record.get("review_owner_role") or "数据工程"),
+            "rights_tag": dict(rights_tag),
+        }
+
+    def _company_material_inbox_document_payload(self, record: Mapping[str, Any], material_path: Path, body: str, rights_tag: Mapping[str, Any]) -> dict[str, Any]:
+        digest = hashlib.sha256(material_path.read_bytes()).hexdigest()
+        document_id = str(record.get("document_id") or "").strip()
+        if not document_id:
+            seed = "|".join([str(record.get("issuer_id", "")), str(record.get("security_id", "")), str(record.get("source_id", "")), str(record.get("source_uri", "")), digest])
+            document_id = f"doc_cmat_{safe_source_part(str(record.get('issuer_id', 'issuer')))}_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}"
+        return {
+            "document_id": document_id,
+            "issuer_id": str(record["issuer_id"]).strip(),
+            "security_id": str(record.get("security_id", "")).strip(),
+            "document_type": str(record["document_type"]).strip(),
+            "source_id": str(record["source_id"]).strip(),
+            "source_type": str(record["source_type"]).strip(),
+            "source_uri": str(record["source_uri"]).strip(),
+            "title": str(record.get("title") or material_path.stem),
+            "body": body,
+            "content_sha256": digest,
+            "published_at": record.get("published_at") or utcnow().isoformat(),
+            "language": str(record.get("language") or ("zh" if re.search(r"[\u4e00-\u9fff]", body) else "en")),
+            "version": str(record.get("version") or "company-material-inbox-v1"),
+            "rights_tag": dict(rights_tag),
+        }
+
+    def _company_material_inbox_text(self, material_path: Path, encoding: str) -> str:
+        if material_path.suffix.lower() == ".pdf":
+            return pdf_bytes_to_text(material_path.read_bytes())
+        return material_path.read_text(encoding=encoding, errors="replace")
+
     def company_official_material_inbox(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
         raw_root = str(payload.get("root_path") or os.environ.get("AI_QUANT_COMPANY_OFFICIAL_INBOX") or "").strip()

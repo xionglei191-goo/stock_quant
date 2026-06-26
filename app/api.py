@@ -652,6 +652,7 @@ class ApiRouter:
             ("GET", r"^/api/company-database/coverage/audit$", self._company_database_coverage_audit),
             ("POST", r"^/api/company-database/coverage/audit$", self._company_database_coverage_audit),
             ("POST", r"^/api/company-database/quality/reconcile$", self._reconcile_company_database_quality),
+            ("POST", r"^/api/company-database/material-inbox/ingest$", self._company_material_inbox_ingest),
             ("GET", r"^/api/company-database/profile-field-coverage/audit$", self._company_profile_coverage_audit),
             ("POST", r"^/api/company-database/profile-field-coverage/audit$", self._company_profile_coverage_audit),
             ("GET", r"^/api/company-database/profile-field-assertions$", self._company_profile_field_assertions),
@@ -1879,6 +1880,9 @@ class ApiRouter:
 
     def _review_company_profile_field_assertion(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.review_company_profile_field_assertion(body, actor=actor)
+
+    def _company_material_inbox_ingest(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_material_inbox_ingest(body, actor=actor)
 
     def _build_company_database(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.build_company_database(body, actor=actor)

@@ -2408,6 +2408,35 @@
 
 边界：复核只更新本地公司数据库字段 provenance 和画像事实字段，不生成投资建议，不连接真实券商，不触发自动交易。
 
+#### `POST /api/company-database/material-inbox/ingest`
+
+T-467 工作台入口，用于把本机已经下载或手工保存的公司官网、公司 IR、官方披露、交易所或监管材料送入公司数据库。该接口只读取本地 `*.manifest.json` sidecar 和对应文件，默认 dry-run；不会下载外部数据，也不会按文件名猜公司。
+
+请求字段：
+
+- `root_path`：可选；本地 inbox 目录。为空时使用 `AI_QUANT_COMPANY_MATERIAL_INBOX`，再回退到 `AI_QUANT_HOST_COMPANY_MATERIAL_ROOT/inbox`。
+- `manifest_glob`：可选；默认 `*.manifest.json`。
+- `scan_limit` / `limit`：可选；扫描上限，默认 1000，最大 10000。
+- `execute`：可选；默认 `false`。仅 `true` 时写入 source/document/evidence/profile field assertion。
+- `dry_run`：可选；为 `true` 时强制预览，不写库。
+- `fields`：可选；画像字段白名单。
+- `require_evidence`：可选；默认 `true`。
+- `refresh_existing`：可选；默认 `false`。
+
+返回字段：
+
+- `schema_id`：当前为 `company-material-inbox-ingest-v1`。
+- `status`：`dry_run`、`executed` 或 `failed`。
+- `totals`：manifest、planned、invalid、source/document/evidence/profile field 计数。
+- `items[]`：每条 manifest 的计划、执行或拒绝结果。
+- `source_rules`：允许和拒绝的 source/document 类型。
+- `usage_boundary`：固定为本地公司官方/IR 材料补库边界。
+
+边界：
+
+- 研报、券商研究、新闻、manual reference、未知类型和 `training_allowed=true` 记录会被标记 invalid，不进入事实字段链路。
+- 该接口是本地公司事实数据库补库入口，不训练模型，不生成投资建议，不连接真实券商，不触发自动交易。
+
 #### `scripts/company_material_inbox_ingest.py`
 
 T-461 本地脚本，用于把已经下载或手工保存的公司官网、公司 IR、官方披露材料送入公司数据库。它不是新后端服务，不访问外网，不抓取网页；只扫描本机目录中的 `*.manifest.json` sidecar 和对应文本/HTML/Markdown 文件。

@@ -1566,6 +1566,23 @@
               <button id="previewCompanyQualityReconcile">预览质量归并</button>
               <button id="runCompanyQualityReconcile" class="primary">执行质量归并</button>
             </div>
+            <div class="row">
+              <div class="field">
+                <label for="companyIntelMaterialRootPath">本地材料 inbox</label>
+                <input id="companyIntelMaterialRootPath" value="" aria-label="本地公司材料 inbox 路径" placeholder="/home/xionglei/文档/company_materials/inbox">
+                <span class="hint">只读取 manifest sidecar，不按文件名猜公司</span>
+              </div>
+              <div class="field compact">
+                <label for="companyIntelMaterialManifestGlob">Manifest</label>
+                <input id="companyIntelMaterialManifestGlob" value="*.manifest.json" aria-label="本地公司材料 manifest glob">
+              </div>
+              <div class="field compact">
+                <label for="companyIntelMaterialScanLimit">扫描上限</label>
+                <input id="companyIntelMaterialScanLimit" value="50" aria-label="本地公司材料扫描上限">
+              </div>
+              <button id="previewCompanyMaterialInbox">预览材料入库</button>
+              <button id="runCompanyMaterialInbox" class="primary">执行材料入库</button>
+            </div>
             <div class="system-strip">
               <div class="system-box"><strong>覆盖率</strong><span id="companyIntelCoverageScore">0%</span></div>
               <div class="system-box"><strong>缺失层</strong><span id="companyIntelCoverageMissing">0</span></div>
@@ -1590,6 +1607,9 @@
               <div class="system-box"><strong>字段冲突</strong><span id="companyIntelProfileAssertionConflictCount">0</span></div>
               <div class="system-box"><strong>已替代</strong><span id="companyIntelProfileAssertionSupersededCount">0</span></div>
               <div class="system-box"><strong>推荐</strong><span id="companyIntelProfileAssertionRecommendationStatus">待载入</span></div>
+              <div class="system-box"><strong>材料入库</strong><span id="companyIntelMaterialInboxStatus">待预览</span></div>
+              <div class="system-box"><strong>材料计划</strong><span id="companyIntelMaterialPlannedCount">0</span></div>
+              <div class="system-box"><strong>材料写入</strong><span id="companyIntelMaterialIngestedCount">0</span></div>
               <div class="system-box"><strong>质量归并</strong><span id="companyIntelQualityReconcileStatus">待预览</span></div>
               <div class="system-box"><strong>事件重复</strong><span id="companyIntelEventDuplicateCount">0</span></div>
               <div class="system-box"><strong>关系重复</strong><span id="companyIntelRelationshipDuplicateCount">0</span></div>
@@ -1601,6 +1621,7 @@
             <table><thead><tr><th>公司</th><th>覆盖率</th><th>缺失层</th><th>计数</th></tr></thead><tbody id="companyIntelCoverageRows"></tbody></table>
             <table><thead><tr><th>字段</th><th>分组</th><th>状态</th><th>来源/原因</th></tr></thead><tbody id="companyIntelProfileFieldRows"></tbody></table>
             <table><thead><tr><th>候选字段</th><th>值</th><th>来源</th><th>状态</th></tr></thead><tbody id="companyIntelProfileFieldExtractRows"></tbody></table>
+            <table><thead><tr><th>材料</th><th>公司/来源</th><th>状态</th><th>说明</th></tr></thead><tbody id="companyIntelMaterialInboxRows"></tbody></table>
             <div class="row">
               <button id="batchApproveCompanyProfileAssertions">批量批准</button>
               <button id="batchRejectCompanyProfileAssertions">批量拒绝</button>
@@ -5361,6 +5382,68 @@
       }
     }
 
+    function companyMaterialInboxPayload(execute = false) {
+      const payload = {
+        root_path: formValue("companyIntelMaterialRootPath", ""),
+        manifest_glob: formValue("companyIntelMaterialManifestGlob", "*.manifest.json") || "*.manifest.json",
+        scan_limit: Number(formValue("companyIntelMaterialScanLimit", "50")) || 50,
+        execute,
+        dry_run: !execute,
+        require_evidence: $("companyIntelProfileRequireEvidence")?.checked !== false,
+        refresh_existing: $("companyIntelProfileRefreshExisting")?.checked === true
+      };
+      const fields = formValue("companyIntelProfileFieldList", "").split(",").map((item) => item.trim()).filter(Boolean);
+      if (fields.length) payload.fields = fields;
+      return payload;
+    }
+
+    function renderCompanyMaterialInbox(data, showDetails = true) {
+      const totals = data.totals || {};
+      const items = data.items || [];
+      $("companyIntelMaterialInboxStatus").textContent = data.execute ? "已执行" : (data.status === "failed" ? "失败" : "预览");
+      $("companyIntelMaterialPlannedCount").textContent = `${totals.planned_count || items.filter((item) => item.status === "planned").length || 0}`;
+      $("companyIntelMaterialIngestedCount").textContent = `${totals.documents_ingested || 0}`;
+      $("companyIntelMaterialInboxRows").innerHTML = rows(items.slice(0, 80), "暂无本地材料 manifest。请先在 inbox 中放入 *.manifest.json sidecar。", (item) => {
+        const errors = (item.errors || []).join(", ");
+        const actions = (item.planned_actions || []).join(", ");
+        const explanation = errors || actions || item.document_status || `${item.evidence_count || 0} evidence`;
+        return `<tr><td>${compactId(item.document_id || item.file_path || item.manifest_path || "")}${metaLine("文件", String(item.file_path || "").slice(-80))}</td><td>${compactId(item.issuer_id || "")}${metaLine("来源", `${statusLabel(item.source_type || "")} / ${statusLabel(item.document_type || "")}`)}</td><td>${statusLabel(item.status || "")}</td><td>${String(explanation || "").slice(0, 180)}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          schema_id: data.schema_id,
+          status: data.status,
+          root_path: data.root_path,
+          manifest_glob: data.manifest_glob,
+          totals,
+          source_rules: data.source_rules,
+          usage_boundary: data.usage_boundary,
+          items: items.slice(0, 10)
+        });
+      }
+    }
+
+    async function ingestCompanyMaterialInbox(execute = false) {
+      try {
+        $("companyIntelMaterialInboxStatus").textContent = execute ? "执行中" : "预览中";
+        const { data, trace_id } = await api("/api/company-database/material-inbox/ingest", {
+          method: "POST",
+          role: "data_engineer",
+          body: companyMaterialInboxPayload(execute)
+        });
+        renderCompanyMaterialInbox(data, true);
+        if (execute) {
+          await auditCompanyProfileFieldCoverage(false);
+          await loadCompanyProfileAssertionConflicts(false);
+          await loadCompanyIntelligence(false);
+        }
+        setStatus(`${execute ? "本地材料入库已执行" : "本地材料入库预览完成"} · planned ${data.totals?.planned_count || 0} · invalid ${data.totals?.invalid_count || 0} · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelMaterialInboxStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
     function companyIntelQualityReconcilePayload(execute = false) {
       const payload = companyIntelScopedPayload(Number(formValue("companyIntelBuildLimit", "20")) || 20);
       payload.include_events = true;
@@ -6627,6 +6710,8 @@
     $("batchRejectCompanyEvents").addEventListener("click", () => batchReviewCompanyEvents("reject"));
     $("batchApproveCompanyRelationships").addEventListener("click", () => batchReviewCompanyRelationships("approve"));
     $("batchRejectCompanyRelationships").addEventListener("click", () => batchReviewCompanyRelationships("reject"));
+    $("previewCompanyMaterialInbox").addEventListener("click", () => ingestCompanyMaterialInbox(false));
+    $("runCompanyMaterialInbox").addEventListener("click", () => ingestCompanyMaterialInbox(true));
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));
     $("runCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(true));
     $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));

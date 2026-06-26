@@ -381,11 +381,13 @@
   - 验收：关系复核仍只更新本地图谱 provenance，不触发真实交易；研报覆盖关系仍是观点/关注度关系，不会被提升为客户、供应商或竞争事实。
   - 后续增强：T-467 本地公司 IR/官网/官方披露材料 inbox 工作台入口；T-468 公司事件候选复核 API 与工作台；T-469 补库 run retry/resume UI。
 
-- `TODO` T-467 本地公司 IR/官网/官方披露材料 inbox 工作台入口
+- `DONE` T-467 本地公司 IR/官网/官方披露材料 inbox 工作台入口
   - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
   - 背景：T-461 已提供 `scripts/company_material_inbox_ingest.py`，可用 manifest sidecar 将本地官方/IR/监管/交易所材料送入 source/document/evidence/profile field assertion 链路，但公司情报工作台还没有可见入口。
-  - 待做：在公司数据库补齐面板加入本地材料 inbox dry-run/execute、manifest 计划表、local-only artifact 摘要和边界提示；不得用文件名猜公司，不得让研报、新闻、manual reference 或 `training_allowed=true` 进入事实字段。
-  - 验收：UI 静态/浏览器验收覆盖 material inbox 预览，单测或 smoke 覆盖 manifest 边界拒绝和官方材料 dry-run，不下载外部数据，不触发真实交易。
+  - **已完成（本轮）**：新增 `POST /api/company-database/material-inbox/ingest`，把 T-461 的本地 manifest sidecar 入库能力挂到工作台后端服务，默认 dry-run，显式 execute 才注册 source、写入 document、抽取 evidence 和画像字段断言。
+  - **已完成（本轮）**：公司数据库补齐面板新增本地材料 inbox 路径、manifest glob、扫描上限、预览/执行按钮、材料计划表和状态计数，执行后刷新画像字段覆盖、字段冲突队列和公司情报总览。
+  - **已完成（本轮）**：入口继续拒绝研报、券商研究、新闻、manual reference、未知 source/document 类型和 `training_allowed=true` 记录；不按文件名猜公司，不下载外部数据，不触发真实交易。
+  - 验收：`python3 -m py_compile app/api.py app/services.py scripts/ui_static_check.py scripts/ui_interaction_acceptance.py`、`python3 scripts/ui_static_check.py` 和直接 API smoke 覆盖 dry-run planned/invalid 边界。
 
 - `DONE` T-468 公司事件候选复核 API 与工作台
   - 对应：E3-US1, E7-US1, E8-US2；愿景扩展/生产化增强
