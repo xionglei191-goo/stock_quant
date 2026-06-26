@@ -405,6 +405,13 @@ def run_ui_interaction_acceptance(
             ),
             _run_check(
                 client,
+                "company_package_import_run_history_render",
+                "(() => { renderCompanyPackageImportRuns({count:1, include_items:false, usage_boundary:'company_package_import_runs_are_local_watchlist_history_no_external_download_no_live_trading', runs:[{run_id:'pkg_import_demo', status:'executed', execute:true, dry_run:false, root_path:'/tmp/company_packages', manifest_glob:'*.watchlist.*', input_count:2, company_count:1, target_symbols:['PKGA'], target_issuer_ids:['issuer_bootstrap_pkga'], created_issuer_ids:['issuer_bootstrap_pkga'], existing_issuer_ids:[], duplicate_symbols:['PKGA'], invalid_symbols:[], totals:{valid_count:1, executed_count:1, already_exists_count:0, invalid_count:0, duplicate_count:1, failed_count:0}, items:[], item_details_omitted:true, completed_at:'2026-06-26T10:00:00Z', usage_boundary:'company_package_import_run_is_local_watchlist_history_no_external_download_no_live_trading'}]}, true); return true; })()",
+                "document.querySelector('#companyIntelPackageRunHistoryStatus').textContent.includes('已执行') && document.querySelector('#companyIntelPackageRunHistoryCount').textContent.includes('1') && document.querySelector('#companyIntelPackageImportRunRows').textContent.includes('import demo') && document.querySelector('#companyIntelPackageImportRunRows').textContent.includes('本地导入历史') && document.querySelector('#companyIntelOperationBox').textContent.includes('company_package_import_runs_are_local_watchlist_history')",
+                wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
                 "company_database_quality_reconcile_preview",
                 "document.querySelector('#companyIntelSymbol').value = 'SPCX'; document.querySelector('#previewCompanyQualityReconcile').click(); true",
                 "document.querySelector('#companyIntelQualityReconcileStatus').textContent.includes('预览') && document.querySelector('#companyIntelSourceQualityCount').textContent.trim().length > 0 && document.querySelector('#companyIntelQualityReconcileRows').textContent.trim().length > 0",

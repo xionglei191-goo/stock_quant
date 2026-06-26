@@ -1584,6 +1584,7 @@
               </div>
               <button id="previewCompanyPackageImport">预览公司包导入</button>
               <button id="runCompanyPackageImport" class="primary">执行公司包导入</button>
+              <button id="loadCompanyPackageImportRuns">查看导入历史</button>
             </div>
             <div class="row">
               <div class="field">
@@ -1633,6 +1634,9 @@
               <div class="system-box"><strong>公司计划</strong><span id="companyIntelPackagePlannedCount">0</span></div>
               <div class="system-box"><strong>公司导入</strong><span id="companyIntelPackageImportedCount">0</span></div>
               <div class="system-box"><strong>公司无效</strong><span id="companyIntelPackageInvalidCount">0</span></div>
+              <div class="system-box"><strong>导入历史</strong><span id="companyIntelPackageRunHistoryStatus">待载入</span></div>
+              <div class="system-box"><strong>导入次数</strong><span id="companyIntelPackageRunHistoryCount">0</span></div>
+              <div class="system-box"><strong>最近导入</strong><span id="companyIntelPackageRunHistoryLatest">-</span></div>
               <div class="system-box"><strong>材料入库</strong><span id="companyIntelMaterialInboxStatus">待预览</span></div>
               <div class="system-box"><strong>材料计划</strong><span id="companyIntelMaterialPlannedCount">0</span></div>
               <div class="system-box"><strong>材料写入</strong><span id="companyIntelMaterialIngestedCount">0</span></div>
@@ -1648,6 +1652,7 @@
             <table><thead><tr><th>字段</th><th>分组</th><th>状态</th><th>来源/原因</th></tr></thead><tbody id="companyIntelProfileFieldRows"></tbody></table>
             <table><thead><tr><th>候选字段</th><th>值</th><th>来源</th><th>状态</th></tr></thead><tbody id="companyIntelProfileFieldExtractRows"></tbody></table>
             <table><thead><tr><th>公司包</th><th>本地主体</th><th>状态</th><th>下一步</th></tr></thead><tbody id="companyIntelPackageImportRows"></tbody></table>
+            <table><thead><tr><th>导入 run</th><th>目标</th><th>结果</th><th>边界</th></tr></thead><tbody id="companyIntelPackageImportRunRows"></tbody></table>
             <table><thead><tr><th>材料</th><th>公司/来源</th><th>状态</th><th>说明</th></tr></thead><tbody id="companyIntelMaterialInboxRows"></tbody></table>
             <div class="row">
               <button id="batchApproveCompanyProfileAssertions">批量批准</button>
@@ -5488,6 +5493,67 @@
       }
     }
 
+    function companyPackageImportRunsPayload(includeItems = false) {
+      const payload = {
+        limit: 20,
+        include_items: includeItems
+      };
+      const symbol = companyIntelCurrentSymbol();
+      if (symbol) payload.symbol = symbol;
+      return payload;
+    }
+
+    function renderCompanyPackageImportRuns(data, showDetails = false) {
+      const runs = data.runs || [];
+      const latest = runs[0] || {};
+      $("companyIntelPackageRunHistoryStatus").textContent = runs.length ? statusLabel(latest.status || "") : "无记录";
+      $("companyIntelPackageRunHistoryCount").textContent = `${data.count || runs.length || 0}`;
+      $("companyIntelPackageRunHistoryLatest").textContent = latest.completed_at ? String(latest.completed_at).slice(0, 19) : "-";
+      $("companyIntelPackageImportRunRows").innerHTML = rows(runs, "暂无公司包导入历史。执行公司包导入后会记录本地 run。", (run) => {
+        const totals = run.totals || {};
+        const symbols = (run.target_symbols || []).slice(0, 6).join(", ") || "-";
+        const targetLine = [
+          `${Number(run.company_count || 0)} 家公司`,
+          `${(run.target_issuer_ids || []).length} 主体`,
+          run.execute ? "执行" : "预览"
+        ].join(" · ");
+        const resultLine = [
+          `valid ${Number(totals.valid_count || 0)}`,
+          `executed ${Number(totals.executed_count || 0)}`,
+          `existing ${Number(totals.already_exists_count || 0)}`,
+          `invalid ${Number(totals.invalid_count || 0)}`,
+          `duplicate ${Number(totals.duplicate_count || 0)}`,
+          `failed ${Number(totals.failed_count || 0)}`
+        ].join(" · ");
+        const localSource = [run.root_path || "", run.manifest_glob || ""].filter(Boolean).join(" / ") || "inline";
+        return `<tr><td>${compactId(run.run_id || "")}${metaLine("状态", statusLabel(run.status || ""))}${metaLine("时间", String(run.completed_at || run.created_at || "").slice(0, 19))}</td><td>${targetLine}${metaLine("代码", symbols)}${metaLine("来源", String(localSource).slice(-100))}</td><td>${resultLine}${metaLine("创建", `${(run.created_issuer_ids || []).length} issuer`)}</td><td>${boundaryLabel(run.usage_boundary || data.usage_boundary || "")}${metaLine("本地导入历史", run.item_details_omitted ? "明细已省略" : `${(run.items || []).length} rows`)}</td></tr>`;
+      });
+      if (showDetails) {
+        $("companyIntelOperationBox").textContent = userPretty({
+          count: data.count,
+          include_items: data.include_items,
+          usage_boundary: data.usage_boundary,
+          runs: runs.slice(0, 10)
+        });
+      }
+    }
+
+    async function loadCompanyPackageImportRuns(showDetails = false) {
+      try {
+        $("companyIntelPackageRunHistoryStatus").textContent = "载入中";
+        const { data, trace_id } = await api("/api/company-database/package/import/runs", {
+          method: "POST",
+          role: "analyst",
+          body: companyPackageImportRunsPayload(showDetails)
+        });
+        renderCompanyPackageImportRuns(data, showDetails);
+        if (showDetails) setStatus(`公司包导入历史已载入 · ${data.count || 0} 条 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelPackageRunHistoryStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
     async function importCompanyPackage(execute = false) {
       try {
         $("companyIntelPackageImportStatus").textContent = execute ? "执行中" : "预览中";
@@ -5498,6 +5564,7 @@
         });
         renderCompanyPackageImport(data, true);
         if (execute) {
+          await loadCompanyPackageImportRuns(false);
           await auditCompanyCoverage(false);
           await loadCompanyIntelligence(false);
         }
@@ -6204,6 +6271,7 @@
       renderCompanyRelationshipReview(data);
       loadCompanyBuildRuns(false);
       loadCompanyCoverageTrends(false);
+      loadCompanyPackageImportRuns(false);
       $("companyIntelRawBox").textContent = userPretty({
         symbol: data.symbol,
         resolution: data.resolution,
@@ -6947,6 +7015,7 @@
     $("batchRejectCompanyRelationships").addEventListener("click", () => batchReviewCompanyRelationships("reject"));
     $("previewCompanyPackageImport").addEventListener("click", () => importCompanyPackage(false));
     $("runCompanyPackageImport").addEventListener("click", () => importCompanyPackage(true));
+    $("loadCompanyPackageImportRuns").addEventListener("click", () => loadCompanyPackageImportRuns(true));
     $("previewCompanyMaterialInbox").addEventListener("click", () => ingestCompanyMaterialInbox(false));
     $("runCompanyMaterialInbox").addEventListener("click", () => ingestCompanyMaterialInbox(true));
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));
