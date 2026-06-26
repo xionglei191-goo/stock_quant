@@ -2318,6 +2318,7 @@
 | `/api/analysis-conclusions` | `GET` / `POST` | 查询或登记 `AnalysisConclusion`，记录事实、推断、主观判断、证据、反证和复盘计划 |
 | `/api/simulation-feedback` | `GET` / `POST` | 查询或登记 `SimulationFeedback`，固定 `paper_only=true`、`live_execution_allowed=false` |
 | `/api/simulation-feedback/performance/update` | `POST` | 使用本地最新行情更新 paper-only 模拟反馈表现，不连接券商 |
+| `/api/company-intelligence/{symbol}/cycle/run` | `POST` | 公司级闭环刷新 runner，串联研报兑现、workflow 重建和 paper-only 模拟反馈表现更新；默认 dry-run |
 
 过滤字段通用支持 `issuer_id`、`security_id`、`limit`；各接口还支持与对象对应的状态、类型、分析师、研报或结论 ID 过滤。`/api/simulation-feedback` 会拒绝任何 `paper_only=false`、`live_execution_allowed=true` 或 `broker_connected=true` 的请求。
 
@@ -2942,6 +2943,43 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 - `next_actions`：缺口对应的下一步入口。
 
 研报字段只作为观点/关注度/可靠性复盘来源；事实仍需回链公告、财报、监管披露、公司 IR 或可信公开来源。返回的模拟反馈只用于验证分析结论有效性，不代表真实订单或投资建议。
+
+#### `POST /api/company-intelligence/{symbol}/cycle/run`
+
+公司级闭环刷新 runner，用于在新材料入库、事件/关系复核、行情更新或研报观点结构化后，把分析反馈链路刷新到同一家公司视图里。该接口默认 dry-run，只使用本地已有数据，不下载外部资料，不连接真实券商，不触发真实交易。
+
+执行顺序：
+
+1. 解析 `{symbol}` 到本地 `issuer_id`；若未建档，返回 `status=not_found` 和原公司情报 `next_actions`，不会回退到全库。
+2. 读取刷新前的公司情报完整度和公司数据库覆盖率。
+3. 可选调用 `POST /api/research-reports/realization/update` 更新研报预测/观点兑现状态。
+4. 可选调用 `POST /api/company-database/workflow/build` 刷新观察任务、分析结论和 watch-only 模拟反馈。
+5. 可选调用 `POST /api/simulation-feedback/performance/update` 更新 paper-only 反馈表现。
+6. 读取刷新后的公司情报完整度和覆盖率，返回 compact summary。
+
+请求字段：
+
+- `execute`：默认 `false`；为 `true` 时才写入兑现状态、workflow 和 paper feedback performance。
+- `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划。
+- `limit`：目标/处理数量上限，默认 20。
+- `link_limit` / `workflow_link_limit`：workflow 回链数量上限，默认 5。
+- `include_realization`：默认 `true`。
+- `include_workflow`：默认 `true`。
+- `include_feedback_performance`：默认 `true`。
+- `refresh_existing`：默认 `true`；已有基线观察/结论/反馈可刷新回链。
+- `recompute_analyst_scores`：默认 `true`；执行研报兑现时重算分析师可靠性。
+
+返回字段：
+
+- `schema_id`：当前为 `company-intelligence-cycle-v1`。
+- `status`：`dry_run`、`executed` 或 `not_found`。
+- `issuer_ids`：本次解析到的公司主体；未知 symbol 为空。
+- `steps`：三个子步骤的原始摘要：`research_report_realization`、`workflow_build`、`simulation_feedback_performance`。
+- `summary`：完整度/覆盖率前后变化、兑现项、workflow 项和反馈更新项。
+- `before` / `after`：刷新前后公司情报状态、section counts、完整度 verdict 和覆盖率。
+- `usage_boundary`：固定声明本地记录、paper feedback、无券商执行。
+
+边界：该 runner 是复盘和本地公司数据库维护动作，不生成投资建议，不把研报升级为事实源，不下单，不连接真实券商。
 
 #### `GET /api/graph/query`
 

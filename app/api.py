@@ -704,6 +704,7 @@ class ApiRouter:
             ("POST", r"^/api/graph/neo4j/sync$", self._sync_graph_neo4j),
             ("GET", r"^/api/graph-vector/readiness-report$", self._graph_vector_readiness_report),
             ("POST", r"^/api/graph-vector/readiness-report$", self._graph_vector_readiness_report),
+            ("POST", r"^/api/company-intelligence/(?P<symbol>[^/]+)/cycle/run$", self._run_company_intelligence_cycle),
             ("GET", r"^/api/company-intelligence/(?P<symbol>[^/]+)$", self._company_intelligence_by_symbol),
             ("POST", r"^/api/company-intelligence/(?P<symbol>[^/]+)$", self._company_intelligence_by_symbol),
             ("GET", r"^/api/graph/query$", self._query_graph),
@@ -2068,6 +2069,12 @@ class ApiRouter:
         payload = dict(body)
         payload["symbol"] = match["symbol"] if match else payload.get("symbol", "")
         return self.service.company_intelligence(payload)
+
+    def _run_company_intelligence_cycle(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/company-intelligence/(?P<symbol>[^/]+)/cycle/run$", path)
+        payload = dict(body)
+        payload["symbol"] = match["symbol"] if match else payload.get("symbol", "")
+        return self.service.run_company_intelligence_cycle(payload, actor=actor)
 
     def _graph_traceability_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.graph_traceability_report(body)

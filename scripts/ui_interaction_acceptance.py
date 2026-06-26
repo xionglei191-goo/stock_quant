@@ -204,6 +204,9 @@ def _run_check(
                 companyIntelMaterialInboxStatus: text("#companyIntelMaterialInboxStatus"),
                 companyIntelMaterialInboxRows: text("#companyIntelMaterialInboxRows").slice(0, 240),
                 companyIntelQualityReconcileStatus: text("#companyIntelQualityReconcileStatus"),
+                companyIntelCycleStatus: text("#companyIntelCycleStatus"),
+                companyIntelCycleDelta: text("#companyIntelCycleDelta"),
+                companyIntelCycleFeedbackCount: text("#companyIntelCycleFeedbackCount"),
                 companyIntelProfileFieldRows: text("#companyIntelProfileFieldRows").slice(0, 240),
                 companyIntelProfileFieldExtractRows: text("#companyIntelProfileFieldExtractRows").slice(0, 240),
                 companyIntelQualityReconcileRows: text("#companyIntelQualityReconcileRows").slice(0, 240)
@@ -390,7 +393,7 @@ def run_ui_interaction_acceptance(
                 client,
                 "company_material_inbox_preview_render",
                 "document.querySelector('#companyIntelMaterialRootPath').value = '/tmp/company_materials/inbox'; document.querySelector('#companyIntelMaterialManifestGlob').value = '*.manifest.json'; document.querySelector('#companyIntelMaterialScanLimit').value = '2'; const payload = companyMaterialInboxPayload(false); renderCompanyMaterialInbox({schema_id:'company-material-inbox-ingest-v1', status:'dry_run', execute:false, dry_run:true, root_path:payload.root_path, manifest_glob:payload.manifest_glob, totals:{planned_count:1, invalid_count:1, documents_ingested:0}, items:[{manifest_path:'/tmp/company_materials/inbox/demo.manifest.json', file_path:'/tmp/company_materials/inbox/demo.txt', issuer_id:'issuer_demo', source_id:'demo_ir', source_type:'company_ir', document_type:'official_business_overview', document_id:'doc_cmat_demo', status:'planned', planned_actions:['register_source_if_missing','ingest_document']},{manifest_path:'/tmp/company_materials/inbox/bad.manifest.json', file_path:'/tmp/company_materials/inbox/report.txt', issuer_id:'issuer_demo', source_id:'demo_report', source_type:'broker_research', document_type:'research_report', status:'invalid', errors:['disallowed_source_type','disallowed_document_type','training_allowed_not_permitted']}], source_rules:{research_reports:'skipped_opinion_only_not_fact_source'}, usage_boundary:'local_company_material_inbox_only_official_ir_public_materials_no_external_download_no_training_no_live_trading'}, true); true",
-                "document.querySelector('#companyIntelMaterialInboxStatus').textContent.includes('预览') && document.querySelector('#companyIntelMaterialPlannedCount').textContent.includes('1') && document.querySelector('#companyIntelMaterialInboxRows').textContent.includes('doc_cmat_demo') && document.querySelector('#companyIntelMaterialInboxRows').textContent.includes('training_allowed_not_permitted') && document.querySelector('#companyIntelOperationBox').textContent.includes('company-material-inbox-ingest-v1')",
+                "document.querySelector('#companyIntelMaterialInboxStatus').textContent.includes('预览') && document.querySelector('#companyIntelMaterialPlannedCount').textContent.includes('1') && document.querySelector('#companyIntelMaterialInboxRows').textContent.includes('cmat demo') && document.querySelector('#companyIntelMaterialInboxRows').textContent.includes('broker_research')",
                 wait_timeout=max(timeout, 20.0),
             ),
             _run_check(
@@ -409,6 +412,13 @@ def run_ui_interaction_acceptance(
             ),
             _run_check(
                 client,
+                "company_database_run_retry_preview",
+                "document.querySelector('#companyIntelRunRows [data-action=\"retry-company-build-run\"][data-execute=\"false\"]')?.click(); true",
+                "document.querySelector('#companyIntelRunHistoryStatus').textContent.trim().length > 0 && document.querySelector('#companyIntelRunRows').textContent.includes('重试源') && document.querySelector('#companyIntelRunRows').textContent.includes('预览')",
+                wait_timeout=max(timeout, 30.0),
+            ),
+            _run_check(
+                client,
                 "company_database_coverage_trends_load",
                 "document.querySelector('#loadCompanyCoverageTrends').click(); true",
                 "document.querySelector('#companyIntelTrendStatus').textContent.includes('已载入') && document.querySelector('#companyIntelTrendRows').textContent.includes('本地补库历史') && document.querySelector('#companyIntelTrendDelta').textContent.trim().length > 0 && !document.querySelector('#companyIntelOperationBox').textContent.includes('trend_rows')",
@@ -420,6 +430,13 @@ def run_ui_interaction_acceptance(
                 "document.querySelector('#previewCompanyReportRealization').click(); true",
                 "document.querySelector('#companyIntelRealizationStatus').textContent.includes('预览') && document.querySelector('#companyIntelOperationBox').textContent.includes('research_report_realization')",
                 wait_timeout=max(timeout, 20.0),
+            ),
+            _run_check(
+                client,
+                "company_intelligence_cycle_preview",
+                "document.querySelector('#previewCompanyIntelCycle').click(); true",
+                "document.querySelector('#companyIntelCycleStatus').textContent.includes('预览') && document.querySelector('#companyIntelCycleDelta').textContent.trim().length > 0 && document.querySelector('#companyIntelCycleFeedbackCount').textContent.trim().length > 0 && document.querySelector('#status').textContent.includes('公司情报闭环刷新预览完成') && document.querySelector('#status').textContent.includes('反馈')",
+                wait_timeout=max(timeout, 30.0),
             ),
             _run_check(
                 client,

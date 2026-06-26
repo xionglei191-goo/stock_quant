@@ -26329,6 +26329,138 @@ class SystemService:
                 rows = [item for item in rows if str(getattr(item, field_name, "")) == value]
         return rows
 
+    def run_company_intelligence_cycle(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        raw_symbol = str(payload.get("symbol") or payload.get("ticker") or payload.get("q") or "").strip()
+        if not raw_symbol:
+            raise ValidationError("company intelligence cycle requires symbol")
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        limit = self._bounded_limit(payload.get("limit", 20), 200)
+        link_limit = self._bounded_limit(payload.get("link_limit", payload.get("workflow_link_limit", 5)), 50)
+        include_realization = self._truthy(payload.get("include_realization", True))
+        include_workflow = self._truthy(payload.get("include_workflow", True))
+        include_feedback_performance = self._truthy(payload.get("include_feedback_performance", True))
+        refresh_existing = self._truthy(payload.get("refresh_existing", True))
+        before = self.company_intelligence({"symbol": raw_symbol, "limit": limit})
+        issuer_ids = [str(item).strip() for item in before.get("resolution", {}).get("issuer_ids", []) if str(item).strip()]
+        if not issuer_ids:
+            self._audit(
+                actor,
+                "run_company_intelligence_cycle",
+                "company_intelligence",
+                raw_symbol,
+                approval_state="not_found",
+            )
+            return {
+                "schema_id": "company-intelligence-cycle-v1",
+                "status": "not_found",
+                "execute": execute,
+                "dry_run": not execute,
+                "symbol": raw_symbol,
+                "issuer_ids": [],
+                "steps": {},
+                "before": {
+                    "status": before.get("status"),
+                    "section_counts": before.get("section_counts", {}),
+                    "completeness_verdict": before.get("completeness_verdict", {}),
+                },
+                "after": {},
+                "next_actions": before.get("next_actions", []),
+                "usage_boundary": "company_intelligence_cycle_uses_local_records_only_paper_feedback_no_broker_execution",
+            }
+        scoped = {
+            "issuer_ids": issuer_ids,
+            "limit": min(limit, len(issuer_ids)),
+            "execute": execute,
+            "dry_run": not execute,
+        }
+        coverage_before = self.company_database_coverage_audit({"issuer_ids": issuer_ids, "limit": len(issuer_ids)}, actor=actor)
+        steps: dict[str, Any] = {}
+        if include_realization:
+            steps["research_report_realization"] = self.update_research_report_realization(
+                {
+                    **scoped,
+                    "recompute_analyst_scores": self._truthy(payload.get("recompute_analyst_scores", True)),
+                },
+                actor=actor,
+            )
+        if include_workflow:
+            steps["workflow_build"] = self.build_company_workflow(
+                {
+                    **scoped,
+                    "link_limit": link_limit,
+                    "include_observations": self._truthy(payload.get("include_observations", True)),
+                    "include_conclusions": self._truthy(payload.get("include_conclusions", True)),
+                    "include_feedback": self._truthy(payload.get("include_feedback", True)),
+                    "refresh_existing": refresh_existing,
+                },
+                actor=actor,
+            )
+        if include_feedback_performance:
+            steps["simulation_feedback_performance"] = self.update_simulation_feedback_performance(scoped, actor=actor)
+        coverage_after = self.company_database_coverage_audit({"issuer_ids": issuer_ids, "limit": len(issuer_ids)}, actor=actor)
+        after = self.company_intelligence({"symbol": raw_symbol, "limit": limit})
+        before_score = float(before.get("completeness_verdict", {}).get("score", 0.0) or 0.0)
+        after_score = float(after.get("completeness_verdict", {}).get("score", 0.0) or 0.0)
+        coverage_before_score = float(coverage_before.get("average_coverage_score", 0.0) or 0.0)
+        coverage_after_score = float(coverage_after.get("average_coverage_score", 0.0) or 0.0)
+        realization_step = steps.get("research_report_realization", {})
+        workflow_step = steps.get("workflow_build", {})
+        feedback_step = steps.get("simulation_feedback_performance", {})
+        summary = {
+            "completeness_before": round(before_score, 4),
+            "completeness_after": round(after_score, 4),
+            "completeness_delta": round(after_score - before_score, 4),
+            "coverage_before": round(coverage_before_score, 4),
+            "coverage_after": round(coverage_after_score, 4),
+            "coverage_delta": round(coverage_after_score - coverage_before_score, 4),
+            "realization_items": int(realization_step.get("forecast_updated" if execute else "forecast_planned", 0) or 0)
+            + int(realization_step.get("viewpoint_updated" if execute else "viewpoint_planned", 0) or 0),
+            "workflow_items": int(workflow_step.get("observations_planned", 0) or 0)
+            + int(workflow_step.get("observations_created", 0) or 0)
+            + int(workflow_step.get("observations_updated", 0) or 0)
+            + int(workflow_step.get("conclusions_planned", 0) or 0)
+            + int(workflow_step.get("conclusions_created", 0) or 0)
+            + int(workflow_step.get("conclusions_updated", 0) or 0)
+            + int(workflow_step.get("feedback_planned", 0) or 0)
+            + int(workflow_step.get("feedback_created", 0) or 0)
+            + int(workflow_step.get("feedback_updated", 0) or 0),
+            "feedback_items": int(feedback_step.get("feedback_updated" if execute else "feedback_planned", 0) or 0),
+        }
+        self._audit(
+            actor,
+            "run_company_intelligence_cycle",
+            "company_intelligence",
+            raw_symbol,
+            approval_state=f"execute={execute};issuers={len(issuer_ids)};delta={summary['completeness_delta']}",
+        )
+        return {
+            "schema_id": "company-intelligence-cycle-v1",
+            "status": "executed" if execute else "dry_run",
+            "execute": execute,
+            "dry_run": not execute,
+            "symbol": raw_symbol,
+            "issuer_ids": issuer_ids,
+            "steps": steps,
+            "summary": summary,
+            "before": {
+                "status": before.get("status"),
+                "section_counts": before.get("section_counts", {}),
+                "completeness_verdict": before.get("completeness_verdict", {}),
+                "coverage": coverage_before,
+            },
+            "after": {
+                "status": after.get("status"),
+                "section_counts": after.get("section_counts", {}),
+                "completeness_verdict": after.get("completeness_verdict", {}),
+                "coverage": coverage_after,
+            },
+            "usage_boundary": "company_intelligence_cycle_uses_local_records_only_paper_feedback_no_broker_execution",
+        }
+
     def company_intelligence(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         raw_symbol = str(filters.get("symbol") or filters.get("ticker") or filters.get("q") or "").strip()

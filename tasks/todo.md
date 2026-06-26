@@ -398,6 +398,23 @@
   - **已完成（本轮）**：`scripts/ui_static_check.py`、`scripts/ui_interaction_acceptance.py` 和单测覆盖事件候选推荐、选择、批准、拒绝、合并、改分类和备注写入。
   - 验收：事件复核只更新本地时间线 provenance，不触发真实交易；研报覆盖事件仍保持观点/关注度信号，不会被自动提升为事实。
 
+- `DONE` T-469 补库 run retry/resume 工作台入口
+  - 对应：E3-US4, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-454 已有 `POST /api/company-database/batch/runs/{run_id}/retry` 和 `resume_run_id` 语义，T-455 已在 UI 展示 retry/resume 元数据，但分析用户仍不能从工作台直接对失败、partial 或历史 run 发起重试/续跑。
+  - **已完成（本轮）**：运行历史表每行新增“预览重试”“续跑剩余”“重跑全部”操作，按钮通过 `data-action="retry-company-build-run"` 保留 run lineage、resume mode 和 execute/dry-run 边界。
+  - **已完成（本轮）**：新增 `retryCompanyBuildRun` 前端调用 `POST /api/company-database/batch/runs/{run_id}/retry`，默认 dry-run 预览，显式执行才补库；成功后刷新运行历史、覆盖趋势和公司情报总览。
+  - **已完成（本轮）**：UI 静态契约和交互验收脚本覆盖 retry/resume action marker、JS 函数和“执行补库后预览重试”的浏览器路径。
+  - 验收：`python3 scripts/ui_static_check.py`、`python3 -m py_compile app/api.py app/services.py scripts/ui_static_check.py scripts/ui_interaction_acceptance.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8768` 25/25 通过；后端 retry/resume 语义沿用 T-454 既有单测。
+
+- `DONE` T-470 公司情报闭环刷新 runner 与工作台入口
+  - 对应：E3-US4, E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：研报兑现、观察任务/分析结论生成、模拟反馈表现更新已经分别存在，但用户仍需要手动按顺序触发，导致公司档案刷新后不能直接看到分析闭环是否同步。
+  - **已完成（本轮）**：新增 `POST /api/company-intelligence/{symbol}/cycle/run`，默认 dry-run，按本地 symbol 解析 issuer 后串联研报兑现、company workflow build 和 paper-only 模拟反馈表现更新。
+  - **已完成（本轮）**：接口返回刷新前后公司情报完整度、公司数据库覆盖率、兑现项、workflow 项、反馈更新项和固定本地/paper-only/no-broker 边界。
+  - **已完成（本轮）**：公司情报工作台新增“预览闭环刷新”“执行闭环刷新”按钮和状态指标；执行后刷新公司情报、补库 run 历史与覆盖趋势。
+  - **已完成（本轮）**：`docs/api-contracts.md`、`scripts/ui_static_check.py`、`scripts/ui_interaction_acceptance.py` 和单测覆盖新 API、UI contract 和浏览器预览路径。
+  - 验收：`python3 -m py_compile app/api.py app/services.py tests/test_system.py scripts/ui_static_check.py scripts/ui_interaction_acceptance.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_intelligence_cycle_runs_local_workflow_feedback_loop`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

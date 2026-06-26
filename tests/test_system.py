@@ -3071,6 +3071,54 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(updated.validation["paper_only"])
         self.assertFalse(updated.validation["live_execution_allowed"])
 
+    def test_company_intelligence_cycle_runs_local_workflow_feedback_loop(self) -> None:
+        missing = self.router.dispatch(
+            "POST",
+            "/api/company-intelligence/ZZZNOLOCAL/cycle/run",
+            {},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(missing.success, missing.error)
+        self.assertEqual(missing.data["status"], "not_found")
+        self.assertEqual(missing.data["issuer_ids"], [])
+
+        dry_run = self.router.dispatch(
+            "POST",
+            "/api/company-intelligence/DEMO/cycle/run",
+            {},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["schema_id"], "company-intelligence-cycle-v1")
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertEqual(dry_run.data["issuer_ids"], ["issuer_001"])
+        self.assertIn("workflow_build", dry_run.data["steps"])
+        self.assertGreaterEqual(dry_run.data["summary"]["workflow_items"], 1)
+        self.assertFalse(self.service.store.observation_items)
+        self.assertFalse(self.service.store.analysis_conclusions)
+        self.assertFalse(self.service.store.simulation_feedback)
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-intelligence/DEMO/cycle/run",
+            {"execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["status"], "executed")
+        self.assertGreaterEqual(executed.data["summary"]["workflow_items"], 1)
+        self.assertIn("simulation_feedback_performance", executed.data["steps"])
+        self.assertTrue(self.service.store.observation_items)
+        self.assertTrue(self.service.store.analysis_conclusions)
+        self.assertTrue(self.service.store.simulation_feedback)
+        feedback = next(iter(self.service.store.simulation_feedback.values()))
+        self.assertTrue(feedback.paper_only)
+        self.assertFalse(feedback.live_execution_allowed)
+        self.assertIn("no_broker_execution", executed.data["usage_boundary"])
+
     def test_research_report_realization_update_recomputes_target_price_and_analyst_score(self) -> None:
         self.service.register_market_data_point(
             {
