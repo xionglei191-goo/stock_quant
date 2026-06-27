@@ -66,6 +66,7 @@ from scripts.production_release_gate import run_production_release_gate
 from scripts.production_task_status_finalize import finalize_production_task_statuses
 from scripts.project_completion_audit import build_completion_audit
 from scripts.production_task_closure_audit import TASKS_WITH_EXTERNAL_EVIDENCE, TASK_CODE_MARKERS, audit_production_tasks, build_evidence_collection_plan
+from scripts.production_evidence_owner_packets import build_owner_packets, render_owner_packets_markdown, validate_owner_packets
 from scripts.readiness_evidence_package_check import REQUIRED_CHECK_IDS, REQUIRED_EXTERNAL_VALIDATION_SCOPES, validate_readiness_evidence_package
 from scripts.security_check import scan_repository
 from scripts.staging_acceptance import run_staging_acceptance
@@ -18944,6 +18945,52 @@ class SystemServiceTests(unittest.TestCase):
             self.assertFalse((plan_path.parent / f".{plan_path.name}.tmp").exists())
             loaded = json.loads(plan_path.read_text(encoding="utf-8"))
             self.assertTrue(validate_evidence_collection_plan(loaded, require_filled_uris=True)["passed"])
+
+    def test_production_evidence_owner_packets_group_external_evidence_by_owner(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        packets = build_owner_packets(plan)
+        validation = validate_owner_packets(packets)
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertEqual(validation["owner_count"], 6)
+        self.assertEqual(validation["task_count"], 17)
+        self.assertEqual(validation["artifact_field_count"], 80)
+        self.assertIn("not release evidence", packets["production_boundary"])
+        owners = {item["owner_role"]: item for item in packets["owners"]}
+        self.assertIn("平台负责人", owners)
+        self.assertIn("数据工程", owners)
+        self.assertIn("风险/合规", owners)
+        self.assertIn("T-421", owners["风险/合规"]["task_ids"])
+        rendered = render_owner_packets_markdown(packets)
+        self.assertIn("# Production External Evidence Owner Packets", rendered)
+        self.assertIn("## Release Gate Handoff", rendered)
+        self.assertIn("artifact://staging-local", rendered)
+        self.assertIn("/api/governance/security-readiness-report", rendered)
+
+        with TemporaryDirectory() as tmpdir:
+            plan_path = Path(tmpdir) / "plan.json"
+            output_json = Path(tmpdir) / "owner-packets.json"
+            output_md = Path(tmpdir) / "owner-packets.md"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_evidence_owner_packets.py",
+                    str(plan_path),
+                    "--output-json",
+                    str(output_json),
+                    "--output-md",
+                    str(output_md),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn('"status": "passed"', result.stdout)
+            self.assertTrue(output_json.exists())
+            self.assertTrue(output_md.exists())
+            self.assertFalse((output_json.parent / f".{output_json.name}.tmp").exists())
+            self.assertFalse((output_md.parent / f".{output_md.name}.tmp").exists())
 
     def test_project_completion_audit_maps_objective_to_real_evidence(self) -> None:
         completion = build_completion_audit()
