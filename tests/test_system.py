@@ -66,6 +66,7 @@ from scripts.production_release_gate import run_production_release_gate
 from scripts.production_task_status_finalize import finalize_production_task_statuses
 from scripts.project_completion_audit import build_completion_audit
 from scripts.production_task_closure_audit import TASKS_WITH_EXTERNAL_EVIDENCE, TASK_CODE_MARKERS, audit_production_tasks, build_evidence_collection_plan
+from scripts.production_evidence_execution_plan import build_execution_plan, render_execution_plan_markdown, validate_execution_plan
 from scripts.production_evidence_owner_packets import build_owner_packets, render_owner_packets_markdown, validate_owner_packets
 from scripts.production_evidence_status_board import build_status_board, render_status_board_markdown, validate_status_board
 from scripts.readiness_evidence_package_check import REQUIRED_CHECK_IDS, REQUIRED_EXTERNAL_VALIDATION_SCOPES, validate_readiness_evidence_package
@@ -19058,6 +19059,56 @@ class SystemServiceTests(unittest.TestCase):
                 [
                     sys.executable,
                     "scripts/production_evidence_status_board.py",
+                    str(plan_path),
+                    "--output-json",
+                    str(output_json),
+                    "--output-md",
+                    str(output_md),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn('"status": "passed"', result.stdout)
+            self.assertTrue(output_json.exists())
+            self.assertTrue(output_md.exists())
+            self.assertFalse((output_json.parent / f".{output_json.name}.tmp").exists())
+            self.assertFalse((output_md.parent / f".{output_md.name}.tmp").exists())
+
+    def test_production_evidence_execution_plan_routes_owner_work_to_release_gate(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        execution_plan = build_execution_plan(plan)
+        validation = validate_execution_plan(execution_plan)
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertEqual(execution_plan["status"], "waiting_for_external_evidence")
+        self.assertEqual(execution_plan["owner_count"], 6)
+        self.assertEqual(execution_plan["task_count"], 17)
+        self.assertEqual(execution_plan["artifact_field_count"], 81)
+        self.assertEqual(execution_plan["waiting_task_count"], 17)
+        self.assertIn("not release evidence", execution_plan["production_boundary"])
+        phases = {item["phase_id"]: item for item in execution_plan["execution_phases"]}
+        self.assertIn("--require-filled-uris", phases["P1"]["command"])
+        self.assertIn("production_release_gate.py", phases["P3"]["command"])
+        self.assertIn("production_task_status_finalize.py", phases["P4"]["command"])
+        owner_groups = {item["owner_role"]: item["owner_group"] for item in execution_plan["owner_runs"]}
+        self.assertEqual(owner_groups["数据工程"], "Data and Evidence")
+        self.assertEqual(owner_groups["风险/合规"], "Governance, Security, and Compliance")
+        rendered = render_execution_plan_markdown(execution_plan)
+        self.assertIn("# Production External Evidence Execution Plan", rendered)
+        self.assertIn("docs/production-evidence-task-packets/t-421-production-evidence.md", rendered)
+        self.assertIn("strict release gate", rendered)
+        self.assertIn("not release evidence", rendered)
+
+        with TemporaryDirectory() as tmpdir:
+            plan_path = Path(tmpdir) / "plan.json"
+            output_json = Path(tmpdir) / "execution-plan.json"
+            output_md = Path(tmpdir) / "execution-plan.md"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_evidence_execution_plan.py",
                     str(plan_path),
                     "--output-json",
                     str(output_json),
