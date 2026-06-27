@@ -3815,8 +3815,96 @@ class SystemServiceTests(unittest.TestCase):
         updated = self.service.store.simulation_feedback[feedback.simulation_feedback_id]
         self.assertEqual(updated.performance["latest_market_data_id"], "md_demo_feedback_latest")
         self.assertEqual(updated.performance["return_pct"], 0.2)
+        self.assertEqual(updated.performance["event_window_return"], 0.2)
+        self.assertIn(updated.performance["realization_status"], {"realized", "mixed", "missed"})
         self.assertTrue(updated.validation["paper_only"])
         self.assertFalse(updated.validation["live_execution_allowed"])
+
+    def test_simulation_feedback_realization_scoring_links_conclusion_market_window_and_review(self) -> None:
+        self.service.register_issuer(
+            {
+                "issuer_id": "issuer_benchmark_score",
+                "legal_name": "Benchmark Corp",
+                "market": ["A"],
+                "country": "CN",
+            },
+            actor="platform",
+        )
+        self.service.register_security(
+            {
+                "security_id": "sec_002",
+                "issuer_id": "issuer_benchmark_score",
+                "ticker": "BENCH",
+                "exchange": "SSE",
+                "currency": "CNY",
+                "market": "A",
+            },
+            actor="platform",
+        )
+        for payload in [
+            {"data_id": "md_score_1", "security_id": "sec_001", "source_id": "public_eod_market_data", "market": "A", "as_of_date": "2026-06-20", "open": 10.0, "high": 10.2, "low": 9.8, "close": 10.0, "volume": 1000},
+            {"data_id": "md_score_2", "security_id": "sec_001", "source_id": "public_eod_market_data", "market": "A", "as_of_date": "2026-06-21", "open": 10.0, "high": 10.6, "low": 9.5, "close": 10.5, "volume": 1100},
+            {"data_id": "md_score_3", "security_id": "sec_001", "source_id": "public_eod_market_data", "market": "A", "as_of_date": "2026-06-22", "open": 10.5, "high": 11.3, "low": 10.4, "close": 11.2, "volume": 1200},
+            {"data_id": "md_bench_1", "security_id": "sec_002", "source_id": "public_eod_market_data", "market": "A", "as_of_date": "2026-06-20", "open": 20.0, "high": 20.2, "low": 19.8, "close": 20.0, "volume": 2000},
+            {"data_id": "md_bench_2", "security_id": "sec_002", "source_id": "public_eod_market_data", "market": "A", "as_of_date": "2026-06-22", "open": 20.0, "high": 20.5, "low": 19.9, "close": 20.4, "volume": 2100},
+        ]:
+            self.service.register_market_data_point(payload, actor="data")
+        conclusion = self.service.create_analysis_conclusion(
+            {
+                "analysis_conclusion_id": "ac_realization_score_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "title": "Upside thesis",
+                "conclusion": "Demo should outperform in the event window.",
+                "status": "active",
+            },
+            actor="analyst",
+        )
+        feedback = self.service.record_simulation_feedback(
+            {
+                "simulation_feedback_id": "sf_realization_score_demo",
+                "analysis_conclusion_id": conclusion.analysis_conclusion_id,
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "benchmark_security_id": "sec_002",
+                "feedback_type": "paper_position",
+                "paper_only": True,
+                "live_execution_allowed": False,
+                "broker_connected": False,
+                "simulated_action": "buy",
+                "entry_price": 10.0,
+                "start_at": "2026-06-20T00:00:00+00:00",
+            },
+            actor="analyst",
+        )
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/simulation-feedback/performance/update",
+            {"feedback_id": feedback.simulation_feedback_id, "execute": True},
+            actor="data",
+            role="analyst",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["feedback_updated"], 1)
+        row = executed.data["feedback"][0]
+        self.assertEqual(row["realization_status"], "realized")
+        self.assertEqual(row["event_window_return"], 0.12)
+        self.assertEqual(row["relative_benchmark_return"], 0.1)
+        self.assertLessEqual(row["max_drawdown"], 0)
+        self.assertTrue(row["paper_only"])
+        self.assertFalse(row["live_execution_allowed"])
+        self.assertIn("paper_only_no_broker", executed.data["usage_boundary"])
+
+        updated = self.service.store.simulation_feedback[feedback.simulation_feedback_id]
+        self.assertEqual(updated.performance["realization_status"], "realized")
+        self.assertEqual(updated.performance["event_window_return"], 0.12)
+        self.assertEqual(updated.performance["relative_benchmark_return"], 0.1)
+        self.assertEqual(updated.review_result["prediction_error_attribution"], "no_material_error_identified")
+        self.assertTrue(updated.review_result["requires_human_review"])
+        self.assertEqual(updated.review_result["conclusion_title"], "Upside thesis")
+        self.assertTrue(updated.validation["paper_only"])
+        self.assertFalse(updated.validation["broker_connected"])
 
     def test_company_intelligence_cycle_runs_local_workflow_feedback_loop(self) -> None:
         missing = self.router.dispatch(

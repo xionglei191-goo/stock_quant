@@ -643,13 +643,17 @@
   - **已完成（本轮）**：新增 focused regression，要求 T-495 必备场景、桌面/移动视口、local-only 边界和现有 cross-browser matrix 校验契约不退化。
   - 验收：新增验收脚本输出 local-only artifact；console error 为 0；失败时能定位页面、接口和断言。
 
-- `TODO` T-496 结论兑现与模拟反馈评分增强
+- `DONE` T-496 结论兑现与模拟反馈评分增强
   - 对应：E5-US1, E6-US3, E7-US3；愿景扩展/生产化增强
   - Owner：Research and AI Workflows
   - 目标：让系统能回答“我的研究到底有没有用”。
   - 交付：为 `AnalysisConclusion` 和 `SimulationFeedback` 增加兑现状态、事件窗口收益、相对基准收益、最大回撤、预测错误归因、人工复盘评分和下一步建议。
   - 后端重构：抽取 `feedback_scoring` / `conclusion_realization` 领域模块；保持 paper-only、no-broker、no-auto-trading 边界集中可测。
   - UI：公司情报和复盘反馈页展示“结论兑现卡片”。
+  - **已完成（本轮）**：新增 `app/service_modules/feedback_scoring.py`，把事件窗口收益、相对基准收益、最大回撤、兑现状态、预测错误归因、人工复盘评分占位和下一步建议封装为独立领域评分模块。
+  - **已完成（本轮）**：`/api/simulation-feedback/performance/update` 保持 URL 和 payload 兼容，由 `SystemService` facade 调用评分模块并写回 `SimulationFeedback.performance`、`validation`、`review_result`，继续固定 `paper_only=true`、`live_execution_allowed=false`、`broker_connected=false`。
+  - **已完成（本轮）**：公司情报页“模拟反馈与下一步”默认展示“结论兑现”行，显示窗口收益、相对基准、最大回撤和复盘动作，高级追溯保留完整反馈对象。
+  - **已完成（本轮）**：新增 focused regression 覆盖结论、反馈、行情窗口、基准行情、兑现状态、错误归因和 paper-only 边界。
   - 验收：每条模拟反馈能回链到结论、行情表现、事件窗口和复盘判断；仍固定 `paper_only=true`。
 
 - `TODO` T-497 公司事件/关系可信度、去重与归并增强

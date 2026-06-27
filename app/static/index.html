@@ -8659,6 +8659,19 @@
       return (items || []).find((item) => item) || fallback;
     }
 
+    function feedbackRealizationSummary(item) {
+      const perf = item.performance || {};
+      const review = item.review_result || {};
+      const pctText = perf.event_window_return !== undefined && perf.event_window_return !== null ? pct(Number(perf.event_window_return)) : "-";
+      const relText = perf.relative_benchmark_return !== undefined && perf.relative_benchmark_return !== null ? pct(Number(perf.relative_benchmark_return)) : "无基准";
+      const drawdownText = perf.max_drawdown !== undefined && perf.max_drawdown !== null ? pct(Number(perf.max_drawdown)) : "-";
+      return {
+        status: perf.realization_status || review.realization_status || item.feedback_type || "",
+        finding: `窗口收益 ${pctText} · 相对基准 ${relText} · 最大回撤 ${drawdownText}`,
+        action: review.next_action || review.prediction_error_attribution || "人工复盘评分并记录是否调整观察假设"
+      };
+    }
+
     function renderCompanyIntelPersonalSummary(data) {
       const verdict = data.completeness_verdict || {};
       const facts = data.facts_and_events || {};
@@ -8697,10 +8710,11 @@
         ...(workflow.observation_items || []),
         ...(simulation.simulated_executions || [])
       ], {});
-      const feedbackText = feedback.review_result?.status || feedback.feedback_type || feedback.status || feedback.question || "";
+      const realization = feedback.performance || feedback.review_result ? feedbackRealizationSummary(feedback) : {};
+      const feedbackText = realization.status || feedback.review_result?.status || feedback.feedback_type || feedback.status || feedback.question || "";
       const actionText = nextAction.label || nextAction.reason || companyIntelSectionAction((data.data_quality?.missing_sections || [])[0]);
       $("companyIntelPersonalFeedback").textContent = feedbackText
-        ? `${statusLabel(feedbackText)} · ${String(actionText || "继续复盘").slice(0, 120)}`
+        ? `${statusLabel(feedbackText)} · ${String(realization.finding || actionText || "继续复盘").slice(0, 120)}`
         : `${String(actionText || "暂无反馈；先建立观察任务或分析结论。").slice(0, 150)}`;
     }
 
@@ -8751,7 +8765,17 @@
       renderInsightTable("companyIntelResearchRows", researchRows, "暂无研究判断。点击“开始研究”可生成本机研究闭环。");
       const actionRows = [
         ...(workflow.observation_items || []).slice(0, 5).map((item) => ({ topic: "观察任务", subject: item.title || item.question, status: item.status || "", finding: item.question || item.title || "继续观察", action: "等待新事实或价格验证", trace: item })),
-        ...(simulation.feedback_records || []).slice(0, 5).map((item) => ({ topic: "模拟反馈", subject: item.simulated_action, status: item.feedback_type || "", finding: `${statusLabel(item.simulated_action || "")} · 仅纸面反馈`, action: "不连接券商，不自动下单", trace: item })),
+        ...(simulation.feedback_records || []).slice(0, 5).map((item) => {
+          const realization = feedbackRealizationSummary(item);
+          return {
+            topic: item.performance?.realization_status || item.review_result?.realization_status ? "结论兑现" : "模拟反馈",
+            subject: item.simulated_action,
+            status: realization.status || item.feedback_type || "",
+            finding: item.performance?.realization_status || item.review_result?.realization_status ? realization.finding : `${statusLabel(item.simulated_action || "")} · 仅纸面反馈`,
+            action: realization.action || "不连接券商，不自动下单",
+            trace: item
+          };
+        }),
         ...(simulation.execution_intents || []).slice(0, 5).map((item) => ({ topic: "模拟意图", subject: item.action, status: item.status || "", finding: `${userStatusLabel(item.action || "")} · 目标权重 ${item.target_weight ?? "-"}`, action: "进入 paper-only 复盘", trace: item })),
         ...(simulation.simulated_executions || []).slice(0, 5).map((item) => ({ topic: "模拟成交", subject: item.status, status: item.status || "", finding: `数量 ${item.quantity ?? "-"} · 价格 ${item.fill_price ?? "-"}`, action: "用于验证观点，不代表实盘", trace: item })),
         ...(simulation.portfolio_transactions || []).slice(0, 5).map((item) => ({ topic: "模拟流水", subject: item.side, status: item.side || "", finding: `${item.trade_date || ""} · 数量 ${item.quantity ?? "-"} · 价格 ${item.price ?? "-"}`, action: "复盘观点兑现", trace: item })),

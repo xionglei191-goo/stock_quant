@@ -113,6 +113,7 @@ from .object_store import create_object_store_from_env
 from .search import LocalSearchIndex, LocalSemanticIndex, SearchRecord, create_search_index_from_env
 from .store import InMemoryStore
 from .service_modules import safe_identifier
+from .service_modules.feedback_scoring import score_simulation_feedback
 from .utils import chunk_text, chunk_text_by_page, env_float, env_int, looks_like_html, new_id, parse_datetime, pdf_bytes_to_text, to_plain, utcnow
 
 
@@ -27923,8 +27924,8 @@ class SystemService:
         skipped = 0
         result_rows: list[dict[str, Any]] = []
         for feedback in rows:
-            latest = self._latest_market_point_for_security(feedback.security_id)
-            if latest is None:
+            points = self._market_points_for_security(feedback.security_id, limit=1000)
+            if not points:
                 skipped += 1
                 result_rows.append(
                     {
@@ -27935,88 +27936,35 @@ class SystemService:
                     }
                 )
                 continue
-            entry_price = float(feedback.entry_price or 0.0)
-            latest_price = float(latest.close or 0.0)
-            initialized_entry = False
-            if entry_price <= 0 and latest_price > 0:
-                entry_price = latest_price
-                initialized_entry = True
-            if entry_price <= 0:
+            benchmark_points = self._market_points_for_security(
+                feedback.benchmark_security_id,
+                limit=1000,
+            ) if feedback.benchmark_security_id else []
+            conclusion = self.store.analysis_conclusions.get(feedback.analysis_conclusion_id)
+            score = score_simulation_feedback(feedback, conclusion, points, benchmark_points=benchmark_points)
+            if score is None:
                 skipped += 1
                 result_rows.append(
                     {
                         "simulation_feedback_id": feedback.simulation_feedback_id,
                         "issuer_id": feedback.issuer_id,
                         "security_id": feedback.security_id,
-                        "status": "skipped_invalid_entry_price",
-                        "latest_market_data_id": latest.data_id,
+                        "status": "skipped_invalid_price_window",
                     }
                 )
                 continue
-            start_at = parse_datetime(feedback.start_at)
-            try:
-                latest_date = date.fromisoformat(str(latest.as_of_date))
-                holding_days = max(0, (latest_date - start_at.date()).days)
-            except ValueError:
-                holding_days = 0
-            return_abs = latest_price - entry_price
-            return_pct = return_abs / entry_price if entry_price else 0.0
-            performance = dict(feedback.performance)
-            performance.update(
-                {
-                    "status": "baseline_initialized" if initialized_entry else "measured",
-                    "entry_price": round(entry_price, 6),
-                    "latest_price": round(latest_price, 6),
-                    "latest_date": latest.as_of_date,
-                    "latest_market_data_id": latest.data_id,
-                    "return_abs": round(return_abs, 6),
-                    "return_pct": round(return_pct, 6),
-                    "holding_days": holding_days,
-                    "updated_at": utcnow().isoformat(),
-                }
-            )
-            validation = dict(feedback.validation)
-            validation.update(
-                {
-                    "performance_measured": True,
-                    "paper_only": True,
-                    "live_execution_allowed": False,
-                    "market_data_source_id": latest.source_id,
-                    "metric": "latest_close_vs_entry_price",
-                }
-            )
-            review_result = dict(feedback.review_result)
-            review_result.update(
-                {
-                    "status": "pending_review",
-                    "summary": "Paper feedback performance updated from latest local market data.",
-                    "requires_human_review": True,
-                }
-            )
             if execute:
-                feedback.entry_price = entry_price
-                feedback.performance = performance
-                feedback.validation = validation
-                feedback.review_result = review_result
+                feedback.entry_price = float(score.performance["entry_price"])
+                feedback.performance = score.performance
+                feedback.validation = score.validation
+                feedback.review_result = score.review_result
                 feedback.updated_at = utcnow()
                 updated += 1
             else:
                 planned += 1
-            result_rows.append(
-                {
-                    "simulation_feedback_id": feedback.simulation_feedback_id,
-                    "issuer_id": feedback.issuer_id,
-                    "security_id": feedback.security_id,
-                    "status": "updated" if execute else "planned",
-                    "entry_price": round(entry_price, 6),
-                    "latest_price": round(latest_price, 6),
-                    "latest_date": latest.as_of_date,
-                    "return_pct": round(return_pct, 6),
-                    "holding_days": holding_days,
-                    "paper_only": True,
-                    "live_execution_allowed": False,
-                }
-            )
+            result_row = dict(score.result_row)
+            result_row["status"] = "updated" if execute else "planned"
+            result_rows.append(result_row)
         self._audit(
             actor,
             "update_simulation_feedback_performance",
@@ -28040,7 +27988,7 @@ class SystemService:
             "feedback": result_rows,
             "paper_only": True,
             "live_execution_allowed": False,
-            "usage_boundary": "simulation_feedback_performance_update_uses_local_market_data_only_no_broker_execution",
+            "usage_boundary": "simulation_feedback_realization_scoring_uses_local_market_data_only_paper_only_no_broker_execution",
         }
 
     def _latest_market_point_for_security(self, security_id: str) -> MarketDataPoint | None:
@@ -28052,6 +28000,29 @@ class SystemService:
         rows = [item for item in self.store.market_data.values() if item.security_id == security_id]
         rows.sort(key=lambda item: (str(item.as_of_date), item.data_id), reverse=True)
         return rows[0] if rows else None
+
+    def _market_points_for_security(self, security_id: str, *, start_date: str = "", end_date: str = "", limit: int = 1000) -> list[MarketDataPoint]:
+        if not security_id:
+            return []
+        if self._market_data_direct_query_enabled():
+            return list(
+                reversed(
+                    self._query_market_data_points(
+                        security_id=security_id,
+                        start_date=start_date,
+                        end_date=end_date,
+                        limit=limit,
+                        descending=True,
+                    )
+                )
+            )
+        rows = [item for item in self.store.market_data.values() if item.security_id == security_id]
+        if start_date:
+            rows = [item for item in rows if str(item.as_of_date) >= start_date]
+        if end_date:
+            rows = [item for item in rows if str(item.as_of_date) <= end_date]
+        rows.sort(key=lambda item: (str(item.as_of_date), item.data_id))
+        return rows[:limit]
 
     def _filter_company_layer_rows(self, rows_iter: Any, filters: Mapping[str, Any]) -> list[Any]:
         rows = list(rows_iter)
