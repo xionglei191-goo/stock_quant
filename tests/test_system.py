@@ -3153,6 +3153,9 @@ class SystemServiceTests(unittest.TestCase):
         candidate_rows = {item["event_id"]: item for item in candidate_payload.data["events"]}
         self.assertGreaterEqual(candidate_payload.data["candidate_count"], 6)
         self.assertEqual(candidate_rows[approved.event_id]["review_recommendation"]["recommended_action"], "prefer_approve_after_review")
+        self.assertIn("evidence_summary", candidate_rows[approved.event_id]["review_recommendation"])
+        self.assertIn("next_action", candidate_rows[approved.event_id]["review_recommendation"])
+        self.assertIn("explanation", candidate_rows[approved.event_id]["review_recommendation"])
 
         approved_response = self.router.dispatch(
             "POST",
@@ -3445,6 +3448,9 @@ class SystemServiceTests(unittest.TestCase):
         self.assertGreaterEqual(candidate_payload.data["candidate_count"], 2)
         self.assertIn("review_recommendation", candidate_rows[batch_a.relationship_id])
         self.assertEqual(candidate_rows[batch_a.relationship_id]["review_recommendation"]["recommended_action"], "prefer_approve_after_review")
+        self.assertIn("evidence_summary", candidate_rows[batch_a.relationship_id]["review_recommendation"])
+        self.assertIn("next_action", candidate_rows[batch_a.relationship_id]["review_recommendation"])
+        self.assertIn("explanation", candidate_rows[batch_a.relationship_id]["review_recommendation"])
 
         batch_response = self.router.dispatch(
             "POST",
@@ -3520,6 +3526,8 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn(duplicate.event_id, canonical.metadata["merged_from"])
         self.assertEqual(set(canonical.evidence_ids), {"ev_event_a", "ev_event_b"})
         self.assertEqual(canonical.metadata["source_quality"]["level"], "high")
+        self.assertIn("next_action", canonical.metadata["source_quality"])
+        self.assertIn("explanation", canonical.metadata["source_quality"])
 
     def test_company_database_quality_reconcile_merges_relationship_entity_aliases(self) -> None:
         self.service.register_company_relationship(
@@ -3638,6 +3646,14 @@ class SystemServiceTests(unittest.TestCase):
             if item["record_id"] in {"ce_quality_official", "rel_quality_research"}
         }
         self.assertGreater(scores["ce_quality_official"], scores["rel_quality_research"])
+        research_quality = next(
+            item["source_quality"]
+            for item in scored.data["companies"][0]["source_quality"]
+            if item["record_id"] == "rel_quality_research"
+        )
+        self.assertIn("research_opinion_source", research_quality["factors"])
+        self.assertIn("next_action", research_quality)
+        self.assertIn("explanation", research_quality)
         self.assertEqual(scored.data["rules"]["source_quality"], "local_provenance_score_not_investment_rating")
 
     def test_company_workflow_builder_creates_observation_conclusion_and_paper_feedback(self) -> None:

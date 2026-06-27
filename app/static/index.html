@@ -8020,22 +8020,25 @@
           type: "event_duplicate",
           issuer_id: company.issuer_id,
           object_id: group.canonical_id,
-          action: `${(group.duplicate_ids || []).length} duplicate`,
-          detail: group.reason || group.dedup_key || ""
+          action: "建议合并重复事件",
+          detail: `重复 ${(group.duplicate_ids || []).length} 条 · ${group.reason || group.dedup_key || ""}`,
+          evidence: group.source_quality?.level || "待复核"
         }));
         (company.relationship_duplicate_groups || []).forEach((group) => rowsData.push({
           type: group.entity_merge_candidate ? "relationship_alias_merge" : "relationship_duplicate",
           issuer_id: company.issuer_id,
           object_id: group.canonical_id,
-          action: `${(group.duplicate_ids || []).length} duplicate`,
-          detail: (group.entity_names || []).join(", ") || group.reason || group.dedup_key || ""
+          action: group.entity_merge_candidate ? "建议归并同义实体" : "建议合并重复关系",
+          detail: `重复 ${(group.duplicate_ids || []).length} 条 · ${(group.entity_names || []).join(", ") || group.reason || group.dedup_key || ""}`,
+          evidence: group.source_quality?.level || "待复核"
         }));
         (company.source_quality || []).slice(0, 20).forEach((item) => rowsData.push({
           type: item.record_type,
           issuer_id: company.issuer_id,
           object_id: item.record_id,
-          action: `${item.source_quality?.level || "-"} ${formatScore(item.source_quality?.score || 0)}`,
-          detail: (item.source_quality?.source_types || []).join(", ") || (item.source_quality?.factors || []).join(", ")
+          action: item.source_quality?.next_action || "按来源质量决定是否人工复核",
+          detail: item.source_quality?.explanation || (item.source_quality?.factors || []).join(", "),
+          evidence: `${item.source_quality?.level || "-"} ${formatScore(item.source_quality?.score || 0)} · ${(item.source_quality?.source_types || []).join(", ") || "来源待补"}`
         }));
       });
       $("companyIntelQualityReconcileStatus").textContent = data.execute ? "已执行" : "预览";
@@ -8043,7 +8046,7 @@
       $("companyIntelRelationshipDuplicateCount").textContent = `${totals.relationship_duplicates || 0}`;
       $("companyIntelEntityMergeCandidateCount").textContent = `${totals.entity_merge_candidates || 0}`;
       $("companyIntelSourceQualityCount").textContent = `${totals.source_quality_scored || 0}`;
-      $("companyIntelQualityReconcileRows").innerHTML = rows(rowsData.slice(0, 80), "暂无重复事件、关系归并或来源质量评分记录。", (item) => `<tr><td>${statusLabel(item.type)}${metaLine("公司", userEntityLabel(item.issuer_id))}${renderAdvancedTrace("质量项追溯", item)}</td><td>${item.detail || "质量项"}</td><td>${item.action}</td><td>${String(item.detail || "").slice(0, 180)}</td></tr>`);
+      $("companyIntelQualityReconcileRows").innerHTML = rows(rowsData.slice(0, 80), "暂无重复事件、关系归并或来源质量评分记录。", (item) => `<tr><td>${statusLabel(item.type)}${metaLine("公司", userEntityLabel(item.issuer_id))}${renderAdvancedTrace("质量项追溯", item)}</td><td>${item.detail || "质量项"}</td><td>${item.evidence || "证据待补"}</td><td>${item.action}</td></tr>`);
       if (showDetails) {
         renderAdvancedPre("companyIntelOperationBox", {
           title: "质量归并",
@@ -8519,7 +8522,10 @@
       $("companyIntelEventRecommendationStatus").textContent = candidates.length ? `${recommended}/${candidates.length}` : "0/0";
       $("companyIntelEventReviewRows").innerHTML = rows(candidates, "暂无待复核事件候选", (item) => {
         const recommendation = item.review_recommendation || {};
-        const recommendText = `${recommendation.recommended_action || "manual_review"} ${formatScore(recommendation.candidate_score || 0)}`;
+        const recommendText = `${statusLabel(recommendation.recommended_action || "manual_review")} · ${formatScore(recommendation.candidate_score || 0)}`;
+        const evidenceLine = recommendation.evidence_summary || `证据 ${recommendation.evidence_count || 0} · 文档 ${recommendation.document_count || 0} · 来源 ${recommendation.source_count || 0}`;
+        const whyLine = recommendation.explanation || recommendation.reason || "需要人工判断事件是否应进入事实时间线";
+        const nextLine = recommendation.next_action || "复核证据来源后批准、拒绝或合并";
         const actions = [
           `<label class="inline"><input type="checkbox" data-company-event-select="${item.event_id}"> 选择</label>`,
           `<button data-action="review-company-event" data-review-action="approve" data-event-id="${item.event_id}">批准</button>`,
@@ -8527,7 +8533,7 @@
           `<button data-action="review-company-event" data-review-action="reclassify" data-event-id="${item.event_id}">改分类</button>`,
           `<button data-action="review-company-event" data-review-action="merge" data-event-id="${item.event_id}">合并</button>`
         ].join(" ");
-        return `<tr><td>${item.title || item.summary || "事件候选"}${metaLine("类型", statusLabel(item.event_type || ""))}${renderAdvancedTrace("事件候选追溯", item)}</td><td>${String(item.title || item.summary || "").slice(0, 160)}${metaLine("证据", `${(item.evidence_ids || []).length}`)}</td><td>${statusLabel(item.review_status || "")}${metaLine("事实", statusLabel(item.fact_status || ""))}${metaLine("推荐", recommendText)}</td><td>${actions}</td></tr>`;
+        return `<tr><td>${item.title || item.summary || "事件候选"}${metaLine("类型", statusLabel(item.event_type || ""))}${renderAdvancedTrace("事件候选追溯", item)}</td><td>${whyLine}${metaLine("证据来源", evidenceLine)}</td><td>${statusLabel(item.review_status || "")}${metaLine("事实", statusLabel(item.fact_status || ""))}${metaLine("推荐", recommendText)}</td><td>${nextLine}${metaLine("操作", actions)}</td></tr>`;
       });
     }
 
@@ -8599,14 +8605,17 @@
       $("companyIntelRelationshipReviewRows").innerHTML = rows(candidates, "暂无待审核关系候选", (item) => {
         const objectName = item.metadata?.entity_name || item.object_id || "";
         const recommendation = item.review_recommendation || {};
-        const recommendText = `${recommendation.recommended_action || "manual_review"} ${formatScore(recommendation.candidate_score || 0)}`;
+        const recommendText = `${statusLabel(recommendation.recommended_action || "manual_review")} · ${formatScore(recommendation.candidate_score || 0)}`;
+        const evidenceLine = recommendation.evidence_summary || `证据 ${recommendation.evidence_count || 0} · 文档 ${recommendation.document_count || 0} · 来源 ${recommendation.source_count || 0}`;
+        const whyLine = recommendation.explanation || recommendation.reason || "需要人工判断关系是否应进入事实图谱";
+        const nextLine = recommendation.next_action || "核对来源和实体别名后通过、拒绝或合并";
         const actions = [
           `<label class="inline"><input type="checkbox" data-company-relationship-select="${item.relationship_id}"> 选择</label>`,
           `<button data-action="review-company-relationship" data-review-action="approve" data-relationship-id="${item.relationship_id}">通过</button>`,
           `<button data-action="review-company-relationship" data-review-action="reject" data-relationship-id="${item.relationship_id}">拒绝</button>`,
           `<button data-action="review-company-relationship" data-review-action="merge" data-relationship-id="${item.relationship_id}">合并</button>`
         ].join(" ");
-        return `<tr><td>${statusLabel(item.relationship_type || "关系候选")}${metaLine("类型", statusLabel(item.relationship_type || ""))}${renderAdvancedTrace("关系候选追溯", item)}</td><td>${String(objectName).slice(0, 120)}${metaLine("证据", `${(item.evidence_ids || []).length}`)}</td><td>${statusLabel(item.review_status || "")}${metaLine("置信", formatScore(item.confidence || 0))}${metaLine("推荐", recommendText)}</td><td>${actions}</td></tr>`;
+        return `<tr><td>${statusLabel(item.relationship_type || "关系候选")}${metaLine("对象", String(objectName).slice(0, 80))}${renderAdvancedTrace("关系候选追溯", item)}</td><td>${whyLine}${metaLine("证据来源", evidenceLine)}</td><td>${statusLabel(item.review_status || "")}${metaLine("置信", formatScore(item.confidence || 0))}${metaLine("推荐", recommendText)}</td><td>${nextLine}${metaLine("操作", actions)}</td></tr>`;
       });
     }
 

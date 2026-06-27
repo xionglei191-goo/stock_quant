@@ -113,6 +113,7 @@ from .object_store import create_object_store_from_env
 from .search import LocalSearchIndex, LocalSemanticIndex, SearchRecord, create_search_index_from_env
 from .store import InMemoryStore
 from .service_modules import safe_identifier
+from .service_modules import company_quality
 from .service_modules.feedback_scoring import score_simulation_feedback
 from .utils import chunk_text, chunk_text_by_page, env_float, env_int, looks_like_html, new_id, parse_datetime, pdf_bytes_to_text, to_plain, utcnow
 
@@ -24877,81 +24878,19 @@ class SystemService:
         return merged_count
 
     def _company_record_source_quality(self, record: Any, *, record_type: str) -> dict[str, Any]:
-        score = 0.2
-        factors: list[str] = ["base_local_record"]
-        confidence = float(getattr(record, "confidence", 0.0) or 0.0)
-        score += min(0.2, max(0.0, confidence) * 0.2)
-        if getattr(record, "evidence_ids", []):
-            score += 0.2
-            factors.append("has_evidence_backlink")
-        if getattr(record, "document_ids", []):
-            score += 0.1
-            factors.append("has_document_backlink")
-        source_types = [self._company_source_quality_type(source_id) for source_id in getattr(record, "source_ids", [])]
-        if any(source_type in {"regulatory", "company_ir", "company_official", "official_public", "exchange_disclosure", "issuer_disclosure", "public_company_disclosure"} for source_type in source_types):
-            score += 0.25
-            factors.append("official_or_public_company_source")
-        if any(source_type in {"broker_research", "research", "local_research_reports"} for source_type in source_types):
-            score -= 0.1
-            factors.append("research_opinion_source")
-        if any(source_type in {"local_reference", "manual_reference", "news", "curated_public_profile"} for source_type in source_types):
-            score -= 0.15
-            factors.append("manual_or_reference_source")
-        fact_status = str(getattr(record, "fact_status", "")).strip()
-        if fact_status == "verified":
-            score += 0.15
-            factors.append("verified_fact_status")
-        elif fact_status == "opinion_signal":
-            score -= 0.1
-            factors.append("opinion_signal_not_fact")
-        review_status = str(getattr(record, "review_status", "")).strip()
-        if review_status == "approved":
-            score += 0.2
-            factors.append("approved_review")
-        elif review_status == "auto_generated":
-            score += 0.05
-            factors.append("auto_generated")
-        elif review_status in {"rejected", "merged"}:
-            score -= 0.25
-            factors.append(f"{review_status}_record")
-        score = round(max(0.0, min(1.0, score)), 4)
-        return {
-            "record_type": record_type,
-            "score": score,
-            "level": "high" if score >= 0.75 else ("medium" if score >= 0.5 else "low"),
-            "factors": self._unique_strings(factors),
-            "source_types": self._unique_strings(source_types),
-            "usage_boundary": "source_quality_is_local_provenance_score_not_investment_rating",
-        }
+        return company_quality.record_source_quality(record, record_type=record_type, source_type_lookup=self._company_source_quality_type)
 
     def _company_source_quality_type(self, source_id: str) -> str:
         source = self.store.sources.get(str(source_id))
         if source is not None and source.source_type:
             return str(source.source_type).strip().lower()
-        value = str(source_id).strip().lower()
-        if "research" in value or "broker" in value:
-            return "broker_research"
-        if "manual" in value:
-            return "manual_reference"
-        if "local" in value:
-            return "local_reference"
-        if "ir" in value:
-            return "company_ir"
-        if "sec" in value or "regulatory" in value or "exchange" in value:
-            return "regulatory"
-        if "official" in value:
-            return "official_public"
-        return "unknown"
+        return company_quality.source_quality_type(source_id)
 
     def _company_quality_normalized_key(self, value: str) -> str:
-        return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", str(value).strip().lower()).strip("_")
+        return company_quality.normalized_key(value)
 
     def _company_quality_entity_key(self, value: str) -> str:
-        normalized = self._company_quality_normalized_key(value)
-        for suffix in ["_inc", "_corp", "_co", "_ltd", "_limited", "_company", "_集团", "_股份有限公司", "_有限公司"]:
-            if normalized.endswith(suffix):
-                normalized = normalized[: -len(suffix)].strip("_")
-        return normalized or "unknown"
+        return company_quality.entity_key(value)
 
     def build_company_database(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
@@ -26815,53 +26754,14 @@ class SystemService:
         return row
 
     def _company_event_is_review_candidate(self, event: CompanyEvent) -> bool:
-        classification_status = str((event.metadata or {}).get("classification_status", ""))
-        candidate_status = str((event.metadata or {}).get("candidate_status", ""))
-        return event.review_status == "needs_review" or classification_status.endswith("needs_review") or candidate_status == "candidate"
+        return company_quality.event_is_review_candidate(event)
 
     def _company_event_review_recommendation(self, event: CompanyEvent, source_quality: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        source_quality = source_quality or self._company_record_source_quality(event, record_type="company_event")
-        score = self._company_event_review_score(event, source_quality=source_quality)
-        if not self._company_event_is_review_candidate(event):
-            action = "already_reviewed_or_not_candidate"
-            reason = "event_is_not_pending_review_candidate"
-        elif score >= 0.74:
-            action = "prefer_approve_after_review"
-            reason = "candidate_event_has_official_source_or_evidence_backlinks"
-        elif score <= 0.38:
-            action = "prefer_reject_or_request_evidence"
-            reason = "candidate_event_has_weak_source_quality_or_missing_backlinks"
-        else:
-            action = "manual_review_required"
-            reason = "candidate_event_score_is_mixed"
-        return {
-            "recommended_action": action,
-            "candidate_score": round(score, 4),
-            "source_quality_score": round(float(source_quality.get("score", 0.0) or 0.0), 4),
-            "evidence_count": len(event.evidence_ids),
-            "document_count": len(event.document_ids),
-            "source_count": len(event.source_ids),
-            "reason": reason,
-            "boundary": "recommendation_is_for_human_event_review_not_investment_advice",
-        }
+        return company_quality.event_review_recommendation(event, source_quality, source_type_lookup=self._company_source_quality_type)
 
     def _company_event_review_score(self, event: CompanyEvent, *, source_quality: Mapping[str, Any] | None = None) -> float:
         source_quality = source_quality or self._company_record_source_quality(event, record_type="company_event")
-        score = 0.2
-        score += min(0.25, max(0.0, float(event.confidence or 0.0)) * 0.25)
-        score += min(0.35, max(0.0, float(source_quality.get("score", 0.0) or 0.0)) * 0.35)
-        backlink_count = len(event.evidence_ids) + len(event.document_ids) + len(event.source_ids)
-        score += min(0.15, backlink_count * 0.04)
-        source_layer = str((event.metadata or {}).get("source_layer", ""))
-        if source_layer in {"official_disclosure_text_classification", "disclosure_event", "company_ir"}:
-            score += 0.08
-        if event.fact_status == "opinion_signal":
-            score -= 0.08
-        if event.review_status == "approved":
-            score += 0.08
-        if event.review_status == "rejected":
-            score -= 0.15
-        return min(1.0, max(0.0, score))
+        return company_quality.event_review_score(event, source_quality_row=source_quality)
 
     def register_company_relationship(self, payload: Mapping[str, Any], *, actor: str = "system") -> CompanyRelationship:
         relationship = CompanyRelationship(
@@ -27020,53 +26920,14 @@ class SystemService:
         return row
 
     def _company_relationship_is_review_candidate(self, relationship: CompanyRelationship) -> bool:
-        relationship_type = str(relationship.relationship_type or "")
-        candidate_status = str((relationship.metadata or {}).get("candidate_status", ""))
-        return relationship_type.endswith("_candidate") or relationship.review_status == "needs_review" or candidate_status == "candidate"
+        return company_quality.relationship_is_review_candidate(relationship)
 
     def _company_relationship_review_recommendation(self, relationship: CompanyRelationship, source_quality: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        source_quality = source_quality or self._company_record_source_quality(relationship, record_type="company_relationship")
-        score = self._company_relationship_review_score(relationship, source_quality=source_quality)
-        if not self._company_relationship_is_review_candidate(relationship):
-            action = "already_reviewed_or_not_candidate"
-            reason = "relationship_is_not_pending_review_candidate"
-        elif score >= 0.72:
-            action = "prefer_approve_after_review"
-            reason = "candidate_has_strong_source_quality_or_evidence_backlinks"
-        elif score <= 0.38:
-            action = "prefer_reject_or_request_evidence"
-            reason = "candidate_has_weak_source_quality_or_missing_backlinks"
-        else:
-            action = "manual_review_required"
-            reason = "candidate_score_is_mixed"
-        return {
-            "recommended_action": action,
-            "candidate_score": round(score, 4),
-            "source_quality_score": round(float(source_quality.get("score", 0.0) or 0.0), 4),
-            "evidence_count": len(relationship.evidence_ids),
-            "document_count": len(relationship.document_ids),
-            "source_count": len(relationship.source_ids),
-            "reason": reason,
-            "boundary": "recommendation_is_for_human_graph_review_not_investment_advice",
-        }
+        return company_quality.relationship_review_recommendation(relationship, source_quality, source_type_lookup=self._company_source_quality_type)
 
     def _company_relationship_review_score(self, relationship: CompanyRelationship, *, source_quality: Mapping[str, Any] | None = None) -> float:
         source_quality = source_quality or self._company_record_source_quality(relationship, record_type="company_relationship")
-        score = 0.2
-        score += min(0.25, max(0.0, float(relationship.confidence or 0.0)) * 0.25)
-        score += min(0.35, max(0.0, float(source_quality.get("score", 0.0) or 0.0)) * 0.35)
-        backlink_count = len(relationship.evidence_ids) + len(relationship.document_ids) + len(relationship.source_ids)
-        score += min(0.15, backlink_count * 0.04)
-        source_layer = str((relationship.metadata or {}).get("source_layer", ""))
-        if source_layer in {"official_disclosure_candidate", "public_company_disclosure_candidate"}:
-            score += 0.08
-        if "research" in source_layer or str(relationship.relationship_type).startswith("institution_coverage"):
-            score -= 0.08
-        if relationship.review_status == "approved":
-            score += 0.08
-        if relationship.review_status == "rejected" or relationship.relationship_status == "inactive":
-            score -= 0.15
-        return min(1.0, max(0.0, score))
+        return company_quality.relationship_review_score(relationship, source_quality_row=source_quality)
 
     def _stable_research_child_id(self, prefix: str, *parts: str) -> str:
         raw = "_".join(str(part) for part in parts if str(part).strip())
