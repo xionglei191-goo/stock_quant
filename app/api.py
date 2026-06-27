@@ -666,6 +666,10 @@ class ApiRouter:
             ("GET", r"^/api/company-database/coverage/audit$", self._company_database_coverage_audit),
             ("POST", r"^/api/company-database/coverage/audit$", self._company_database_coverage_audit),
             ("POST", r"^/api/company-database/quality/reconcile$", self._reconcile_company_database_quality),
+            ("GET", r"^/api/data-health/runs/summary$", self._data_health_runs_summary),
+            ("POST", r"^/api/data-health/runs/summary$", self._data_health_runs_summary),
+            ("GET", r"^/api/data-health/summary$", self._data_health_summary),
+            ("POST", r"^/api/data-health/summary$", self._data_health_summary),
             ("POST", r"^/api/company-database/material-inbox/ingest$", self._company_material_inbox_ingest),
             ("GET", r"^/api/company-database/profile-field-coverage/audit$", self._company_profile_coverage_audit),
             ("POST", r"^/api/company-database/profile-field-coverage/audit$", self._company_profile_coverage_audit),
@@ -791,7 +795,7 @@ class ApiRouter:
             return role in {"system", "风险/合规", "平台负责人", "数据工程"}
         if path.startswith("/api/benchmarks") or path.startswith("/api/prompts/changes") or path.startswith("/api/scorecards"):
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO"}
-        if path.startswith("/api/templates") or path.startswith("/api/research-cards") or path.startswith("/api/research-reports") or path.startswith("/api/research/manual-references") or path.startswith("/api/research/answers") or path.startswith("/api/research/tasks") or path.startswith("/api/macro-themes") or path.startswith("/api/industry-chains") or path.startswith("/api/company-database") or path.startswith("/api/company-profiles") or path.startswith("/api/company-financial-metrics") or path.startswith("/api/company-events") or path.startswith("/api/company-relationships") or path.startswith("/api/research-report-viewpoints") or path.startswith("/api/research-report-forecasts") or path.startswith("/api/analyst-profiles") or path.startswith("/api/analyst-reliability-scores") or path.startswith("/api/observation-items") or path.startswith("/api/analysis-conclusions") or path.startswith("/api/simulation-feedback") or path.startswith("/api/hotspot-lexicons") or path.startswith("/api/hotspots") or path.startswith("/api/crowding") or path.startswith("/api/challenger") or path.startswith("/api/playbooks") or path.startswith("/api/incident-reports") or path.startswith("/api/drill-schedules") or path.startswith("/api/alerts"):
+        if path.startswith("/api/templates") or path.startswith("/api/research-cards") or path.startswith("/api/research-reports") or path.startswith("/api/research/manual-references") or path.startswith("/api/research/answers") or path.startswith("/api/research/tasks") or path.startswith("/api/macro-themes") or path.startswith("/api/industry-chains") or path.startswith("/api/company-database") or path.startswith("/api/data-health") or path.startswith("/api/company-profiles") or path.startswith("/api/company-financial-metrics") or path.startswith("/api/company-events") or path.startswith("/api/company-relationships") or path.startswith("/api/research-report-viewpoints") or path.startswith("/api/research-report-forecasts") or path.startswith("/api/analyst-profiles") or path.startswith("/api/analyst-reliability-scores") or path.startswith("/api/observation-items") or path.startswith("/api/analysis-conclusions") or path.startswith("/api/simulation-feedback") or path.startswith("/api/hotspot-lexicons") or path.startswith("/api/hotspots") or path.startswith("/api/crowding") or path.startswith("/api/challenger") or path.startswith("/api/playbooks") or path.startswith("/api/incident-reports") or path.startswith("/api/drill-schedules") or path.startswith("/api/alerts"):
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO", "PM", "分析师", "海外研究负责人", "数据工程"}
         if path.startswith("/api/llm"):
             return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人", "分析师", "NLP/ML 负责人", "海外研究负责人"}
@@ -1959,6 +1963,12 @@ class ApiRouter:
 
     def _reconcile_company_database_quality(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.reconcile_company_database_quality(body, actor=actor)
+
+    def _data_health_runs_summary(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.data_health_runs_summary(body, actor=actor)
+
+    def _data_health_summary(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.data_health_summary(body, actor=actor)
 
     def _company_profile_coverage_audit(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.company_profile_coverage_audit(body, actor=actor)

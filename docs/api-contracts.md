@@ -2304,6 +2304,8 @@
 | `/api/company-database/coverage/trends` | `GET` / `POST` | 从补库运行历史生成覆盖率趋势和可选本地 artifact，用于复盘补库是否改善公司数据库 |
 | `/api/company-database/coverage/audit` | `GET` / `POST` | 按公司审计画像、证券、行情、财务、文档、事件、关系、研报、观察结论和模拟反馈覆盖情况 |
 | `/api/company-database/quality/reconcile` | `POST` | 对公司事件和关系做本地去重、实体别名归并候选和来源质量评分；默认 dry-run，显式 `execute=true` 才标记 merge 或写入 source quality |
+| `/api/data-health/runs/summary` | `GET` / `POST` | 聚合 ingestion、公司补库、公司包导入、闭环刷新、本地材料、日更和个人关注池刷新 run，返回统一只读摘要 |
+| `/api/data-health/summary` | `GET` / `POST` | 面向个人用户的数据来源健康摘要，覆盖行情、研报、披露、IR/官网材料、公司数据库和 paper-only 闭环反馈 |
 | `/api/company-database/events/build` | `POST` | 从已入库公开披露、披露正文证据、公开行情和研报覆盖生成公司事件时间线；研报事件固定为观点/关注度信号，不作为事实源 |
 | `/api/company-database/events/review` | `POST` | 批量复核公司事件候选，支持 approve/reject/merge/reclassify，返回本地人工复核结果和推荐摘要 |
 | `/api/company-database/relationships/build` | `POST` | 从证券上市关系、研报覆盖记录和公开披露文本生成最小公司关系层；研报覆盖关系固定为观点/关注度关系，公开披露抽取关系默认待复核 |
@@ -2877,6 +2879,40 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 - 关系去重 key 以主体、关系类型、方向和归一化对象实体名为基础；`customer_candidate` 与 `supplier_candidate` 不会互相合并。
 - execute 时保留 canonical 记录，重复事件设置 `review_status=merged`；重复关系设置 `review_status=merged`、`relationship_status=inactive`，并在 canonical 记录上合并 `source_ids`、`document_ids`、`evidence_ids`、`metadata.merged_from` 和 `metadata.entity_aliases`。
 - source quality 是本地来源/证据/复核质量分，不是投资评级、买卖建议或公司质量判断。官方/监管/公司 IR 且有 evidence/document 回链的记录得分较高；研报、manual/local reference、news 或 opinion signal 得分较低，且不会被升级为事实源。
+
+#### `GET|POST /api/data-health/runs/summary`
+
+统一运行摘要 read model。该接口只聚合现有运行记录和本地 artifact，不创建新运行、不迁移 schema、不改变原始 run payload。
+
+请求字段：
+
+- `run_family` / `run_families`：可选；限定 `ingestion_job`、`ingestion_schedule_run`、`company_database_build_run`、`company_package_import_run`、`company_intelligence_cycle_run`、`material_inbox_pending`、`daily_data_update_pipeline`、`personal_intelligence_refresh`。
+- `status` / `normalized_status`：可选；按原状态或规范化状态过滤。
+- `symbol` / `ticker` / `code`：可选；按标的过滤支持 symbol 的 run。
+- `issuer_id`：可选；按本地主体过滤。
+- `limit`：默认 100，最大 500。
+
+返回字段：
+
+- `schema_id`：当前为 `data-health-run-summary-v1`。
+- `summary`：运行总数、成功/部分/失败数量、待处理数和最近成功/失败时间。
+- `runs[]`：统一摘要行，包含 `run_family`、`run_id`、`domain`、`status`、`normalized_status`、时间、目标公司/标的、计数、错误、artifact、下一步和 `detail_ref`。
+- `local_only=true` / `acceptable_for_non_local_release=false`：本地运行摘要不能作为非本机生产发布证据。
+- `usage_boundary`：固定声明本地 read model、无 schema migration、无真实交易。
+
+#### `GET|POST /api/data-health/summary`
+
+个人研究视角的数据来源健康中心。该接口从统一 run summary、公开行情、研报资产、披露事件、公司材料待办、公司数据库和 paper-only 闭环反馈中派生可读状态。
+
+返回字段：
+
+- `schema_id`：当前为 `data-health-summary-v1`。
+- `summary`：来源数、状态分布、失败数、待处理数和下一步数量。
+- `sources[]`：来源健康行，包含 `source_key`、`domain`、`label`、`status`、最近成功/失败、失败数、待处理数、freshness、last artifact、下一步、证据和边界。
+- `run_summary` / `run_count`：底层统一运行摘要概览。
+- `local_only=true` / `acceptable_for_non_local_release=false`。
+
+边界：该接口是本地数据健康和来源追溯视图，不下载外部数据，不训练，不生成交易信号，不连接券商。
 
 #### `POST /api/company-database/events/build`
 

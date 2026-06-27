@@ -23656,6 +23656,490 @@ class SystemService:
     def _company_database_batch_options(self, **kwargs: Any) -> dict[str, Any]:
         return {key: value for key, value in kwargs.items()}
 
+    def _normalize_data_health_status(self, status: str) -> str:
+        value = str(status or "").strip().lower()
+        if value in {"executed", "completed", "passed", "success", "ok", "active"}:
+            return "success"
+        if value in {"partial", "retrying"}:
+            return "partial"
+        if value in {"failed", "error", "invalid"}:
+            return "failed"
+        if value in {"dry_run", "planned"}:
+            return "planned"
+        if value in {"skipped", "not_found", "inactive"}:
+            return "skipped"
+        if value in {"running", "pending"}:
+            return "running"
+        return value or "unknown"
+
+    def _data_health_row(
+        self,
+        *,
+        run_family: str,
+        run_id: str,
+        status: str,
+        domain: str,
+        source_kind: str,
+        source_ref: str,
+        schema_id: str = "",
+        actor: str = "",
+        execute: bool = False,
+        dry_run: bool = False,
+        started_at: Any = None,
+        completed_at: Any = None,
+        created_at: Any = None,
+        updated_at: Any = None,
+        target_symbols: list[str] | None = None,
+        target_issuer_ids: list[str] | None = None,
+        counts: Mapping[str, Any] | None = None,
+        error: str = "",
+        artifact_paths: list[str] | None = None,
+        next_action: str = "",
+        usage_boundary: str = "",
+        detail_ref: Mapping[str, Any] | None = None,
+        details_omitted: bool = True,
+    ) -> dict[str, Any]:
+        normalized = self._normalize_data_health_status(status)
+        count_payload = dict(counts or {})
+        failure_count = int(count_payload.get("failed_count", count_payload.get("failed", 0)) or 0)
+        if normalized == "failed" and failure_count == 0:
+            failure_count = 1
+        return {
+            "run_key": f"{run_family}:{run_id or source_ref or 'latest'}",
+            "run_family": run_family,
+            "run_id": run_id,
+            "schema_id": schema_id,
+            "source_kind": source_kind,
+            "source_ref": source_ref,
+            "domain": domain,
+            "status": status or "unknown",
+            "normalized_status": normalized,
+            "execute": bool(execute),
+            "dry_run": bool(dry_run),
+            "actor": actor,
+            "started_at": to_plain(started_at) if started_at else "",
+            "completed_at": to_plain(completed_at) if completed_at else "",
+            "created_at": to_plain(created_at) if created_at else "",
+            "updated_at": to_plain(updated_at) if updated_at else "",
+            "target_symbols": list(target_symbols or []),
+            "target_issuer_ids": list(target_issuer_ids or []),
+            "target_count": int(count_payload.get("target_count", len(target_symbols or []) or len(target_issuer_ids or []) or count_payload.get("total_count", 0)) or 0),
+            "total_count": int(count_payload.get("total_count", 0) or 0),
+            "created_count": int(count_payload.get("created_count", count_payload.get("created", 0)) or 0),
+            "updated_count": int(count_payload.get("updated_count", count_payload.get("updated", 0)) or 0),
+            "completed_count": int(count_payload.get("completed_count", count_payload.get("executed_count", 0)) or 0),
+            "skipped_count": int(count_payload.get("skipped_count", count_payload.get("skipped", 0)) or 0),
+            "failed_count": failure_count,
+            "planned_count": int(count_payload.get("planned_count", count_payload.get("planned", 0)) or 0),
+            "pending_count": int(count_payload.get("pending_count", 0) or 0),
+            "batch_count": int(count_payload.get("batch_count", 0) or 0),
+            "item_count": int(count_payload.get("item_count", 0) or 0),
+            "error": str(error or ""),
+            "artifact_paths": list(artifact_paths or []),
+            "local_only": True,
+            "acceptable_for_non_local_release": False,
+            "next_action": next_action or ("inspect_failure" if normalized == "failed" else "monitor_next_refresh"),
+            "usage_boundary": usage_boundary or "local_data_health_summary_no_live_trading",
+            "details_omitted": bool(details_omitted),
+            "detail_ref": dict(detail_ref or {}),
+            "paper_only": True,
+            "live_trading_allowed": False,
+        }
+
+    def data_health_runs_summary(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        filters = filters or {}
+        limit = self._bounded_limit(filters.get("limit", 100), 500)
+        family_filter = {str(item).strip() for item in filters.get("run_families", []) if str(item).strip()}
+        if not family_filter and filters.get("run_family"):
+            family_filter = {str(filters.get("run_family")).strip()}
+        status_filter = str(filters.get("status", "")).strip()
+        normalized_filter = str(filters.get("normalized_status", "")).strip()
+        symbol_filter = str(filters.get("symbol") or filters.get("ticker") or filters.get("code") or "").strip().upper()
+        issuer_filter = str(filters.get("issuer_id", "")).strip()
+        rows: list[dict[str, Any]] = []
+
+        for job in self.store.ingestion_jobs.values():
+            rows.append(
+                self._data_health_row(
+                    run_family="ingestion_job",
+                    run_id=job.job_id,
+                    status=job.status,
+                    domain="ingestion",
+                    source_kind="store",
+                    source_ref=f"ingestion_jobs:{job.job_id}",
+                    schema_id="ingestion-job-v1",
+                    started_at=job.started_at,
+                    completed_at=job.completed_at,
+                    counts={"total_count": job.total, "created_count": job.created, "skipped_count": job.skipped, "failed_count": job.failed},
+                    error="; ".join(str(item.get("error") or item.get("message") or item) for item in job.errors[:3]),
+                    next_action="review_ingestion_errors" if job.failed else "monitor_next_refresh",
+                    usage_boundary="local_ingestion_job_summary_no_external_unapproved_use_no_live_trading",
+                )
+            )
+
+        for schedule in self.store.ingestion_schedules.values():
+            rows.append(
+                self._data_health_row(
+                    run_family="ingestion_schedule_run",
+                    run_id=schedule.schedule_id,
+                    status=schedule.last_status or schedule.status,
+                    domain="ingestion",
+                    source_kind="schedule_state",
+                    source_ref=f"ingestion_schedules:{schedule.schedule_id}",
+                    schema_id="ingestion-schedule-v1",
+                    created_at=schedule.created_at,
+                    updated_at=schedule.updated_at,
+                    counts={"failed_count": 1 if schedule.last_error else 0},
+                    error=schedule.last_error,
+                    next_action="run_due_schedule" if schedule.status in {"active", "retrying"} else "review_schedule_status",
+                    usage_boundary="local_ingestion_schedule_summary_no_external_unapproved_use_no_live_trading",
+                    detail_ref={"last_job_id": schedule.last_job_id, "next_run_at": to_plain(schedule.next_run_at), "retry_count": schedule.retry_count},
+                )
+            )
+
+        for run in self.store.company_database_build_runs.values():
+            totals = dict(run.totals or {})
+            totals.setdefault("batch_count", run.batch_count)
+            totals.setdefault("target_count", len(run.target_issuer_ids) or len(run.target_symbols))
+            rows.append(
+                self._data_health_row(
+                    run_family="company_database_build_run",
+                    run_id=run.run_id,
+                    status=run.status,
+                    domain="company_database",
+                    source_kind="store",
+                    source_ref=f"company_database_build_runs:{run.run_id}",
+                    schema_id="company-database-build-run-v1",
+                    actor=run.actor,
+                    execute=run.execute,
+                    dry_run=run.dry_run,
+                    started_at=run.started_at,
+                    completed_at=run.completed_at,
+                    created_at=run.created_at,
+                    target_symbols=run.target_symbols,
+                    target_issuer_ids=run.target_issuer_ids,
+                    counts=totals,
+                    error=run.error,
+                    next_action="retry_company_database_build" if run.status in {"failed", "partial"} else "review_coverage_after",
+                    usage_boundary=run.usage_boundary,
+                    detail_ref={"retry_of": run.retry_of, "resume_of": run.resume_of, "include_details_param": "include_batches"},
+                )
+            )
+
+        for run in self.store.company_package_import_runs.values():
+            totals = dict(run.totals or {})
+            totals.setdefault("item_count", len(run.items))
+            totals.setdefault("target_count", len(run.target_symbols) or run.company_count)
+            rows.append(
+                self._data_health_row(
+                    run_family="company_package_import_run",
+                    run_id=run.run_id,
+                    status=run.status,
+                    domain="company_package_import",
+                    source_kind="store",
+                    source_ref=f"company_package_import_runs:{run.run_id}",
+                    schema_id="company-package-import-run-v1",
+                    actor=run.actor,
+                    execute=run.execute,
+                    dry_run=run.dry_run,
+                    started_at=run.started_at,
+                    completed_at=run.completed_at,
+                    created_at=run.created_at,
+                    target_symbols=run.target_symbols,
+                    target_issuer_ids=run.target_issuer_ids,
+                    counts=totals,
+                    error=run.error,
+                    artifact_paths=[run.root_path] if run.root_path else [],
+                    next_action="prepare_material_manifest" if run.company_count else "review_import_inputs",
+                    usage_boundary=run.usage_boundary,
+                    detail_ref={"include_details_param": "include_items", "manifest_glob": run.manifest_glob},
+                )
+            )
+
+        for run in self.store.company_intelligence_cycle_runs.values():
+            counts = dict(run.summary or {})
+            counts.setdefault("target_count", len(run.issuer_ids) or (1 if run.symbol else 0))
+            rows.append(
+                self._data_health_row(
+                    run_family="company_intelligence_cycle_run",
+                    run_id=run.run_id,
+                    status=run.status,
+                    domain="company_intelligence",
+                    source_kind="store",
+                    source_ref=f"company_intelligence_cycle_runs:{run.run_id}",
+                    schema_id="company-intelligence-cycle-v1",
+                    actor=run.actor,
+                    execute=run.execute,
+                    dry_run=run.dry_run,
+                    started_at=run.started_at,
+                    completed_at=run.completed_at,
+                    created_at=run.created_at,
+                    target_symbols=[run.symbol] if run.symbol else [],
+                    target_issuer_ids=run.issuer_ids,
+                    counts=counts,
+                    error=run.error,
+                    next_action="bootstrap_company_database" if run.status == "not_found" else "review_company_intelligence_summary",
+                    usage_boundary=run.usage_boundary,
+                    detail_ref={"step_status": run.step_status},
+                )
+            )
+
+        pending = self.company_material_inbox_pending({"limit": 200}, actor=actor)
+        rows.append(
+            self._data_health_row(
+                run_family="material_inbox_pending",
+                run_id="latest",
+                status="pending" if pending.get("pending_count") else "ok",
+                domain="company_materials",
+                source_kind="api_response",
+                source_ref="company_material_inbox_pending:latest",
+                schema_id=str(pending.get("schema_id", "company-material-inbox-pending-v1")),
+                counts={"pending_count": pending.get("pending_count", 0), "total_count": pending.get("pending_count", 0)},
+                next_action="prepare_or_ingest_company_materials" if pending.get("pending_count") else "monitor_material_queue",
+                usage_boundary=str(pending.get("usage_boundary", "local_material_inbox_pending_queue_no_external_download_no_training_no_live_trading")),
+                detail_ref={"status_counts": pending.get("status_counts", {})},
+            )
+        )
+
+        def _artifact_row(path_value: str, family: str, domain: str, schema_id: str, next_action: str) -> None:
+            path = Path(path_value)
+            payload: dict[str, Any] = {}
+            status = "not_found"
+            completed_at = None
+            error = ""
+            if path.exists():
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    status = str(payload.get("status") or payload.get("summary", {}).get("status") or "ok")
+                    completed_at = payload.get("completed_at") or payload.get("generated_at") or payload.get("run_date")
+                except Exception as exc:  # pragma: no cover - defensive local artifact parsing
+                    status = "failed"
+                    error = str(exc)
+            rows.append(
+                self._data_health_row(
+                    run_family=family,
+                    run_id="latest",
+                    status=status,
+                    domain=domain,
+                    source_kind="artifact",
+                    source_ref=str(path),
+                    schema_id=schema_id,
+                    completed_at=completed_at,
+                    counts={
+                        "failed_count": payload.get("failed_count", payload.get("summary", {}).get("blocking_failure_count", 0)) if payload else 0,
+                        "target_count": payload.get("company_count", payload.get("summary", {}).get("company_count", 0)) if payload else 0,
+                    },
+                    error=error,
+                    artifact_paths=[str(path)],
+                    next_action=next_action if path.exists() else "run_local_refresh",
+                    usage_boundary="local_artifact_summary_not_production_evidence_no_live_trading",
+                    detail_ref={"path_exists": path.exists()},
+                )
+            )
+
+        _artifact_row("artifacts/daily-update-local/latest-run.json", "daily_data_update_pipeline", "daily_update", "daily-data-update-local-v1", "review_daily_update_summary")
+        _artifact_row("artifacts/personal-intelligence/latest.json", "personal_intelligence_refresh", "company_intelligence", "personal-intelligence-refresh-v1", "review_watchlist_refresh")
+
+        if family_filter:
+            rows = [row for row in rows if row["run_family"] in family_filter]
+        if status_filter:
+            rows = [row for row in rows if row["status"] == status_filter]
+        if normalized_filter:
+            rows = [row for row in rows if row["normalized_status"] == normalized_filter]
+        if symbol_filter:
+            rows = [row for row in rows if symbol_filter in {str(item).upper() for item in row.get("target_symbols", [])}]
+        if issuer_filter:
+            rows = [row for row in rows if issuer_filter in row.get("target_issuer_ids", [])]
+        rows.sort(key=lambda item: (str(item.get("completed_at") or item.get("updated_at") or item.get("created_at")), item["run_key"]), reverse=True)
+        rows = rows[:limit]
+        summary = {
+            "total_runs": len(rows),
+            "success_count": sum(1 for row in rows if row["normalized_status"] == "success"),
+            "partial_count": sum(1 for row in rows if row["normalized_status"] == "partial"),
+            "failed_count": sum(1 for row in rows if row["normalized_status"] == "failed"),
+            "pending_count": sum(int(row.get("pending_count", 0) or 0) for row in rows),
+            "latest_success_at": max([str(row.get("completed_at") or "") for row in rows if row["normalized_status"] == "success"] or [""]),
+            "latest_failure_at": max([str(row.get("completed_at") or row.get("updated_at") or "") for row in rows if row["normalized_status"] == "failed"] or [""]),
+        }
+        return {
+            "schema_id": "data-health-run-summary-v1",
+            "status": "ok",
+            "count": len(rows),
+            "summary": summary,
+            "runs": rows,
+            "local_only": True,
+            "acceptable_for_non_local_release": False,
+            "usage_boundary": "data_health_run_summary_is_local_read_model_no_schema_migration_no_live_trading",
+        }
+
+    def _source_health_row(
+        self,
+        *,
+        source_key: str,
+        domain: str,
+        label: str,
+        status: str,
+        latest_success_at: str = "",
+        latest_failure_at: str = "",
+        failure_count: int = 0,
+        pending_count: int = 0,
+        freshness_level: str = "unknown",
+        last_artifact: str = "",
+        next_actions: list[dict[str, Any]] | None = None,
+        evidence: Mapping[str, Any] | None = None,
+        usage_boundary: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "source_key": source_key,
+            "domain": domain,
+            "label": label,
+            "status": status,
+            "latest_success_at": latest_success_at,
+            "latest_failure_at": latest_failure_at,
+            "failure_count": int(failure_count or 0),
+            "pending_count": int(pending_count or 0),
+            "freshness_level": freshness_level,
+            "last_artifact": last_artifact,
+            "next_actions": list(next_actions or []),
+            "evidence": dict(evidence or {}),
+            "usage_boundary": usage_boundary or "local_source_health_summary_no_live_trading",
+        }
+
+    def data_health_summary(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        filters = filters or {}
+        runs_payload = self.data_health_runs_summary({"limit": filters.get("run_limit", 200)}, actor=actor)
+        runs = list(runs_payload.get("runs", []))
+
+        def _runs_for(*families: str) -> list[dict[str, Any]]:
+            return [run for run in runs if run.get("run_family") in families]
+
+        def _latest_success(run_rows: list[dict[str, Any]]) -> str:
+            return max([str(row.get("completed_at") or row.get("updated_at") or "") for row in run_rows if row.get("normalized_status") == "success"] or [""])
+
+        def _latest_failure(run_rows: list[dict[str, Any]]) -> str:
+            return max([str(row.get("completed_at") or row.get("updated_at") or "") for row in run_rows if row.get("normalized_status") == "failed"] or [""])
+
+        def _failures(run_rows: list[dict[str, Any]]) -> int:
+            return sum(1 for row in run_rows if row.get("normalized_status") == "failed")
+
+        market_points = list(self.store.market_data.values())
+        latest_market = max([str(to_plain(item.as_of_date)) for item in market_points] or [""])
+        research_reports = list(self.store.research_reports.values())
+        structured_reports = list(self.store.structured_research_reports.values())
+        disclosure_count = len(self.store.disclosure_events)
+        material_pending = self.company_material_inbox_pending({"limit": 200}, actor=actor)
+        build_runs = _runs_for("company_database_build_run")
+        package_runs = _runs_for("company_package_import_run")
+        cycle_runs = _runs_for("company_intelligence_cycle_run")
+        ingestion_runs = _runs_for("ingestion_job", "ingestion_schedule_run")
+        daily_runs = _runs_for("daily_data_update_pipeline")
+        personal_runs = _runs_for("personal_intelligence_refresh")
+
+        source_rows = [
+            self._source_health_row(
+                source_key="market_data",
+                domain="market_data",
+                label="公开行情",
+                status="healthy" if market_points else "missing",
+                latest_success_at=latest_market or _latest_success(daily_runs),
+                latest_failure_at=_latest_failure(daily_runs),
+                failure_count=_failures(daily_runs),
+                freshness_level="fresh" if market_points else "missing",
+                last_artifact=next((path for run in daily_runs for path in run.get("artifact_paths", []) if path), ""),
+                next_actions=[{"action": "import_market_data", "endpoint": "/api/market-data/batch"}] if not market_points else [{"action": "monitor_daily_update", "endpoint": "/api/data-health/runs/summary"}],
+                evidence={"market_data_count": len(market_points), "latest_as_of_date": latest_market},
+                usage_boundary="public_or_local_market_data_reference_no_live_trading",
+            ),
+            self._source_health_row(
+                source_key="research_reports",
+                domain="research_reports",
+                label="研报观点库",
+                status="healthy" if research_reports else "missing",
+                latest_success_at=_latest_success(package_runs + personal_runs),
+                latest_failure_at=_latest_failure(package_runs + personal_runs),
+                failure_count=_failures(package_runs + personal_runs),
+                freshness_level="available" if research_reports else "missing",
+                last_artifact=next((path for run in personal_runs for path in run.get("artifact_paths", []) if path), ""),
+                next_actions=[{"action": "ingest_research_reports", "endpoint": "/api/research-reports/inbox/schedule"}],
+                evidence={"research_report_assets": len(research_reports), "structured_reports": len(structured_reports)},
+                usage_boundary="local_research_reports_are_opinion_reference_not_fact_source_not_training",
+            ),
+            self._source_health_row(
+                source_key="official_disclosures",
+                domain="disclosures",
+                label="公告/披露",
+                status="healthy" if disclosure_count else ("pending" if ingestion_runs else "missing"),
+                latest_success_at=_latest_success(ingestion_runs),
+                latest_failure_at=_latest_failure(ingestion_runs),
+                failure_count=_failures(ingestion_runs),
+                freshness_level="available" if disclosure_count else "needs_ingestion",
+                next_actions=[{"action": "run_ingestion_schedule", "endpoint": "/api/ingestion/schedules/run"}],
+                evidence={"disclosure_events": disclosure_count, "ingestion_run_count": len(ingestion_runs)},
+                usage_boundary="official_public_disclosure_summary_no_restricted_training_no_live_trading",
+            ),
+            self._source_health_row(
+                source_key="company_materials",
+                domain="company_materials",
+                label="IR/官网材料",
+                status="pending" if material_pending.get("pending_count") else "healthy",
+                pending_count=int(material_pending.get("pending_count", 0) or 0),
+                freshness_level="needs_action" if material_pending.get("pending_count") else "ready",
+                next_actions=material_pending.get("next_actions", []),
+                evidence={"pending_count": material_pending.get("pending_count", 0), "status_counts": material_pending.get("status_counts", {})},
+                usage_boundary=str(material_pending.get("usage_boundary", "local_company_materials_summary_no_external_download_no_training_no_live_trading")),
+            ),
+            self._source_health_row(
+                source_key="company_database",
+                domain="company_database",
+                label="公司数据库补齐",
+                status="healthy" if any(row.get("normalized_status") == "success" for row in build_runs) else ("failed" if _failures(build_runs) else "pending"),
+                latest_success_at=_latest_success(build_runs),
+                latest_failure_at=_latest_failure(build_runs),
+                failure_count=_failures(build_runs),
+                freshness_level="available" if build_runs else "not_started",
+                next_actions=[{"action": "build_company_database", "endpoint": "/api/company-database/batch/build"}],
+                evidence={"build_run_count": len(build_runs), "company_profiles": len(self.store.company_profiles)},
+                usage_boundary="company_database_health_is_local_operations_summary_no_live_trading",
+            ),
+            self._source_health_row(
+                source_key="workflow_feedback",
+                domain="workflow_feedback",
+                label="闭环刷新与模拟反馈",
+                status="healthy" if any(row.get("normalized_status") == "success" for row in cycle_runs) else ("failed" if _failures(cycle_runs) else "pending"),
+                latest_success_at=_latest_success(cycle_runs),
+                latest_failure_at=_latest_failure(cycle_runs),
+                failure_count=_failures(cycle_runs),
+                freshness_level="available" if cycle_runs else "not_started",
+                next_actions=[{"action": "run_company_intelligence_cycle", "endpoint": "/api/company-intelligence/{symbol}/cycle/run"}],
+                evidence={"cycle_run_count": len(cycle_runs), "simulation_feedback_count": len(self.store.simulation_feedback)},
+                usage_boundary="workflow_feedback_is_paper_only_no_broker_no_auto_trading",
+            ),
+        ]
+        if filters.get("source_key"):
+            wanted = str(filters.get("source_key")).strip()
+            source_rows = [row for row in source_rows if row["source_key"] == wanted]
+        status_counts: dict[str, int] = {}
+        for row in source_rows:
+            status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+        return {
+            "schema_id": "data-health-summary-v1",
+            "status": "ok",
+            "generated_at": to_plain(utcnow()),
+            "summary": {
+                "source_count": len(source_rows),
+                "status_counts": status_counts,
+                "failure_count": sum(row["failure_count"] for row in source_rows),
+                "pending_count": sum(row["pending_count"] for row in source_rows),
+                "next_action_count": sum(len(row["next_actions"]) for row in source_rows),
+            },
+            "sources": source_rows,
+            "run_summary": runs_payload.get("summary", {}),
+            "run_count": runs_payload.get("count", 0),
+            "local_only": True,
+            "acceptable_for_non_local_release": False,
+            "usage_boundary": "data_health_summary_is_local_read_model_no_schema_migration_no_live_trading",
+        }
+
     def company_database_build_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         limit = self._bounded_limit(filters.get("limit", 20), 200)

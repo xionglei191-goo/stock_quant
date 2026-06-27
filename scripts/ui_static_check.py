@@ -46,6 +46,8 @@ REQUIRED_TEXT_SNIPPETS = [
     "决策追溯",
     "调度追溯",
     "材料入库追溯",
+    "今日数据状态",
+    "来源健康中心",
 ]
 
 REQUIRED_IDS = [
@@ -57,6 +59,16 @@ REQUIRED_IDS = [
     "portfolioBoundary",
     "portfolioFlags",
     "analysisSources",
+    "dataHealthOverallStatus",
+    "dataHealthFailureCount",
+    "dataHealthPendingCount",
+    "dataHealthRunCount",
+    "dataHealthRows",
+    "sourceHealthOverallStatus",
+    "sourceHealthFailureCount",
+    "sourceHealthPendingCount",
+    "sourceHealthRunCount",
+    "sourceHealthRows",
     "personalIntelStatus",
     "personalIntelCompanyCount",
     "personalIntelReadyCount",
@@ -404,6 +416,11 @@ REQUIRED_IDS = [
 
 REQUIRED_JS_FUNCTIONS = [
     "loadDashboard",
+    "dataHealthStatusClass",
+    "dataHealthNextActionLabel",
+    "renderDataHealthRows",
+    "renderDataHealthSummary",
+    "loadDataHealthSummary",
     "renderLatestAnalysis",
     "openTab",
     "openSecurityContext",

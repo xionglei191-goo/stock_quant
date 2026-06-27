@@ -608,13 +608,17 @@
   - 后端关联：确认 `app/api.py`、`app/services.py`、新增脚本和 handoff 之间的任务状态一致，不在未收敛状态继续追加大重构。
   - 验收：`python3 scripts/check_handoffs.py`、`git diff --check`、`python3 scripts/ui_static_check.py`、`python3 -m py_compile app/*.py tests/*.py scripts/*.py` 通过；远端 GitHub 包含本轮变更。
 
-- `TODO` T-493 数据自动刷新与来源健康中心
+- `DONE` T-493 数据自动刷新与来源健康中心
   - 对应：E3-US3, E3-US4, E7-US1, E8-US2；愿景扩展/生产化增强
   - Owner：Data and Evidence
   - 目标：解决“数据散乱、不自动、不知道哪里失败”的核心问题。
   - 交付：新增数据健康摘要，覆盖行情、研报、公告/披露、IR/官网材料、公司包导入、待补材料、调度状态、最近刷新时间、失败原因和下一步动作。
   - 后端重构：抽取 `data_health` / `source_health` 领域模块，`SystemService` 只保留 facade 方法；新增或复用健康摘要 API，不改变既有数据写入 schema。
   - UI：总览首屏增加“今日数据状态”；数据中台增加“来源健康中心”。
+  - **已完成（本轮）**：新增只读 `GET|POST /api/data-health/runs/summary`，聚合 ingestion、公司补库、公司包导入、闭环刷新、本地材料、日更和个人关注池刷新 run，默认摘要化且不迁移 schema。
+  - **已完成（本轮）**：新增只读 `GET|POST /api/data-health/summary`，按个人研究视角展示行情、研报、公告/披露、IR/官网材料、公司数据库和 paper-only 闭环反馈来源健康。
+  - **已完成（本轮）**：总览首屏新增“今日数据状态”，数据中台新增“来源健康中心”，默认展示来源、当前判断、状态、下一步或证据，高级追溯折叠保留原始健康信号。
+  - **已完成（本轮）**：新增 focused regression 覆盖 run family 聚合、来源健康状态、下一步动作、本地证据边界和 no-live-trading 标记。
   - 验收：每类来源能看到最新成功时间、失败数、待补数、下一次建议动作；无数据时给出可执行下一步。
 
 - `TODO` T-494 个人研究桌面与后台维护拆分

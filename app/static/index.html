@@ -1448,6 +1448,16 @@
           </div>
         </div>
         <div class="dashboard-grid" style="margin-bottom:12px">
+          <div class="panel span-12">
+            <h2>今日数据状态</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>来源状态</strong><span id="dataHealthOverallStatus">待载入</span></div>
+              <div class="system-box"><strong>异常来源</strong><span id="dataHealthFailureCount">0</span></div>
+              <div class="system-box"><strong>待处理</strong><span id="dataHealthPendingCount">0</span></div>
+              <div class="system-box"><strong>运行记录</strong><span id="dataHealthRunCount">0</span></div>
+            </div>
+            <table><thead><tr><th>来源</th><th>当前判断</th><th>状态</th><th>下一步或证据</th></tr></thead><tbody id="dataHealthRows"></tbody></table>
+          </div>
           <div class="panel span-6">
             <h2>数据来源边界</h2>
             <div class="source-grid" id="analysisSources"></div>
@@ -2783,6 +2793,16 @@
 
       <section data-tab="ingestion">
         <div class="grid">
+          <div class="panel span-12">
+            <h2>来源健康中心</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>健康状态</strong><span id="sourceHealthOverallStatus">待载入</span></div>
+              <div class="system-box"><strong>失败信号</strong><span id="sourceHealthFailureCount">0</span></div>
+              <div class="system-box"><strong>待补事项</strong><span id="sourceHealthPendingCount">0</span></div>
+              <div class="system-box"><strong>本地运行</strong><span id="sourceHealthRunCount">0</span></div>
+            </div>
+            <table><thead><tr><th>来源</th><th>当前判断</th><th>状态</th><th>下一步或证据</th></tr></thead><tbody id="sourceHealthRows"></tbody></table>
+          </div>
           <div class="panel span-12">
             <h2>A 股公告</h2>
             <div class="row">
@@ -6171,9 +6191,73 @@
         "simulated only · no broker execution": "仅模拟，不连接券商",
         "company_database_build_run_is_local_research_operations_history_no_live_trading": "本地补库历史",
         "company_database_build_runs_are_local_operations_history_no_live_trading": "本地补库历史",
-        "company_database_coverage_trends_are_local_research_operations_history_no_live_trading": "本地覆盖趋势"
+        "company_database_coverage_trends_are_local_research_operations_history_no_live_trading": "本地覆盖趋势",
+        "data_health_summary_is_local_read_model_no_schema_migration_no_live_trading": "本地数据健康视图",
+        "data_health_run_summary_is_local_read_model_no_schema_migration_no_live_trading": "本地运行摘要",
+        "public_or_local_market_data_reference_no_live_trading": "公开/本地行情参考",
+        "local_research_reports_are_opinion_reference_not_fact_source_not_training": "本地研报观点参考",
+        "official_public_disclosure_summary_no_restricted_training_no_live_trading": "官方公开披露摘要",
+        "company_database_health_is_local_operations_summary_no_live_trading": "本地公司数据库健康",
+        "workflow_feedback_is_paper_only_no_broker_no_auto_trading": "仅纸面反馈"
       };
       return labels[value] || value || "-";
+    }
+
+    function dataHealthStatusClass(value) {
+      const normalized = String(value || "").toLowerCase();
+      if (["healthy", "success", "ok", "available", "ready"].includes(normalized)) return "ok";
+      if (["failed", "missing", "stale"].includes(normalized)) return "block";
+      return "warn";
+    }
+
+    function dataHealthNextActionLabel(item = {}) {
+      const actions = item.next_actions || [];
+      if (actions.length) return actions.map((action) => statusLabel(action.action || action.endpoint || "下一步")).join(" / ");
+      return statusLabel(item.next_action || "monitor_next_refresh");
+    }
+
+    function renderDataHealthRows(targetId, sources = []) {
+      $(targetId).innerHTML = rows(sources, "暂无来源健康摘要", (item) => {
+        const judgment = (() => {
+          const evidence = item.evidence || {};
+          const facts = [];
+          if (evidence.market_data_count !== undefined) facts.push(`行情 ${evidence.market_data_count}`);
+          if (evidence.research_report_assets !== undefined) facts.push(`研报 ${evidence.research_report_assets}`);
+          if (evidence.disclosure_events !== undefined) facts.push(`披露 ${evidence.disclosure_events}`);
+          if (evidence.company_profiles !== undefined) facts.push(`画像 ${evidence.company_profiles}`);
+          if (evidence.simulation_feedback_count !== undefined) facts.push(`反馈 ${evidence.simulation_feedback_count}`);
+          if (item.pending_count) facts.push(`待处理 ${item.pending_count}`);
+          return facts.join(" · ") || boundaryLabel(item.usage_boundary);
+        })();
+        return `<tr>
+          <td>${item.label || statusLabel(item.source_key || item.domain || "来源")}</td>
+          <td>${judgment}</td>
+          <td><span class="badge ${dataHealthStatusClass(item.status)}">${statusLabel(item.status || item.freshness_level || "")}</span></td>
+          <td>${dataHealthNextActionLabel(item)}${renderAdvancedTrace("来源健康追溯", item)}</td>
+        </tr>`;
+      });
+    }
+
+    function renderDataHealthSummary(data = {}) {
+      const summary = data.summary || {};
+      const sources = data.sources || [];
+      const overallStatus = summary.failure_count ? "需要处理" : (summary.pending_count ? "有待补项" : "健康");
+      setText("dataHealthOverallStatus", overallStatus);
+      setText("dataHealthFailureCount", `${summary.failure_count || 0}`);
+      setText("dataHealthPendingCount", `${summary.pending_count || 0}`);
+      setText("dataHealthRunCount", `${data.run_count || 0}`);
+      setText("sourceHealthOverallStatus", overallStatus);
+      setText("sourceHealthFailureCount", `${summary.failure_count || 0}`);
+      setText("sourceHealthPendingCount", `${summary.pending_count || 0}`);
+      setText("sourceHealthRunCount", `${data.run_count || 0}`);
+      renderDataHealthRows("dataHealthRows", sources);
+      renderDataHealthRows("sourceHealthRows", sources);
+    }
+
+    async function loadDataHealthSummary() {
+      const { data } = await api("/api/data-health/summary", { role: "analyst" });
+      renderDataHealthSummary(data || {});
+      return data;
     }
 
     function openTab(tabName) {
@@ -6433,6 +6517,7 @@
         const healthPromise = api("/api/health", { role: "ceo" });
         const metricsPromise = api("/api/metrics", { role: "ceo" });
         const latestPromise = api("/api/analysis/latest", { role: "ceo" });
+        const dataHealthPromise = loadDataHealthSummary();
         const industryChainPromise = loadIndustryChainSummary();
 
         const latest = await latestPromise;
@@ -6441,7 +6526,7 @@
         $("chipResearch").textContent = `研报 ${latest.data?.research_evidence?.counts?.research_reports || latest.data?.counts?.research_reports || counts.research_reports || 0}`;
         setStatus("最新分析已载入");
 
-        const [healthResult, metricsResult] = await Promise.allSettled([healthPromise, metricsPromise]);
+        const [healthResult, metricsResult] = await Promise.allSettled([healthPromise, metricsPromise, dataHealthPromise]);
         const health = healthResult.status === "fulfilled" ? healthResult.value : { data: { status: "unknown", store: "-" } };
         const metrics = metricsResult.status === "fulfilled" ? metricsResult.value : { data: { audit_events: 0 } };
         $("chipService").textContent = `${statusLabel(health.data.status)} · ${health.data.store}`;
@@ -9299,6 +9384,7 @@
     document.querySelectorAll("[data-open]").forEach((button) => {
       button.addEventListener("click", () => {
         openTab(button.dataset.open);
+        if (button.dataset.open === "ingestion") loadDataHealthSummary().catch((error) => setStatus(error.message, true));
       });
     });
 

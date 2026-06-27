@@ -24,7 +24,7 @@ from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, CompanyDatabaseBuildRun, CompanyProfileFieldAssertion, DecisionPack, DisclosureEvent, Document, Evidence, ResearchReportAsset, RightsTag, SystemAlert
+from app.models import AlertNotification, CompanyDatabaseBuildRun, CompanyIntelligenceCycleRun, CompanyPackageImportRun, CompanyProfileFieldAssertion, DecisionPack, DisclosureEvent, Document, Evidence, IngestionJob, IngestionSchedule, ResearchReportAsset, RightsTag, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
 from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
@@ -1270,6 +1270,144 @@ class SystemServiceTests(unittest.TestCase):
         denied = self.router.dispatch("POST", "/api/company-database/quality/reconcile", {"symbols": ["DEMO"]}, role="viewer")
         self._assert_api_envelope(denied, success=False, status_code=403)
         self.assertEqual(denied.error["type"], "permission_denied")
+
+    def test_data_health_summary_aggregates_runs_sources_and_next_actions(self) -> None:
+        self.service.register_market_data_point(
+            {
+                "data_id": "md_health_demo",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "as_of_date": "2026-06-24",
+                "data_type": "eod",
+                "market": "A",
+                "close": 10.5,
+                "volume": 123456,
+            },
+            actor="data",
+        )
+        self.service.store.research_reports["rr_health_demo"] = ResearchReportAsset(
+            report_id="rr_health_demo",
+            source_id="local_research_reports",
+            broker="Local Broker",
+            file_path="/tmp/health-demo.pdf",
+            file_name="health-demo.pdf",
+            title="Health demo report",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            status="text_indexed",
+        )
+        self.service.store.ingestion_jobs["job_health_ok"] = IngestionJob(
+            job_id="job_health_ok",
+            status="completed",
+            total=2,
+            created=2,
+            skipped=0,
+            failed=0,
+        )
+        self.service.store.ingestion_jobs["job_health_failed"] = IngestionJob(
+            job_id="job_health_failed",
+            status="failed",
+            total=1,
+            failed=1,
+            errors=[{"message": "source unavailable"}],
+        )
+        self.service.store.ingestion_schedules["sched_health"] = IngestionSchedule(
+            schedule_id="sched_health",
+            name="Disclosure refresh",
+            status="retrying",
+            last_job_id="job_health_failed",
+            last_status="failed",
+            last_error="source unavailable",
+        )
+        self.service.store.company_database_build_runs["cdb_health_run"] = CompanyDatabaseBuildRun(
+            run_id="cdb_health_run",
+            actor="data",
+            status="executed",
+            execute=True,
+            dry_run=False,
+            target_issuer_ids=["issuer_001"],
+            target_symbols=["DEMO"],
+            batch_count=1,
+            batch_size=1,
+            totals={"profiles_created": 1, "event_count": 1},
+        )
+        self.service.store.company_package_import_runs["pkg_health_run"] = CompanyPackageImportRun(
+            run_id="pkg_health_run",
+            actor="data",
+            status="executed",
+            execute=True,
+            dry_run=False,
+            root_path="/tmp/company-package",
+            company_count=1,
+            target_symbols=["DEMO"],
+            target_issuer_ids=["issuer_001"],
+            totals={"executed_count": 1},
+            items=[
+                {
+                    "symbol": "DEMO",
+                    "issuer_id": "issuer_001",
+                    "security_id": "sec_001",
+                    "status": "executed",
+                }
+            ],
+        )
+        self.service.store.company_intelligence_cycle_runs["cycle_health_run"] = CompanyIntelligenceCycleRun(
+            run_id="cycle_health_run",
+            actor="data",
+            status="executed",
+            execute=True,
+            dry_run=False,
+            symbol="DEMO",
+            issuer_ids=["issuer_001"],
+            summary={"feedback_updated": 1},
+        )
+
+        runs = self.router.dispatch("GET", "/api/data-health/runs/summary", {"limit": 50}, role="analyst")
+        self._assert_api_envelope(runs)
+        self.assertEqual(runs.data["schema_id"], "data-health-run-summary-v1")
+        self.assertFalse(runs.data["acceptable_for_non_local_release"])
+        families = {item["run_family"]: item for item in runs.data["runs"]}
+        for family in [
+            "ingestion_job",
+            "ingestion_schedule_run",
+            "company_database_build_run",
+            "company_package_import_run",
+            "company_intelligence_cycle_run",
+            "material_inbox_pending",
+            "daily_data_update_pipeline",
+            "personal_intelligence_refresh",
+        ]:
+            self.assertIn(family, families)
+        self.assertEqual(families["company_database_build_run"]["run_id"], "cdb_health_run")
+        self.assertEqual(families["company_database_build_run"]["normalized_status"], "success")
+        self.assertEqual(families["company_package_import_run"]["target_symbols"], ["DEMO"])
+        self.assertTrue(families["company_package_import_run"]["details_omitted"])
+        self.assertEqual(families["company_intelligence_cycle_run"]["paper_only"], True)
+        self.assertFalse(families["company_intelligence_cycle_run"]["live_trading_allowed"])
+        failed_jobs = [item for item in runs.data["runs"] if item["run_id"] == "job_health_failed"]
+        self.assertEqual(failed_jobs[0]["normalized_status"], "failed")
+        self.assertEqual(failed_jobs[0]["failed_count"], 1)
+
+        filtered = self.router.dispatch("POST", "/api/data-health/runs/summary", {"run_family": "company_package_import_run", "symbol": "DEMO"}, role="analyst")
+        self._assert_api_envelope(filtered)
+        self.assertEqual(filtered.data["count"], 1)
+        self.assertEqual(filtered.data["runs"][0]["run_id"], "pkg_health_run")
+
+        summary = self.router.dispatch("GET", "/api/data-health/summary", {}, role="analyst")
+        self._assert_api_envelope(summary)
+        self.assertEqual(summary.data["schema_id"], "data-health-summary-v1")
+        self.assertFalse(summary.data["acceptable_for_non_local_release"])
+        sources = {item["source_key"]: item for item in summary.data["sources"]}
+        for source_key in ["market_data", "research_reports", "official_disclosures", "company_materials", "company_database", "workflow_feedback"]:
+            self.assertIn(source_key, sources)
+        self.assertEqual(sources["market_data"]["status"], "healthy")
+        self.assertEqual(sources["market_data"]["evidence"]["market_data_count"], 1)
+        self.assertEqual(sources["research_reports"]["evidence"]["research_report_assets"], 1)
+        self.assertGreaterEqual(sources["official_disclosures"]["failure_count"], 1)
+        self.assertGreaterEqual(sources["company_materials"]["pending_count"], 1)
+        self.assertEqual(sources["company_database"]["status"], "healthy")
+        self.assertEqual(sources["workflow_feedback"]["usage_boundary"], "workflow_feedback_is_paper_only_no_broker_no_auto_trading")
+        self.assertGreater(summary.data["summary"]["next_action_count"], 0)
 
     def test_company_database_builder_materializes_profiles_and_binds_reports(self) -> None:
         self.service.store.research_reports["rr_demo_unbound"] = ResearchReportAsset(
