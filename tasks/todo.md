@@ -490,6 +490,212 @@
   - **已完成（本轮 UI）**：公司情报工作台新增“查看待补材料”、待补材料计数和队列表，区分 `needs_manifest`、`needs_material_file`、`ready_to_ingest`。
   - 验收：单测覆盖 manifest 写入后显示缺正文，补正文文件后显示可入库；UI 静态检查覆盖新增 DOM/JS。
 
+- `DONE` T-480 个人用户公司情报阅读视图简化
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：公司情报页已经聚合了画像、事件、关系、研报、补库、材料 inbox、冲突复核、运行历史和质量归并，但个人用户默认进入时更需要阅读公司情报和下一步判断，而不是先面对维护动作。
+  - **已完成（本轮）**：公司情报总览新增“个人研究摘要”层，默认展示当前判断、最新事实、观点变化、反馈与下一步，直接从公司情报聚合数据渲染。
+  - **已完成（本轮）**：公司数据库补齐、材料入库、字段冲突、运行历史、质量归并、事件/关系候选复核、研报结构化和完整 JSON 默认折叠到高级维护/调试区，保留全部原有控件和 DOM contract。
+  - **已完成（本轮）**：维护动作仍可从高级区展开使用；个人视图保留开始研究、整理研报观点和查看缺口三个轻量动作。
+  - 验收：`python3 scripts/ui_static_check.py`；`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8770 --output-dir artifacts/ui-interaction-acceptance-personal-ui-current` 28/28 通过。
+
+- `DONE` T-481 公司情报页面视觉再优化
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-480 已经把默认信息结构简化，但个人用户仍会感到页面偏“工具堆叠”，需要进一步收敛视觉噪音，让关键判断、指标和表格更清晰。
+  - **已完成（本轮）**：在不改动业务能力和 DOM contract 的前提下，优化公司情报总览的留白、层级、卡片质感、表格可读性和高级维护区的弱化呈现。
+  - **已完成（本轮）**：桌面和移动视口均完成截图审视，个人摘要、指标卡和高级折叠区无明显遮挡或文本溢出。
+  - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`；`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8770 --output-dir artifacts/ui-interaction-acceptance-personal-ui-polish` 28/28 通过。
+
+- `DONE` T-482 个人关注池自动公司情报闭环
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：当前底层行情、研报和证据很多，但公司画像、事件、关系、观点和 paper-only 反馈没有随日更自动形成关注池级闭环，导致个人用户看到的数据仍像散表。
+  - 目标：新增关注池驱动的自动公司情报刷新，把日更后的关注标的自动建档、补事件/关系、结构化观点并生成观察/结论/模拟反馈；总览页前置展示闭环状态和每家公司缺口。
+  - **已完成（本轮）**：新增 `scripts/personal_intelligence_refresh.py`，默认关注池 `AAPL,NVDA,MSFT,300750,600519` 可通过现有公司数据库 API 自动建档、生成事件/关系、结构化研报观点、观察/结论和 paper-only 反馈，并输出 `artifacts/personal-intelligence/latest.json`。
+  - **已完成（本轮）**：日更流水线和 `scripts/run_daily_data_update.sh` 已接入个人关注池刷新，支持跳过、允许失败、执行/演练、关注池标的和超时等环境变量配置。
+  - **已完成（本轮）**：`/api/analysis/latest` 暴露 `personal_intelligence` 和 artifact path；首页总览新增“个人关注池自动闭环”，展示运行状态、公司数、待关注数、每家公司缺口和下一步动作，并可点击进入公司情报页。
+  - 验收：`python3 scripts/personal_intelligence_refresh.py --base-url http://127.0.0.1:8000 --symbols AAPL,NVDA,MSFT,300750,600519 --execute --output artifacts/personal-intelligence/latest.json` 通过，生成 5 个关注标的；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`；`/api/analysis/latest` 回读 `personal_intelligence.status=passed`。
+
+- `DONE` T-483 Obsidian 式知识图谱探索视图
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：知识图谱页此前主要是指标和表格，个人用户无法像 Obsidian Graph View 一样快速看见公司、产业链、事件、证据、观点、结论、组合和风险之间的关系。
+  - 目标：在知识图谱页第一屏新增可探索关系网络，支持搜索节点、关系类型过滤、深度聚焦、重置视图、缩放/拖拽、点击节点侧栏和相邻节点联动，同时保留原有表格明细。
+  - **已完成（本轮）**：新增原生 SVG 力导向关系图谱，把 `/api/graph/query` 返回的公司、证券、产业链、事件、文档证据、研报观点、分析结论、观察任务、组合/持仓和复盘风险统一渲染为节点和边。
+  - **已完成（本轮）**：新增节点类型图例、搜索框、深度选择、一键重置和产业/证据/观点/组合/风险过滤；点击节点会高亮一跳关系并在侧栏显示摘要和相邻关系。
+  - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`；浏览器打开 `/ui` 的“知识图谱”页，确认图谱 SVG、节点数、关系数、过滤和节点详情正常。
+
+- `DONE` T-484 知识图谱动态力导向交互
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-483 已经有 Obsidian 式关系图谱，但布局仍是一次性计算后的静态网络；用户希望它成为真正动态的关系图谱。
+  - 目标：让知识图谱持续进行力导向运动，支持暂停/继续、拖拽节点固定、释放固定节点，并在搜索、过滤和深度变化后平滑重新收敛。
+  - **已完成（本轮）**：将一次性布局替换为 `requestAnimationFrame` 驱动的持续力导向模拟，节点/边位置会随运行状态动态更新。
+  - **已完成（本轮）**：新增“暂停动态”“释放节点”和运动状态显示；拖拽节点会固定位置，释放后重新参与图谱运动。
+  - 验收：`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；浏览器打开 `/ui` 的“知识图谱”页，确认 AAPL 图谱节点位置随时间变化，暂停后位置停止变化，继续后恢复动态。
+
+- `DONE` T-485 知识图谱可读性与布局修正
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：动态知识图谱首版在 AAPL 这类星形关系中出现节点吸附外边、节点重叠、底层 ID/重复泛标签过多的问题。
+  - 目标：让默认图谱成为可读的关系摘要，而不是数据库节点散点图；修正贴边、重叠和命名噪音。
+  - **已完成（本轮）**：新增语义命名与类型推断，`issuer/security/vp/rr/ce` 等底层 ID 会被折叠为公司、证券、研究观点、事件等业务语义。
+  - **已完成（本轮）**：默认图谱按类型配额保留高价值节点，隐藏证据/事件/观点的泛化常显标签，只在选中/高亮时查看关系细节。
+  - **已完成（本轮）**：调整为分类聚类、碰撞避让、软边界和更大安全边距，AAPL 验证结果为 29 节点、85 关系、0 重叠、0 贴边。
+  - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；浏览器 AAPL 图谱布局量化检查。
+
+- `DONE` T-486 公开行情 K 线板块
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：公司情报和知识图谱已经能展示关系与证据，但个人用户还需要直接查看证券价格走势，避免在研究时离开系统另找行情图。
+  - 目标：在数据中台公开行情区域新增 K 线视图，复用已有本地 OHLCV 行情数据，并与证券点击/载入行情联动。
+  - **已完成（本轮）**：新增原生 SVG K 线板块，展示蜡烛图、影线、收盘线、成交量、价格网格和日期刻度。
+  - **已完成（本轮）**：新增最新收盘、区间涨跌、最高/最低和成交量摘要；`loadMarketData` 默认拉取最近 120 根并同时更新表格和 K 线。
+  - **已完成（本轮）**：从总览、图谱或行情表点击证券仍会进入数据中台并自动载入对应 K 线。
+  - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；浏览器验证 K 线 SVG 非空并显示最新价格指标。
+
+- `DONE` T-487 K 线均线系统
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：K 线首版能看价格走势，但缺少个人用户判断趋势常用的均线参照。
+  - 目标：在公开行情 K 线板块新增常用均线系统，复用本地 OHLCV 收盘价，不引入外部行情依赖。
+  - **已完成（本轮）**：新增 MA5、MA10、MA20、MA60 均线计算和 SVG 叠加线，价格坐标会纳入均线值范围。
+  - **已完成（本轮）**：新增均线开关与最新均线值，用户可在不重新请求数据的情况下显示/隐藏不同周期均线。
+  - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；浏览器验证载入行情后 4 条均线和最新均线值正常，关闭单条均线后图表重绘。
+
+- `DONE` T-488 K 线横截面误绘修复
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：公开行情证券输入为空时，接口返回最新交易日的多证券横截面；前端曾把这些不同证券的同日价格误画成单一证券时间序列，导致价格尖刺、横轴日期重复。
+  - 目标：K 线只展示单一证券、多日期 OHLCV 时间序列；全市场横截面只进入表格，不进入 K 线图。
+  - **已完成（本轮）**：证券输入默认使用 `sec_000670`，点击载入行情时空输入会回填样例证券，避免无意请求全市场横截面。
+  - **已完成（本轮）**：`renderKlineChart` 新增单证券和多日期校验；多证券横截面或单日数据会显示空态提示，不再绘制误导性 K 线。
+  - **已完成（本轮）**：静态 UI 契约新增防回归文本检查，覆盖单证券时间序列约束。
+  - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；浏览器验证空证券载入自动回填样例证券并显示正常日期横轴，同时直接传入横截面数据不会绘制 K 线。
+
+- `DONE` T-489 K 线交互与周期切换
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：个人用户查看 K 线需要常规图表交互，包括拖动平移、放大缩小，以及日线/周线/月线/年线周期切换。
+  - 目标：在不引入外部图表库的前提下，让现有 SVG K 线具备常规查看体验，并保持本地 OHLCV 数据边界。
+  - **已完成（本轮）**：新增日线、周线、月线、年线周期切换；周/月/年由本地日线 OHLCV 聚合生成。
+  - **已完成（本轮）**：新增图表窗口状态、放大、缩小、复位、鼠标/触控拖动平移和滚轮缩放。
+  - **已完成（本轮）**：行情载入扩展到最近 1000 条以支持月线/年线聚合，表格仍只显示最近 120 条，避免页面过重。
+  - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；浏览器验证周期切换、缩放、拖动、复位和均线重绘正常。
+
+- `DONE` T-490 全项目 UI 信息降噪第一阶段
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：公司情报、知识图谱、行情和总览仍有不少内部 ID、状态码、raw JSON 和流水记录直接进入个人用户主界面。
+  - 目标：把默认界面收敛为个人研究视角，优先显示关键事实、研究判断、风险和下一步；追溯信息默认折叠在高级详情中。
+  - **已完成（本轮）**：新增 `userEntityLabel`、`userStatusLabel`、`userSummaryLine`、`renderAdvancedTrace`、`renderInsightTable` 等共享展示规则。
+  - **已完成（本轮）**：公司情报核心表改为“主题 / 关键发现 / 状态 / 下一步或证据”，研报、事件、行情、关系、模拟反馈不再以内部 ID 作为主列。
+  - **已完成（本轮）**：知识图谱节点详情和关系/事实/决策表默认展示业务语义，内部节点 ID 与原始对象进入追溯详情。
+  - **已完成（本轮）**：公开行情表改为日期、开高低收、成交量、来源，权限和记录 ID 进入高级详情；K 线交互保持不变。
+  - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；浏览器验证核心页面默认视图不以裸 `issuer_*`、`rr *`、`run_id` 作为主信息，高级详情仍可追溯。
+
+- `DONE` T-491 全页面 UI 信息降噪收尾
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-490 已覆盖总览、公司情报、知识图谱和行情核心路径；瓶颈研究、智能体协作、复盘反馈、兼容审批、数据中台后台区、风控合规和公司情报高级维护区仍有裸 JSON、run/trace/manifest/id 作为默认主信息。
+  - 目标：把剩余页面统一改成个人研究视角：默认展示事项、判断、状态、下一步；内部对象和原始 JSON 进入“高级详情 / 追溯信息”。
+  - **已完成（本轮）**：新增 `renderReadableObjectSummary`、`renderAdvancedPre`、`renderActionableRows`，将裸 `<pre>` 输出改成摘要 + 折叠追溯。
+  - **已完成（本轮）**：瓶颈研究、SEC 单标的、原文问答、热点扩散、兼容审批、组合模拟反馈、复盘报告、数据中台后台区、风控合规和公司情报高级维护区完成默认展示降噪。
+  - **已完成（本轮）**：静态 UI 契约加入二阶段 helper 和追溯文本检查，防止回退到裸 JSON/调试视图。
+  - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/check_handoffs.py`；`git diff --check`；浏览器逐页烟测 `/ui` 核心标签页 console error 为 0。
+
+## 项目经理整理 / 长效完善与后端渐进式重构路线
+
+项目经理口径：以下任务来自 2026-06-27 长效完善总计划，目标是把个人公司情报系统从“可用、能看”推进到“长期稳定、可信、可维护”。本路线把产品完善与后端渐进式重构绑定推进：先收敛当前成果，再围绕数据健康、个人研究桌面、真实验收、结论兑现、事件/关系可信度、前后端模块化和非本机生产化建立长期路线。后端不做大爆炸重写，继续保留 `SystemService` facade，按领域模块渐进抽取。所有任务继续遵守本地优先、公开/已提供数据优先、研报只进入观点层、模拟反馈 paper-only、不接真实券商、不自动下单边界。
+
+- `DONE` T-492 文档/交接/工作树收敛与 GitHub 推送
+  - 对应：E7-US1, E8-US2, E9-US2；愿景扩展/生产化增强
+  - Owner：PM / Release Coordination
+  - 目标：把 T-480 至 T-491 的 UI、数据闭环、后端 API 变更、交接记录收敛成可提交状态。
+  - 交付：更新文档索引任务范围；修正 T-490/T-491 handoff checklist；分组说明当前 dirty worktree；执行最终验证；提交并推送。
+  - **已完成（本轮）**：PM 分组调用 Data/Evidence、Product/UI、Platform/Quality、Research/Workflow、Governance/Security 五组 agent，形成 T-493 至 T-503 的实施顺序与风险边界。
+  - **已完成（本轮）**：修复 `scripts/daily_data_update_pipeline.py` 对旧调用方缺省 `personal_intelligence` 参数的兼容问题，恢复全量单测。
+  - **已完成（本轮）**：完成 handoff、静态 UI、语法、安全、全量单测和 diff 检查；本任务提交并推送到 GitHub。
+  - 后端关联：确认 `app/api.py`、`app/services.py`、新增脚本和 handoff 之间的任务状态一致，不在未收敛状态继续追加大重构。
+  - 验收：`python3 scripts/check_handoffs.py`、`git diff --check`、`python3 scripts/ui_static_check.py`、`python3 -m py_compile app/*.py tests/*.py scripts/*.py` 通过；远端 GitHub 包含本轮变更。
+
+- `TODO` T-493 数据自动刷新与来源健康中心
+  - 对应：E3-US3, E3-US4, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Data and Evidence
+  - 目标：解决“数据散乱、不自动、不知道哪里失败”的核心问题。
+  - 交付：新增数据健康摘要，覆盖行情、研报、公告/披露、IR/官网材料、公司包导入、待补材料、调度状态、最近刷新时间、失败原因和下一步动作。
+  - 后端重构：抽取 `data_health` / `source_health` 领域模块，`SystemService` 只保留 facade 方法；新增或复用健康摘要 API，不改变既有数据写入 schema。
+  - UI：总览首屏增加“今日数据状态”；数据中台增加“来源健康中心”。
+  - 验收：每类来源能看到最新成功时间、失败数、待补数、下一次建议动作；无数据时给出可执行下一步。
+
+- `TODO` T-494 个人研究桌面与后台维护拆分
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI
+  - 目标：把 `/ui` 从密集单页工具拆成“个人研究默认视图 + 后台维护视图”。
+  - 交付：默认导航只保留总览、公司情报、知识图谱、K 线行情、研究结论、模拟反馈；导入、审计、复核、调度、治理进入“后台维护”。
+  - 后端关联：梳理哪些接口属于 personal workspace，哪些属于 admin/maintenance；不改 URL，先在前端和权限矩阵中分组。
+  - 验收：个人用户首屏不需要理解 run、manifest、trace、调度、复核队列；高级能力仍可在后台找到。
+
+- `TODO` T-495 真实浏览器验收矩阵补齐
+  - 对应：E7-US1, E8-US2, E9-US2；愿景扩展/生产化增强
+  - Owner：Platform and Quality
+  - 目标：把 UI 验收从静态契约升级到关键真实路径。
+  - 交付：新增浏览器验收覆盖 AAPL、A 股样例、未知标的、K 线真实 API 加载、周期切换、拖拽缩放、图谱节点详情、数据健康中心、高级详情 HTML 转义。
+  - 后端关联：建立 golden API payload 验收样例，覆盖公司情报、行情、图谱、模拟反馈和来源健康；为后续后端模块化提供行为基线。
+  - 验收：新增验收脚本输出 local-only artifact；console error 为 0；失败时能定位页面、接口和断言。
+
+- `TODO` T-496 结论兑现与模拟反馈评分增强
+  - 对应：E5-US1, E6-US3, E7-US3；愿景扩展/生产化增强
+  - Owner：Research and AI Workflows
+  - 目标：让系统能回答“我的研究到底有没有用”。
+  - 交付：为 `AnalysisConclusion` 和 `SimulationFeedback` 增加兑现状态、事件窗口收益、相对基准收益、最大回撤、预测错误归因、人工复盘评分和下一步建议。
+  - 后端重构：抽取 `feedback_scoring` / `conclusion_realization` 领域模块；保持 paper-only、no-broker、no-auto-trading 边界集中可测。
+  - UI：公司情报和复盘反馈页展示“结论兑现卡片”。
+  - 验收：每条模拟反馈能回链到结论、行情表现、事件窗口和复盘判断；仍固定 `paper_only=true`。
+
+- `TODO` T-497 公司事件/关系可信度、去重与归并增强
+  - 对应：E3-US1, E5-US1, E7-US3；愿景扩展/生产化增强
+  - Owner：Data and Evidence
+  - 目标：提升公司事件和关系图谱可信度，减少重复和候选噪音。
+  - 交付：事件去重、关系候选归并、同义实体归并、来源优先级、置信度解释、人工复核后提升为可信关系。
+  - 后端重构：抽取 `company_quality` / `entity_resolution` 领域模块；研报观点不得直接提升为事实关系。
+  - UI：事件/关系复核队列显示“为什么重要、证据来源、建议动作”。
+  - 验收：重复事件/关系能合并；高级详情保留原始追溯；事实层和观点层边界不退化。
+
+- `TODO` T-498 前端模块化与 API 路由分组
+  - 对应：E7-US1, E8-US2, E9-US2；愿景扩展/生产化增强
+  - Owner：Product and UI, Platform and Quality
+  - 目标：降低 `app/static/index.html` 和 `app/api.py` 持续膨胀带来的回归风险。
+  - 前端交付：按 dashboard/company/graph/market/admin/helpers 分离静态前端模块；保持 `/ui` 路由和 DOM 契约兼容。
+  - 后端交付：拆分 API route group 注册表，降低 `ApiRouter._resolve` 的 400+ 路由集中维护风险；`dispatch`、权限、trace、错误格式不变。
+  - 验收：UI 静态检查和浏览器验收不退化；所有既有 API URL、method、payload 不变。
+
+- `TODO` T-499 非本机生产化准备包
+  - 对应：E2-US1, E2-US3, E6-US2, E6-US4, E9-US1；愿景扩展/生产化增强
+  - Owner：Governance, Security, and Compliance
+  - 目标：明确个人本机可用与组织级发布之间的差距。
+  - 交付：认证授权、密钥治理、备份恢复演练、数据授权审计、staging/prod artifact URI、监控告警、发布门禁的任务拆分与证据模板。
+  - 后端关联：梳理 local/staging/production 模式下 API 权限、trace、audit、secret、object store、search backend 的差异。
+  - 验收：不改变当前本机使用体验；非本机发布前置条件清晰，不把 local-only artifact 误标为 production evidence。
+
+- `TODO` T-500 SystemService 公司情报主线模块化
+  - 对应：E3-US4, E5-US1, E6-US4, E8-US2；愿景扩展/生产化增强
+  - Owner：Platform and Quality
+  - 目标：把 `SystemService` 从 3 万行级单体服务逐步拆成领域模块。
+  - 第一批抽取：company database、market data、research reports、graph intelligence、simulation feedback。
+  - 约束：保留 `SystemService` facade；不改 API schema；不做数据库迁移；不改变 UI 行为。
+  - 验收：每批抽取前后 golden API payload 不变；全量单测和 UI 验收通过。
+
+- `TODO` T-501 后端领域模块测试基线
+  - 对应：E8-US2, E9-US2；愿景扩展/生产化增强
+  - Owner：Platform and Quality
+  - 目标：在真正拆后端前先锁定行为。
+  - 交付：为公司情报、行情 K 线、知识图谱、研报结构化、模拟反馈、来源健康建立 focused regression。
+  - 验收：重构前后响应字段、边界标记、trace/audit、paper-only 约束一致。
+
+- `TODO` T-502 数据健康与调度 run 统一模型评估
+  - 对应：E3-US4, E8-US2；愿景扩展/生产化增强
+  - Owner：Data and Evidence, Platform and Quality
+  - 目标：评估是否需要把 ingestion job、company build run、package import run、cycle run、material inbox run 统一成 run summary/read model。
+  - 交付：先出 ADR，不直接迁移 schema；明确哪些 run 只需要视图聚合，哪些需要模型统一。
+  - 验收：ADR 能指导 T-493 数据健康中心实现，不引入破坏性迁移。
+
+- `TODO` T-503 服务层增长冻结规则
+  - 对应：E8-US2, E9-US2；愿景扩展/生产化增强
+  - Owner：PM / Release Coordination, Platform and Quality
+  - 目标：防止新功能继续直接堆进 `app/services.py`。
+  - 交付：更新后端开发规则：新业务默认进入领域模块；`SystemService` 只做代理、兼容和跨模块编排。
+  - 验收：`AGENTS.md` 或开发文档记录规则；后续任务 handoff 必须说明是否新增 `SystemService` 逻辑及原因。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

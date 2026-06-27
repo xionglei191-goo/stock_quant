@@ -443,6 +443,7 @@ def _daily_summary(
     insight = payloads.get("daily-insight-json", {})
     latency = payloads.get("latency-audit", {})
     latest_analysis = payloads.get("latest_analysis", {})
+    personal_intelligence = payloads.get("personal-intelligence-refresh", {})
     local_production = payloads.get("local-production-audit", {})
     project_completion = payloads.get("project-completion-audit", {})
 
@@ -486,6 +487,14 @@ def _daily_summary(
             "useful_evidence_sample_count": _int_value(quality_gates.get("useful_evidence_sample_count")),
             "quality_gate_failure_count": _int_value(quality_gates.get("failure_count")),
             "markdown_artifact": str(artifacts.get("daily-insight-md") or ""),
+        },
+        "personal_intelligence": {
+            "status": str(personal_intelligence.get("status") or ""),
+            "company_count": _int_value(personal_intelligence.get("company_count")),
+            "ready_count": _int_value(personal_intelligence.get("ready_count")),
+            "needs_attention_count": _int_value(personal_intelligence.get("needs_attention_count")),
+            "watchlist_symbols": personal_intelligence.get("watchlist_symbols") or [],
+            "artifact": str(artifacts.get("personal-intelligence-refresh") or ""),
         },
         "latency": {
             "status": str(latency.get("status") or ""),
@@ -932,6 +941,37 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
 
+    if not getattr(args, "skip_personal_intelligence", False):
+        personal_output = artifact("personal-intelligence-refresh")
+        command = [
+            sys.executable,
+            "scripts/personal_intelligence_refresh.py",
+            "--base-url",
+            args.base_url,
+            "--symbols",
+            getattr(args, "personal_intelligence_symbols", ""),
+            "--batch-size",
+            str(getattr(args, "personal_intelligence_batch_size", 20)),
+            "--report-match-limit",
+            str(getattr(args, "personal_intelligence_report_match_limit", 20)),
+            "--structure-report-limit",
+            str(getattr(args, "personal_intelligence_structure_report_limit", 5)),
+            "--timeout",
+            str(args.api_timeout_seconds),
+            "--output",
+            str(personal_output),
+        ]
+        if getattr(args, "personal_intelligence_execute", False):
+            command.append("--execute")
+        steps.append(
+            _run_command(
+                "personal_intelligence_refresh",
+                command,
+                timeout=getattr(args, "personal_intelligence_timeout_seconds", args.analysis_timeout_seconds),
+                allow_failure=getattr(args, "allow_personal_intelligence_failure", True),
+            )
+        )
+
     insight_output = artifact("daily-insight-json")
     insight_md_output = artifact("daily-insight-md", ".md")
     insight_started = datetime.now(timezone.utc)
@@ -1116,6 +1156,14 @@ def main() -> None:
     parser.add_argument("--skip-latest-analysis", action="store_true")
     parser.add_argument("--allow-latest-analysis-failure", action="store_true", help="Continue daily insight and audits if the heavier latest_analysis_run step times out or fails.")
     parser.add_argument("--latest-analysis-semantic-timeout-seconds", type=float, default=8.0)
+    parser.add_argument("--skip-personal-intelligence", action="store_true", help="Skip personal watchlist company intelligence refresh.")
+    parser.add_argument("--allow-personal-intelligence-failure", action="store_true", help="Keep the daily run going if the personal watchlist refresh fails.")
+    parser.add_argument("--personal-intelligence-execute", action="store_true", help="Persist company intelligence refresh results for the personal watchlist.")
+    parser.add_argument("--personal-intelligence-symbols", default="AAPL,NVDA,MSFT,300750,600519")
+    parser.add_argument("--personal-intelligence-batch-size", type=int, default=5)
+    parser.add_argument("--personal-intelligence-report-match-limit", type=int, default=100)
+    parser.add_argument("--personal-intelligence-structure-report-limit", type=int, default=20)
+    parser.add_argument("--personal-intelligence-timeout-seconds", type=int, default=900)
     parser.add_argument("--skip-local-production-audit", action="store_true")
     parser.add_argument("--skip-project-completion-audit", action="store_true")
     parser.add_argument("--run-project-completion-audit", action="store_true", help="Run the heavier project completion audit. Disabled by default in daily refresh because it imports UI/PIL audit dependencies.")

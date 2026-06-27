@@ -995,6 +995,7 @@ class ApiRouter:
                 run_date = str(pointer.get("run_date") or "")
                 latest_analysis_path = output_dir / f"latest-analysis-{run_date}" / "latest-analysis.json" if run_date else Path()
                 daily_insight_path = output_dir / f"daily-insight-json-{run_date}.json" if run_date else Path()
+                personal_intelligence_path = output_dir / f"personal-intelligence-refresh-{run_date}.json" if run_date else Path()
                 if pipeline_output.exists():
                     daily_run["pipeline"] = json.loads(pipeline_output.read_text(encoding="utf-8"))
                 if latest_analysis_path.exists():
@@ -1002,9 +1003,20 @@ class ApiRouter:
                 if daily_insight_path.exists():
                     daily_run["daily_insight_path"] = daily_insight_path
                     daily_run["daily_insight"] = json.loads(daily_insight_path.read_text(encoding="utf-8"))
+                if personal_intelligence_path.exists():
+                    daily_run["personal_intelligence_path"] = personal_intelligence_path
+                    daily_run["personal_intelligence"] = json.loads(personal_intelligence_path.read_text(encoding="utf-8"))
                 daily_run["pointer"] = pointer
             except Exception:
                 daily_run = {}
+        if not daily_run.get("personal_intelligence"):
+            personal_fallback = Path("artifacts/personal-intelligence/latest.json")
+            if personal_fallback.exists():
+                try:
+                    daily_run["personal_intelligence_path"] = personal_fallback
+                    daily_run["personal_intelligence"] = json.loads(personal_fallback.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
         candidates = [
             daily_run.get("latest_analysis_path") if isinstance(daily_run.get("latest_analysis_path"), Path) else None,
             Path("artifacts/latest-analysis/latest-analysis.json"),
@@ -1133,12 +1145,14 @@ class ApiRouter:
             }
 
         daily_insight = daily_run.get("daily_insight") if isinstance(daily_run.get("daily_insight"), dict) else {}
+        personal_intelligence = daily_run.get("personal_intelligence") if isinstance(daily_run.get("personal_intelligence"), dict) else {}
         pipeline = daily_run.get("pipeline") if isinstance(daily_run.get("pipeline"), dict) else {}
         return {
             "status": payload.get("status") or "available",
             "artifact_path": str(artifact_path),
             "daily_pipeline_artifact_path": str((daily_run.get("pointer") or {}).get("pipeline_output") or ""),
             "daily_insight_artifact_path": str(daily_run.get("daily_insight_path") or ""),
+            "personal_intelligence_artifact_path": str(daily_run.get("personal_intelligence_path") or ""),
             "generated_at": payload.get("generated_at") or "",
             "base_url": payload.get("base_url") or "",
             "latest_market_date": analysis.get("latest_market_date") or analysis.get("window", {}).get("end_date") or "",
@@ -1181,6 +1195,7 @@ class ApiRouter:
                 "pipeline_status": pipeline.get("status") or "",
                 "pipeline_effective_end_dates": pipeline.get("effective_end_dates") or {},
             },
+            "personal_intelligence": personal_intelligence,
             "business_acceptance": acceptance,
             "board_pack": analysis.get("board_pack") or {},
         }
