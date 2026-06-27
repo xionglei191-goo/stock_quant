@@ -680,12 +680,14 @@
   - **已完成（本轮）**：`scripts/ui_static_check.py` 增加 UI 模块 scaffold 契约和 `.mjs` 语法检查；新增测试确保路由表不再内联在 `_resolve` 中。
   - 验收：UI 静态检查和浏览器验收不退化；所有既有 API URL、method、payload 不变。
 
-- `TODO` T-499 非本机生产化准备包
+- `DONE` T-499 非本机生产化准备包
   - 对应：E2-US1, E2-US3, E6-US2, E6-US4, E9-US1；愿景扩展/生产化增强
   - Owner：Governance, Security, and Compliance
   - 目标：明确个人本机可用与组织级发布之间的差距。
   - 交付：认证授权、密钥治理、备份恢复演练、数据授权审计、staging/prod artifact URI、监控告警、发布门禁的任务拆分与证据模板。
   - 后端关联：梳理 local/staging/production 模式下 API 权限、trace、audit、secret、object store、search backend 的差异。
+  - **已完成（本轮）**：新增 `docs/non-local-production-readiness-package.md`，用部署模式矩阵和证据模板明确本机个人使用、非本机 staging 和 production 的认证、权限、密钥、状态库、对象存储、检索/图谱、trace/audit、监控和 artifact URI 差异。
+  - **已完成（本轮）**：新增 `scripts/non_local_production_readiness_check.py`，校验 T-499 准备包必须声明 local-first、paper-only、no-broker/no-auto-trading、拒绝 local-only evidence、必备证据字段和发布门禁命令。
   - 验收：不改变当前本机使用体验；非本机发布前置条件清晰，不把 local-only artifact 误标为 production evidence。
 
 - `TODO` T-500 SystemService 公司情报主线模块化

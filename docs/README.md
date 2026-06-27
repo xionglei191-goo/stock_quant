@@ -33,6 +33,7 @@
 - [systemservice-modularization-adr.md](./systemservice-modularization-adr.md): `SystemService` 模块化拆分 ADR 与迁移顺序
 - [data-health-run-summary-adr.md](./data-health-run-summary-adr.md): 数据健康与调度 run 统一摘要 read model ADR，指导 T-493/T-502 先聚合视图、不迁移 schema
 - [security-boundary-modes-adr.md](./security-boundary-modes-adr.md): 本机/非本机访问控制边界与认证模式 ADR
+- [non-local-production-readiness-package.md](./non-local-production-readiness-package.md): 非本机组织级发布准备包，包含认证、密钥、备份、来源授权、监控、证据 URI 和发布门禁模板
 - [artifact-governance.md](./artifact-governance.md): 产物提交规则与本机 CI 质量门
 - [production-runbook.md](./production-runbook.md): 备份、恢复、部署和非本机发布运维附录
 - [portfolio-construction-spec.md](./portfolio-construction-spec.md): 纸面组合和风险诊断规格；后续归入模拟反馈附录
