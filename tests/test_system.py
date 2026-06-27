@@ -18175,6 +18175,19 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(result["required_functions"], len(REQUIRED_JS_FUNCTIONS))
         self.assertEqual(result["node_check"], "skipped")
 
+    def test_api_route_table_is_registered_outside_router_resolve(self) -> None:
+        from app.api_routes import build_route_table
+
+        routes = build_route_table(self.router)
+        self.assertGreater(len(routes), 250)
+        route_pairs = {(method, pattern) for method, pattern, _handler in routes}
+        self.assertIn(("POST", r"^/api/company-database/quality/reconcile$"), route_pairs)
+        self.assertIn(("POST", r"^/api/simulation-feedback/performance/update$"), route_pairs)
+        self.assertIn(("GET", r"^/api/company-intelligence/(?P<symbol>[^/]+)$"), route_pairs)
+        api_source = Path("app/api.py").read_text(encoding="utf-8")
+        self.assertIn("build_route_table(self)", api_source)
+        self.assertNotIn('routes: list[tuple[str, str, Callable[..., Any]]] = [', api_source)
+
     def test_server_import_does_not_auto_load_dotenv(self) -> None:
         import app.server as server_module
 

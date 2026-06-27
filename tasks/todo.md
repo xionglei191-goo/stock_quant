@@ -669,12 +669,15 @@
   - **已完成（本轮）**：focused regression 锁定重复事件归并、关系同义实体归并、候选复核推荐解释字段、研报/观点来源降权和本地 no-live-trading 边界。
   - 验收：重复事件/关系能合并；高级详情保留原始追溯；事实层和观点层边界不退化。
 
-- `TODO` T-498 前端模块化与 API 路由分组
+- `DONE` T-498 前端模块化与 API 路由分组
   - 对应：E7-US1, E8-US2, E9-US2；愿景扩展/生产化增强
   - Owner：Product and UI, Platform and Quality
   - 目标：降低 `app/static/index.html` 和 `app/api.py` 持续膨胀带来的回归风险。
   - 前端交付：按 dashboard/company/graph/market/admin/helpers 分离静态前端模块；保持 `/ui` 路由和 DOM 契约兼容。
   - 后端交付：拆分 API route group 注册表，降低 `ApiRouter._resolve` 的 400+ 路由集中维护风险；`dispatch`、权限、trace、错误格式不变。
+  - **已完成（本轮）**：新增 `app/api_routes.py`，将 `ApiRouter._resolve` 的巨型路由表迁移为 `build_route_table(owner)`，`dispatch`、鉴权、trace、错误格式和全部既有 API URL/method/payload 保持不变。
+  - **已完成（本轮）**：新增 `app/static/ui_modules/manifest.json` 与 dashboard/company/graph/market/admin/helpers `.mjs` scaffold，记录前端拆分边界；当前 `runtime_loaded=false`，不改变 `/ui` inline 运行时。
+  - **已完成（本轮）**：`scripts/ui_static_check.py` 增加 UI 模块 scaffold 契约和 `.mjs` 语法检查；新增测试确保路由表不再内联在 `_resolve` 中。
   - 验收：UI 静态检查和浏览器验收不退化；所有既有 API URL、method、payload 不变。
 
 - `TODO` T-499 非本机生产化准备包

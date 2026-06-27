@@ -8,6 +8,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HTML_PATH = ROOT / "app" / "static" / "index.html"
+UI_MODULES_DIR = ROOT / "app" / "static" / "ui_modules"
+
+REQUIRED_UI_MODULES = [
+    "dashboard",
+    "company",
+    "graph",
+    "market",
+    "admin",
+    "helpers",
+]
 
 REQUIRED_NAV_LABELS = [
     "总览",
@@ -617,6 +627,7 @@ def validate_ui_html(path: str | Path = HTML_PATH, *, run_node: bool = True) -> 
             script_check = "passed"
         finally:
             script_path.unlink(missing_ok=True)
+    module_result = validate_ui_module_scaffold(run_node=run_node)
     if any(failures.values()):
         raise AssertionError(json.dumps(failures, ensure_ascii=False, sort_keys=True))
     return {
@@ -627,6 +638,7 @@ def validate_ui_html(path: str | Path = HTML_PATH, *, run_node: bool = True) -> 
         "required_ids": len(REQUIRED_IDS),
         "required_functions": len(REQUIRED_JS_FUNCTIONS),
         "interaction_markers": len(REQUIRED_INTERACTION_MARKERS),
+        "ui_module_scaffold": module_result,
         "node_check": script_check,
     }
 
@@ -635,6 +647,53 @@ def _extract_script(html: str) -> str:
     start = html.index("<script>") + len("<script>")
     end = html.index("</script>", start)
     return html[start:end]
+
+
+def validate_ui_module_scaffold(*, run_node: bool = True) -> dict[str, object]:
+    manifest_path = UI_MODULES_DIR / "manifest.json"
+    missing_files = [str(manifest_path.relative_to(ROOT))] if not manifest_path.exists() else []
+    missing_files.extend(
+        str((UI_MODULES_DIR / f"{module_name}.mjs").relative_to(ROOT))
+        for module_name in REQUIRED_UI_MODULES
+        if not (UI_MODULES_DIR / f"{module_name}.mjs").exists()
+    )
+    if missing_files:
+        raise AssertionError(json.dumps({"ui_modules": missing_files}, ensure_ascii=False, sort_keys=True))
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_domains = manifest.get("module_domains", [])
+    missing_domains = [module_name for module_name in REQUIRED_UI_MODULES if module_name not in manifest_domains]
+    if manifest.get("runtime_loaded") is not False or missing_domains:
+        raise AssertionError(
+            json.dumps(
+                {
+                    "ui_module_manifest": {
+                        "runtime_loaded": manifest.get("runtime_loaded"),
+                        "missing_domains": missing_domains,
+                    }
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+
+    module_node_check = "skipped"
+    if run_node and shutil.which("node"):
+        for module_name in REQUIRED_UI_MODULES:
+            subprocess.run(
+                ["node", "--check", str(UI_MODULES_DIR / f"{module_name}.mjs")],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        module_node_check = "passed"
+
+    return {
+        "manifest": str(manifest_path.relative_to(ROOT)),
+        "modules": len(REQUIRED_UI_MODULES),
+        "runtime_loaded": manifest.get("runtime_loaded"),
+        "node_check": module_node_check,
+    }
 
 
 def main() -> None:
