@@ -31,6 +31,7 @@ The code layer is complete for the remaining productionization tasks, but non-lo
 
 - `scripts/production_evidence_owner_packets.py` generates JSON and Markdown owner packets.
 - `docs/production-evidence-owner-packets.md` lists 6 owner groups, 17 external evidence tasks, and 80 required artifact fields.
+- `docs/production-evidence-task-packets/` contains one agent/issue packet per external evidence task.
 - Tests validate owner grouping and output files.
 - Docs and todo notes point future agents to the packet.
 
@@ -78,6 +79,7 @@ The code layer is complete for the remaining productionization tasks, but non-lo
 
 - [x] Owner packet generator added.
 - [x] Owner-readable Markdown packet generated.
+- [x] One task packet per external evidence task generated.
 - [x] Test coverage added.
 - [x] Docs index updated.
 - [x] Todo notes updated without changing external-evidence-blocked tasks to DONE.
@@ -85,6 +87,7 @@ The code layer is complete for the remaining productionization tasks, but non-lo
 ## Evidence
 
 - `docs/production-evidence-owner-packets.md`: owner-readable collection instructions.
+- `docs/production-evidence-task-packets/`: task-level agent/issue packets.
 - `scripts/production_evidence_owner_packets.py`: packet generator and validator.
 - `tests/test_system.py`: focused owner-packet regression.
 

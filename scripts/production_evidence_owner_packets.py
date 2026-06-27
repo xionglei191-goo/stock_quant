@@ -131,6 +131,86 @@ def render_owner_packets_markdown(packet: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_task_packet_markdown(task: Mapping[str, Any], *, owner_role: str) -> str:
+    task_id = str(task.get("task_id", ""))
+    fields = [str(item) for item in task.get("artifact_fields", [])]
+    blockers = [str(item) for item in task.get("external_evidence_blockers", [])]
+    lines = [
+        f"# Production Evidence Task Packet: {task_id}",
+        "",
+        "- Status: blocked_external_evidence",
+        f"- Owner role: {owner_role}",
+        "- Owner group: PM / Release Coordination",
+        "- Last updated: 2026-06-27",
+        f"- Related task: {task_id}",
+        "- Scope: collect real external staging/production evidence for this task",
+        "- Non-goals: local-only release approval, generating or fabricating evidence, broker integration, automatic trading",
+        "",
+        "## Objective",
+        "",
+        f"Collect and archive the external evidence required to unblock `{task_id}` for non-local production closure.",
+        "",
+        "## Readiness Endpoint",
+        "",
+        f"- `{task.get('readiness_endpoint', '')}`",
+        "",
+        "## External Blockers",
+        "",
+        *[f"- {item}" for item in blockers],
+        "",
+        "## Required Artifact Fields",
+        "",
+        *[f"- `{field}`" for field in fields],
+        "",
+        "## URI Template",
+        "",
+    ]
+    template = task.get("artifact_uri_template", {})
+    if isinstance(template, Mapping):
+        for field in fields:
+            lines.append(f"- `{field}`: `{template.get(field, '')}`")
+    lines.extend(
+        [
+            "",
+            "## Acceptance",
+            "",
+            "- Every URI is a concrete external staging/production archive URI.",
+            "- No URI is local-only, demo, localhost, `file://`, `local://`, or `artifact://staging-local`.",
+            "- Artifact inventory records sha256, size, environment, producer, owner, retention, and immutable/object-lock metadata.",
+            "- The filled evidence plan passes `scripts/production_evidence_plan_check.py --require-filled-uris`.",
+            "- The strict release gate passes before any task status is changed to DONE.",
+            "",
+            "## Commands",
+            "",
+            "```bash",
+            "python3 scripts/production_evidence_plan_check.py artifacts/production-evidence-collection-plan.json --require-filled-uris",
+            "python3 scripts/production_artifact_inventory_check.py artifacts/production-artifact-inventory.json --plan artifacts/production-evidence-collection-plan.json --evidence-package artifacts/readiness-evidence-package.json --manifest artifacts/production-closure-manifest.json",
+            "python3 scripts/production_release_gate.py --plan artifacts/production-evidence-collection-plan.json --evidence-package artifacts/readiness-evidence-package.json --artifact-inventory artifacts/production-artifact-inventory.json --artifact-bundle-root artifacts/production-evidence-bundle --manifest-output artifacts/production-closure-manifest.json",
+            "```",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def write_task_packets(packet: Mapping[str, Any], output_dir: str | Path) -> list[str]:
+    target = Path(output_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    for owner in packet.get("owners", []):
+        if not isinstance(owner, Mapping):
+            continue
+        owner_role = str(owner.get("owner_role", "未分配"))
+        for task in owner.get("tasks", []):
+            if not isinstance(task, Mapping):
+                continue
+            task_id = str(task.get("task_id", "")).lower()
+            safe_task_id = task_id.replace("_", "-")
+            path = target / f"{safe_task_id}-production-evidence.md"
+            _atomic_write_text(path, render_task_packet_markdown(task, owner_role=owner_role))
+            written.append(str(path))
+    return written
+
+
 def validate_owner_packets(packet: Mapping[str, Any]) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
 
@@ -178,6 +258,7 @@ def main() -> None:
     parser.add_argument("plan_json", help="Production evidence collection plan JSON.")
     parser.add_argument("--output-json", default="", help="Optional output JSON path for the owner packets.")
     parser.add_argument("--output-md", default="", help="Optional output Markdown path for owner-readable packets.")
+    parser.add_argument("--output-dir", default="", help="Optional directory for one Markdown packet per task.")
     args = parser.parse_args()
     plan = json.loads(Path(args.plan_json).read_text(encoding="utf-8"))
     packet = build_owner_packets(plan)
@@ -187,7 +268,12 @@ def main() -> None:
         _atomic_write_text(args.output_json, rendered_json + "\n")
     if args.output_md:
         _atomic_write_text(args.output_md, render_owner_packets_markdown(packet))
+    written_task_packets: list[str] = []
+    if args.output_dir:
+        written_task_packets = write_task_packets(packet, args.output_dir)
     print(json.dumps(validation, ensure_ascii=False, indent=2, sort_keys=True))
+    if written_task_packets:
+        print(json.dumps({"task_packet_count": len(written_task_packets), "task_packet_dir": args.output_dir}, ensure_ascii=False, indent=2, sort_keys=True))
     if not validation["passed"]:
         raise SystemExit(1)
 

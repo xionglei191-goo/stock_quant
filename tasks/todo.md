@@ -1301,4 +1301,4 @@
   - T-406A 热点检索召回增强已落地；T-416 补充 HTTP connector 框架已落地；T-417 增量调度框架已落地
 - M9 `BLOCKED`：生产基础设施与治理代码层已收口；本机 production-like 栈已通过，T-419 ~ T-421 的非本机组织级证据仍作为未来增强
 - M10 `DONE`：愿景验收和上线闸门，T-422 本机 staging / 本机长期使用 gate 已 `ready`；非本机组织级生产发布仍进入人工签批和外部证据归档阶段
-- 非本机证据分派：`scripts/production_evidence_owner_packets.py` 已把 T-402/T-404/T-405/T-406/T-406A/T-407/T-408/T-409/T-410/T-411/T-412/T-414/T-416/T-418/T-419/T-420/T-421 的外部证据阻塞项按 6 个 owner 分组，生成 17 个任务、80 个 artifact 字段的执行包 `docs/production-evidence-owner-packets.md`；该包只是采集指令，不是 release evidence。
+- 非本机证据分派：`scripts/production_evidence_owner_packets.py` 已把 T-402/T-404/T-405/T-406/T-406A/T-407/T-408/T-409/T-410/T-411/T-412/T-414/T-416/T-418/T-419/T-420/T-421 的外部证据阻塞项按 6 个 owner 分组，生成 17 个任务、80 个 artifact 字段的执行包 `docs/production-evidence-owner-packets.md`；并在 `docs/production-evidence-task-packets/` 生成每任务一份 agent/issue 分派包。该包只是采集指令，不是 release evidence。

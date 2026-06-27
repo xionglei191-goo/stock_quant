@@ -18971,6 +18971,7 @@ class SystemServiceTests(unittest.TestCase):
             plan_path = Path(tmpdir) / "plan.json"
             output_json = Path(tmpdir) / "owner-packets.json"
             output_md = Path(tmpdir) / "owner-packets.md"
+            output_dir = Path(tmpdir) / "task-packets"
             plan_path.write_text(json.dumps(plan), encoding="utf-8")
             result = subprocess.run(
                 [
@@ -18981,14 +18982,19 @@ class SystemServiceTests(unittest.TestCase):
                     str(output_json),
                     "--output-md",
                     str(output_md),
+                    "--output-dir",
+                    str(output_dir),
                 ],
                 check=True,
                 capture_output=True,
                 text=True,
             )
             self.assertIn('"status": "passed"', result.stdout)
+            self.assertIn('"task_packet_count": 17', result.stdout)
             self.assertTrue(output_json.exists())
             self.assertTrue(output_md.exists())
+            self.assertEqual(len(list(output_dir.glob("*.md"))), 17)
+            self.assertIn("T-421", (output_dir / "t-421-production-evidence.md").read_text(encoding="utf-8"))
             self.assertFalse((output_json.parent / f".{output_json.name}.tmp").exists())
             self.assertFalse((output_md.parent / f".{output_md.name}.tmp").exists())
 

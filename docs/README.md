@@ -35,6 +35,7 @@
 - [security-boundary-modes-adr.md](./security-boundary-modes-adr.md): 本机/非本机访问控制边界与认证模式 ADR
 - [non-local-production-readiness-package.md](./non-local-production-readiness-package.md): 非本机组织级发布准备包，包含认证、密钥、备份、来源授权、监控、证据 URI 和发布门禁模板
 - [production-evidence-owner-packets.md](./production-evidence-owner-packets.md): 非本机外部证据 owner 分派包，按角色列出 T-402 至 T-421 的真实 artifact URI、readiness endpoint 和发布门禁要求
+- [production-evidence-task-packets/](./production-evidence-task-packets/): 每个外部证据阻塞任务一份 agent/issue 分派包，用于逐项领取、上传真实外部证据并回填 URI
 - [artifact-governance.md](./artifact-governance.md): 产物提交规则与本机 CI 质量门
 - [production-runbook.md](./production-runbook.md): 备份、恢复、部署和非本机发布运维附录
 - [portfolio-construction-spec.md](./portfolio-construction-spec.md): 纸面组合和风险诊断规格；后续归入模拟反馈附录
