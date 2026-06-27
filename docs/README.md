@@ -31,6 +31,7 @@
 - [postgresql-schema.sql](./postgresql-schema.sql): PostgreSQL 状态库基线 schema
 - [postgresql-migrations.md](./postgresql-migrations.md): PostgreSQL schema 迁移、dry-run、迁移记录和回滚策略
 - [systemservice-modularization-adr.md](./systemservice-modularization-adr.md): `SystemService` 模块化拆分 ADR 与迁移顺序
+- [data-health-run-summary-adr.md](./data-health-run-summary-adr.md): 数据健康与调度 run 统一摘要 read model ADR，指导 T-493/T-502 先聚合视图、不迁移 schema
 - [security-boundary-modes-adr.md](./security-boundary-modes-adr.md): 本机/非本机访问控制边界与认证模式 ADR
 - [artifact-governance.md](./artifact-governance.md): 产物提交规则与本机 CI 质量门
 - [production-runbook.md](./production-runbook.md): 备份、恢复、部署和非本机发布运维附录

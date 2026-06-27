@@ -386,6 +386,18 @@ class SystemServiceTests(unittest.TestCase):
         self.addCleanup(temp_dir.cleanup)
         self.service.object_store = LocalObjectStore(Path(temp_dir.name))
 
+    def _assert_api_envelope(self, response, *, success: bool = True, status_code: int = 200) -> None:
+        self.assertEqual(response.success, success, response.error)
+        self.assertEqual(response.status_code, status_code)
+        self.assertTrue(response.trace_id.startswith("trace_"))
+        if success:
+            self.assertIsNone(response.error)
+            self.assertIsNotNone(response.data)
+        else:
+            self.assertIsNone(response.data)
+            self.assertIsInstance(response.error, dict)
+            self.assertIn("type", response.error)
+
     def test_company_intelligence_symbol_view_handles_spcx_before_and_after_research(self) -> None:
         empty = self.router.dispatch("GET", "/api/company-intelligence/SPCX", {"limit": 10}, role="analyst")
         self.assertTrue(empty.success, empty.error)
@@ -1011,6 +1023,253 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("HAS_COMPANY_EVENT", edge_types)
         self.assertIn("REPORT_HAS_VIEWPOINT", edge_types)
         self.assertIn("FEEDBACK_FOR_CONCLUSION", edge_types)
+
+    def test_golden_api_behavior_baseline_for_backend_domain_refactor(self) -> None:
+        seeded = self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
+        self._assert_api_envelope(seeded)
+        self.assertIn("public_eod_market_data", {item["source_id"] for item in seeded.data["sources"]})
+
+        market = self.router.dispatch(
+            "POST",
+            "/api/market-data/points",
+            {
+                "data_id": "md_golden_demo",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "as_of_date": "2026-06-24",
+                "data_type": "eod",
+                "market": "A",
+                "currency": "CNY",
+                "open": 9.8,
+                "high": 10.6,
+                "low": 9.7,
+                "close": 10.5,
+                "adjusted_close": 10.5,
+                "volume": 123456,
+            },
+            role="data_engineer",
+        )
+        self._assert_api_envelope(market)
+
+        profile = self.router.dispatch(
+            "POST",
+            "/api/company-profiles",
+            {"issuer_id": "issuer_001", "business_summary": "Demo supplier", "products": ["components"]},
+            role="analyst",
+        )
+        self._assert_api_envelope(profile)
+        event = self.router.dispatch(
+            "POST",
+            "/api/company-events",
+            {
+                "event_id": "ce_golden_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "event_type": "official_disclosure",
+                "title": "Golden official update",
+                "summary": "Official disclosure updated revenue visibility.",
+                "occurred_at": "2026-06-24T00:00:00+00:00",
+                "source_ids": ["src_sec"],
+                "document_ids": ["doc_golden"],
+                "evidence_ids": ["ev_golden"],
+                "confidence": 0.9,
+                "fact_status": "verified",
+                "review_status": "auto_generated",
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self._assert_api_envelope(event)
+        relationship = self.router.dispatch(
+            "POST",
+            "/api/company-relationships",
+            {
+                "relationship_id": "rel_golden_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "company",
+                "object_id": "customer_golden",
+                "relationship_type": "customer_candidate",
+                "source_ids": ["src_sec"],
+                "document_ids": ["doc_golden"],
+                "evidence_ids": ["ev_golden_rel"],
+                "confidence": 0.62,
+                "relationship_status": "unknown",
+                "review_status": "needs_review",
+                "metadata": {"entity_name": "Golden Customer"},
+            },
+            actor="data",
+            role="data_engineer",
+        )
+        self._assert_api_envelope(relationship)
+
+        report = self.router.dispatch(
+            "POST",
+            "/api/research-reports/structured",
+            {
+                "research_report_id": "rr_golden_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "title": "Golden Demo report",
+                "institution": "Golden Research",
+                "published_at": "2026-06-24",
+                "rating": "watch",
+                "target_price": 12.5,
+                "rights_boundary": "opinion_only_not_fact_source",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self._assert_api_envelope(report)
+        viewpoint = self.router.dispatch(
+            "POST",
+            "/api/research-report-viewpoints",
+            {
+                "viewpoint_id": "vp_golden_demo",
+                "research_report_id": "rr_golden_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "viewpoint_type": "rating",
+                "rating": "watch",
+                "target_price": 12.5,
+                "summary": "Opinion-only report view.",
+                "confidence": 0.6,
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self._assert_api_envelope(viewpoint)
+        conclusion = self.router.dispatch(
+            "POST",
+            "/api/analysis-conclusions",
+            {
+                "analysis_conclusion_id": "ac_golden_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "title": "Golden watch conclusion",
+                "conclusion": "Track official disclosure and report opinion as separate layers.",
+                "supporting_evidence_ids": ["ev_golden"],
+                "related_event_ids": ["ce_golden_demo"],
+                "related_relationship_ids": ["rel_golden_demo"],
+                "related_viewpoint_ids": ["vp_golden_demo"],
+                "status": "active",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self._assert_api_envelope(conclusion)
+        feedback = self.router.dispatch(
+            "POST",
+            "/api/simulation-feedback",
+            {
+                "simulation_feedback_id": "sf_golden_demo",
+                "analysis_conclusion_id": "ac_golden_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "feedback_type": "watch_only",
+                "simulated_action": "watch",
+                "entry_price": 10.0,
+                "performance": {"absolute_return": 0.05},
+                "paper_only": True,
+                "live_execution_allowed": False,
+                "broker_connected": False,
+            },
+            actor="analyst",
+            role="analyst",
+        )
+        self._assert_api_envelope(feedback)
+        self.assertTrue(feedback.data["paper_only"])
+        self.assertFalse(feedback.data["live_execution_allowed"])
+
+        intelligence = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
+        self._assert_api_envelope(intelligence)
+        self.assertEqual(intelligence.data["status"], "available")
+        self.assertEqual(intelligence.data["section_counts"]["company_profiles"], 1)
+        self.assertEqual(intelligence.data["section_counts"]["company_events"], 1)
+        self.assertEqual(intelligence.data["section_counts"]["company_relationships"], 1)
+        self.assertEqual(intelligence.data["section_counts"]["structured_research_reports"], 1)
+        self.assertEqual(intelligence.data["section_counts"]["simulation_feedback_records"], 1)
+        self.assertFalse(intelligence.data["simulation_feedback"]["live_execution_allowed"])
+        self.assertFalse(intelligence.data["completeness_verdict"]["source_policy_summary"]["research_reports_can_complete_fact_fields"])
+
+        listed_market = self.router.dispatch("GET", "/api/market-data", {"security_id": "sec_001"}, role="CEO")
+        self._assert_api_envelope(listed_market)
+        market_row = listed_market.data["market_data"][0]
+        self.assertEqual(market_row["data_id"], "md_golden_demo")
+        self.assertEqual(market_row["security_id"], "sec_001")
+        self.assertEqual(market_row["source_id"], "public_eod_market_data")
+        self.assertEqual(market_row["market"], "A")
+        self.assertEqual(market_row["as_of_date"], "2026-06-24")
+        self.assertEqual(market_row["data_type"], "eod")
+        self.assertEqual(market_row["close"], 10.5)
+        self.assertEqual(market_row["adjusted_close"], 10.5)
+        self.assertEqual(market_row["volume"], 123456)
+        self.assertEqual(market_row["currency"], "CNY")
+
+        graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_001"}, role="analyst")
+        self._assert_api_envelope(graph)
+        self.assertTrue(any(item["event_id"] == "ce_golden_demo" for item in graph.data["company_events"]))
+        self.assertTrue(any(item["relationship_id"] == "rel_golden_demo" for item in graph.data["company_relationships"]))
+        self.assertTrue(any(item["viewpoint_id"] == "vp_golden_demo" for item in graph.data["report_viewpoints"]))
+        self.assertTrue(any(item["simulation_feedback_id"] == "sf_golden_demo" for item in graph.data["simulation_feedback"]))
+        self.assertTrue({"HAS_COMPANY_EVENT", "REPORT_HAS_VIEWPOINT", "FEEDBACK_FOR_CONCLUSION"}.issubset({item["type"] for item in graph.data["edges"]}))
+
+        reports = self.router.dispatch("GET", "/api/research-reports/structured", {"issuer_id": "issuer_001"}, role="analyst")
+        self._assert_api_envelope(reports)
+        report_row = next(item for item in reports.data["reports"] if item["research_report_id"] == "rr_golden_demo")
+        self.assertEqual(report_row["issuer_id"], "issuer_001")
+        self.assertEqual(report_row["security_id"], "sec_001")
+        self.assertEqual(report_row["rating"], "watch")
+        self.assertEqual(report_row["target_price"], 12.5)
+        self.assertEqual(report_row["rights_boundary"], "opinion_only_not_fact_source")
+
+        feedback_list = self.router.dispatch("GET", "/api/simulation-feedback", {"issuer_id": "issuer_001"}, role="analyst")
+        self._assert_api_envelope(feedback_list)
+        feedback_row = next(item for item in feedback_list.data["feedback"] if item["simulation_feedback_id"] == "sf_golden_demo")
+        self.assertEqual(feedback_row["feedback_type"], "watch_only")
+        self.assertEqual(feedback_row["simulated_action"], "watch")
+        self.assertTrue(feedback_row["paper_only"])
+        self.assertFalse(feedback_row["live_execution_allowed"])
+        self.assertEqual(feedback_row["performance"]["absolute_return"], 0.05)
+
+        rejected_live = self.router.dispatch(
+            "POST",
+            "/api/simulation-feedback",
+            {
+                "analysis_conclusion_id": "ac_golden_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "live_execution_allowed": True,
+            },
+            role="analyst",
+        )
+        self._assert_api_envelope(rejected_live, success=False, status_code=422)
+        self.assertEqual(rejected_live.error["type"], "validation_error")
+
+        performance = self.router.dispatch("POST", "/api/simulation-feedback/performance/update", {"symbols": ["DEMO"]}, role="analyst")
+        self._assert_api_envelope(performance)
+        self.assertEqual(performance.data["status"], "dry_run")
+        self.assertEqual(performance.data["feedback_planned"], 1)
+        self.assertTrue(performance.data["paper_only"])
+        self.assertFalse(performance.data["live_execution_allowed"])
+
+        quality = self.router.dispatch("POST", "/api/company-database/quality/reconcile", {"symbols": ["DEMO"], "merge_duplicates": False}, role="data_engineer")
+        self._assert_api_envelope(quality)
+        self.assertEqual(quality.data["status"], "dry_run")
+        self.assertEqual(quality.data["rules"]["source_quality"], "local_provenance_score_not_investment_rating")
+
+        governance = self.router.dispatch("GET", "/api/governance/sources/report", {}, role="risk_compliance")
+        self._assert_api_envelope(governance)
+        source_rows = {item["source_id"]: item for item in governance.data["sources"]}
+        self.assertTrue(source_rows["public_eod_market_data"]["automation_ready"])
+        self.assertEqual(source_rows["public_eod_market_data"]["gaps"], [])
+        self.assertFalse(source_rows["manual_reference_transcripts"]["automation_ready"])
+
+        denied = self.router.dispatch("POST", "/api/company-database/quality/reconcile", {"symbols": ["DEMO"]}, role="viewer")
+        self._assert_api_envelope(denied, success=False, status_code=403)
+        self.assertEqual(denied.error["type"], "permission_denied")
 
     def test_company_database_builder_materializes_profiles_and_binds_reports(self) -> None:
         self.service.store.research_reports["rr_demo_unbound"] = ResearchReportAsset(

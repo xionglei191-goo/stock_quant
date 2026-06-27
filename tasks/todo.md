@@ -675,18 +675,22 @@
   - 约束：保留 `SystemService` facade；不改 API schema；不做数据库迁移；不改变 UI 行为。
   - 验收：每批抽取前后 golden API payload 不变；全量单测和 UI 验收通过。
 
-- `TODO` T-501 后端领域模块测试基线
+- `DONE` T-501 后端领域模块测试基线
   - 对应：E8-US2, E9-US2；愿景扩展/生产化增强
   - Owner：Platform and Quality
   - 目标：在真正拆后端前先锁定行为。
   - 交付：为公司情报、行情 K 线、知识图谱、研报结构化、模拟反馈、来源健康建立 focused regression。
+  - **已完成（本轮）**：新增 `test_golden_api_behavior_baseline_for_backend_domain_refactor`，通过 `ApiRouter.dispatch` 锁定公司情报、公开行情、图谱、结构化研报、模拟反馈、performance dry-run、质量归并、来源治理和权限拒绝的 envelope/边界字段。
+  - **已完成（本轮）**：基线采用字段断言而非完整 JSON fixture，避免 trace、timestamp、生成 ID 等易变字段导致脆弱快照。
   - 验收：重构前后响应字段、边界标记、trace/audit、paper-only 约束一致。
 
-- `TODO` T-502 数据健康与调度 run 统一模型评估
+- `DONE` T-502 数据健康与调度 run 统一模型评估
   - 对应：E3-US4, E8-US2；愿景扩展/生产化增强
   - Owner：Data and Evidence, Platform and Quality
   - 目标：评估是否需要把 ingestion job、company build run、package import run、cycle run、material inbox run 统一成 run summary/read model。
   - 交付：先出 ADR，不直接迁移 schema；明确哪些 run 只需要视图聚合，哪些需要模型统一。
+  - **已完成（本轮）**：新增 `docs/data-health-run-summary-adr.md`，决策为 aggregation-first read model，不做破坏性 schema 迁移。
+  - **已完成（本轮）**：ADR 明确 ingestion、company build、package import、company intelligence cycle、material inbox、daily pipeline 和 personal refresh 等 run families、规范字段、来源健康映射和迁移触发条件。
   - 验收：ADR 能指导 T-493 数据健康中心实现，不引入破坏性迁移。
 
 - `TODO` T-503 服务层增长冻结规则
