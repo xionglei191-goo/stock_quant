@@ -48,6 +48,12 @@ REQUIRED_TEXT_SNIPPETS = [
     "材料入库追溯",
     "今日数据状态",
     "来源健康中心",
+    "个人研究桌面",
+    "后台维护",
+    "K 线行情",
+    "maintenance-only",
+    'data-workspace-mode="personal"',
+    'data-workspace-mode="maintenance"',
 ]
 
 REQUIRED_IDS = [
@@ -421,6 +427,8 @@ REQUIRED_JS_FUNCTIONS = [
     "renderDataHealthRows",
     "renderDataHealthSummary",
     "loadDataHealthSummary",
+    "setWorkspaceMode",
+    "activeWorkspaceMode",
     "renderLatestAnalysis",
     "openTab",
     "openSecurityContext",

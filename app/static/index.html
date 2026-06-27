@@ -149,6 +149,54 @@
       color: var(--text);
       box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05);
     }
+    .workspace-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      padding: 4px;
+      margin-bottom: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-2);
+    }
+    .workspace-switch button {
+      min-height: 32px;
+      margin: 0;
+      justify-content: center;
+      text-align: center;
+      border-color: transparent;
+      color: var(--muted);
+      background: transparent;
+    }
+    .workspace-switch button.active {
+      color: var(--blue);
+      background: #fff;
+      border-color: var(--line);
+      box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
+    }
+    .nav-group {
+      display: grid;
+      gap: 6px;
+    }
+    .nav-group[hidden] {
+      display: none;
+    }
+    .nav-label {
+      margin: 6px 2px 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+    .nav-help {
+      margin: 10px 2px 14px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    body[data-workspace-mode="personal"] .maintenance-only {
+      display: none !important;
+    }
     .nav-footer {
       margin-top: auto;
       display: grid;
@@ -1329,8 +1377,12 @@
       header { align-items: flex-start; padding: 12px; flex-direction: column; }
       .brand { flex-direction: column; align-items: flex-start; }
       .layout { grid-template-columns: 1fr; }
-      nav { display: flex; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      nav { display: flex; flex-direction: row; align-items: stretch; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
       nav button { width: auto; white-space: nowrap; margin: 0 8px 0 0; }
+      .workspace-switch { display: flex; min-width: max-content; margin: 0 8px 0 0; }
+      .nav-group { display: flex; flex-direction: row; align-items: center; gap: 0; }
+      .nav-group[hidden] { display: none; }
+      .nav-label, .nav-help { display: none; }
       .nav-footer { display: none; }
       .span-2, .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
       .workspace-hero { grid-template-columns: 1fr; }
@@ -1378,15 +1430,28 @@
   </header>
   <div class="layout">
     <nav>
-      <button class="active" data-open="dashboard">总览</button>
-      <button data-open="ingestion">数据中台</button>
-      <button data-open="search">公司情报</button>
-      <button data-open="chokepoint">瓶颈研究</button>
-      <button data-open="agents">智能体协作</button>
-      <button data-open="review">复盘反馈</button>
-      <button data-open="committee">兼容审批</button>
-      <button data-open="entity">知识图谱</button>
-      <button data-open="incidents">风控合规</button>
+      <div class="workspace-switch" aria-label="工作台模式">
+        <button class="active" data-workspace-mode="personal" type="button">个人研究</button>
+        <button data-workspace-mode="maintenance" type="button">后台维护</button>
+      </div>
+      <div class="nav-group" data-nav-group="personal">
+        <div class="nav-label">个人研究桌面</div>
+        <button class="active" data-open="dashboard" data-workspace-target="personal">总览</button>
+        <button data-open="search" data-workspace-target="personal">公司情报</button>
+        <button data-open="entity" data-workspace-target="personal">知识图谱</button>
+        <button data-open="ingestion" data-workspace-target="personal">K 线行情</button>
+        <button data-open="chokepoint" data-workspace-target="personal">研究结论</button>
+        <button data-open="review" data-workspace-target="personal">模拟反馈</button>
+        <p class="nav-help">默认只呈现个人研究闭环；复盘反馈、导入、调度、治理和复核在后台维护中继续可用。</p>
+      </div>
+      <div class="nav-group" data-nav-group="maintenance" hidden>
+        <div class="nav-label">后台维护</div>
+        <button data-open="ingestion" data-workspace-target="maintenance">数据中台</button>
+        <button data-open="agents" data-workspace-target="maintenance">智能体协作</button>
+        <button data-open="committee" data-workspace-target="maintenance">兼容审批</button>
+        <button data-open="incidents" data-workspace-target="maintenance">风控合规</button>
+        <button data-open="search" data-workspace-target="maintenance">公司高级维护</button>
+      </div>
       <div class="nav-footer">
         <div class="nav-card"><strong>系统时间</strong><span id="navClock">2026-05-15</span></div>
         <div class="nav-card"><strong>市场状态</strong><span id="navMarket">已开盘 · 公开延时数据</span></div>
@@ -2120,7 +2185,7 @@
             <h2>研究结果</h2>
             <table><thead><tr><th>主题</th><th>关键发现</th><th>状态</th><th>下一步或证据</th></tr></thead><tbody id="companyIntelResearchRows"></tbody></table>
           </div>
-          <div class="panel span-12 advanced-panel">
+          <div class="panel span-12 advanced-panel maintenance-only">
             <details id="companyIntelAdvancedMaintenance">
               <summary>高级维护：数据补齐、材料入库、冲突复核和运行历史</summary>
               <div class="advanced-body">
@@ -2290,7 +2355,7 @@
               </div>
             </details>
           </div>
-          <div class="panel span-12 advanced-panel">
+          <div class="panel span-12 advanced-panel maintenance-only">
             <details>
               <summary>高级维护：事件候选复核</summary>
               <div class="advanced-body">
@@ -2318,7 +2383,7 @@
               </div>
             </details>
           </div>
-          <div class="panel span-12 advanced-panel">
+          <div class="panel span-12 advanced-panel maintenance-only">
             <details>
               <summary>高级维护：关系候选审核</summary>
               <div class="advanced-body">
@@ -2341,7 +2406,7 @@
               </div>
             </details>
           </div>
-          <div class="panel span-12 advanced-panel">
+          <div class="panel span-12 advanced-panel maintenance-only">
             <details>
               <summary>高级维护：研报结构化</summary>
               <div class="advanced-body">
@@ -2803,7 +2868,7 @@
             </div>
             <table><thead><tr><th>来源</th><th>当前判断</th><th>状态</th><th>下一步或证据</th></tr></thead><tbody id="sourceHealthRows"></tbody></table>
           </div>
-          <div class="panel span-12">
+          <div class="panel span-12 maintenance-only">
             <h2>A 股公告</h2>
             <div class="row">
               <div class="field compact">
@@ -2835,7 +2900,7 @@
             </div>
             <table><thead><tr><th>类型</th><th>发布时间</th><th>链接</th></tr></thead><tbody id="ashareRows"></tbody></table>
           </div>
-          <div class="panel span-12">
+          <div class="panel span-12 maintenance-only">
             <h2>SEC 披露</h2>
             <div class="row">
               <div class="field">
@@ -2855,7 +2920,7 @@
             </div>
             <table><thead><tr><th>类型</th><th>发布时间</th><th>链接</th></tr></thead><tbody id="secRows"></tbody></table>
           </div>
-          <div class="panel span-12">
+          <div class="panel span-12 maintenance-only">
             <h2>港交所披露</h2>
             <div class="row">
               <div class="field">
@@ -2946,7 +3011,7 @@
             </div>
             <table><thead><tr><th>日期</th><th>开高低收</th><th>成交量</th><th>来源</th></tr></thead><tbody id="marketDataRows"></tbody></table>
           </div>
-          <div class="panel span-12">
+          <div class="panel span-12 maintenance-only">
             <h2>人工参考边界复核</h2>
             <div class="row">
               <div class="field">
@@ -2987,7 +3052,7 @@
             </div>
             <table><thead><tr><th>资料</th><th>问题</th><th>状态</th><th>建议动作</th></tr></thead><tbody id="manualReferenceRows"></tbody></table>
           </div>
-          <div class="panel span-12">
+          <div class="panel span-12 maintenance-only">
             <h2>13F 持仓</h2>
             <div class="row">
               <div class="field">
@@ -3024,7 +3089,7 @@
             </div>
             <table><thead><tr><th>申报方</th><th>期间</th><th>美元市值</th><th>证券</th></tr></thead><tbody id="holdingRows"></tbody></table>
           </div>
-          <div class="panel span-12">
+          <div class="panel span-12 maintenance-only">
             <h2>结构化抽取</h2>
             <div class="row">
               <div class="field">
@@ -3046,7 +3111,7 @@
             </div>
             <pre id="extractionBox"></pre>
           </div>
-          <div class="panel span-12">
+          <div class="panel span-12 maintenance-only">
             <h2>接入调度</h2>
             <div class="row">
               <div class="field">
@@ -6260,8 +6325,38 @@
       return data;
     }
 
-    function openTab(tabName) {
-      const button = document.querySelector(`[data-open="${tabName}"]`);
+    const WORKSPACE_TAB_MODE = {
+      dashboard: "personal",
+      search: "personal",
+      entity: "personal",
+      chokepoint: "personal",
+      review: "personal",
+      ingestion: "personal",
+      agents: "maintenance",
+      committee: "maintenance",
+      incidents: "maintenance"
+    };
+
+    function setWorkspaceMode(mode = "personal") {
+      const normalized = mode === "maintenance" ? "maintenance" : "personal";
+      document.body.dataset.workspaceMode = normalized;
+      document.querySelectorAll("[data-workspace-mode]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.workspaceMode === normalized);
+      });
+      document.querySelectorAll("[data-nav-group]").forEach((group) => {
+        group.hidden = group.dataset.navGroup !== normalized;
+      });
+    }
+
+    function activeWorkspaceMode() {
+      return document.querySelector("[data-workspace-mode].active")?.dataset.workspaceMode || "personal";
+    }
+
+    function openTab(tabName, options = {}) {
+      const mode = options.mode || WORKSPACE_TAB_MODE[tabName] || activeWorkspaceMode();
+      setWorkspaceMode(mode);
+      const button = document.querySelector(`[data-open="${tabName}"][data-workspace-target="${mode}"]`)
+        || document.querySelector(`[data-open="${tabName}"]`);
       const tab = document.querySelector(`[data-tab="${tabName}"]`);
       if (!button || !tab) return;
       document.querySelectorAll("[data-open]").forEach((item) => item.classList.remove("active"));
@@ -6279,7 +6374,7 @@
       setValue("mdSecurityId", securityId || "");
       setValue("query", label || securityId || "");
       setValue("searchIssuer", "");
-      openTab("ingestion");
+      openTab("ingestion", { mode: "personal" });
       await loadMarketData();
       setStatus(`已切到行情上下文 · ${label || securityId}`);
     }
@@ -9371,7 +9466,7 @@
         } else if (action === "company-intel-guidance") {
           await runCompanyIntelGuidanceAction(target.dataset.guidanceAction || "coverage_audit");
         } else if (action === "open-ingestion") {
-          openTab("ingestion");
+          openTab("ingestion", { mode: "maintenance" });
           setStatus("已切到数据中台");
         } else if (action === "open-portfolio") {
           await openPortfolioContext(target.dataset.proposalId);
@@ -9383,8 +9478,18 @@
 
     document.querySelectorAll("[data-open]").forEach((button) => {
       button.addEventListener("click", () => {
-        openTab(button.dataset.open);
+        openTab(button.dataset.open, { mode: button.dataset.workspaceTarget || activeWorkspaceMode() });
         if (button.dataset.open === "ingestion") loadDataHealthSummary().catch((error) => setStatus(error.message, true));
+      });
+    });
+
+    document.querySelectorAll("[data-workspace-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = button.dataset.workspaceMode || "personal";
+        const activeInMode = document.querySelector(`[data-workspace-target="${mode}"].active`);
+        const fallback = document.querySelector(`[data-workspace-target="${mode}"]`);
+        setWorkspaceMode(mode);
+        if (!activeInMode && fallback) openTab(fallback.dataset.open, { mode });
       });
     });
 
@@ -9514,6 +9619,7 @@
     }
     $("reportId").value = currentReportId();
     renderChokepointPlaybook("generic");
+    setWorkspaceMode("personal");
     loadDashboard();
     loadCompanyIntelligence(false);
   </script>
