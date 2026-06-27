@@ -67,6 +67,7 @@ from scripts.production_task_status_finalize import finalize_production_task_sta
 from scripts.project_completion_audit import build_completion_audit
 from scripts.production_task_closure_audit import TASKS_WITH_EXTERNAL_EVIDENCE, TASK_CODE_MARKERS, audit_production_tasks, build_evidence_collection_plan
 from scripts.production_evidence_owner_packets import build_owner_packets, render_owner_packets_markdown, validate_owner_packets
+from scripts.production_evidence_status_board import build_status_board, render_status_board_markdown, validate_status_board
 from scripts.readiness_evidence_package_check import REQUIRED_CHECK_IDS, REQUIRED_EXTERNAL_VALIDATION_SCOPES, validate_readiness_evidence_package
 from scripts.security_check import scan_repository
 from scripts.staging_acceptance import run_staging_acceptance
@@ -18995,6 +18996,59 @@ class SystemServiceTests(unittest.TestCase):
             self.assertTrue(output_md.exists())
             self.assertEqual(len(list(output_dir.glob("*.md"))), 17)
             self.assertIn("T-421", (output_dir / "t-421-production-evidence.md").read_text(encoding="utf-8"))
+            self.assertFalse((output_json.parent / f".{output_json.name}.tmp").exists())
+            self.assertFalse((output_md.parent / f".{output_md.name}.tmp").exists())
+
+    def test_production_evidence_status_board_tracks_uri_readiness_by_owner(self) -> None:
+        audit = audit_production_tasks()
+        plan = build_evidence_collection_plan(audit)
+        board = build_status_board(plan)
+        validation = validate_status_board(board)
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertEqual(board["status"], "waiting_for_external_evidence")
+        self.assertEqual(board["owner_count"], 6)
+        self.assertEqual(board["task_count"], 17)
+        self.assertEqual(board["ready_task_count"], 0)
+        self.assertEqual(board["waiting_task_count"], 17)
+        self.assertEqual(board["artifact_field_count"], 80)
+        self.assertEqual(board["filled_uri_count"], 0)
+        self.assertEqual(board["placeholder_uri_count"], 80)
+        self.assertEqual(board["invalid_uri_count"], 0)
+        rendered = render_status_board_markdown(board)
+        self.assertIn("# Production External Evidence Status Board", rendered)
+        self.assertIn("waiting_for_external_evidence", rendered)
+        self.assertIn("T-421", rendered)
+        self.assertIn("Release Gate Rule", rendered)
+
+        filled = fill_evidence_collection_plan(plan, artifact_prefix="s3://ai-quant-prod/evidence/release-20260518")
+        filled_board = build_status_board(filled)
+        self.assertEqual(filled_board["status"], "ready_for_release_gate")
+        self.assertEqual(filled_board["ready_task_count"], 17)
+        self.assertEqual(filled_board["placeholder_uri_count"], 0)
+        self.assertEqual(filled_board["filled_uri_count"], 80)
+
+        with TemporaryDirectory() as tmpdir:
+            plan_path = Path(tmpdir) / "plan.json"
+            output_json = Path(tmpdir) / "status-board.json"
+            output_md = Path(tmpdir) / "status-board.md"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/production_evidence_status_board.py",
+                    str(plan_path),
+                    "--output-json",
+                    str(output_json),
+                    "--output-md",
+                    str(output_md),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn('"status": "passed"', result.stdout)
+            self.assertTrue(output_json.exists())
+            self.assertTrue(output_md.exists())
             self.assertFalse((output_json.parent / f".{output_json.name}.tmp").exists())
             self.assertFalse((output_md.parent / f".{output_md.name}.tmp").exists())
 
