@@ -368,6 +368,7 @@ def build_route_table(owner: Any) -> list[tuple[str, str, Callable[..., Any]]]:
             ("POST", r"^/api/company-database/events/build$", owner._build_company_events),
             ("POST", r"^/api/company-database/events/review$", owner._review_company_events),
             ("POST", r"^/api/company-database/relationships/build$", owner._build_company_relationships),
+            ("POST", r"^/api/company-database/ownership/manifest-template$", owner._company_ownership_manifest_template),
             ("POST", r"^/api/company-database/relationships/review$", owner._review_company_relationships),
             ("POST", r"^/api/company-database/workflow/build$", owner._build_company_workflow),
             ("GET", r"^/api/company-events$", owner._list_company_events),
@@ -450,4 +451,3 @@ def build_route_table(owner: Any) -> list[tuple[str, str, Callable[..., Any]]]:
             ("GET", r"^/api/readiness/vision-gate$", owner._vision_acceptance_report),
             ("GET", r"^/api/incidents/calendar$", owner._incident_calendar),
         ]
-

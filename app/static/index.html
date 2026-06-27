@@ -627,6 +627,13 @@
       gap: 8px;
       flex-wrap: wrap;
     }
+    .graph-filter-chips {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-height: 26px;
+    }
     .graph-toggle {
       display: inline-flex;
       align-items: center;
@@ -2014,6 +2021,7 @@
                 <label class="graph-toggle"><input id="graphFilterPortfolio" type="checkbox" checked>组合</label>
                 <label class="graph-toggle"><input id="graphFilterRisk" type="checkbox" checked>风险</label>
               </div>
+              <div id="knowledgeGraphFilterChips" class="graph-filter-chips" aria-label="当前图谱过滤"><span class="badge">全部关系</span></div>
             </div>
             <div class="graph-explorer">
               <div>
@@ -2182,6 +2190,17 @@
             <table><thead><tr><th>主题</th><th>关键发现</th><th>状态</th><th>下一步或证据</th></tr></thead><tbody id="companyIntelFactRows"></tbody></table>
           </div>
           <div class="panel span-6">
+            <h2>多维关系</h2>
+            <div class="system-strip">
+              <div class="system-box"><strong>同类</strong><span id="companyIntelPeerCount">0</span></div>
+              <div class="system-box"><strong>上游</strong><span id="companyIntelUpstreamCount">0</span></div>
+              <div class="system-box"><strong>下游</strong><span id="companyIntelDownstreamCount">0</span></div>
+              <div class="system-box"><strong>股东</strong><span id="companyIntelShareholderCount">0</span></div>
+              <div class="system-box"><strong>股东关联</strong><span id="companyIntelShareholderRelatedCount">0</span></div>
+            </div>
+            <table><thead><tr><th>维度</th><th>对象</th><th>状态</th><th>证据/下一步</th></tr></thead><tbody id="companyIntelRelationshipContextRows"></tbody></table>
+          </div>
+          <div class="panel span-6">
             <h2>研究结果</h2>
             <table><thead><tr><th>主题</th><th>关键发现</th><th>状态</th><th>下一步或证据</th></tr></thead><tbody id="companyIntelResearchRows"></tbody></table>
           </div>
@@ -2284,6 +2303,37 @@
               <button id="previewCompanyMaterialInbox">预览材料入库</button>
               <button id="runCompanyMaterialInbox" class="primary">执行材料入库</button>
             </div>
+            <div class="row">
+              <div class="field">
+                <label for="companyIntelOwnershipRootPath">本地股权表目录</label>
+                <input id="companyIntelOwnershipRootPath" value="" aria-label="本地股权表目录" placeholder="/home/xionglei/文档/company_ownership">
+                <span class="hint">CSV/TSV/TXT/MD；每行包含股票代码、关系类型、股东/主体、持股比例等字段</span>
+              </div>
+              <div class="field">
+                <label for="companyIntelOwnershipFiles">股权表文件</label>
+                <input id="companyIntelOwnershipFiles" value="" aria-label="本地股权表文件列表" placeholder="600519-ownership.csv, 300750-holders.md">
+                <span class="hint">逗号分隔；相对路径基于目录</span>
+              </div>
+              <div class="field compact">
+                <label for="companyIntelOwnershipDefaultKind">默认类型</label>
+                <input id="companyIntelOwnershipDefaultKind" value="shareholder" aria-label="本地股权表默认关系类型">
+              </div>
+              <button id="previewCompanyOwnershipImport">预览股权导入</button>
+              <button id="runCompanyOwnershipImport" class="primary">执行股权导入</button>
+            </div>
+            <div class="row">
+              <div class="field compact">
+                <label for="companyIntelOwnershipManifestGlob">股权表 glob</label>
+                <input id="companyIntelOwnershipManifestGlob" value="**/*ownership*.csv,**/*股权*.md" aria-label="股权表 manifest 扫描 glob">
+              </div>
+              <div class="field">
+                <label for="companyIntelOwnershipManifestOutputPath">股权 manifest 输出</label>
+              <input id="companyIntelOwnershipManifestOutputPath" value="" aria-label="股权 manifest 输出路径" placeholder="/home/xionglei/文档/company_ownership/ownership.manifest.json">
+              </div>
+              <button id="previewCompanyOwnershipManifest">预览股权 manifest</button>
+              <button id="previewCompanyOwnershipImportFromManifest">用 manifest 预览导入</button>
+              <button id="runCompanyOwnershipManifest" class="primary">写入股权 manifest</button>
+            </div>
             <div class="system-strip">
               <div class="system-box"><strong>覆盖率</strong><span id="companyIntelCoverageScore">0%</span></div>
               <div class="system-box"><strong>缺失层</strong><span id="companyIntelCoverageMissing">0</span></div>
@@ -2327,6 +2377,11 @@
               <div class="system-box"><strong>材料入库</strong><span id="companyIntelMaterialInboxStatus">待预览</span></div>
               <div class="system-box"><strong>材料计划</strong><span id="companyIntelMaterialPlannedCount">0</span></div>
               <div class="system-box"><strong>材料写入</strong><span id="companyIntelMaterialIngestedCount">0</span></div>
+              <div class="system-box"><strong>股权导入</strong><span id="companyIntelOwnershipImportStatus">待预览</span></div>
+              <div class="system-box"><strong>股权候选</strong><span id="companyIntelOwnershipCandidateCount">0</span></div>
+              <div class="system-box"><strong>股权文件</strong><span id="companyIntelOwnershipFileCount">0</span></div>
+              <div class="system-box"><strong>股权 Manifest</strong><span id="companyIntelOwnershipManifestStatus">待预览</span></div>
+              <div class="system-box"><strong>Manifest 文件</strong><span id="companyIntelOwnershipManifestFileCount">0</span></div>
               <div class="system-box"><strong>质量归并</strong><span id="companyIntelQualityReconcileStatus">待预览</span></div>
               <div class="system-box"><strong>事件重复</strong><span id="companyIntelEventDuplicateCount">0</span></div>
               <div class="system-box"><strong>关系重复</strong><span id="companyIntelRelationshipDuplicateCount">0</span></div>
@@ -2344,6 +2399,8 @@
             <table><thead><tr><th>Manifest</th><th>公司/证券</th><th>文件模板</th><th>状态</th></tr></thead><tbody id="companyIntelPackageManifestRows"></tbody></table>
             <table><thead><tr><th>待补材料</th><th>公司/证券</th><th>本地文件</th><th>下一步</th></tr></thead><tbody id="companyIntelMaterialPendingRows"></tbody></table>
             <table><thead><tr><th>材料</th><th>公司/来源</th><th>状态</th><th>说明</th></tr></thead><tbody id="companyIntelMaterialInboxRows"></tbody></table>
+            <table><thead><tr><th>股权表</th><th>解析</th><th>候选关系</th><th>边界</th></tr></thead><tbody id="companyIntelOwnershipImportRows"></tbody></table>
+            <table><thead><tr><th>股权 Manifest</th><th>代码</th><th>默认类型</th><th>来源</th></tr></thead><tbody id="companyIntelOwnershipManifestRows"></tbody></table>
             <div class="row">
               <button id="batchApproveCompanyProfileAssertions">批量批准</button>
               <button id="batchRejectCompanyProfileAssertions">批量拒绝</button>
@@ -3172,6 +3229,7 @@
     let activeEntitySecurityId = "";
     let activeEntityIssuerId = "";
     let latestCompanyIntelligence = null;
+    let latestCompanyOwnershipManifestTemplate = null;
     let latestKlineItems = [];
     const klineViewState = {
       period: "day",
@@ -3200,6 +3258,8 @@
       fixedIds: new Set(),
       pointer: null,
       draggingNodeId: "",
+      pendingFilters: {},
+      activeFilters: {},
     };
     const chokepointPlaybooks = {
       generic: {
@@ -3767,11 +3827,13 @@
       const subject = item.subject || item.object || item.entity || "";
       const status = item.status || "";
       const action = item.action || item.evidence || item.next || item.source || "查看高级详情";
-      return `<tr>
+      const actionAttrs = item.actionAttrs || "";
+      const actionHtml = item.actionHtml || "";
+      return `<tr ${actionAttrs}>
         <td class="insight-topic"><strong>${topic}</strong><span>${subject ? userEntityLabel(subject) : ""}</span></td>
         <td>${String(item.finding || item.summary || "-").slice(0, 220)}</td>
         <td>${status ? `<span class="badge ${String(status).includes("风险") || String(status).includes("待") ? "warn" : ""}">${userStatusLabel(status)}</span>` : "-"}</td>
-        <td><span class="insight-action">${String(action || "-").slice(0, 180)}</span>${item.trace ? renderAdvancedTrace("追溯", item.trace) : ""}</td>
+        <td><span class="insight-action">${String(action || "-").slice(0, 180)}</span>${actionHtml ? ` ${actionHtml}` : ""}${item.trace ? renderAdvancedTrace("追溯", item.trace) : ""}</td>
       </tr>`;
     }
 
@@ -5074,6 +5136,85 @@
       };
     }
 
+    function compactGraphFilterLabel(key, value) {
+      if (!String(value || "").trim()) return "";
+      const labels = {
+        issuerId: "主体",
+        securityId: "证券",
+        relationshipType: "关系类型",
+        chainId: "产业链",
+        chainNodeId: "产业节点",
+        industryDirection: "产业方向",
+        ownershipHolderKey: "股东",
+        institutionalHolderKey: "13F持有人",
+      };
+      return `${labels[key] || key}: ${statusLabel(value)}`;
+    }
+
+    function relationshipTypeDisplayLabel(value) {
+      const labels = {
+        industry_position: "产业链位置",
+        industry_peer: "同类关系",
+        upstream_of: "上游关系",
+        downstream_of: "下游关系",
+        ownership: "股权关系",
+        shareholder: "事实股东",
+        shareholder_candidate: "股东候选",
+        controller: "实际控制",
+        controller_candidate: "实控候选",
+        subsidiary: "子公司",
+        subsidiary_candidate: "子公司候选",
+        investee: "参股公司",
+        investee_candidate: "参股候选",
+        customer: "客户关系",
+        customer_candidate: "客户候选",
+        supplier: "供应商关系",
+        supplier_candidate: "供应商候选",
+        partner: "合作伙伴",
+        partner_candidate: "合作候选",
+        institution_coverage: "机构覆盖",
+        listed_security: "上市证券",
+      };
+      return labels[value] || value;
+    }
+
+    function graphFilterDisplayValue(key, filters = {}) {
+      if (key === "ownershipHolderKey" && filters.ownershipHolderLabel) return filters.ownershipHolderLabel;
+      if (key === "institutionalHolderKey" && filters.institutionalHolderLabel) return filters.institutionalHolderLabel;
+      if (key === "relationshipType") return relationshipTypeDisplayLabel(filters.relationshipType);
+      if (key === "industryDirection") {
+        const labels = {
+          position: "产业链位置",
+          peer: "同类",
+          upstream: "上游",
+          downstream: "下游",
+        };
+        return labels[filters.industryDirection] || filters.industryDirection;
+      }
+      return filters[key];
+    }
+
+    function setKnowledgeGraphActiveFilters(filters = {}) {
+      knowledgeGraphState.activeFilters = Object.fromEntries(
+        Object.entries(filters).filter(([, value]) => String(value || "").trim())
+      );
+      renderKnowledgeGraphFilterChips();
+    }
+
+    function renderKnowledgeGraphFilterChips() {
+      const element = $("knowledgeGraphFilterChips");
+      if (!element) return;
+      const filters = knowledgeGraphState.activeFilters || {};
+      const chips = ["issuerId", "securityId", "relationshipType", "chainId", "chainNodeId", "industryDirection", "ownershipHolderKey", "institutionalHolderKey"].map((key) => ({
+        key,
+        rawValue: filters[key],
+        label: compactGraphFilterLabel(key, graphFilterDisplayValue(key, filters)),
+      })).filter((item) => item.label);
+      element.innerHTML = chips.length
+        ? chips.map((item) => `<span class="badge ok" data-filter-key="${escapeHtml(item.key)}" data-filter-raw-value="${escapeHtml(item.rawValue || "")}" title="过滤追溯: ${escapeHtml(item.key)}=${escapeHtml(item.rawValue || "")}">${escapeHtml(item.label)}</span>`).join("")
+        : `<span class="badge">全部关系</span>`;
+    }
+
     function graphHumanText(value, fallback = "-") {
       return String(value || fallback || "-")
         .replace(/^issuer_/i, "")
@@ -5182,7 +5323,7 @@
           source: String(source),
           target: String(target),
           type: String(type || "RELATED"),
-          label: graphEdgeLabel(type, label || type),
+          label: label || graphEdgeLabel(type, type),
           group: graphEdgeGroup(type),
           meta,
         });
@@ -5211,7 +5352,7 @@
         const to = item.target_issuer_id || item.to_issuer_id || item.related_issuer_id || item.to;
         addNode(from, "issuer", from);
         addNode(to, "issuer", item.target_name || to);
-        addLink(from, to, item.relationship_type || "COMPANY_RELATIONSHIP", statusLabel(item.relationship_type || "关系"), item);
+        addLink(from, to, item.relationship_type || "COMPANY_RELATIONSHIP", relationshipTypeDisplayLabel(item.relationship_type || "关系"), item);
       });
       (data.disclosure_events || []).forEach((item) => {
         addNode(item.event_id, "event", item.event_type || item.event_id, item);
@@ -5299,7 +5440,10 @@
         addNode(item.task_id, "risk", item.task_type || item.task_id, item);
         addLink(item.issuer_id || item.security_id || item.chain_id || item.position_id, item.task_id, "HAS_RESEARCH_TASK", "补全任务", item);
       });
-      (data.edges || []).forEach((item) => addLink(item.from, item.to, item.type || "RELATED", statusLabel(item.type || "关系"), item));
+      (data.edges || []).forEach((item) => {
+        const label = item.relationship_type ? relationshipTypeDisplayLabel(item.relationship_type) : statusLabel(item.type || "关系");
+        addLink(item.from, item.to, item.type || "RELATED", label, item);
+      });
 
       const liveLinks = links.filter((item) => nodeMap.has(item.source) && nodeMap.has(item.target));
       return { nodes: [...nodeMap.values()], links: liveLinks };
@@ -5587,7 +5731,8 @@
         .map((link) => {
           const neighborId = link.source === node.id ? link.target : link.source;
           const neighbor = knowledgeGraphState.nodes.find((item) => item.id === neighborId) || { id: neighborId, label: graphRef(neighborId), type: "evidence" };
-          return `<div class="graph-neighbor" data-action="focus-graph-node" data-node-id="${neighbor.id}"><strong>${neighbor.label}</strong><span class="small-note">${graphEdgeLabel(link.type, link.label)} · ${graphNodeTypeLabel(neighbor.type)}</span></div>`;
+          const edgeLabel = link.label || graphEdgeLabel(link.type, link.label);
+          return `<div class="graph-neighbor" data-action="focus-graph-node" data-node-id="${neighbor.id}"><strong>${neighbor.label}</strong><span class="small-note">${edgeLabel} · ${graphNodeTypeLabel(neighbor.type)}</span></div>`;
         });
       $("knowledgeGraphNeighborRows").innerHTML = neighbors.join("") || `<div class="small-note">暂无相邻关系</div>`;
     }
@@ -5644,6 +5789,7 @@
       setText("knowledgeGraphFocusLabel", `焦点 ${graphRef(knowledgeGraphState.focusId, "-")}`);
       const legendTypes = [...new Set(layout.nodes.map((node) => node.type))];
       $("knowledgeGraphLegend").innerHTML = legendTypes.map((type) => `<span><i style="background:${graphNodeColor(type)}"></i>${graphNodeTypeLabel(type)}</span>`).join("");
+      renderKnowledgeGraphFilterChips();
       const transform = knowledgeGraphState.transform;
       const edgeMarkup = layout.links.map((link) => {
         const source = layout.nodes.find((node) => node.id === link.source);
@@ -5934,7 +6080,10 @@
       renderInsightTable("graphPortfolioRows", graphPortfolioRows.map((item) => ({ topic: "组合/持仓", subject: item.object, finding: item.action, status: item.note, action: item.source, trace: item })), "暂无组合、持仓或拥挤度数据");
       renderInsightTable("graphFactRows", factRows.map((item) => ({ topic: item.type, subject: item.object, finding: item.note, status: item.source, action: "作为事实或证据层查看", trace: item })), "暂无证据、事件或行情数据");
       renderInsightTable("graphDecisionRows", decisionRows.map((item) => ({ topic: item.type, subject: item.object, finding: item.note, status: item.status, action: "进入复盘或模拟反馈", trace: item })), "暂无分析结论、模拟反馈或复盘数据");
-      renderInsightTable("graphEdgeRows", edges.map((item) => ({ topic: graphEdgeLabel(item.type), subject: `${userEntityLabel(item.from)} -> ${userEntityLabel(item.to)}`, finding: `${graphEdgeLabel(item.type)} 连接了两个研究对象`, status: formatScore(item.confidence), action: sourceLabel(item.source_id || item.source), trace: item })), "暂无图谱关系");
+      renderInsightTable("graphEdgeRows", edges.map((item) => {
+        const label = item.relationship_type ? relationshipTypeDisplayLabel(item.relationship_type) : graphEdgeLabel(item.type);
+        return { topic: label, subject: `${userEntityLabel(item.from)} -> ${userEntityLabel(item.to)}`, finding: `${label} 连接了两个研究对象`, status: formatScore(item.confidence), action: sourceLabel(item.source_id || item.source), trace: item };
+      }), "暂无图谱关系");
       renderKnowledgeGraphExplorer(data);
     }
 
@@ -6401,6 +6550,27 @@
       await loadEntity();
     }
 
+    async function openRelationshipGraphContext(options = {}) {
+      const issuerId = options.issuerId || activeEntityIssuerId || latestCompanyIntelligence?.resolution?.issuer_ids?.[0] || "";
+      const relationshipType = options.relationshipType || "";
+      const chainId = options.chainId || "";
+      const chainNodeId = options.chainNodeId || "";
+      const industryDirection = options.industryDirection || "";
+      const ownershipHolderKey = options.ownershipHolderKey || "";
+      const ownershipHolderLabel = options.ownershipHolderLabel || "";
+      const institutionalHolderKey = options.institutionalHolderKey || "";
+      const institutionalHolderLabel = options.institutionalHolderLabel || "";
+      const crossCompanyFilter = ownershipHolderKey || institutionalHolderKey;
+      const securityId = options.securityId || (crossCompanyFilter ? "" : activeEntitySecurityId) || "";
+      setValue("issuerId", issuerId || chainId || "issuer_demo");
+      activeEntityIssuerId = issuerId || activeEntityIssuerId;
+      activeEntitySecurityId = securityId;
+      knowledgeGraphState.pendingFilters = { relationshipType, chainId, chainNodeId, industryDirection, ownershipHolderKey, ownershipHolderLabel, institutionalHolderKey, institutionalHolderLabel };
+      openTab("entity");
+      await loadEntity();
+      setStatus(`已打开关系图谱 · ${statusLabel(relationshipType || ownershipHolderKey || institutionalHolderKey || industryDirection || chainNodeId || chainId || "全部关系")}`);
+    }
+
     async function openPortfolioContext(proposalId) {
       setValue("portfolioProposalId", proposalId || $("portfolioProposalId").value || "");
       openTab("committee");
@@ -6798,6 +6968,25 @@
         const scopedSecurityId = activeEntityIssuerId === issuerId ? activeEntitySecurityId : "";
         const securityId = lookup.securityId || scopedSecurityId;
         if (securityId) params.set("security_id", securityId);
+        const graphFilters = knowledgeGraphState.pendingFilters || {};
+        if (graphFilters.relationshipType) params.set("relationship_type", graphFilters.relationshipType);
+        if (graphFilters.chainId) params.set("chain_id", graphFilters.chainId);
+        if (graphFilters.chainNodeId) params.set("chain_node_id", graphFilters.chainNodeId);
+        if (graphFilters.ownershipHolderKey) params.set("ownership_holder_key", graphFilters.ownershipHolderKey);
+        if (graphFilters.institutionalHolderKey) params.set("institutional_holder_key", graphFilters.institutionalHolderKey);
+        knowledgeGraphState.pendingFilters = {};
+        setKnowledgeGraphActiveFilters({
+          issuerId,
+          securityId,
+          relationshipType: graphFilters.relationshipType,
+          chainId: graphFilters.chainId,
+          chainNodeId: graphFilters.chainNodeId,
+          industryDirection: graphFilters.industryDirection,
+          ownershipHolderKey: graphFilters.ownershipHolderKey,
+          ownershipHolderLabel: graphFilters.ownershipHolderLabel,
+          institutionalHolderKey: graphFilters.institutionalHolderKey,
+          institutionalHolderLabel: graphFilters.institutionalHolderLabel,
+        });
         params.set("market_data_limit", "20");
         const { data, trace_id } = await api(`/api/graph/query?${params.toString()}`);
         if (lookup.source === "symbol" && issuerId) {
@@ -7356,6 +7545,27 @@
         await structureCompanyReports(false);
       } else if (action === "preview_batch_build") {
         await buildCompanyDatabaseBatch(false);
+      } else {
+        await auditCompanyCoverage();
+      }
+    }
+
+    async function runRelationshipBackfillAction(action, layer = "") {
+      if (action === "preview_batch_build") {
+        await buildCompanyDatabaseBatch(false);
+      } else if (action === "ownership_import_guidance") {
+        openTab("search", { mode: "maintenance" });
+        const details = $("companyIntelAdvancedMaintenance");
+        if (details) details.open = true;
+        await importCompanyOwnershipTables(false);
+      } else if (action === "open_relationship_graph") {
+        await openRelationshipGraphContext({ issuerId: currentCompanyIntelIssuerId() });
+      } else if (action === "review_relationship_candidates") {
+        openTab("search", { mode: "maintenance" });
+        const details = $("companyIntelAdvancedMaintenance");
+        if (details) details.open = true;
+        renderCompanyRelationshipReview(latestCompanyIntelligence?.relationships?.company_relationships || []);
+        setStatus("已载入关系候选审核队列");
       } else {
         await auditCompanyCoverage();
       }
@@ -7947,6 +8157,175 @@
       const fields = formValue("companyIntelProfileFieldList", "").split(",").map((item) => item.trim()).filter(Boolean);
       if (fields.length) payload.fields = fields;
       return payload;
+    }
+
+    function companyOwnershipImportPayload(execute = false, options = {}) {
+      const files = formValue("companyIntelOwnershipFiles", "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const manifestFiles = options.useManifest
+        ? (latestCompanyOwnershipManifestTemplate?.files || []).map((item) => ({
+            file_path: item.file_path,
+            default_kind: item.default_kind || formValue("companyIntelOwnershipDefaultKind", "shareholder") || "shareholder",
+            source_id: item.source_id || "local_structured_ownership",
+            source_table: item.source_table || "",
+          }))
+        : [];
+      const payload = companyIntelScopedPayload(Number(formValue("companyIntelBuildLimit", "20")) || 20);
+      if (manifestFiles.length) {
+        const manifestSymbols = [...new Set((latestCompanyOwnershipManifestTemplate?.files || [])
+          .map((item) => String(item.symbol || item.ticker || "").trim())
+          .filter(Boolean))];
+        delete payload.issuer_ids;
+        if (manifestSymbols.length) payload.symbols = manifestSymbols;
+      }
+      return {
+        ...payload,
+        execute,
+        dry_run: !execute,
+        include_listings: false,
+        include_institution_coverage: false,
+        include_disclosure_candidates: false,
+        include_structured_ownership: true,
+        ownership_root_path: formValue("companyIntelOwnershipRootPath", ""),
+        ownership_file_paths: manifestFiles.length ? manifestFiles : files,
+        ownership_file_default_kind: formValue("companyIntelOwnershipDefaultKind", "shareholder") || "shareholder",
+        relationship_limit: 500,
+      };
+    }
+
+    function renderCompanyOwnershipImport(data, showDetails = true) {
+      const companies = data.companies || [];
+      const fileInputs = data.ownership_file_inputs || [];
+      const structuredCount = companies.reduce((sum, item) => sum + Number(item.structured_ownership_candidate_count || 0), 0);
+      const candidateCount = data.execute ? Number(data.relationships_created || 0) : Number(data.relationships_planned || structuredCount || 0);
+      $("companyIntelOwnershipImportStatus").textContent = data.execute ? "已执行" : (data.status === "failed" ? "失败" : "预览");
+      $("companyIntelOwnershipCandidateCount").textContent = `${candidateCount}`;
+      $("companyIntelOwnershipFileCount").textContent = `${fileInputs.length}`;
+      $("companyIntelOwnershipImportRows").innerHTML = rows(fileInputs, "暂无股权表解析结果。请填写本地股权表文件后预览。", (item) => {
+        const errors = (item.errors || []).join(", ");
+        return `<tr><td>${userEntityLabel(item.source_table || item.file_path || "股权表")}</td><td>${statusLabel(item.status || "")}${metaLine("行数", item.row_count || 0)}${metaLine("大小", item.size_bytes || 0)}</td><td>${candidateCount}${metaLine("目标公司", data.target_count || companies.length || 0)}</td><td>${errors || boundaryLabel(data.usage_boundary || "")}${renderAdvancedTrace("股权表追溯", item)}</td></tr>`;
+      });
+      if (showDetails) {
+        renderAdvancedPre("companyIntelOperationBox", {
+          title: "股权表导入",
+          status: data.status || (data.execute ? "execute" : "dry_run"),
+          summary: `${candidateCount} 条股权候选 · ${fileInputs.length} 个文件`,
+          next_action: data.execute ? "进入关系候选审核并人工复核" : "确认后执行导入",
+          status: data.status,
+          execute: data.execute,
+          target_count: data.target_count,
+          relationships_planned: data.relationships_planned,
+          relationships_created: data.relationships_created,
+          ownership_file_inputs: fileInputs,
+          companies,
+          usage_boundary: data.usage_boundary,
+        }, { summary: "股权表导入", traceLabel: "股权导入追溯" });
+      }
+    }
+
+    function ownershipReviewPayloadFromImport(data) {
+      const candidates = data.relationship_review_candidates || [];
+      return { relationships: { company_relationships: candidates } };
+    }
+
+    function shouldUseLatestOwnershipManifest(execute, options = {}) {
+      if (options.useManifest) return true;
+      if (!execute) return false;
+      const hasTemplate = Boolean(latestCompanyOwnershipManifestTemplate?.files?.length);
+      const hasExplicitFiles = Boolean(formValue("companyIntelOwnershipFiles", "").trim());
+      return hasTemplate && !hasExplicitFiles;
+    }
+
+    async function importCompanyOwnershipTables(execute = false, options = {}) {
+      try {
+        $("companyIntelOwnershipImportStatus").textContent = execute ? "执行中" : "预览中";
+        const useManifest = shouldUseLatestOwnershipManifest(execute, options);
+        const { data, trace_id } = await api("/api/company-database/relationships/build", {
+          method: "POST",
+          role: "data_engineer",
+          body: companyOwnershipImportPayload(execute, { ...options, useManifest })
+        });
+        renderCompanyOwnershipImport(data, true);
+        if (execute) {
+          renderCompanyRelationshipReview(ownershipReviewPayloadFromImport(data));
+          await loadCompanyIntelligence(false);
+        } else {
+          renderCompanyRelationshipReview(ownershipReviewPayloadFromImport(data));
+        }
+        setStatus(`${execute ? "股权表导入已执行" : "股权表导入预览完成"} · ${data.relationships_created || data.relationships_planned || 0} 条候选 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelOwnershipImportStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    function companyOwnershipManifestPayload(execute = false) {
+      return {
+        root_path: formValue("companyIntelOwnershipRootPath", ""),
+        files: formValue("companyIntelOwnershipFiles", ""),
+        glob: formValue("companyIntelOwnershipManifestGlob", ""),
+        scan_limit: Number(formValue("companyIntelMaterialScanLimit", "50")) || 50,
+        default_kind: formValue("companyIntelOwnershipDefaultKind", "shareholder") || "shareholder",
+        default_source_id: "local_structured_ownership",
+        default_source_table: "",
+        infer_symbols_from_path: true,
+        output_path: formValue("companyIntelOwnershipManifestOutputPath", ""),
+        execute,
+        dry_run: !execute,
+      };
+    }
+
+    function renderCompanyOwnershipManifest(data, showDetails = true) {
+      const template = data.template || {};
+      const files = template.files || [];
+      latestCompanyOwnershipManifestTemplate = template;
+      $("companyIntelOwnershipManifestStatus").textContent = data.execute ? "已写入" : (data.status === "failed" ? "失败" : "预览");
+      $("companyIntelOwnershipManifestFileCount").textContent = `${data.file_count || files.length || 0}`;
+      $("companyIntelOwnershipManifestRows").innerHTML = rows(files, "暂无股权 manifest 模板。请填写目录、文件或 glob 后预览。", (item) => {
+        return `<tr><td>${userEntityLabel(item.file_path || "股权表")}</td><td>${item.symbol || "-"}</td><td>${relationshipTypeDisplayLabel(item.default_kind || "")}</td><td>${sourceLabel(item.source_id || "")}${metaLine("表", item.source_table || "")}${renderAdvancedTrace("股权 Manifest 追溯", item)}</td></tr>`;
+      });
+      if (showDetails) {
+        renderAdvancedPre("companyIntelOperationBox", {
+          title: "股权 manifest 模板",
+          status: data.status || (data.execute ? "execute" : "dry_run"),
+          summary: `${data.file_count || files.length || 0} 个股权表模板${data.written ? " · 已写入" : ""}`,
+          next_action: data.execute ? "编辑 manifest 后执行股权表导入" : "确认后写入 manifest 或直接预览导入",
+          output_path: data.output_path,
+          written: data.written,
+          template,
+          next_actions: data.next_actions,
+          usage_boundary: data.usage_boundary,
+        }, { summary: "股权 manifest 模板", traceLabel: "股权 Manifest 完整追溯" });
+      }
+    }
+
+    async function generateCompanyOwnershipManifest(execute = false) {
+      try {
+        $("companyIntelOwnershipManifestStatus").textContent = execute ? "写入中" : "预览中";
+        const { data, trace_id } = await api("/api/company-database/ownership/manifest-template", {
+          method: "POST",
+          role: "data_engineer",
+          body: companyOwnershipManifestPayload(execute)
+        });
+        renderCompanyOwnershipManifest(data, true);
+        setStatus(`${execute ? "股权 manifest 已写入" : "股权 manifest 预览完成"} · ${data.file_count || 0} 个文件 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelOwnershipManifestStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    async function previewCompanyOwnershipImportFromManifest() {
+      if (!latestCompanyOwnershipManifestTemplate?.files?.length) {
+        await generateCompanyOwnershipManifest(false);
+      }
+      if (!latestCompanyOwnershipManifestTemplate?.files?.length) {
+        setStatus("股权 manifest 没有可导入文件，请先填写目录、文件或 glob。", true);
+        return;
+      }
+      await importCompanyOwnershipTables(false, { useManifest: true });
     }
 
     function renderCompanyMaterialInbox(data, showDetails = true) {
@@ -8590,8 +8969,16 @@
       await loadCompanyIntelligence(false);
     }
 
+    function relationshipRowsFromPayload(data) {
+      if (Array.isArray(data)) return data;
+      if (Array.isArray(data?.relationships?.company_relationships)) return data.relationships.company_relationships;
+      if (Array.isArray(data?.company_relationships)) return data.company_relationships;
+      if (Array.isArray(data?.relationships)) return data.relationships;
+      return [];
+    }
+
     function renderCompanyRelationshipReview(data) {
-      const relationships = data.relationships?.company_relationships || [];
+      const relationships = relationshipRowsFromPayload(data);
       const candidates = relationships.filter((item) => {
         const type = String(item.relationship_type || "");
         const status = String(item.review_status || "");
@@ -8615,7 +9002,7 @@
           `<button data-action="review-company-relationship" data-review-action="reject" data-relationship-id="${item.relationship_id}">拒绝</button>`,
           `<button data-action="review-company-relationship" data-review-action="merge" data-relationship-id="${item.relationship_id}">合并</button>`
         ].join(" ");
-        return `<tr><td>${statusLabel(item.relationship_type || "关系候选")}${metaLine("对象", String(objectName).slice(0, 80))}${renderAdvancedTrace("关系候选追溯", item)}</td><td>${whyLine}${metaLine("证据来源", evidenceLine)}</td><td>${statusLabel(item.review_status || "")}${metaLine("置信", formatScore(item.confidence || 0))}${metaLine("推荐", recommendText)}</td><td>${nextLine}${metaLine("操作", actions)}</td></tr>`;
+        return `<tr><td>${relationshipTypeDisplayLabel(item.relationship_type || "关系候选")}${metaLine("对象", String(objectName).slice(0, 80))}</td><td>${whyLine}${metaLine("证据来源", evidenceLine)}</td><td>${statusLabel(item.review_status || "")}${metaLine("置信", formatScore(item.confidence || 0))}${metaLine("推荐", recommendText)}</td><td>${nextLine}${metaLine("操作", actions)}${renderAdvancedTrace("关系候选追溯", item)}</td></tr>`;
       });
     }
 
@@ -8727,6 +9114,200 @@
         : `${String(actionText || "暂无反馈；先建立观察任务或分析结论。").slice(0, 150)}`;
     }
 
+    function renderCompanyRelationshipContext(relationships) {
+      const context = relationships.relationship_context || {};
+      const summary = context.summary || {};
+      const industry = context.industry || {};
+      const ownership = context.ownership || {};
+      const diagnostics = context.coverage_diagnostics || {};
+      const focusIssuerId = context.focus_issuer_ids?.[0] || "";
+      const chainNodeId = (item) => item.node_id || (item.node_ids || [])[0] || "";
+      const holdingStatusLabel = (item) => item.report_period || sourceLabel(item.source_id || "");
+      const graphActionAttrs = (item, relationshipType = "") => [
+        `data-action="open-relationship-graph"`,
+        `data-issuer-id="${focusIssuerId}"`,
+        relationshipType ? `data-relationship-type="${relationshipType}"` : "",
+        item.chain_id ? `data-chain-id="${item.chain_id}"` : "",
+        chainNodeId(item) ? `data-chain-node-id="${chainNodeId(item)}"` : "",
+      ].filter(Boolean).join(" ");
+      const industryRelationshipTraceAttrs = (item, relationshipType = "", direction = "") => [
+        graphActionAttrs(item, relationshipType),
+        relationshipType ? `data-industry-relationship="${relationshipType}"` : "",
+        direction ? `data-industry-direction="${direction}"` : "",
+        item.chain_name ? `data-chain-name="${escapeHtml(item.chain_name)}"` : "",
+        item.position_id ? `data-position-id="${escapeHtml(item.position_id)}"` : "",
+        (item.node_ids || []).length ? `data-chain-node-ids="${escapeHtml((item.node_ids || []).join(","))}"` : "",
+        (item.node_name || chainNodeId(item)) ? `data-chain-node-label="${escapeHtml(item.node_name || chainNodeId(item))}"` : "",
+      ].filter(Boolean).join(" ");
+      function recommendedGraphQueryAttrs(item = {}) {
+        const query = item.query || {};
+        return [
+          `data-action="open-relationship-graph"`,
+          `data-issuer-id="${query.issuer_id || focusIssuerId}"`,
+          query.security_id ? `data-security-id="${query.security_id}"` : "",
+          query.relationship_type ? `data-relationship-type="${query.relationship_type}"` : "",
+          query.chain_id ? `data-chain-id="${query.chain_id}"` : "",
+          query.chain_node_id ? `data-chain-node-id="${query.chain_node_id}"` : "",
+          query.industry_direction ? `data-industry-direction="${query.industry_direction}"` : "",
+          query.ownership_holder_key ? `data-ownership-holder-key="${query.ownership_holder_key}"` : "",
+          query.ownership_holder_key ? `data-ownership-holder-label="${item.label || query.ownership_holder_key}"` : "",
+          query.institutional_holder_key ? `data-institutional-holder-key="${query.institutional_holder_key}"` : "",
+          query.institutional_holder_key ? `data-institutional-holder-label="${item.label || query.institutional_holder_key}"` : "",
+        ].filter(Boolean).join(" ");
+      }
+      const relationshipGapActionHtml = (item = {}) => {
+        const target = item.target || {};
+        const action = target.ui_action || item.action || (() => {
+          const layer = item.layer || "";
+          if (["industry_position", "peer_companies", "upstream_companies", "downstream_companies"].includes(layer)) return "preview_batch_build";
+          if (["ownership_candidates", "shareholder_network", "approved_shareholder_network"].includes(layer)) return "ownership_import_guidance";
+          if (layer === "graph_edges") return "open_relationship_graph";
+          return "coverage_audit";
+        })();
+        const label = action === "ownership_import_guidance"
+          ? "导入股权表"
+          : action === "open_relationship_graph"
+            ? "打开图谱"
+            : action === "preview_batch_build"
+              ? "预览补齐"
+              : "查看缺口";
+        return `<button data-action="run-relationship-backfill-action" data-backfill-action="${action}" data-target-ui-action="${escapeHtml(target.ui_action || "")}" data-layer="${item.layer || ""}" data-evidence="${escapeHtml(item.evidence || "")}">${label}</button>`;
+      };
+      setText("companyIntelPeerCount", `${summary.peer_companies || 0}`);
+      setText("companyIntelUpstreamCount", `${summary.upstream_companies || 0}`);
+      setText("companyIntelDownstreamCount", `${summary.downstream_companies || 0}`);
+      const industryNetworkSummary = diagnostics.industry_network_summary || {};
+      const setIndustryNetworkTrace = (elementId, key, label) => {
+        const element = $(elementId);
+        if (!element) return;
+        element.dataset.networkTotal = `${industryNetworkSummary.total ?? summary.industry_related_companies_total ?? 0}`;
+        element.dataset.networkPart = `${industryNetworkSummary[key] ?? summary[`${key}_companies`] ?? 0}`;
+        element.dataset.chainNodes = `${industryNetworkSummary.chain_nodes ?? summary.industry_chain_nodes ?? 0}`;
+        element.title = `产业链关系覆盖: 合计 ${element.dataset.networkTotal} · ${label} ${element.dataset.networkPart} · 节点 ${element.dataset.chainNodes}`;
+      };
+      setIndustryNetworkTrace("companyIntelPeerCount", "peers", "同类");
+      setIndustryNetworkTrace("companyIntelUpstreamCount", "upstream", "上游");
+      setIndustryNetworkTrace("companyIntelDownstreamCount", "downstream", "下游");
+      setText("companyIntelShareholderCount", `${summary.shareholders || 0}`);
+      setText("companyIntelShareholderRelatedCount", `${summary.shareholder_related_companies_total ?? ((summary.approved_shareholder_related_companies || 0) + (summary.shareholder_related_companies || 0))} · 事实 ${summary.approved_shareholder_related_companies || 0} / 持仓 ${summary.shareholder_related_companies || 0}`);
+      const shareholderNetworkSummary = diagnostics.shareholder_network_summary || {};
+      const shareholderRelatedElement = $("companyIntelShareholderRelatedCount");
+      if (shareholderRelatedElement) {
+        shareholderRelatedElement.dataset.networkTotal = `${shareholderNetworkSummary.total ?? summary.shareholder_related_companies_total ?? 0}`;
+        shareholderRelatedElement.dataset.factNetwork = `${shareholderNetworkSummary.fact_network ?? summary.approved_shareholder_related_companies ?? 0}`;
+        shareholderRelatedElement.dataset.holdingNetwork = `${shareholderNetworkSummary.holding_network ?? summary.shareholder_related_companies ?? 0}`;
+        shareholderRelatedElement.title = `股东网络覆盖: 合计 ${shareholderRelatedElement.dataset.networkTotal} · 事实 ${shareholderRelatedElement.dataset.factNetwork} · 持仓 ${shareholderRelatedElement.dataset.holdingNetwork}`;
+      }
+      const relationshipActionsByLayer = new Map([
+        ...(context.next_actions || []),
+        ...(context.enhancement_actions || []),
+        ...(diagnostics.next_actions || []),
+        ...(diagnostics.enhancement_actions || []),
+      ].filter((item) => item && item.layer).map((item) => [item.layer, item]));
+      const relationshipRows = [
+        ...(diagnostics.diagnostics || []).filter((item) => !item.available).map((item) => ({
+          topic: "关系链缺口",
+          subject: item.label || item.layer,
+          status: item.required ? "必补" : "增强",
+          finding: `${statusLabel(item.status || "missing")} · 当前 ${item.count || 0} 条 · 来源: ${item.evidence || "未标注"}`,
+          action: relationshipActionsByLayer.get(item.layer)?.reason || item.recommended_action || "补齐本层关系数据",
+          actionHtml: relationshipGapActionHtml({ ...item, ...(relationshipActionsByLayer.get(item.layer) || {}) }),
+          trace: { ...item, relationship_action: relationshipActionsByLayer.get(item.layer) || null },
+        })),
+        ...(context.dynamic_graph?.recommended_queries || []).slice(0, 8).map((item) => ({
+          topic: "图谱推荐入口",
+          subject: item.label || "关系图谱",
+          status: "可展开",
+          finding: item.reason || "按推荐过滤条件打开动态图谱",
+          action: "点击打开推荐图谱",
+          trace: item,
+          actionAttrs: recommendedGraphQueryAttrs(item),
+        })),
+        ...(industry.chain_nodes || []).slice(0, 4).map((item) => ({
+          topic: "产业链位置",
+          subject: item.node_name || item.node_id,
+          status: item.chain_name || item.chain_id,
+          finding: `${item.chain_name || item.chain_id || "产业链"} · ${item.node_name || item.node_id || "环节"}`,
+          action: "作为同类、上下游展开起点",
+          trace: item,
+          actionAttrs: industryRelationshipTraceAttrs(item, "industry_position", "position"),
+        })),
+        ...(industry.peer_companies || []).slice(0, 5).map((item) => ({
+          topic: "同类公司",
+          subject: item.display_name || item.issuer_id,
+          status: item.role || relationshipTypeDisplayLabel(item.relationship_type),
+          finding: item.reason || `${item.chain_name || item.chain_id} · ${(item.node_ids || []).map(userEntityLabel).join(", ")}`,
+          action: "可点击知识图谱继续展开",
+          trace: item,
+          actionAttrs: industryRelationshipTraceAttrs(item, "industry_peer", "peer"),
+        })),
+        ...(industry.upstream_companies || []).slice(0, 5).map((item) => ({
+          topic: "上游公司",
+          subject: item.display_name || item.issuer_id,
+          status: item.role || relationshipTypeDisplayLabel(item.relationship_type),
+          finding: item.reason || `${item.chain_name || item.chain_id} · ${(item.node_ids || []).map(userEntityLabel).join(", ")}`,
+          action: "补供应商证据后提升可信关系",
+          trace: item,
+          actionAttrs: industryRelationshipTraceAttrs(item, "upstream_of", "upstream"),
+        })),
+        ...(industry.downstream_companies || []).slice(0, 5).map((item) => ({
+          topic: "下游公司",
+          subject: item.display_name || item.issuer_id,
+          status: item.role || relationshipTypeDisplayLabel(item.relationship_type),
+          finding: item.reason || `${item.chain_name || item.chain_id} · ${(item.node_ids || []).map(userEntityLabel).join(", ")}`,
+          action: "补客户/应用证据后提升可信关系",
+          trace: item,
+          actionAttrs: industryRelationshipTraceAttrs(item, "downstream_of", "downstream"),
+        })),
+        ...(ownership.shareholders || []).slice(0, 5).map((item) => ({
+          topic: "股东/持有人",
+          subject: item.holder_name || item.holder_id,
+          status: holdingStatusLabel(item),
+          finding: `${Number(item.shares || 0).toLocaleString()} 股 · 市值 ${Number(item.value_usd || 0).toLocaleString()}`,
+          action: "点击展开同一13F持有人网络",
+          trace: item,
+          actionAttrs: `data-action="open-relationship-graph" data-issuer-id="${focusIssuerId}" data-institutional-holder-key="${item.holder_key || item.holder_id || ""}" data-institutional-holder-label="${item.holder_name || item.holder_key || item.holder_id || ""}" data-source-id="${item.source_id || ""}"`,
+        })),
+        ...(ownership.approved_relationships || []).slice(0, 5).map((item) => ({
+          topic: "事实股权关系",
+          subject: item.entity_name || item.object_id,
+          status: relationshipTypeDisplayLabel(item.relationship_type || item.review_status),
+          finding: `${relationshipTypeDisplayLabel(item.relationship_type || "ownership")} · 已批准 · 置信 ${formatScore(item.confidence || 0)}`,
+          action: "点击展开同一事实股东网络",
+          trace: item,
+          actionAttrs: `data-action="open-relationship-graph" data-issuer-id="${focusIssuerId}" data-relationship-type="${item.relationship_type || ""}" data-ownership-holder-key="${item.holder_key || item.object_id || ""}" data-ownership-holder-label="${item.holder_name || item.entity_name || item.holder_key || item.object_id || ""}"`,
+        })),
+        ...(ownership.relationship_candidates || []).slice(0, 5).map((item) => ({
+          topic: "股权候选",
+          subject: item.entity_name || item.object_id,
+          status: item.review_status || relationshipTypeDisplayLabel(item.relationship_type),
+          finding: `${relationshipTypeDisplayLabel(item.relationship_type || "ownership")} · 置信 ${formatScore(item.confidence || 0)}`,
+          action: "复核公开披露证据后提升为可信关系",
+          trace: item,
+          actionAttrs: `data-action="open-relationship-graph" data-issuer-id="${focusIssuerId}" data-relationship-type="${item.relationship_type || ""}"`,
+        })),
+        ...(ownership.approved_shareholder_related_companies || []).slice(0, 5).map((item) => ({
+          topic: "事实股东关联",
+          subject: item.related_company || item.related_issuer_id,
+          status: item.holder_name || item.relationship_type,
+          finding: `${item.holder_name || "同一股东"} 还关联 ${item.related_company || item.related_issuer_id}`,
+          action: "点击展开同一事实股东网络",
+          trace: item,
+          actionAttrs: `data-action="open-relationship-graph" data-issuer-id="${focusIssuerId}" data-relationship-type="${item.relationship_type || ""}" data-ownership-holder-key="${item.holder_key || item.holder_id || ""}" data-ownership-holder-label="${item.holder_name || item.holder_key || item.holder_id || ""}"`,
+        })),
+        ...(ownership.shareholder_related_companies || []).slice(0, 5).map((item) => ({
+          topic: "股东关联公司",
+          subject: item.related_company || item.related_issuer_id,
+          status: item.holder_name || item.report_period,
+          finding: `${item.holder_name || "同一持有人"} 还持有 ${item.related_company || item.related_issuer_id}`,
+          action: "点击展开同一13F持有人网络",
+          trace: item,
+          actionAttrs: `data-action="open-relationship-graph" data-issuer-id="${focusIssuerId}" data-institutional-holder-key="${item.holder_key || item.holder_id || ""}" data-institutional-holder-label="${item.holder_name || item.holder_key || item.holder_id || ""}"`,
+        })),
+      ];
+      renderInsightTable("companyIntelRelationshipContextRows", relationshipRows, "暂无多维关系上下文。先补公司产业定位、关系候选或股东/持仓记录。");
+    }
+
     function renderCompanyIntelligence(data) {
       latestCompanyIntelligence = data;
       const counts = data.section_counts || {};
@@ -8755,10 +9336,11 @@
         ...(facts.company_events || []).slice(0, 5).map((item) => ({ topic: "重要事件", subject: item.title || item.event_type, status: item.fact_status || item.event_type || "", finding: userSummaryLine(item), action: "复核事件影响和证据", trace: item })),
         ...(facts.disclosure_events || []).slice(0, 5).map((item) => ({ topic: "披露事件", subject: item.event_type, status: item.severity || "", finding: userSummaryLine(item), action: "查看披露来源", trace: item })),
         ...(facts.documents || []).slice(0, 5).map((item) => ({ topic: "资料", subject: item.title || item.document_type, status: item.document_type || "", finding: item.title || item.source_uri || "资料已入库", action: "作为事实追溯证据", trace: item })),
-        ...(relationships.company_relationships || []).slice(0, 5).map((item) => ({ topic: "公司关系", subject: item.relationship_type, status: item.relationship_type || "", finding: `${userEntityLabel(item.subject_id || item.source_issuer_id)} -> ${userEntityLabel(item.object_id || item.target_issuer_id)}`, action: "用于理解供应链或关联方", trace: item })),
+        ...(relationships.company_relationships || []).slice(0, 5).map((item) => ({ topic: "公司关系", subject: relationshipTypeDisplayLabel(item.relationship_type), status: relationshipTypeDisplayLabel(item.relationship_type || ""), finding: `${userEntityLabel(item.subject_id || item.source_issuer_id)} -> ${userEntityLabel(item.object_id || item.target_issuer_id)}`, action: "用于理解供应链或关联方", trace: item })),
         ...(relationships.company_positions || []).slice(0, 5).map((item) => ({ topic: "产业定位", subject: item.role, status: item.role || "", finding: `${userEntityLabel(item.chain_id)} · ${(item.node_ids || []).map(userEntityLabel).join(", ")}`, action: "用于判断产业链位置", trace: item }))
       ];
       renderInsightTable("companyIntelFactRows", factRows, "暂无关键事实。可先运行单标的研究建立最小档案。");
+      renderCompanyRelationshipContext(relationships);
       const researchRows = [
         ...(research.structured_research_reports || []).slice(0, 5).map((item) => ({ topic: "结构化研报", subject: item.title || item.institution_name, status: item.rating || item.parser_status || "", finding: `${item.institution_name || item.broker || "研究来源"} · ${userSummaryLine(item, item.title || "研报已结构化")}`, action: item.published_at || "查看观点与预测", trace: item })),
         ...(research.report_viewpoints || []).slice(0, 5).map((item) => ({ topic: "研报观点", subject: item.topic || item.stance, status: item.realization_status || item.stance || "", finding: `${userSummaryLine(item)}${item.target_price ? ` · 目标价 ${item.target_price}` : ""}`, action: "跟踪观点兑现", trace: item })),
@@ -9476,6 +10058,19 @@
           setValue("companyIntelSymbol", target.dataset.symbol || "AAPL");
           openTab("search");
           await loadCompanyIntelligence(true);
+        } else if (action === "open-relationship-graph") {
+          await openRelationshipGraphContext({
+            issuerId: target.dataset.issuerId,
+            securityId: target.dataset.securityId,
+            relationshipType: target.dataset.relationshipType,
+            chainId: target.dataset.chainId,
+            chainNodeId: target.dataset.chainNodeId,
+            industryDirection: target.dataset.industryDirection,
+            ownershipHolderKey: target.dataset.ownershipHolderKey,
+            ownershipHolderLabel: target.dataset.ownershipHolderLabel,
+            institutionalHolderKey: target.dataset.institutionalHolderKey,
+            institutionalHolderLabel: target.dataset.institutionalHolderLabel,
+          });
         } else if (action === "focus-graph-node") {
           knowledgeGraphState.focusId = target.dataset.nodeId || knowledgeGraphState.focusId;
           knowledgeGraphState.selectedId = target.dataset.nodeId || knowledgeGraphState.selectedId;
@@ -9498,6 +10093,8 @@
           await updateChokepointVerificationTask(target.dataset.taskId, target.dataset.taskStatus || "done");
         } else if (action === "company-intel-guidance") {
           await runCompanyIntelGuidanceAction(target.dataset.guidanceAction || "coverage_audit");
+        } else if (action === "run-relationship-backfill-action") {
+          await runRelationshipBackfillAction(target.dataset.targetUiAction || target.dataset.backfillAction || "coverage_audit", target.dataset.layer || "");
         } else if (action === "open-ingestion") {
           openTab("ingestion", { mode: "maintenance" });
           setStatus("已切到数据中台");
@@ -9602,6 +10199,11 @@
     $("loadCompanyMaterialPending").addEventListener("click", () => loadCompanyMaterialPending(true));
     $("previewCompanyMaterialInbox").addEventListener("click", () => ingestCompanyMaterialInbox(false));
     $("runCompanyMaterialInbox").addEventListener("click", () => ingestCompanyMaterialInbox(true));
+    $("previewCompanyOwnershipImport").addEventListener("click", () => importCompanyOwnershipTables(false));
+    $("runCompanyOwnershipImport").addEventListener("click", () => importCompanyOwnershipTables(true));
+    $("previewCompanyOwnershipManifest").addEventListener("click", () => generateCompanyOwnershipManifest(false));
+    $("previewCompanyOwnershipImportFromManifest").addEventListener("click", () => previewCompanyOwnershipImportFromManifest());
+    $("runCompanyOwnershipManifest").addEventListener("click", () => generateCompanyOwnershipManifest(true));
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));
     $("runCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(true));
     $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));

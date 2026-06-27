@@ -1539,6 +1539,9 @@ class ApiRouter:
     def _build_company_relationships(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.build_company_relationships(body, actor=actor)
 
+    def _company_ownership_manifest_template(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.company_ownership_manifest_template(body, actor=actor)
+
     def _build_company_workflow(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.build_company_workflow(body, actor=actor)
 

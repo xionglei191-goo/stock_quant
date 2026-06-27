@@ -728,6 +728,467 @@
   - **已完成（本轮）**：`docs/pr-checklist.md` 增加服务层 review gate；`scripts/check_handoffs.py` 要求触及 `app/services.py` 或 `SystemService` 的 handoff 必须包含 `SystemService Growth Freeze Review`。
   - 验收：`AGENTS.md` 或开发文档记录规则；后续任务 handoff 必须说明是否新增 `SystemService` 逻辑及原因。
 
+- `DONE` T-504 公司主体多维关系图谱与动态探索
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI, Data and Evidence
+  - 目标：按公司为中心展示产业链位置、同类公司、上下游公司、股东/持有人和股东关联公司，解决公司情报逻辑线条不完整的问题。
+  - 交付：不重建数据库；复用 `CompanyRelationship`、`CompanyPosition`、`IndustryChain`、`InstitutionalHolding` 和 `/api/graph/query`，新增公司情报聚合中的 `relationships.relationship_context` 派生视图。
+  - **已完成（本轮）**：`app/service_modules/company_intelligence.py` 新增 `relationship_context` 领域聚合，输出产业链节点、同类、上下游、股东、股东关联公司、关系类型分组、动态图谱建议和 `database_rebuild_required=false` / `relationship_backfill_required=true` 数据策略。
+  - **已完成（本轮）**：`/api/company-intelligence/{symbol}` 返回 `relationships.relationship_context`；图谱查询在公司中心视图中补充同一 13F 持有人关联公司的可展开边。
+  - **已完成（本轮）**：公司情报页新增“多维关系”面板，展示同类、上游、下游、股东和股东关联计数与明细，高级追溯仍折叠保留完整对象。
+  - **已完成（继续推进）**：公开披露关系候选抽取扩展到 `shareholder_candidate`、`controller_candidate`、`investee_candidate`；这些股权候选进入 `relationship_context.ownership.relationship_candidates` 并在“多维关系”面板显示，仍需人工复核后才能提升为事实关系。
+  - **已完成（继续推进）**：“多维关系”明细行可直接跳入动态知识图谱；产业链、同类、上游、下游会携带 `chain_id`/`chain_node_id`，股权/关系候选会携带 `relationship_type`，`/api/graph/query` 支持按关系类型过滤公司关系子图。
+  - **已完成（继续推进）**：关系 builder 新增 `structured_ownership_relationships` / `ownership_relationships` 本地结构化输入，可把 A 股十大股东、实控人、子公司和参股公司导入结果归一为 `shareholder_candidate`、`controller_candidate`、`subsidiary_candidate`、`investee_candidate`，默认 dry-run 且 `needs_review`，进入同一 `relationship_context.ownership.relationship_candidates`。
+  - **已完成（继续推进）**：关系 builder 进一步支持 `ownership_csv`、`ownership_tsv`、`ownership_table_text` 和 `structured_ownership_tables`，可解析 CSV/TSV/Markdown 管道表，并将中文表头如 `股票代码`、`关系类型`、`股东名称`、`持股比例`、`报告期`、`来源` 归一为结构化股权候选输入。
+  - **已完成（继续推进）**：关系 builder 支持 `ownership_file_paths` / `ownership_files` 从显式本地文件读取 ownership 表格，按 `ownership_root_path` 解析相对路径，限制扩展名、文件数量和单文件大小，并返回 `ownership_file_inputs` 解析摘要。
+  - **已完成（继续推进）**：新增 `scripts/import_company_ownership_tables.py` 操作入口，可把本地 ownership CSV/TSV/TXT/MD 文件提交到关系 builder，支持显式 `--files`、`--glob` 目录扫描、JSON `--manifest` 和 `--write-manifest-template` 模板生成；未传 `--symbols` 时可从文件名/路径推断股票代码；默认 dry-run，显式 `--execute` 才写入待复核候选关系，并输出 `artifacts/company-ownership-table-import.json`。
+  - 后续增强：接入更多真实 A 股十大股东、实控人、子公司/参股公司和交易所/年报股权结构属于数据源扩展，不阻塞当前多维关系链闭环；公开披露关系候选仍需人工复核后提升为事实关系。
+  - 验收：`python3 -m py_compile app/*.py app/service_modules/*.py tests/*.py scripts/*.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_company_relationship_builder_creates_listing_and_coverage_links tests.test_system.SystemServiceTests.test_company_relationship_builder_accepts_structured_ownership_rows tests.test_system.SystemServiceTests.test_company_relationship_builder_parses_local_ownership_tables tests.test_system.SystemServiceTests.test_company_relationship_builder_reads_local_ownership_files tests.test_system.SystemServiceTests.test_company_ownership_table_import_script_uses_relationship_builder tests.test_system.SystemServiceTests.test_company_ownership_table_import_script_infers_symbol_from_path tests.test_system.SystemServiceTests.test_company_ownership_table_import_script_uses_manifest_metadata tests.test_system.SystemServiceTests.test_company_ownership_table_import_script_builds_manifest_template tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-505 公司多维关系链覆盖诊断
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Data and Evidence, Product and UI
+  - 目标：让公司关系图谱不仅能展示已有关系，还能判断产业链、同类、上下游、股权和图谱边还缺哪一层，并给出下一步补齐动作。
+  - **已完成（本轮）**：`relationship_context` 新增 `coverage_diagnostics` 和 `next_actions`，按产业链位置、同类公司、上游公司、下游公司、股权/控制关系、股东关联公司和动态图谱边输出覆盖状态、必补/增强属性、缺失层和建议动作。
+  - **已完成（本轮）**：公司情报页“多维关系”面板优先显示缺失的关系链层级，把缺口直接转成用户可理解的补数据动作，已有关系明细仍可点击进入动态图谱。
+  - **已完成（本轮）**：新增聚焦回归，覆盖完整关系样例 `coverage_score=1.0`，以及只有产业链定位但缺同类、上下游、股权和图谱边时返回 `missing_required_layers` 与 `relationship_backfill` 下一步动作。
+  - 后续增强状态：已由 T-506 至 T-538 接到后台补库、ownership manifest、关系审核、图谱和增强动作入口；剩余仅为更多真实数据源接入。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated tests.test_system.SystemServiceTests.test_company_relationship_context_reports_missing_chain_layers`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-506 关系链缺口到补齐操作联动
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI, Data and Evidence
+  - 目标：把 T-505 的关系链缺口诊断从提示文本推进为可点击操作，让用户能从“缺什么”直接进入补齐、导入、图谱或审核入口。
+  - **已完成（本轮）**：公司情报页“关系链缺口”行新增操作按钮，按缺口层级映射到现有能力：产业链/同类/上下游触发公司数据库补齐预览，股权/股东网络引导打开后台维护区的本地材料/ownership manifest 导入，图谱边打开关系图谱，候选审核可进入关系复核队列。
+  - **已完成（本轮）**：新增 `runRelationshipBackfillAction` 前端执行函数，复用现有 `buildCompanyDatabaseBatch`、`openRelationshipGraphContext`、`renderCompanyRelationshipReview` 和后台维护区，不新增后端接口、不迁移 schema。
+  - **已完成（本轮）**：`scripts/ui_static_check.py` 纳入 `runRelationshipBackfillAction` 和 `data-action="run-relationship-backfill-action"`，防止后续回退成只读提示。
+  - 后续增强状态：已由 T-507 至 T-511 提供 UI 原生入口、manifest 预览、导入预览、执行和候选审核队列闭环。
+  - 验收：`python3 scripts/ui_static_check.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_ui_static_contract_matches_target_information_architecture`、`python3 -m py_compile app/*.py app/service_modules/*.py tests/*.py scripts/*.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-507 股权表导入工作台入口
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI, Data and Evidence
+  - 目标：把股权/股东关系缺口补齐从脚本和提示推进到浏览器内可预览、可执行的受控入口。
+  - **已完成（本轮）**：公司情报后台维护区新增“股权表导入”表单，支持填写本地股权表目录、文件列表和默认关系类型，调用现有 `/api/company-database/relationships/build` 的 `ownership_file_paths` 路径，默认 dry-run。
+  - **已完成（本轮）**：股权表导入结果展示解析文件数、候选关系数、目标公司数、文件错误和 usage boundary；执行后刷新公司情报并进入关系候选审核队列，所有关系仍为 `needs_review` 候选。
+  - **已完成（本轮）**：T-506 的股权缺口动作现在直接触发股权表导入预览，而不是只提示进入后台维护区。
+  - **已完成（本轮）**：`scripts/ui_static_check.py` 纳入新增 DOM、函数和按钮契约；API 文档说明公司情报工作台的股权表导入入口复用同一关系 builder。
+  - 后续增强状态：已由 T-508 至 T-510 提供 ownership manifest 浏览器生成、导入预览和真实浏览器验收。
+  - 验收：`python3 scripts/ui_static_check.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_ui_static_contract_matches_target_information_architecture`、`python3 -m py_compile app/*.py app/service_modules/*.py tests/*.py scripts/*.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-508 股权表 manifest 模板生成工作台入口
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI, Data and Evidence
+  - 目标：让用户可以在浏览器内扫描本地股权表目录并生成可编辑 ownership manifest，不再必须手动运行 CLI。
+  - **已完成（本轮）**：新增 `POST /api/company-database/ownership/manifest-template`，复用 `company_intelligence` 领域模块的文件发现、路径股票代码推断和 manifest 模板生成逻辑；默认 dry-run，只在 `execute=true` 且提供 `output_path` 时写入本地 JSON。
+  - **已完成（本轮）**：公司情报后台维护区新增股权 manifest glob、输出路径、预览和写入按钮，结果表展示文件、推断代码、默认类型和来源字段。
+  - **已完成（本轮）**：`scripts/ui_static_check.py` 覆盖新增 DOM 和函数；API 文档记录新接口字段、返回结构和本地边界。
+  - 后续增强状态：已由 T-509 至 T-510 完成 manifest 到导入预览闭环和真实浏览器验收。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_ownership_manifest_template_api_previews_and_writes tests.test_system.SystemServiceTests.test_ui_static_contract_matches_target_information_architecture`、`python3 scripts/ui_static_check.py`、`python3 -m py_compile app/*.py app/service_modules/*.py tests/*.py scripts/*.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-509 股权 manifest 到导入预览闭环
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI, Data and Evidence
+  - 目标：把 T-508 生成的 ownership manifest 直接串到 T-507 的股权表导入预览，形成浏览器内“扫描目录 -> 生成 manifest -> 预览候选关系”的连续路径。
+  - **已完成（本轮）**：前端保存最近一次 `latestCompanyOwnershipManifestTemplate`，股权导入 payload 可直接使用 manifest 中的 `file_path`、`default_kind`、`source_id` 和 `source_table`。
+  - **已完成（本轮）**：新增“用 manifest 预览导入”按钮；如果尚未生成模板，会先 dry-run 生成 manifest，再用模板文件项调用 `/api/company-database/relationships/build` 预览候选关系。
+  - **已完成（本轮）**：`scripts/ui_static_check.py` 纳入新按钮和 `previewCompanyOwnershipImportFromManifest` 函数，防止回退为两个割裂步骤。
+  - 后续增强状态：已由 T-510 至 T-511 覆盖真实浏览器验收和候选审核队列刷新。
+  - 验收：`python3 scripts/ui_static_check.py`、`python3 -m unittest tests.test_system.SystemServiceTests.test_ui_static_contract_matches_target_information_architecture`、`python3 -m py_compile app/*.py app/service_modules/*.py tests/*.py scripts/*.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-510 股权 manifest 到导入真实浏览器验收
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI, Data and Evidence
+  - 目标：用真实浏览器点击验证 T-508/T-509 的连续链路，确保用户在工作台内填写本地股权表目录后，可以预览 manifest 并直接用 manifest 预览股权候选关系。
+  - **已完成（本轮）**：`scripts/ui_interaction_acceptance.py` 创建本地 CSV fixture，真实点击公司情报页后台维护区的 ownership manifest 预览按钮，并断言文件数、SPCX 模板行和操作摘要。
+  - **已完成（本轮）**：同一浏览器会话继续点击“用 manifest 预览导入”，通过真实 API 调用 `/api/company-database/relationships/build`，断言股权导入状态、候选数、解析结果行和操作摘要。
+  - **已完成（本轮）**：失败诊断新增 ownership manifest/import 状态与行内容，后续定位 UI 或 API 断点时不用只看全量页面截图。
+  - 后续增强状态：已由 T-511 纳入隔离数据目录的执行态浏览器验收。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8771 --output-dir artifacts/ui-interaction-acceptance-t510 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-511 股权导入执行到候选复核队列闭环
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI, Data and Evidence
+  - 目标：把“股权表执行导入”后的结果直接推进关系候选复核队列，形成“扫描目录 -> manifest -> 预览候选 -> 执行导入 -> 复核候选”的完整浏览器链路。
+  - **已完成（本轮）**：`build_company_relationships` 执行或 dry-run 后返回 `relationship_review_candidates` 和 `relationship_review_candidate_count`，每条候选带 `review_recommendation`，前端无需再从全量公司情报聚合里猜测新候选。
+  - **已完成（本轮）**：`renderCompanyRelationshipReview` 兼容数组、`{relationships:{company_relationships}}`、`{company_relationships}` 和 API 列表 payload，修复执行导入后传数组导致候选队列为空的问题。
+  - **已完成（本轮）**：`runCompanyOwnershipImport` 在已有 manifest 且未填写显式文件列表时复用最近 manifest 输入；执行后直接渲染后端返回的候选复核队列，再刷新公司情报。
+  - **已完成（本轮）**：真实浏览器验收新增 `company_ownership_import_execute_refreshes_review_queue`，覆盖点击执行导入后股权候选 `Alpha Capital` 出现在关系复核队列且具备通过按钮。
+  - 后续增强状态：已由 T-512 纳入“批准 -> 关系图谱 active 边可见”浏览器验收。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_relationship_builder_reads_local_ownership_files tests.test_system.SystemServiceTests.test_ui_static_contract_matches_target_information_architecture`、`python3 scripts/ui_static_check.py`、`python3 -m py_compile app/services.py scripts/ui_interaction_acceptance.py scripts/ui_static_check.py tests/test_system.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8772 --output-dir artifacts/ui-interaction-acceptance-t511 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-512 股权候选批准到事实图谱边闭环
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Data and Evidence, Product and UI
+  - 目标：把人工批准的股权候选从 `*_candidate` 提升为事实型公司关系，并验证它能在关系图谱中按事实关系类型展开。
+  - **已完成（本轮）**：`review_company_relationship(... action=approve)` 对 `shareholder_candidate`、`controller_candidate`、`subsidiary_candidate`、`investee_candidate` 等候选统一去掉 `_candidate` 后缀，保留 `metadata.candidate_relationship_type` 和 `metadata.promoted_relationship_type`，同时设置 `approved/active`。
+  - **已完成（本轮）**：单测覆盖本地股权表导入后的 `shareholder_candidate` 被批准为 `shareholder`，旧 `shareholder_candidate` 图谱过滤不再返回该关系，`relationship_type=shareholder` 图谱过滤返回 active 边。
+  - **已完成（本轮）**：真实浏览器验收新增“通过股权候选 -> 公司情报刷新后存在 active shareholder -> 打开 shareholder 关系图谱并看到非空图谱边”的链路。
+  - 后续增强状态：已由 T-513、T-514、T-515 和 T-540 区分候选/事实股权，并提供事实股东网络扩展入口。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_approved_ownership_candidate_promotes_to_active_graph_relationship tests.test_system.SystemServiceTests.test_company_relationship_review_approves_rejects_and_merges_candidates`、`python3 -m py_compile app/services.py scripts/ui_interaction_acceptance.py tests/test_system.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8773 --output-dir artifacts/ui-interaction-acceptance-t512 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-513 多维关系面板区分事实股权与候选股权
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Data and Evidence, Product and UI
+  - 目标：让公司情报页的多维关系不再把已批准股权事实显示成“股权候选”，而是明确区分事实股权关系和待复核候选。
+  - **已完成（本轮）**：`relationship_context.ownership` 新增 `approved_relationships`、`relationship_candidates` 和兼容汇总 `relationships`；summary 新增 `approved_ownership_relationships` 与 `ownership_candidates`。
+  - **已完成（本轮）**：已批准且 active 的 `shareholder` / `controller` / `subsidiary` / `investee` 等事实股权关系进入 `approved_relationships`；仍为 `*_candidate`、`needs_review` 或 `candidate_status=candidate` 的关系进入 `relationship_candidates`。
+  - **已完成（本轮）**：公司情报“多维关系”面板新增“事实股权关系”行，点击可进入对应事实关系图谱；“股权候选”继续保留人工复核提示。
+  - **已完成（本轮）**：浏览器验收在批准 Alpha Capital 后断言 `relationship_context.ownership.approved_relationships` 包含 active `shareholder`，候选列表为空，且面板显示“事实股权关系”。
+  - 后续增强状态：已由 T-514、T-515、T-519、T-527、T-528 和 T-540 覆盖事实股东网络扩展和诊断汇总；更细的候选/事实评分校准可作为后续质量调参。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_approved_ownership_candidate_promotes_to_active_graph_relationship tests.test_system.SystemServiceTests.test_company_relationship_builder_accepts_structured_ownership_rows tests.test_system.SystemServiceTests.test_company_relationship_builder_creates_listing_and_coverage_links`、`python3 -m py_compile app/service_modules/company_intelligence.py scripts/ui_interaction_acceptance.py tests/test_system.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8774 --output-dir artifacts/ui-interaction-acceptance-t513 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-514 事实股东关联公司二跳聚合
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Data and Evidence, Product and UI
+  - 目标：当看到某家公司和已批准股东关系时，能回答“该股东还有哪些公司”，并在多维关系面板中展示同一事实股东关联的其他公司。
+  - **已完成（本轮）**：`relationship_context` 新增全量 `CompanyRelationship` 只读输入，用焦点公司已批准 ownership fact 的 `object_id/entity_name` 作为股东 key，扫描其他已批准 active ownership fact，输出 `ownership.approved_shareholder_related_companies`。
+  - **已完成（本轮）**：summary 新增 `approved_shareholder_related_companies`；原 `shareholder_related_companies` 继续代表 13F/持仓记录推导，避免混淆数据来源。
+  - **已完成（本轮）**：公司情报多维关系面板新增“事实股东关联”，展示“同一股东还关联哪些公司”，点击可按事实关系类型展开图谱。
+  - **已完成（本轮）**：浏览器验收用同一 CSV 导入 SPCX 和 DEMO 的 Alpha Capital 股东关系，批准后断言 approved relationship、候选清空、事实股权关系和事实股东关联均显示。
+  - 后续增强状态：已由 T-515、T-519、T-521、T-527 和 T-528 纳入事实股东网络诊断、holder-key 过滤和 UI 追溯。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_relationship_context_links_approved_same_shareholder_companies tests.test_system.SystemServiceTests.test_approved_ownership_candidate_promotes_to_active_graph_relationship`、`python3 -m py_compile app/service_modules/company_intelligence.py app/services.py scripts/ui_interaction_acceptance.py tests/test_system.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8775 --output-dir artifacts/ui-interaction-acceptance-t514 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-515 同一事实股东网络图谱过滤
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Research and AI Workflows, Product and UI
+  - 目标：从“事实股东关联”行点击进入动态图谱时，不只按关系类型展开焦点公司，而是按同一已批准股东/持有人 key 展开跨公司事实股东网络。
+  - **已完成（本轮）**：`/api/graph/query` 新增 `ownership_holder_key` 过滤；带该过滤时只返回同一 holder key 的 active、非候选、已批准/已复核/自动生成 ownership fact，并把跨公司关系挂回各自 issuer。
+  - **已完成（本轮）**：`relationship_context.ownership.approved_shareholder_related_companies` 暴露 `holder_key`；公司情报多维关系面板“事实股东关联”点击图谱时携带 `ownership_holder_key`。
+  - **已完成（本轮）**：API 合同记录 holder-key 图谱过滤边界，明确 `*_candidate` 不进入事实股东网络。
+  - **已完成（继续推进）**：真实浏览器验收新增 `company_ownership_holder_key_graph_click_loads_same_holder_network`，用 UI/API fixture 建立 DEMO 与 SPCX 的同一 Alpha Capital 已批准事实股东关系，载入 SPCX 的“事实股东关联”，再按 `ownership_holder_key=external_company_alpha_capital` 渲染图谱并断言两家公司关系边均进入 graph raw。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_relationship_context_links_approved_same_shareholder_companies`、`python3 -m py_compile app/services.py app/service_modules/company_intelligence.py scripts/ui_interaction_acceptance.py tests/test_system.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t516 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-516 图谱当前过滤条件可见化
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI
+  - 目标：用户从多维关系面板跳入图谱后，能直接看到当前图谱是按主体、关系类型、产业链节点或同一事实股东 key 过滤出来的，避免误以为是全量关系图。
+  - **已完成（本轮）**：关系图谱工具栏新增 `knowledgeGraphFilterChips`，默认显示“全部关系”，带过滤条件时显示主体、证券、关系类型、产业链、产业节点和股东 holder key。
+  - **已完成（本轮）**：`loadEntity` 会把本次 `/api/graph/query` 的 `relationship_type`、`chain_id`、`chain_node_id`、`ownership_holder_key` 等查询上下文写入图谱状态；图谱重渲染时保持 chip 可见。
+  - **已完成（本轮）**：真实浏览器验收断言 shareholder 关系图显示“关系类型: shareholder”，holder-key 网络图显示“股东: external company alpha capital”。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t516 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-517 图谱股东过滤 chip 可读名
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI
+  - 目标：同一事实股东网络图谱仍按稳定 holder key 查询，但界面 chip 显示用户能读懂的股东名，例如 `股东: Alpha Capital`，不再只暴露 `external_company_alpha_capital`。
+  - **已完成（本轮）**：`openRelationshipGraphContext` 和 `knowledgeGraphState.activeFilters` 支持 `ownershipHolderLabel`；`renderKnowledgeGraphFilterChips` 在 holder-key 过滤时优先展示 label，查询仍使用 `ownershipHolderKey`。
+  - **已完成（本轮）**：“事实股东关联”行新增 `data-ownership-holder-label`，从 `approved_shareholder_related_companies.holder_name` 传递到图谱过滤 chip。
+  - **已完成（本轮）**：浏览器验收断言 holder-key 图谱 chip 显示 `Alpha Capital`，并且不显示 raw `external_company_alpha_capital`。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t517 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-518 图谱过滤 chip 追溯属性
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；愿景扩展/生产化增强
+  - Owner：Product and UI
+  - 目标：图谱过滤 chip 对用户显示可读名，同时保留 raw filter key/value 供审计、排错和自动化验收追溯。
+  - **已完成（本轮）**：`renderKnowledgeGraphFilterChips` 为每个 chip 增加 `data-filter-key`、`data-filter-raw-value` 和 `title="过滤追溯: key=value"`；holder-key chip 继续显示 `Alpha Capital`。
+  - **已完成（本轮）**：浏览器验收断言 holder-key chip 不显示 raw key，但 DOM `data-filter-raw-value` 与 title 均保留 `external_company_alpha_capital`。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t518 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-519 事实股东网络覆盖诊断拆分
+  - 对应：E3-US1, E5-US1, E7-US1；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows
+  - 目标：`relationship_context.coverage_diagnostics` 区分 13F/持仓同一持有人网络与已批准事实股东网络，避免“股东关联公司”口径混淆。
+  - **已完成（本轮）**：`coverage_diagnostics.diagnostics` 新增可选层 `approved_shareholder_network`，使用 `summary.approved_shareholder_related_companies` 计数；原 `shareholder_network` 标签调整为 13F/持仓口径并继续使用 `summary.shareholder_related_companies`。
+  - **已完成（本轮）**：关系上下文缺口动作把 `approved_shareholder_network` 归入股权表导入/复核引导；API 合同补充两个股东网络诊断层的来源口径。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_relationship_context_links_approved_same_shareholder_companies tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated tests.test_system.SystemServiceTests.test_company_relationship_context_reports_missing_chain_layers`、`python3 -m py_compile app/service_modules/company_intelligence.py scripts/ui_interaction_acceptance.py scripts/ui_static_check.py tests/test_system.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-520 关系链缺口来源口径可见化
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI
+  - 目标：关系链缺口不只告诉用户缺哪一层，还要展示系统凭哪些来源口径判断该层缺失，避免 13F、事实股权、产业链定位等来源混淆。
+  - **已完成（本轮）**：公司情报“关系链缺口”行在 `finding` 中展示 `来源: diagnostics.evidence`，例如 `CompanyPosition + IndustryChain`、`same-holder InstitutionalHolding records`、`approved active ownership CompanyRelationship records`。
+  - **已完成（本轮）**：缺口操作按钮增加 `data-evidence`，静态契约纳入该追溯属性；API 合同说明 `diagnostics[].evidence` 会进入 UI 缺口行和按钮属性。
+  - 验收：`python3 -m py_compile scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-521 动态图谱 holder-key 过滤契约补齐
+  - 对应：E3-US1, E5-US1, E7-US1；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows
+  - 目标：让 `relationship_context.dynamic_graph` 自描述真实反映同一事实股东网络可按 `ownership_holder_key` 展开，避免 API 消费方只看到 UI 能力却看不到推荐过滤键。
+  - **已完成（本轮）**：`dynamic_graph.recommended_filters` 新增 `ownership_holder_key`，与 `/api/graph/query` holder-key 过滤和“事实股东关联”图谱入口保持一致。
+  - **已完成（本轮）**：同股东网络回归断言 `ownership_holder_key` 出现在 recommended filters；API 合同补充动态图谱推荐过滤键列表。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_relationship_context_links_approved_same_shareholder_companies`、`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-522 动态图谱推荐查询自描述
+  - 对应：E3-US1, E5-US1, E7-US1；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows
+  - 目标：`relationship_context.dynamic_graph` 不只声明可用过滤键，还要输出当前公司可直接执行的图谱查询建议，方便 UI、脚本或后续 agent 连续展开关系链。
+  - **已完成（本轮）**：`dynamic_graph.recommended_queries[]` 新增 `{label, query, reason}` 结构，覆盖公司中心图、产业链节点图、关系类型图和同一事实股东网络图。
+  - **已完成（本轮）**：同股东网络回归断言 recommended queries 包含 `issuer_id=issuer_001` 以及 `relationship_type=shareholder + ownership_holder_key=external_company_alpha_capital` 的查询；API 合同记录 recommended queries 结构和用途。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_relationship_context_links_approved_same_shareholder_companies tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-523 图谱推荐查询前端入口
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI
+  - 目标：把 T-522 的 `dynamic_graph.recommended_queries[]` 从 API/高级追溯推进到公司情报多维关系表里的可见、可点击入口。
+  - **已完成（本轮）**：公司情报“多维关系”表新增“图谱推荐入口”行，显示推荐查询的 `label`、`reason`，点击后复用 `open-relationship-graph` 并携带 `issuer_id`、`security_id`、`relationship_type`、`chain_id`、`chain_node_id`、`ownership_holder_key`。
+  - **已完成（本轮）**：新增 `recommendedGraphQueryAttrs` 前端 helper，静态契约纳入该函数；API 合同说明 UI 会渲染推荐图谱入口。
+  - 验收：`python3 -m py_compile scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-524 图谱推荐入口真实浏览器验收
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI
+  - 目标：为 T-523 的“图谱推荐入口”补真实浏览器点击验收，证明它不是只存在于静态 DOM，而能打开同一事实股东网络。
+  - **已完成（本轮）**：`scripts/ui_interaction_acceptance.py` 新增 `company_recommended_graph_query_click_loads_holder_network`，在构造 SPCX/DEMO 同一 Alpha Capital 已批准事实股东关系后，点击“图谱推荐入口”行并断言 holder-key 图谱过滤 chip、raw holder key 和两条事实股东关系都进入图谱。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t524 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-525 股东关联摘要计数口径修正
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI
+  - 目标：公司情报多维关系顶部“股东关联”摘要计数同时反映已批准事实股东网络和 13F/持仓网络，避免表格里有“事实股东关联”但顶部仍显示 0 的口径错位。
+  - **已完成（本轮）**：`companyIntelShareholderRelatedCount` 改为显示合计以及 `事实 N / 持仓 M` 分项，合计来源为 `summary.approved_shareholder_related_companies + summary.shareholder_related_companies`。
+  - **已完成（本轮）**：静态契约纳入“事实 / 持仓”表达式；浏览器验收在同一 Alpha Capital 事实股东网络上下文中断言顶部计数包含 `事实 1`。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t525 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-526 股东关联合计进入 API summary
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows
+  - 目标：把 T-525 的股东关联合计口径从前端表达式沉淀到 `relationship_context.summary`，让 API/UI/脚本消费方共享同一合计字段。
+  - **已完成（本轮）**：`summary.shareholder_related_companies_total` 新增为 `approved_shareholder_related_companies + shareholder_related_companies`；前端顶部“股东关联”优先读取该合计字段，保留旧字段回退。
+  - **已完成（本轮）**：单测分别覆盖 13F/持仓网络样例和已批准事实股东网络样例的 total；API 合同记录该字段和 UI 使用方式。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_relationship_context_links_approved_same_shareholder_companies tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-527 覆盖诊断股东网络汇总口径
+  - 对应：E3-US1, E5-US1, E7-US1；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows
+  - 目标：`coverage_diagnostics` 在保留 13F/持仓网络与已批准事实股东网络分项诊断的同时，提供统一股东网络覆盖汇总，和 `summary.shareholder_related_companies_total` 口径一致。
+  - **已完成（本轮）**：`coverage_diagnostics.shareholder_network_summary` 新增 `total`、`fact_network`、`holding_network`、`available` 和 `source_layers`，用于统一判断“股东还有哪些公司”这一逻辑线是否有任何来源覆盖。
+  - **已完成（本轮）**：单测覆盖 13F-only 样例返回 `fact_network=0/holding_network=1/total=1`，以及事实股东网络样例返回 `fact_network=1/holding_network=0/total=1`；API 合同记录该汇总块。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_relationship_context_links_approved_same_shareholder_companies tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-528 股东网络覆盖汇总 UI 追溯
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI
+  - 目标：把 T-527 的 `coverage_diagnostics.shareholder_network_summary` 从 API 追溯推进到公司情报 UI，让顶部“股东关联”计数可以被自动化和人工追溯到事实/持仓分项。
+  - **已完成（本轮）**：`companyIntelShareholderRelatedCount` 增加 `data-network-total`、`data-fact-network`、`data-holding-network` 和 title，来源优先使用 `coverage_diagnostics.shareholder_network_summary`，回退到 summary 分项。
+  - **已完成（本轮）**：静态契约纳入 `shareholderRelatedElement.dataset.networkTotal`；浏览器验收断言同一 Alpha Capital 事实股东网络下 `data-fact-network=1`、`data-network-total=1` 且 title 包含“股东网络覆盖”。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t528 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-529 产业链关系汇总口径
+  - 对应：E3-US1, E5-US1, E7-US1；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows
+  - 目标：为产业链关系线提供和股东网络类似的合计口径，让 API 消费方可以直接判断同类、上游、下游整体覆盖，而不需要自行相加。
+  - **已完成（本轮）**：`summary.industry_related_companies_total` 新增为 `peer_companies + upstream_companies + downstream_companies`；`coverage_diagnostics.industry_network_summary` 新增 `total`、`peers`、`upstream`、`downstream`、`chain_nodes`、`available` 和来源层。
+  - **已完成（本轮）**：单测覆盖完整样例 `total=3/peers=1/upstream=1/downstream=1/chain_nodes=1`，以及稀疏样例 `total=0/available=false/chain_nodes=1`；API 合同记录该字段和汇总块。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated tests.test_system.SystemServiceTests.test_company_relationship_context_reports_missing_chain_layers`、`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-530 产业链关系摘要 UI 追溯
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI
+  - 目标：把 `coverage_diagnostics.industry_network_summary` 接到公司情报多维关系顶部“同类/上游/下游”计数，形成可追溯的产业链关系摘要。
+  - **已完成（本轮）**：`companyIntelPeerCount`、`companyIntelUpstreamCount`、`companyIntelDownstreamCount` 增加 `data-network-total`、`data-network-part`、`data-chain-nodes` 和 title，来源优先使用 `industry_network_summary`，回退到 summary 字段。
+  - **已完成（本轮）**：静态契约纳入 `setIndustryNetworkTrace`；API 合同说明 UI 追溯属性。
+  - 验收：`python3 -m py_compile scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-531 产业链关系行级追溯
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI
+  - 目标：让公司情报“产业链位置 / 同类公司 / 上游公司 / 下游公司”每一行都能追溯到链条、节点和方向，方便动态图谱点击、自动化验收和人工排查。
+  - **已完成（本轮）**：新增 `industryRelationshipTraceAttrs`，在产业链位置、同类、上游、下游关系行写入 `data-industry-relationship`、`data-industry-direction`、`data-chain-id`、`data-chain-node-id`、`data-chain-node-ids`、`data-chain-node-label` 和 `data-position-id`。
+  - **已完成（本轮）**：静态契约纳入 `industryRelationshipTraceAttrs` 和 `data-industry-direction`；API 合同记录产业链行级追溯属性。
+  - **已完成（本轮）**：浏览器验收新增 `company_industry_relationship_rows_have_trace_attrs`，用自包含关系上下文 fixture 断言同类/上游/下游/产业链位置行的追溯属性真实渲染到 DOM。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t531 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-532 13F 持有人网络动态图谱展开
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows
+  - 目标：让 13F/持仓同一持有人网络和已批准事实股东网络一样，可以从公司情报“股东关联公司”行点击进入动态图谱，回答“该持有人还持有哪些公司”。
+  - **已完成（本轮）**：`relationship_context.ownership.shareholders` 与 `shareholder_related_companies` 增加标准化 `holder_key`；`dynamic_graph.recommended_filters` / `recommended_queries` 增加 `institutional_holder_key`。
+  - **已完成（本轮）**：`/api/graph/query` 支持 `institutional_holder_key` / `institutionalHolderKey` / `13f_holder_key`，按同一 13F/持仓持有人展开跨公司 `HAS_13F_HOLDING`、`HOLDS_SECURITY` 和 `SAME_HOLDER_RELATED_COMPANY` 边。
+  - **已完成（本轮）**：公司情报“股东关联公司”行写入 `data-institutional-holder-key` / `data-institutional-holder-label`；图谱过滤 chip 增加“13F持有人”，保留 raw key 追溯；holder-key 跨公司图谱不再默认带当前证券过滤。
+  - **已完成（本轮）**：浏览器验收新增 `company_13f_holder_graph_click_loads_same_holder_network`，在干净本地 SQLite/object-store 服务上 38/38 通过。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py app/services.py scripts/ui_interaction_acceptance.py scripts/ui_static_check.py tests/test_system.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t532-clean --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-533 图谱推荐入口优先展示具体二跳网络
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows
+  - 目标：确保“图谱推荐入口”优先展示同一事实股东和同一 13F 持有人这类具体二跳网络，避免被泛化关系类型推荐挤出前 8 条 UI 展示范围。
+  - **已完成（本轮）**：`dynamic_graph.recommended_queries[]` 生成顺序调整为公司中心、产业链节点、同一事实股东、同一 13F 持有人，再到泛化关系类型。
+  - **已完成（本轮）**：浏览器验收新增 `company_recommended_13f_holder_graph_query_click_loads_network`，证明 13F 持有人网络可以从“图谱推荐入口”点击进入动态图谱，而不只依赖“股东关联公司”普通行。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py app/services.py scripts/ui_interaction_acceptance.py scripts/ui_static_check.py tests/test_system.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t533 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-534 关系链缺口完整可见性
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：确保多维关系诊断里的每个必补缺口层都能进入 API `next_actions` 和公司情报 UI 缺口行，避免只显示前几项导致用户看不到完整补齐路径。
+  - **已完成（本轮）**：`relationship_context.coverage_diagnostics.next_actions` 不再截断为前 5 条，而是覆盖全部 `missing_required_layers`。
+  - **已完成（本轮）**：公司情报“关系链缺口”行不再只显示前 4 个缺口，所有未覆盖层都会渲染缺口行、来源口径和补齐按钮。
+  - **已完成（本轮验收）**：后端回归断言 `relationship_context.next_actions` 的 layer 集合与 `missing_required_layers` 完全一致；浏览器验收新增 6 个缺口层 fixture，断言所有缺口按钮都渲染，并能分流到补齐预览、股权导入引导和图谱入口。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_relationship_context_reports_missing_chain_layers tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py scripts/ui_interaction_acceptance.py tests/test_system.py scripts/ui_static_check.py app/services.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t534 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-535 关系链可选增强动作 API 自描述
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows, Product and UI
+  - 目标：让 13F/持仓股东网络和事实股东网络等可选增强层也有机器可读补齐动作，避免 API 消费方只能从 `diagnostics` 文案里猜下一步。
+  - **已完成（本轮）**：`relationship_context.coverage_diagnostics.enhancement_actions` 新增为全部 `missing_optional_layers` 的动作列表，动作类型为 `relationship_enhancement`。
+  - **已完成（本轮）**：外层 `relationship_context.enhancement_actions` 同步透出，和 `next_actions` 分工明确：必补层走 `relationship_backfill`，增强层走 `relationship_enhancement`。
+  - **已完成（本轮验收）**：后端回归断言 `enhancement_actions` 的 layer 集合与 `missing_optional_layers` 完全一致，并且全部 action 为 `relationship_enhancement`。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_relationship_context_reports_missing_chain_layers tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py scripts/ui_interaction_acceptance.py tests/test_system.py scripts/ui_static_check.py app/services.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-536 关系链补齐动作目标入口自描述
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows, Product and UI
+  - 目标：让 `next_actions` 和 `enhancement_actions` 不只说明缺什么，还要带可路由目标入口，方便脚本、UI 和后续 agent 直接知道该调用补库、股权导入/复核还是图谱查询。
+  - **已完成（本轮）**：每条关系链 action 新增 `target` 块，包含 `target_type`、`endpoint`、`method`、`ui_action`、`default_execute=false` 和 `usage_boundary`。
+  - **已完成（本轮）**：产业链/同类/上下游动作指向 `/api/company-database/batch/build` 和 `preview_batch_build`；股权/股东网络动作指向 `/api/company-database/relationships/build`，并带 `review_endpoint` 与 `manifest_endpoint`；图谱边动作指向 `/api/graph/query`。
+  - **已完成（本轮验收）**：后端回归断言必补和增强动作均带目标 endpoint/UI action，避免 API 消费方继续依赖前端硬编码或中文文案解析。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_relationship_context_reports_missing_chain_layers tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py scripts/ui_interaction_acceptance.py scripts/ui_static_check.py app/services.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-537 关系链补齐动作前端消费 target
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：让公司情报页“关系链缺口”按钮优先消费服务端 `target.ui_action`，减少前端硬编码映射对 API 语义的重复维护。
+  - **已完成（本轮）**：`app/static/index.html` 的关系缺口按钮改为优先读取 `item.target.ui_action`，并把 `data-target-ui-action` 透传到点击处理逻辑。
+  - **已完成（本轮）**：`scripts/ui_interaction_acceptance.py` 新增对 `data-target-ui-action` 的断言，确认缺口按钮从服务端 target 派生动作而不是只靠前端层名映射。
+  - **已完成（本轮）**：`scripts/ui_static_check.py` 纳入 `data-target-ui-action` 文本检查，防止后续回退为只读层名硬编码。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_relationship_context_reports_missing_chain_layers tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py scripts/ui_interaction_acceptance.py scripts/ui_static_check.py app/services.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`，并补浏览器验收。
+
+- `DONE` T-538 关系链增强动作前端 target 合并
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：让公司情报页“关系链缺口”里的可选增强层也消费服务端 `enhancement_actions.target`，使 13F 持有人网络和事实股东网络等增强补齐入口可点击、可追溯。
+  - **已完成（本轮）**：`app/static/index.html` 建立 `relationshipActionsByLayer`，把 `next_actions` 和 `enhancement_actions` 按 layer 合并回诊断行，必补层和增强层共用 target 驱动按钮。
+  - **已完成（本轮）**：`scripts/ui_interaction_acceptance.py` 新增 `company_relationship_enhancement_actions_use_target`，断言 `shareholder_network` 与 `approved_shareholder_network` 能从 `enhancement_actions.target.ui_action` 渲染 `data-target-ui-action`。
+  - **已完成（本轮）**：`docs/api-contracts.md` 记录 UI 会把同 layer 的必补/增强 action target 合并到关系链缺口行；`scripts/ui_static_check.py` 纳入 `relationshipActionsByLayer`。
+  - 验收：`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py scripts/ui_interaction_acceptance.py scripts/ui_static_check.py app/services.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t538 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-539 股东/持有人行直达同一持有人网络
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：当用户看到某个 13F/持仓股东时，可以从“股东/持有人”这一行本身直接展开“该持有人还持有哪些公司”，不必先找到二跳“股东关联公司”行。
+  - **已完成（本轮）**：`app/static/index.html` 的“股东/持有人”行写入 `data-institutional-holder-key` 和 `data-institutional-holder-label`，点击后按同一 13F/持仓持有人网络打开动态图谱。
+  - **已完成（本轮）**：`scripts/ui_interaction_acceptance.py` 新增 `company_shareholder_row_has_holder_graph_attrs`，断言普通股东行也能携带 holder key 并打开同一持有人网络。
+  - **已完成（本轮）**：`docs/api-contracts.md` 明确“股东/持有人”行和“股东关联公司”行都会写入 13F holder-key 过滤属性。
+  - 验收：`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py scripts/ui_interaction_acceptance.py scripts/ui_static_check.py app/services.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t539 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-540 事实股权关系行直达同一事实股东网络
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：当用户看到已批准的“事实股权关系”时，可以从该事实关系行直接展开“同一事实股东还关联哪些公司”，不必先找到二跳“事实股东关联”行。
+  - **已完成（本轮）**：`relationship_context.ownership.approved_relationships[]` 输出 `holder_key` 和 `holder_name`，用于同一事实股东网络过滤。
+  - **已完成（本轮）**：`app/static/index.html` 的“事实股权关系”行写入 `data-ownership-holder-key` / `data-ownership-holder-label`，点击后按同一事实股东网络打开动态图谱。
+  - **已完成（本轮）**：`scripts/ui_interaction_acceptance.py` 新增 `company_approved_relationship_row_click_loads_holder_network`，单测补断言 `approved_relationships` 带 holder key。
+  - **已完成（本轮）**：`docs/api-contracts.md` 明确“事实股权关系”行和“事实股东关联”行都会写入 ownership holder-key 过滤属性。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_relationship_context_links_approved_same_shareholder_companies`、`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py scripts/ui_interaction_acceptance.py scripts/ui_static_check.py app/services.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t540 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-541 产业链关系行点击保留方向追溯
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：当用户从“同类公司 / 上游公司 / 下游公司 / 产业链位置”行进入知识图谱时，图谱过滤条要明确保留这次展开的产业链方向，避免用户只看到链条和节点却不知道当前图谱来自哪个逻辑方向。
+  - **已完成（本轮）**：`app/static/index.html` 新增 `industryDirection` 图谱过滤状态，点击带 `data-industry-direction` 的产业链关系行时会在图谱 chip 展示“产业方向”并保留 raw direction。
+  - **已完成（本轮）**：`scripts/ui_interaction_acceptance.py` 新增 `company_industry_relationship_row_click_preserves_direction_chip`，从模拟“上游公司”行点击进入图谱后断言 `industryDirection=upstream`、`chainId` 和 `chainNodeId` 都可追溯。
+  - **已完成（本轮）**：`docs/api-contracts.md` 明确 `industryDirection` 是 UI 追溯状态，不改变 `/api/graph/query` 后端查询语义。
+  - 验收：`python3 -m py_compile app/static/index.html scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t541 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-542 产业链图谱推荐入口细化到方向级
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows, Product and UI
+  - 目标：让“图谱推荐入口”不只给出泛化产业链节点图，还能直接推荐同类、上游、下游三个具体方向，避免用户从推荐入口进入图谱后仍要猜当前展开逻辑。
+  - **已完成（本轮）**：`relationship_context.dynamic_graph.recommended_queries[]` 在存在同类、上游、下游数据时，新增带 `query.industry_direction=peer/upstream/downstream`、`relationship_type`、`chain_id` 和 `chain_node_id` 的方向级产业链推荐。
+  - **已完成（本轮）**：`app/static/index.html` 的“图谱推荐入口”会把 `query.industry_direction` 透传为 `data-industry-direction`，点击后沿用 T-541 的 `industryDirection` 图谱 chip。
+  - **已完成（本轮）**：单测断言推荐查询包含 peer/upstream/downstream 三个方向；浏览器验收新增 `company_industry_recommended_query_click_preserves_direction_chip`，点击“上游公司”推荐入口后断言方向、关系类型、链条和节点均保留。
+  - **已完成（本轮）**：`docs/api-contracts.md` 记录方向级产业链推荐入口，并明确 `industry_direction` 是 UI 追溯状态，不新增后端查询过滤参数。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t542 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-543 产业方向图谱过滤显示中文且保留 raw 追溯
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：图谱过滤条面对用户显示“同类 / 上游 / 下游 / 产业链位置”，而不是直接显示 `peer/upstream/downstream/position` 枚举；同时保留 raw 枚举给脚本和审计追溯。
+  - **已完成（本轮）**：`app/static/index.html` 的 `graphFilterDisplayValue()` 对 `industryDirection` 做中文映射，显示值为“产业链位置 / 同类 / 上游 / 下游”。
+  - **已完成（本轮）**：`scripts/ui_interaction_acceptance.py` 更新产业链行和推荐入口点击断言，确认 chip 文本显示“上游”，但 `data-filter-raw-value` 和 title 仍保留 `upstream`。
+  - **已完成（本轮）**：`docs/api-contracts.md` 明确产业方向 chip 中文显示与 raw 枚举追溯的分工。
+  - 验收：`python3 -m py_compile app/static/index.html scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t543 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-544 产业方向推荐过滤键自描述
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Research and AI Workflows, Product and UI
+  - 目标：让 `relationship_context.dynamic_graph.recommended_filters` 明确声明 `industry_direction`，避免 API 消费方看到推荐查询里的方向字段却无法从过滤键列表判断其含义和边界。
+  - **已完成（本轮）**：`app/service_modules/company_intelligence.py` 的 `recommended_filters` 增加 `industry_direction`，与 T-542 的方向级 `recommended_queries[].query.industry_direction` 对齐。
+  - **已完成（本轮）**：单测 `test_company_intelligence_first_class_models_are_exposed_and_aggregated` 断言 `industry_direction` 存在于推荐过滤键列表，且推荐查询仍包含 peer/upstream/downstream 三个方向。
+  - **已完成（本轮）**：`docs/api-contracts.md` 明确 `recommended_filters` 会声明 `industry_direction`，并继续强调它是 UI 追溯状态，不新增 `/api/graph/query` 后端过滤参数。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated`、`python3 -m py_compile app/service_modules/company_intelligence.py tests/test_system.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-545 关系类型图谱过滤显示中文且保留 raw 追溯
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：图谱过滤条面对用户显示“上游关系 / 事实股东 / 股东候选”等中文关系类型，而不是直接显示 `upstream_of`、`shareholder_candidate` 等 raw 枚举；同时保留 raw 关系类型给脚本和审计追溯。
+  - **已完成（本轮）**：`app/static/index.html` 的 `graphFilterDisplayValue()` 对 `relationshipType` 增加常见公司关系、产业链关系和股权候选关系中文映射。
+  - **已完成（本轮）**：浏览器验收更新上游推荐入口和事实股东图谱入口断言，确认 chip 文本显示中文，但 `data-filter-raw-value` 和 title 仍保留 `upstream_of` / `shareholder`。
+  - **已完成（本轮）**：`docs/api-contracts.md` 记录关系类型 chip 的中文显示与 raw 追溯分工。
+  - 验收：`python3 -m py_compile app/static/index.html scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t545 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-546 多维关系表关系类型显示中文且保留 raw 追溯
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：公司情报“多维关系”表和“关键事实”里的关系类型面对用户显示“事实股东 / 实控候选 / 同类关系”等中文标签，不再把 `shareholder`、`controller_candidate`、`industry_peer` 等 raw 枚举直出；同时继续在 trace 和 data 属性里保留 raw 值。
+  - **已完成（本轮）**：`app/static/index.html` 新增 `relationshipTypeDisplayLabel()`，图谱 chip、产业链关系行、事实股权关系、股权候选和公司关系事实行复用同一套中文映射。
+  - **已完成（本轮）**：浏览器验收新增 `company_relationship_rows_display_chinese_type_labels`，断言表格前三列显示“同类关系 / 事实股东 / 实控候选”，且追溯详情仍保留 `industry_peer`、`shareholder`、`controller_candidate`。
+  - **已完成（本轮）**：`docs/api-contracts.md` 记录多维关系表的“中文主显示 + raw 追溯”契约，并修正 `recommended_filters` 固定列表包含 `industry_direction`。
+  - 验收：`python3 -m py_compile app/static/index.html scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t546 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-547 关系候选审核队列关系类型显示中文且保留 raw 追溯
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：高级维护里的“关系候选审核”队列也复用关系类型中文映射，避免 `customer_candidate` 等 raw 枚举在主审阅表直出；同时高级 trace 继续保留 raw 供审批、脚本和审计使用。
+  - **已完成（本轮）**：`app/static/index.html` 的 `renderCompanyRelationshipReview()` 使用 `relationshipTypeDisplayLabel()` 显示候选关系类型。
+  - **已完成（本轮）**：浏览器验收 `company_relationship_review_queue_render` 断言可见前三列表格显示“客户候选”、不显示 `customer_candidate`，但整行 trace 仍包含 raw 枚举。
+  - **已完成（本轮）**：`docs/api-contracts.md` 将“关系候选审核”纳入关系类型中文主显示契约。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t547 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-548 知识图谱关系边显示中文且保留 raw 追溯
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：知识图谱画布边 label 和“图谱关系”表也使用“事实股东 / 上游关系”等中文关系名，避免过滤 chip 已中文化但图谱主体仍显示 `shareholder` 等 raw 枚举；同时 link type、raw graph payload 和 trace 继续保留原始关系类型。
+  - **已完成（本轮）**：`app/static/index.html` 的 `makeGraphModel()` 在公司关系边 label 中使用 `relationshipTypeDisplayLabel()`，不改写 link `type`。
+  - **已完成（本轮）**：`renderKnowledgeGraph()` 的 `graphEdgeRows` 对带 `relationship_type` 的边使用中文主题和发现文本。
+  - **已完成（本轮）**：浏览器验收 `company_ownership_approved_graph_filter_loads_shareholder_edge` 断言图谱关系表前三列显示“事实股东”、不显示 `shareholder`，但 trace 和 raw graph payload 仍保留 `relationship_type=shareholder`。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t548 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-549 图谱 inspector 相邻关系显示中文关系名
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows
+  - 目标：知识图谱右侧 inspector 的“相邻关系”也显示“事实股东 / 上游关系”等具体中文关系名，而不是泛化成“公司关系”或暴露 raw 枚举，保持图谱画布、边表、过滤 chip 和 inspector 语义一致。
+  - **已完成（本轮）**：`renderKnowledgeGraphInspector()` 的相邻关系行优先使用 graph link `label`，该 label 已由 `relationshipTypeDisplayLabel()` 中文化；缺失 label 时才回退 `graphEdgeLabel()`。
+  - **已完成（本轮）**：浏览器验收新增 `company_graph_inspector_neighbor_shows_relationship_label`，选择含 `relationship_type=shareholder` 的图谱节点后断言相邻关系显示“事实股东”、不显示 `shareholder`，同时 raw link metadata 仍保留。
+  - **已完成（本轮）**：`docs/api-contracts.md` 将图谱 inspector 相邻关系纳入关系类型中文主显示契约。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t549 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-550 股权 manifest 默认类型显示中文且保留 raw 追溯
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Data and Evidence
+  - 目标：股权 manifest 预览表的“默认类型”列显示“事实股东 / 实控候选”等中文关系类型，避免用户在补股权关系时看到 `shareholder` 等 raw 枚举；同时 manifest payload 和高级 trace 继续保留 raw `default_kind`。
+  - **已完成（本轮）**：`renderCompanyOwnershipManifest()` 的默认类型列使用 `relationshipTypeDisplayLabel(item.default_kind)`。
+  - **已完成（本轮）**：浏览器验收 `company_ownership_manifest_preview_real_api` 断言 manifest 表前三列显示“事实股东”、不显示 `shareholder`，整行 trace 仍保留 raw。
+  - **已完成（本轮）**：`docs/api-contracts.md` 记录股权 manifest 默认类型列中文主显示与 raw 追溯分工。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t550 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-551 股权表导入结果主列与追溯分离
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Data and Evidence
+  - 目标：股权表导入预览和执行结果的主表列只显示用户决策需要的信息，把 `file_path`、`source_table`、`source_id` 等 raw 字段留在高级追溯里，保持本地股权补库链路可读且可审计。
+  - **已完成（本轮）**：`renderCompanyOwnershipImport()` 将“股权表追溯”从第一列移到最后一列，前三列保留股权表名称、解析状态、候选关系和目标公司。
+  - **已完成（本轮）**：浏览器验收 `company_ownership_manifest_to_import_preview_real_api` 断言导入结果前三列不含 `file_path` / `local structured ownership`，整行 trace 仍保留 raw 来源信息。
+  - **已完成（本轮）**：`docs/api-contracts.md` 记录股权表导入结果主列与 raw trace 的显示分工。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t551 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-552 13F 股东/持有人来源状态显示可读化
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Data and Evidence
+  - 目标：公司情报“多维关系”里的“股东/持有人”行在缺少报告期时不直接显示 `sec_edgar` 等 raw 来源 id，而显示治理后的来源标签，并在行级追溯属性中保留 raw 来源。
+  - **已完成（本轮）**：`renderCompanyRelationshipContext()` 新增 `holdingStatusLabel()`，状态列优先显示 `report_period`，缺失时回退 `sourceLabel(source_id)`。
+  - **已完成（本轮）**：浏览器验收 `company_shareholder_holding_source_label_is_readable` 断言前三列显示“SEC 官方披露”、不显示 `sec_edgar`，行级 `data-source-id` 仍保留 raw `sec_edgar`。
+  - **已完成（本轮）**：`docs/api-contracts.md` 记录 13F 持有人主显示和 raw trace 的分工。
+  - 验收：`python3 -m py_compile scripts/ui_interaction_acceptance.py scripts/ui_static_check.py`、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t552 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
+- `DONE` T-553 多维关系链总体验收与交接
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：PM / Release Coordination, Product and UI, Data and Evidence
+  - 目标：对 T-504 至 T-552 的公司产业链、同类、上下游、股东、股东关联公司和动态图谱能力做总收口，证明当前目标不需要重建数据库，且主链路可用、可追溯、可复验。
+  - **已完成（本轮）**：新增 `docs/multidimensional-relationship-closure.md`，用能力矩阵列出产业链位置、同类、上游、下游、股东/持有人、事实股权、13F 持有人、事实股东关联、图谱推荐入口、过滤 chip 和中文主显示的覆盖证据。
+  - **已完成（本轮）**：清理 T-505 至 T-514 中已被后续任务完成的“后续增强”提示，保留真正不阻塞当前目标的真实外部数据源接入和质量调参增强。
+  - **已完成（本轮）**：`docs/README.md` 纳入多维关系链总收口证明文档。
+  - 验收：`python3 -m py_compile app/*.py app/service_modules/*.py tests/*.py scripts/*.py`、重点关系链单测、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t553 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。

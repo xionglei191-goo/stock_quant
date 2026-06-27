@@ -2988,7 +2988,7 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 
 #### `POST /api/company-database/relationships/build`
 
-为已有公司数据库构建最小关系层。该接口只使用本地已有主体、证券、已绑定研报资产和公开披露证据，不下载外部资料。当前关系来源包括公司到上市证券的 `listed_security` 关系、公司到研报机构的 `institution_coverage` 关系，以及从公开披露/证据文本中抽取的 `customer_candidate`、`supplier_candidate`、`partner_candidate`、`subsidiary_candidate` 候选关系。研报机构覆盖关系表示“该机构覆盖/发布过该公司相关研报”，不代表客户、供应商、竞争或投资建议事实；公开披露候选关系默认仍需人工复核。
+为已有公司数据库构建最小关系层。该接口只使用本地已有主体、证券、已绑定研报资产、公开披露证据和显式提供的本地结构化股权行，不下载外部资料。当前关系来源包括公司到上市证券的 `listed_security` 关系、公司到研报机构的 `institution_coverage` 关系、从公开披露/证据文本中抽取的 `customer_candidate`、`supplier_candidate`、`partner_candidate`、`subsidiary_candidate`、`shareholder_candidate`、`controller_candidate`、`investee_candidate` 候选关系，以及从 `structured_ownership_relationships` 输入生成的股东、实控人、子公司和参股候选关系。研报机构覆盖关系表示“该机构覆盖/发布过该公司相关研报”，不代表客户、供应商、竞争、股权或投资建议事实；公开披露和结构化股权候选关系默认仍需人工复核。
 
 请求字段：
 
@@ -2999,6 +2999,14 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 - `include_listings`：默认 `true`，生成公司到证券的上市关系。
 - `include_institution_coverage`：默认 `true`，生成公司到研报机构的覆盖关系。
 - `include_disclosure_candidates`：默认 `true`，从已有 `DisclosureEvent`、`Evidence` 和非研报 `Document` 文本中抽取候选关系。
+- `include_structured_ownership`：默认 `true`，当请求提供结构化股权行时生成候选关系。
+- `structured_ownership_relationships` / `ownership_relationships`：可选数组；每行可包含 `issuer_id`、`security_id`、`ticker`/`symbol`、`kind`/`relationship_type`、`entity_name`/`holder_name`/`controller_name`/`subsidiary_name`/`investee_name`、`object_id`、`share_ratio`、`ownership_pct`、`voting_pct`、`report_period`、`source_id`、`source_ids`、`document_ids`、`evidence_ids`、`source_table` 和 `metadata`。`kind=top_shareholder/shareholder/holder` 归一为 `shareholder_candidate`，`actual_controller/controller/beneficial_owner` 归一为 `controller_candidate`，`subsidiary` 归一为 `subsidiary_candidate`，`investee/equity_investment/associate` 归一为 `investee_candidate`。
+- `ownership_csv` / `ownership_tsv` / `ownership_table_text` / `shareholder_table_text` / `controller_table_text` / `subsidiary_table_text` / `investee_table_text`：可选本地表格文本，支持 CSV、TSV 和 Markdown 管道表；中英文字段名会归一到结构化股权行，例如 `股票代码`、`关系类型`、`股东名称`、`持股比例`、`报告期`、`来源`。
+- `structured_ownership_tables` / `ownership_tables`：可选数组；每项可包含 `table_text`、`csv`、`tsv`、`markdown`、`default_kind`、`source_table` 和 `source_id`。
+- `ownership_file_paths` / `ownership_files`：可选本地文件路径或文件说明数组；每项可以是路径字符串，也可以包含 `file_path`、`default_kind`、`source_table`、`source_id`、`encoding`。相对路径按 `ownership_root_path` 解析。
+- `ownership_root_path`：可选；本地 ownership 文件根目录，默认当前工作目录。仅读取显式指定文件，不扫描目录。
+- `ownership_file_extensions`：可选；允许扩展名，默认 `.csv`、`.tsv`、`.txt`、`.md`。
+- `ownership_file_limit` / `ownership_file_max_bytes`：可选；默认最多 20 个文件、单文件 1MB，上限分别为 100 个文件和 5MB。
 - `execute`：默认 `false`；为 `true` 时才写入 `CompanyRelationship`。
 - `dry_run`：默认随 `execute` 反向设置；为 `true` 时只返回计划，不落库。
 
@@ -3006,9 +3014,83 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 
 - `status`：`dry_run` 或 `executed`。
 - `relationships_planned` / `relationships_created`：计划或实际创建关系数。
-- `companies`：每家公司关系数量、上市关系数、机构覆盖关系数、公开披露候选关系数和样本关系 ID。
+- `ownership_file_inputs`：本地 ownership 文件解析摘要，包含路径、状态、行数和错误列表。
+- `companies`：每家公司关系数量、上市关系数、机构覆盖关系数、公开披露候选关系数、结构化股权候选关系数和样本关系 ID。
 
 公开披露候选关系使用 `review_status=needs_review`、`relationship_status=unknown`，并在 metadata 中记录 `candidate_status=candidate`，同时保留 `disclosure_event_id`、`document_ids`、`evidence_ids` 和 `source_ids`。客户、供应商、竞争、股权、上下游和人员关系后续仍需人工复核、来源质量评分和更细粒度抽取，不能从研报观点直接推断为事实。
+
+公司情报工作台的后台维护区提供“股权表导入”入口，直接调用本接口的 `ownership_root_path`、`ownership_file_paths`、`ownership_file_default_kind` 和 `include_structured_ownership=true` 路径。该入口默认 dry-run 预览，显式执行后才写入待复核 `CompanyRelationship` 候选。
+
+本地 ownership 表格可通过脚本提交到同一接口，默认 dry-run。可显式指定文件：
+
+```bash
+python3 scripts/import_company_ownership_tables.py --base-url http://127.0.0.1:8000 --symbols DEMO --root-path /path/to/ownership --files demo-ownership.csv --output artifacts/company-ownership-table-import.json
+```
+
+也可扫描目录：
+
+```bash
+python3 scripts/import_company_ownership_tables.py --base-url http://127.0.0.1:8000 --symbols DEMO --root-path /path/to/ownership --glob "**/*ownership*.csv,**/*股权*.md" --output artifacts/company-ownership-table-import.json
+```
+
+当未传 `--symbols` 时，脚本默认会从文件名或相对路径推断目标代码，例如 `DEMO-ownership.csv`、`600519.SH-股权.md` 或 `sh600000_十大股东.csv`；可用 `--no-infer-symbols-from-path` 关闭。
+
+批量导入可使用 JSON manifest，记录每个文件的来源和默认类型：
+
+```json
+{
+  "files": [
+    {
+      "file_path": "600519.SH-股权.csv",
+      "symbol": "600519",
+      "default_kind": "shareholder",
+      "source_id": "annual_report_2026",
+      "source_table": "top_ten_shareholders"
+    }
+  ]
+}
+```
+
+然后运行：
+
+```bash
+python3 scripts/import_company_ownership_tables.py --base-url http://127.0.0.1:8000 --root-path /path/to/ownership --manifest ownership.manifest.json --output artifacts/company-ownership-table-import.json
+```
+
+也可以先扫描目录生成待编辑 manifest 草案，不调用 API：
+
+```bash
+python3 scripts/import_company_ownership_tables.py --root-path /path/to/ownership --glob "**/*ownership*.csv" --write-manifest-template ownership.manifest.json --default-source-id annual_report_2026 --default-kind shareholder
+```
+
+显式加 `--execute` 才会写入 review-required `CompanyRelationship` 候选。
+
+#### `POST /api/company-database/ownership/manifest-template`
+
+为本地 ownership 表生成待编辑 JSON manifest。该接口只扫描服务端本机目录，不下载外部资料，不写入关系候选；默认 dry-run 仅返回模板，`execute=true` 且提供 `output_path` 时才写入本地 JSON 文件。
+
+请求字段：
+
+- `root_path` / `ownership_root_path`：本地 ownership 表根目录。
+- `files` / `file_paths` / `ownership_file_paths`：可选；显式文件列表，支持逗号分隔或数组。
+- `glob` / `scan_patterns`：可选；逗号分隔 glob，例如 `**/*ownership*.csv,**/*股权*.md`。
+- `scan_limit`：扫描上限，默认 100。
+- `infer_symbols_from_path` / `infer_symbols`：默认 `true`，从文件名推断股票代码。
+- `default_kind`：默认 `shareholder`。
+
+公司情报 UI 的股权 manifest 预览表会把 `default_kind` 主显示映射为中文关系类型，例如 `shareholder` 显示“事实股东”；原始 `default_kind` 仍保留在高级 trace 和 manifest payload 中，供导入、脚本和审计追溯使用。
+股权表导入预览/执行结果表的前三列只显示股权表名称、解析状态、候选关系数量和目标公司数量；`file_path`、`source_table`、`source_id`、原始状态和其他机器字段保留在最后一列的“股权表追溯”高级 trace 中，避免主视图被 raw 字段打断，同时不丢失导入审计证据。
+- `default_source_id`：默认 `local_structured_ownership`。
+- `default_source_table`：可选；为空时用文件名 stem。
+- `output_path` / `manifest_path`：`execute=true` 时必填。
+- `execute` / `dry_run`：默认 dry-run。
+
+返回字段：
+
+- `template`：`company-ownership-table-manifest-v1` 模板，包含 `root_path`、`defaults`、`files` 和 usage boundary。
+- `file_count`：模板文件数。
+- `written`：是否写入本地 JSON。
+- `next_actions`：编辑 manifest 与导入股权表的后续动作。
 
 #### `POST /api/company-relationships/{relationship_id}/review`
 
@@ -3141,7 +3223,13 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 - `resolution`：匹配到的 `issuer_ids`、`security_ids`、`mapping_ids`。
 - `company_profile`：主体、证券、映射和覆盖摘要。
 - `facts_and_events`：行情、公司行动、资料、证据和披露事件。
-- `relationships`：公司关系、公司定位、13F/crowding 和 `/api/graph/query` 聚合图谱。
+- `relationships`：公司关系、公司定位、13F/crowding、`relationship_context` 和 `/api/graph/query` 聚合图谱。`relationship_context` 是只读派生视图，按公司中心汇总产业链位置、同类公司、上游公司、下游公司、股东/持有人、股东关联公司、关系类型分组和动态图谱展开建议；它复用本地 `CompanyRelationship`、`CompanyPosition`、`IndustryChain`、`InstitutionalHolding` 和图谱边，不要求重建数据库。`relationship_context.summary.industry_related_companies_total` 是同类、上游和下游公司的合计，`relationship_context.ownership.approved_relationships` 放已批准且 active 的事实股权/控制/参股关系，且每条会输出 `holder_key` / `holder_name` 供同一事实股东网络展开；`relationship_context.ownership.relationship_candidates` 只放仍需复核的股权候选，`relationship_context.ownership.relationships` 保留全部 ownership 关系聚合，`relationship_context.ownership.approved_shareholder_related_companies` 用已批准事实股权关系按同一股东/持有人反推“该股东还关联哪些公司”，`relationship_context.ownership.shareholder_related_companies` 继续表示 13F/持仓记录推导的同一持有人网络；`relationship_context.summary.shareholder_related_companies_total` 是两者合计，公司情报 UI 顶部“股东关联”计数会显示该合计并拆出“事实 / 持仓”分项。`relationship_context.coverage_diagnostics` 按产业链位置、同类公司、上游、下游、股权/控制、`shareholder_network`（13F/持仓同一持有人网络）、`approved_shareholder_network`（已批准事实股东网络）和动态图谱边输出 `coverage_score`、`status`、`missing_required_layers`、`missing_optional_layers`、`diagnostics`、`industry_network_summary`、`shareholder_network_summary`、`next_actions` 与 `enhancement_actions`，用于判断多维关系链条还缺哪一层和下一步该补什么数据；其中 `next_actions` 覆盖全部 `missing_required_layers`，不是示例列表或截断列表；`enhancement_actions` 覆盖全部 `missing_optional_layers`，用于 13F/持仓同一持有人网络和已批准事实股东网络等增强层的机器可读补齐建议。每条 action 都包含 `target` 块，声明 `target_type`、`endpoint`、`method`、`ui_action`、`default_execute=false` 和 `usage_boundary`；股权相关层还包含 `review_endpoint` 和 `manifest_endpoint`，动态图谱层指向 `/api/graph/query`。`industry_network_summary` 汇总 `total`、`peers`、`upstream`、`downstream`、`chain_nodes`、`available` 和来源层，公司情报 UI 会把该汇总写入“同类/上游/下游”计数的 `data-network-total`、`data-network-part`、`data-chain-nodes` 和 title 追溯；`shareholder_network_summary` 汇总 `total`、`fact_network`、`holding_network`、`available` 和来源层，两个分项诊断仍保留各自 provenance，公司情报 UI 会把该汇总写入“股东关联”计数的 `data-network-total`、`data-fact-network`、`data-holding-network` 和 title 追溯。每条 `diagnostics[]` 都包含 `evidence` 来源口径，公司情报 UI 的关系链缺口行会展示全部未覆盖层、该来源口径，并把同 layer 的 `next_actions` 或 `enhancement_actions` 合并为按钮 target；因此必补层和增强层都会写入 `data-target-ui-action` 与 `data-evidence` 供追溯。`relationship_context.dynamic_graph.recommended_filters` 固定声明可用于动态图谱探索的过滤键，包括 `issuer_id`、`security_id`、`relationship_type`、`chain_id`、`chain_node_id`、`industry_direction`、`ownership_holder_key` 和 `institutional_holder_key`；`dynamic_graph.recommended_queries[]` 进一步给出可直接传给 `/api/graph/query` 的 `{label, query, reason}` 建议，包括公司中心图、产业链节点、关系类型和同一事实股东网络入口，公司情报 UI 会把前几条建议渲染为“图谱推荐入口”并复用 `open-relationship-graph` 点击机制。
+- 关系类型显示：公司情报 UI 的“多维关系”、“关键事实”、“关系候选审核”、“知识图谱关系边”和图谱 inspector 相邻关系主表会把常见 `relationship_type` 显示为中文标签，例如 `industry_peer` -> “同类关系”、`upstream_of` -> “上游关系”、`shareholder` -> “事实股东”、`controller_candidate` -> “实控候选”、`customer_candidate` -> “客户候选”；raw 枚举仍保留在行级 `data-relationship-type`、`data-industry-relationship`、`data-filter-raw-value`、title 和高级 trace JSON 中，供动态图谱过滤、脚本验收和审计追溯使用。知识图谱画布边 label、关系边表的主题/发现文本和 inspector 相邻关系使用中文关系名，但 link `type`、`relationship_type` 和 raw graph payload 不改写。
+- 产业链行级追溯：公司情报 UI 的“产业链位置 / 同类公司 / 上游公司 / 下游公司”行会额外写入 `data-industry-relationship`、`data-industry-direction`、`data-chain-id`、`data-chain-node-id`、`data-chain-node-ids`、`data-chain-node-label` 和 `data-position-id`，用于追溯每条产业链关系来自哪个链条、节点和方向，并与 `/api/graph/query` 的 `chain_id` / `chain_node_id` 过滤保持一致。点击这些行进入知识图谱时，UI 会把 `data-industry-direction` 保留为可见的 `industryDirection` 过滤 chip，明确当前图谱来自“同类 / 上游 / 下游 / 产业链位置”哪一类展开；chip 对用户显示中文方向，但 `data-filter-raw-value` 和 title 保留 `peer` / `upstream` / `downstream` / `position` 原始枚举。该字段是 UI 追溯状态，不改变后端查询语义。
+- 产业链推荐入口：`relationship_context.dynamic_graph.recommended_filters` 会声明 `industry_direction`，`recommended_queries[]` 在存在同类、上游或下游关系时，会额外生成方向级产业链推荐，`query.industry_direction` 取值为 `peer` / `upstream` / `downstream`，并与 `relationship_type`、`chain_id`、`chain_node_id` 一起由公司情报 UI 渲染为“图谱推荐入口”。点击后 UI 会保留同一个 `industryDirection` chip；`industry_direction` 仍是 UI 追溯状态，不作为 `/api/graph/query` 新过滤参数。
+- 13F 持有人网络：`relationship_context.ownership.shareholders[]` 和 `shareholder_related_companies[]` 输出标准化 `holder_key`；`dynamic_graph.recommended_filters` 也包含 `institutional_holder_key`。`/api/graph/query` 支持 `institutional_holder_key` / `institutionalHolderKey` / `13f_holder_key`，按同一 13F/持仓持有人返回跨公司 `InstitutionalHolding`、`HAS_13F_HOLDING`、`HOLDS_SECURITY` 和 `SAME_HOLDER_RELATED_COMPANY` 边。公司情报 UI 的“股东/持有人”行和“股东关联公司”行都会写入 `data-institutional-holder-key` / `data-institutional-holder-label`，因此既可从某个股东本身，也可从该股东关联公司行展开同一持有人网络；图谱 chip 显示“13F持有人”并保留 raw key 追溯。该过滤不表示事实股权，只表示公开 13F/持仓网络，不改变 paper-only/no-broker 边界。
+- 13F 持有人主显示：公司情报 UI 的“股东/持有人”行状态列优先显示 `report_period`；缺少报告期时显示治理后的来源标签，例如 `sec_edgar` 显示“SEC 官方披露”。原始 `source_id` 保留在行级 `data-source-id` 和高级 trace 语义中，供来源审计和脚本验收使用。
+- 事实股东网络：公司情报 UI 的“事实股权关系”行和“事实股东关联”行都会写入 `data-ownership-holder-key` / `data-ownership-holder-label`；点击后会按同一已批准 active ownership fact 的股东/持有人 key 展开跨公司事实股东网络，不纳入 `*_candidate` 候选关系。
 - `research_results`：研报资产、结构化研报、研报观点、预测、分析师、可靠性评分、研究答案、观点、信号、反方、研究卡、研究任务和搜索结果。
 - `analysis_workflow`：观察任务、分析结论和一等模拟反馈记录。
 - `simulation_feedback`：一等 `SimulationFeedback` 记录和旧纸面执行意图、模拟成交、模拟流水兼容对象，固定 `live_execution_allowed=false`。
@@ -3222,6 +3310,8 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 - `theme_id`
 - `chain_id`
 - `chain_node_id`
+- `relationship_type`：可选；在主体图谱内只展开指定类型的 `CompanyRelationship`，用于从公司情报多维关系面板跳入关系类型子图。公司情报 UI 的图谱过滤 chip 会把常见关系类型显示为中文，例如 `upstream_of` 显示“上游关系”、`shareholder` 显示“事实股东”，但 `data-filter-raw-value` 和 title 仍保留原始关系类型。
+- `ownership_holder_key`：可选；与 `relationship_type=shareholder` 等事实股权关系配合使用，按已批准 active ownership fact 的股东/持有人 key 展开同一股东跨公司网络。该过滤只返回非候选、已批准/已复核/自动生成且 active 的 ownership 关系，不把 `*_candidate` 候选纳入事实网络。
 
 返回字段包含 `issuers`、`securities`、`market_data`、`corporate_actions`、`documents`、`evidence`、`manual_reviews`、`theses`、`signals`、`decisions`、`execution_intents`、`reviews`、`strategy_replays`、`exceptions`、`entity_mappings`、`research_cards`、`macro_themes`、`industry_chains`、`chain_nodes`、`company_positions`、`research_tasks`、`crowding`、`institutional_holdings`、`disclosure_events`、`challengers`、`portfolio_proposals`、`portfolio_positions` 和 `edges`。产业链研究任务通过 `CHAIN_HAS_RESEARCH_TASK`、`TASK_FOR_CHAIN_NODE`、`TASK_FOR_COMPANY_POSITION`、`ISSUER_HAS_RESEARCH_TASK` 与主题、链路、节点、公司定位和主体连接。每条 edge 默认包含 `source`、`timestamp`、`version`、`confidence` 元数据。其中 `portfolio_positions` 来自模拟/回测 ledger 或纸面执行意图，`portfolio_proposals` 是纸面组合候选方案，二者都不代表自动交易。
 

@@ -24,7 +24,7 @@ from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, CompanyDatabaseBuildRun, CompanyIntelligenceCycleRun, CompanyPackageImportRun, CompanyProfileFieldAssertion, CorporateAction, DecisionPack, DisclosureEvent, Document, Evidence, IngestionJob, IngestionSchedule, MarketDataPoint, ResearchReportAsset, RightsTag, SystemAlert
+from app.models import AlertNotification, CompanyDatabaseBuildRun, CompanyIntelligenceCycleRun, CompanyPackageImportRun, CompanyPosition, CompanyProfileFieldAssertion, CorporateAction, DecisionPack, DisclosureEvent, Document, Evidence, IngestionJob, IngestionSchedule, InstitutionalHolding, IndustryChain, Issuer, MarketDataPoint, ResearchReportAsset, RightsTag, Security, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
 from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
@@ -896,6 +896,39 @@ class SystemServiceTests(unittest.TestCase):
         )
         self.assertTrue(relationship.success, relationship.error)
 
+        for issuer_id, legal_name, security_id, ticker in [
+            ("issuer_peer", "Peer Component Corp", "sec_peer", "PEER"),
+            ("issuer_upstream", "Upstream Materials Corp", "sec_upstream", "UPST"),
+            ("issuer_downstream", "Downstream Device Corp", "sec_downstream", "DOWN"),
+        ]:
+            self.service.store.issuers[issuer_id] = Issuer(issuer_id=issuer_id, legal_name=legal_name)
+            self.service.store.securities[security_id] = Security(security_id=security_id, issuer_id=issuer_id, ticker=ticker)
+        self.service.store.industry_chains["chain_components"] = IndustryChain(
+            chain_id="chain_components",
+            name="Components chain",
+            nodes=[
+                {"node_id": "materials", "name": "关键材料", "level": "upstream", "category": "material"},
+                {"node_id": "components", "name": "核心组件", "level": "midstream", "category": "component"},
+                {"node_id": "devices", "name": "终端设备", "level": "downstream", "category": "device"},
+            ],
+            edges=[
+                {"source_node_id": "materials", "target_node_id": "components", "relation_type": "upstream_of", "confidence": 0.8},
+                {"source_node_id": "components", "target_node_id": "devices", "relation_type": "downstream_of", "confidence": 0.8},
+            ],
+        )
+        for position in [
+            CompanyPosition(position_id="pos_focus_component", issuer_id="issuer_001", security_id="sec_001", chain_id="chain_components", node_ids=["components"], role="component_supplier", data_quality="reviewed"),
+            CompanyPosition(position_id="pos_peer_component", issuer_id="issuer_peer", security_id="sec_peer", chain_id="chain_components", node_ids=["components"], role="component_supplier", data_quality="needs_review"),
+            CompanyPosition(position_id="pos_upstream_material", issuer_id="issuer_upstream", security_id="sec_upstream", chain_id="chain_components", node_ids=["materials"], role="material_supplier", data_quality="needs_review"),
+            CompanyPosition(position_id="pos_downstream_device", issuer_id="issuer_downstream", security_id="sec_downstream", chain_id="chain_components", node_ids=["devices"], role="device_brand", data_quality="needs_review"),
+        ]:
+            self.service.store.company_positions[position.position_id] = position
+        for holding in [
+            InstitutionalHolding(holding_id="hold_demo_alpha", issuer_id="issuer_001", security_id="sec_001", source_id="sec_13f", filer_cik="000HOLDER", filer_name="Alpha Capital", report_period="2026Q1", shares=1000, value_usd=12000),
+            InstitutionalHolding(holding_id="hold_peer_alpha", issuer_id="issuer_peer", security_id="sec_peer", source_id="sec_13f", filer_cik="000HOLDER", filer_name="Alpha Capital", report_period="2026Q1", shares=2000, value_usd=22000),
+        ]:
+            self.service.store.institutional_holdings[holding.holding_id] = holding
+
         analyst = self.router.dispatch(
             "POST",
             "/api/analyst-profiles",
@@ -1061,6 +1094,8 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(aggregated.data["section_counts"]["company_profiles"], 1)
         self.assertEqual(aggregated.data["section_counts"]["company_events"], 1)
         self.assertEqual(aggregated.data["section_counts"]["company_relationships"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["company_positions"], 1)
+        self.assertEqual(aggregated.data["section_counts"]["institutional_holdings"], 1)
         self.assertEqual(aggregated.data["section_counts"]["structured_research_reports"], 1)
         self.assertEqual(aggregated.data["section_counts"]["report_viewpoints"], 1)
         self.assertEqual(aggregated.data["section_counts"]["observation_items"], 1)
@@ -1068,6 +1103,59 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(aggregated.data["section_counts"]["simulation_feedback_records"], 1)
         self.assertEqual(aggregated.data["facts_and_events"]["company_events"][0]["event_id"], "ce_demo_001")
         self.assertEqual(aggregated.data["relationships"]["company_relationships"][0]["relationship_id"], "rel_demo_customer")
+        relationship_context = aggregated.data["relationships"]["relationship_context"]
+        self.assertFalse(relationship_context["data_policy"]["database_rebuild_required"])
+        self.assertTrue(relationship_context["data_policy"]["relationship_backfill_required"])
+        self.assertEqual(relationship_context["summary"]["peer_companies"], 1)
+        self.assertEqual(relationship_context["summary"]["upstream_companies"], 1)
+        self.assertEqual(relationship_context["summary"]["downstream_companies"], 1)
+        self.assertEqual(relationship_context["summary"]["industry_related_companies_total"], 3)
+        self.assertEqual(relationship_context["summary"]["shareholder_related_companies"], 1)
+        self.assertEqual(relationship_context["summary"]["shareholder_related_companies_total"], 1)
+        self.assertEqual(relationship_context["coverage_diagnostics"]["status"], "complete")
+        self.assertEqual(relationship_context["coverage_diagnostics"]["coverage_score"], 1.0)
+        self.assertEqual(relationship_context["coverage_diagnostics"]["missing_required_layers"], [])
+        self.assertEqual(
+            relationship_context["coverage_diagnostics"]["industry_network_summary"],
+            {
+                "total": 3,
+                "peers": 1,
+                "upstream": 1,
+                "downstream": 1,
+                "chain_nodes": 1,
+                "available": True,
+                "source_layers": ["CompanyPosition", "IndustryChain edges"],
+            },
+        )
+        self.assertEqual(
+            relationship_context["coverage_diagnostics"]["shareholder_network_summary"],
+            {
+                "total": 1,
+                "fact_network": 0,
+                "holding_network": 1,
+                "available": True,
+                "source_layers": ["approved active ownership CompanyRelationship records", "same-holder InstitutionalHolding records"],
+            },
+        )
+        self.assertEqual(relationship_context["next_actions"], [])
+        self.assertEqual(relationship_context["industry"]["peer_companies"][0]["issuer_id"], "issuer_peer")
+        self.assertEqual(relationship_context["industry"]["upstream_companies"][0]["issuer_id"], "issuer_upstream")
+        self.assertEqual(relationship_context["industry"]["downstream_companies"][0]["issuer_id"], "issuer_downstream")
+        self.assertEqual(relationship_context["ownership"]["shareholders"][0]["holder_name"], "Alpha Capital")
+        self.assertEqual(relationship_context["ownership"]["shareholders"][0]["holder_key"], "000HOLDER")
+        self.assertEqual(relationship_context["ownership"]["shareholder_related_companies"][0]["related_issuer_id"], "issuer_peer")
+        self.assertEqual(relationship_context["ownership"]["shareholder_related_companies"][0]["holder_key"], "000HOLDER")
+        self.assertIn("institutional_holder_key", relationship_context["dynamic_graph"]["recommended_filters"])
+        self.assertIn("industry_direction", relationship_context["dynamic_graph"]["recommended_filters"])
+        recommended_queries = relationship_context["dynamic_graph"]["recommended_queries"]
+        self.assertTrue(
+            any(item["query"].get("institutional_holder_key") == "000HOLDER" for item in recommended_queries)
+        )
+        self.assertTrue(
+            {"peer", "upstream", "downstream"}.issubset(
+                {item["query"].get("industry_direction") for item in recommended_queries}
+            )
+        )
         self.assertEqual(aggregated.data["research_results"]["report_viewpoints"][0]["viewpoint_id"], "vp_demo_001")
         self.assertEqual(aggregated.data["analysis_workflow"]["analysis_conclusions"][0]["analysis_conclusion_id"], "ac_demo_001")
         self.assertEqual(aggregated.data["simulation_feedback"]["feedback_records"][0]["simulation_feedback_id"], "sf_demo_001")
@@ -1086,12 +1174,120 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(graph.success, graph.error)
         self.assertTrue(any(item["event_id"] == "ce_demo_001" for item in graph.data["company_events"]))
         self.assertTrue(any(item["relationship_id"] == "rel_demo_customer" for item in graph.data["company_relationships"]))
+        self.assertTrue(any(item["issuer_id"] == "issuer_peer" for item in graph.data["issuers"]))
+        self.assertTrue(any(item["holding_id"] == "hold_peer_alpha" for item in graph.data["institutional_holdings"]))
+        institutional_holder_graph = self.router.dispatch(
+            "GET",
+            "/api/graph/query",
+            {"issuer_id": "issuer_001", "institutional_holder_key": "000HOLDER"},
+            role="analyst",
+        )
+        self.assertTrue(institutional_holder_graph.success, institutional_holder_graph.error)
+        self.assertEqual(
+            {item["holding_id"] for item in institutional_holder_graph.data["institutional_holdings"]},
+            {"hold_demo_alpha", "hold_peer_alpha"},
+        )
+        self.assertIn("issuer_peer", {item["issuer_id"] for item in institutional_holder_graph.data["issuers"]})
+        self.assertIn("SAME_HOLDER_RELATED_COMPANY", {item["type"] for item in institutional_holder_graph.data["edges"]})
         self.assertTrue(any(item["viewpoint_id"] == "vp_demo_001" for item in graph.data["report_viewpoints"]))
         self.assertTrue(any(item["simulation_feedback_id"] == "sf_demo_001" for item in graph.data["simulation_feedback"]))
         edge_types = {item["type"] for item in graph.data["edges"]}
         self.assertIn("HAS_COMPANY_EVENT", edge_types)
+        self.assertIn("POSITION_IN_CHAIN_NODE", edge_types)
+        self.assertIn("SAME_HOLDER_RELATED_COMPANY", edge_types)
         self.assertIn("REPORT_HAS_VIEWPOINT", edge_types)
         self.assertIn("FEEDBACK_FOR_CONCLUSION", edge_types)
+
+        relationship_graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_001", "relationship_type": "customer"}, role="analyst")
+        self.assertTrue(relationship_graph.success, relationship_graph.error)
+        self.assertEqual([item["relationship_id"] for item in relationship_graph.data["company_relationships"]], ["rel_demo_customer"])
+        self.assertTrue(any(item["relationship_type"] == "customer" for item in relationship_graph.data["edges"] if item["type"] == "HAS_COMPANY_RELATIONSHIP"))
+
+        empty_relationship_graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_001", "relationship_type": "supplier_candidate"}, role="analyst")
+        self.assertTrue(empty_relationship_graph.success, empty_relationship_graph.error)
+        self.assertEqual(empty_relationship_graph.data["company_relationships"], [])
+
+    def test_company_relationship_context_reports_missing_chain_layers(self) -> None:
+        self.service.store.issuers["issuer_sparse"] = Issuer(
+            issuer_id="issuer_sparse",
+            legal_name="Sparse Co",
+            country="US",
+            aliases=[],
+        )
+        self.service.store.securities["sec_sparse"] = Security(
+            security_id="sec_sparse",
+            issuer_id="issuer_sparse",
+            ticker="SPRS",
+            market="US",
+            currency="USD",
+            exchange="NASDAQ",
+            security_type="equity",
+        )
+        self.service.store.industry_chains["chain_sparse"] = IndustryChain(
+            chain_id="chain_sparse",
+            name="Sparse Chain",
+            nodes=[
+                {"node_id": "node_focus", "name": "Focus"},
+                {"node_id": "node_upstream", "name": "Upstream"},
+            ],
+            edges=[{"source_node_id": "node_upstream", "target_node_id": "node_focus"}],
+            source_refs=["industry_map"],
+        )
+        self.service.store.company_positions["pos_sparse"] = CompanyPosition(
+            position_id="pos_sparse",
+            issuer_id="issuer_sparse",
+            security_id="sec_sparse",
+            chain_id="chain_sparse",
+            node_ids=["node_focus"],
+            role="producer",
+            evidence_ids=[],
+        )
+
+        aggregated = self.router.dispatch("GET", "/api/company-intelligence/SPRS", {"limit": 20}, role="analyst")
+        self.assertTrue(aggregated.success, aggregated.error)
+        relationship_context = aggregated.data["relationships"]["relationship_context"]
+        diagnostics = relationship_context["coverage_diagnostics"]
+        self.assertEqual(diagnostics["status"], "partial")
+        self.assertLess(diagnostics["coverage_score"], 1.0)
+        self.assertIn("peer_companies", diagnostics["missing_required_layers"])
+        self.assertIn("upstream_companies", diagnostics["missing_required_layers"])
+        self.assertIn("downstream_companies", diagnostics["missing_required_layers"])
+        self.assertIn("ownership_candidates", diagnostics["missing_required_layers"])
+        self.assertNotIn("graph_edges", diagnostics["missing_required_layers"])
+        self.assertIn("shareholder_network", diagnostics["missing_optional_layers"])
+        self.assertIn("approved_shareholder_network", diagnostics["missing_optional_layers"])
+        self.assertEqual(
+            diagnostics["industry_network_summary"],
+            {
+                "total": 0,
+                "peers": 0,
+                "upstream": 0,
+                "downstream": 0,
+                "chain_nodes": 1,
+                "available": False,
+                "source_layers": ["CompanyPosition", "IndustryChain edges"],
+            },
+        )
+        self.assertTrue(relationship_context["next_actions"])
+        self.assertEqual(relationship_context["next_actions"][0]["action"], "relationship_backfill")
+        self.assertEqual(
+            {item["layer"] for item in relationship_context["next_actions"]},
+            set(diagnostics["missing_required_layers"]),
+        )
+        self.assertEqual(len(relationship_context["next_actions"]), len(diagnostics["missing_required_layers"]))
+        next_actions_by_layer = {item["layer"]: item for item in relationship_context["next_actions"]}
+        self.assertEqual(next_actions_by_layer["peer_companies"]["target"]["endpoint"], "/api/company-database/batch/build")
+        self.assertEqual(next_actions_by_layer["peer_companies"]["target"]["ui_action"], "preview_batch_build")
+        self.assertEqual(next_actions_by_layer["ownership_candidates"]["target"]["endpoint"], "/api/company-database/relationships/build")
+        self.assertEqual(next_actions_by_layer["ownership_candidates"]["target"]["review_endpoint"], "/api/company-database/relationships/review")
+        self.assertEqual(
+            {item["layer"] for item in relationship_context["enhancement_actions"]},
+            set(diagnostics["missing_optional_layers"]),
+        )
+        self.assertTrue(all(item["action"] == "relationship_enhancement" for item in relationship_context["enhancement_actions"]))
+        enhancement_actions_by_layer = {item["layer"]: item for item in relationship_context["enhancement_actions"]}
+        self.assertEqual(enhancement_actions_by_layer["shareholder_network"]["target"]["endpoint"], "/api/company-database/relationships/build")
+        self.assertEqual(enhancement_actions_by_layer["approved_shareholder_network"]["target"]["ui_action"], "ownership_import_guidance")
 
     def test_golden_api_behavior_baseline_for_backend_domain_refactor(self) -> None:
         seeded = self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
@@ -3300,8 +3496,8 @@ class SystemServiceTests(unittest.TestCase):
             section="official_disclosure",
             page_no=1,
             bbox="p1",
-            span_text="The company reported customer Mega Cloud and supplier Wafer Co.",
-            canonical_text="customer Mega Cloud and supplier Wafer Co.",
+            span_text="The company reported customer Mega Cloud, supplier Wafer Co, shareholder Alpha Capital, controller Founder Zhang, and investee Battery JV.",
+            canonical_text="customer Mega Cloud, supplier Wafer Co, shareholder Alpha Capital, controller Founder Zhang, investee Battery JV.",
             confidence=0.91,
             issuer_id="issuer_001",
             security_id="sec_001",
@@ -3315,7 +3511,7 @@ class SystemServiceTests(unittest.TestCase):
             item_code="10-K",
             item_title="Annual report relationship disclosure",
             severity="medium",
-            summary="The company reported customer Mega Cloud and supplier Wafer Co.",
+            summary="The company reported customer Mega Cloud, supplier Wafer Co, shareholder Alpha Capital, controller Founder Zhang, and investee Battery JV.",
             evidence_ids=["ev_relationship_demo"],
             source_id="src_sec",
         )
@@ -3329,7 +3525,7 @@ class SystemServiceTests(unittest.TestCase):
         )
         self.assertTrue(dry_run.success, dry_run.error)
         self.assertEqual(dry_run.data["status"], "dry_run")
-        self.assertEqual(dry_run.data["relationships_planned"], 4)
+        self.assertEqual(dry_run.data["relationships_planned"], 7)
         self.assertFalse(self.service.store.company_relationships)
 
         executed = self.router.dispatch(
@@ -3340,25 +3536,668 @@ class SystemServiceTests(unittest.TestCase):
             role="data_engineer",
         )
         self.assertTrue(executed.success, executed.error)
-        self.assertEqual(executed.data["relationships_created"], 4)
+        self.assertEqual(executed.data["relationships_created"], 7)
         relationship_types = {relationship.relationship_type for relationship in self.service.store.company_relationships.values()}
-        self.assertEqual(relationship_types, {"listed_security", "institution_coverage", "customer_candidate", "supplier_candidate"})
+        self.assertEqual(relationship_types, {"listed_security", "institution_coverage", "customer_candidate", "supplier_candidate", "shareholder_candidate", "controller_candidate", "investee_candidate"})
         coverage = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "institution_coverage")
         self.assertEqual(coverage.object_type, "institution")
         self.assertEqual(coverage.review_status, "needs_review")
         self.assertEqual(coverage.metadata["rights_boundary"], "opinion_coverage_relationship_not_company_fact")
         customer = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "customer_candidate")
         supplier = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "supplier_candidate")
+        shareholder = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "shareholder_candidate")
+        controller = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "controller_candidate")
+        investee = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "investee_candidate")
         self.assertEqual(customer.metadata["entity_name"], "Mega Cloud")
         self.assertEqual(supplier.metadata["entity_name"], "Wafer Co")
+        self.assertEqual(shareholder.metadata["entity_name"], "Alpha Capital")
+        self.assertEqual(controller.metadata["entity_name"], "Founder Zhang")
+        self.assertEqual(investee.metadata["entity_name"], "Battery JV")
         self.assertEqual(customer.review_status, "needs_review")
         self.assertEqual(customer.metadata["source_layer"], "official_disclosure_candidate")
         self.assertEqual(customer.evidence_ids, ["ev_relationship_demo"])
 
         aggregated = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
         self.assertTrue(aggregated.success, aggregated.error)
-        self.assertEqual(aggregated.data["section_counts"]["company_relationships"], 4)
+        self.assertEqual(aggregated.data["section_counts"]["company_relationships"], 7)
         self.assertTrue(aggregated.data["data_quality"]["relationship_graph_available"])
+        relationship_context = aggregated.data["relationships"]["relationship_context"]
+        self.assertEqual(relationship_context["summary"]["ownership_relationships"], 3)
+        self.assertEqual(
+            {item["relationship_type"] for item in relationship_context["ownership"]["relationship_candidates"]},
+            {"shareholder_candidate", "controller_candidate", "investee_candidate"},
+        )
+
+    def test_company_relationship_builder_accepts_structured_ownership_rows(self) -> None:
+        ownership_rows = [
+            {
+                "issuer_id": "issuer_001",
+                "kind": "top_shareholder",
+                "entity_name": "Alpha Capital",
+                "share_ratio": 0.123,
+                "report_period": "2026Q1",
+                "source_id": "annual_report_2026",
+                "source_table": "top_ten_shareholders",
+            },
+            {
+                "issuer_id": "issuer_001",
+                "kind": "actual_controller",
+                "entity_name": "Founder Zhang",
+                "voting_pct": 0.31,
+                "source_id": "annual_report_2026",
+            },
+            {
+                "issuer_id": "issuer_001",
+                "kind": "subsidiary",
+                "entity_name": "Demo Cloud Ltd",
+                "ownership_pct": 0.8,
+                "source_id": "annual_report_2026",
+            },
+            {
+                "issuer_id": "issuer_001",
+                "kind": "investee",
+                "entity_name": "Battery JV",
+                "ownership_pct": 0.25,
+                "source_id": "annual_report_2026",
+            },
+        ]
+        payload = {
+            "symbols": ["DEMO"],
+            "include_listings": False,
+            "include_institution_coverage": False,
+            "include_disclosure_candidates": False,
+            "structured_ownership_relationships": ownership_rows,
+        }
+        dry_run = self.router.dispatch("POST", "/api/company-database/relationships/build", payload, actor="data", role="data_engineer")
+        self.assertTrue(dry_run.success, dry_run.error)
+        self.assertEqual(dry_run.data["status"], "dry_run")
+        self.assertEqual(dry_run.data["relationships_planned"], 4)
+        self.assertEqual(dry_run.data["companies"][0]["structured_ownership_candidate_count"], 4)
+        self.assertFalse(self.service.store.company_relationships)
+
+        executed = self.router.dispatch(
+            "POST",
+            "/api/company-database/relationships/build",
+            {**payload, "execute": True},
+            actor="data",
+            role="data_engineer",
+        )
+        self.assertTrue(executed.success, executed.error)
+        self.assertEqual(executed.data["relationships_created"], 4)
+        relationship_types = {relationship.relationship_type for relationship in self.service.store.company_relationships.values()}
+        self.assertEqual(relationship_types, {"shareholder_candidate", "controller_candidate", "subsidiary_candidate", "investee_candidate"})
+        for relationship in self.service.store.company_relationships.values():
+            self.assertEqual(relationship.review_status, "needs_review")
+            self.assertEqual(relationship.relationship_status, "unknown")
+            self.assertEqual(relationship.metadata["source_layer"], "structured_ownership_candidate")
+            self.assertEqual(relationship.metadata["rights_boundary"], "structured_local_or_public_ownership_candidate_needs_review")
+        shareholder = next(relationship for relationship in self.service.store.company_relationships.values() if relationship.relationship_type == "shareholder_candidate")
+        self.assertEqual(shareholder.metadata["share_ratio"], 0.123)
+        self.assertEqual(shareholder.metadata["source_table"], "top_ten_shareholders")
+
+        aggregated = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
+        self.assertTrue(aggregated.success, aggregated.error)
+        relationship_context = aggregated.data["relationships"]["relationship_context"]
+        self.assertEqual(relationship_context["summary"]["ownership_relationships"], 4)
+        self.assertEqual(
+            {item["relationship_type"] for item in relationship_context["ownership"]["relationship_candidates"]},
+            {"shareholder_candidate", "controller_candidate", "subsidiary_candidate", "investee_candidate"},
+        )
+
+        graph = self.router.dispatch(
+            "GET",
+            "/api/graph/query",
+            {"issuer_id": "issuer_001", "relationship_type": "controller_candidate"},
+            role="analyst",
+        )
+        self.assertTrue(graph.success, graph.error)
+        self.assertEqual([item["relationship_type"] for item in graph.data["company_relationships"]], ["controller_candidate"])
+
+    def test_company_relationship_builder_parses_local_ownership_tables(self) -> None:
+        shareholder_csv = "\n".join(
+            [
+                "股票代码,关系类型,股东名称,持股比例,报告期,来源",
+                "DEMO,十大股东,Alpha Capital,12.3%,2026Q1,annual_report_2026",
+                "DEMO,实控人,Founder Zhang,31%,2026Q1,annual_report_2026",
+            ]
+        )
+        subsidiary_markdown = """
+| 代码 | 类型 | 名称 | 持股比例 | 来源 |
+| --- | --- | --- | --- | --- |
+| DEMO | 子公司 | Demo Cloud Ltd | 80% | annual_report_2026 |
+| DEMO | 参股公司 | Battery JV | 25% | annual_report_2026 |
+""".strip()
+        payload = {
+            "symbols": ["DEMO"],
+            "include_listings": False,
+            "include_institution_coverage": False,
+            "include_disclosure_candidates": False,
+            "ownership_csv": shareholder_csv,
+            "structured_ownership_tables": [
+                {
+                    "name": "subsidiary_and_investee_table",
+                    "markdown": subsidiary_markdown,
+                    "source_id": "annual_report_2026",
+                }
+            ],
+            "execute": True,
+        }
+        response = self.router.dispatch("POST", "/api/company-database/relationships/build", payload, actor="data", role="data_engineer")
+        self.assertTrue(response.success, response.error)
+        self.assertEqual(response.data["relationships_created"], 4)
+        self.assertEqual(response.data["companies"][0]["structured_ownership_candidate_count"], 4)
+        rows = list(self.service.store.company_relationships.values())
+        self.assertEqual({row.relationship_type for row in rows}, {"shareholder_candidate", "controller_candidate", "subsidiary_candidate", "investee_candidate"})
+        shareholder = next(row for row in rows if row.relationship_type == "shareholder_candidate")
+        controller = next(row for row in rows if row.relationship_type == "controller_candidate")
+        subsidiary = next(row for row in rows if row.relationship_type == "subsidiary_candidate")
+        self.assertEqual(shareholder.metadata["entity_name"], "Alpha Capital")
+        self.assertAlmostEqual(shareholder.weight, 0.123)
+        self.assertAlmostEqual(controller.weight, 0.31)
+        self.assertEqual(subsidiary.metadata["source_table"], "subsidiary_and_investee_table")
+
+        aggregated = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
+        self.assertTrue(aggregated.success, aggregated.error)
+        self.assertEqual(aggregated.data["relationships"]["relationship_context"]["summary"]["ownership_relationships"], 4)
+
+    def test_company_relationship_builder_reads_local_ownership_files(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ownership_file = root / "demo-ownership.csv"
+            ownership_file.write_text(
+                "\n".join(
+                    [
+                        "股票代码,关系类型,股东名称,持股比例,报告期,来源",
+                        "DEMO,十大股东,Alpha Capital,12.3%,2026Q1,annual_report_2026",
+                        "DEMO,实控人,Founder Zhang,31%,2026Q1,annual_report_2026",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            payload = {
+                "symbols": ["DEMO"],
+                "include_listings": False,
+                "include_institution_coverage": False,
+                "include_disclosure_candidates": False,
+                "ownership_root_path": str(root),
+                "ownership_file_paths": ["demo-ownership.csv"],
+            }
+            dry_run = self.router.dispatch("POST", "/api/company-database/relationships/build", payload, actor="data", role="data_engineer")
+            self.assertTrue(dry_run.success, dry_run.error)
+            self.assertEqual(dry_run.data["relationships_planned"], 2)
+            self.assertEqual(dry_run.data["ownership_file_inputs"][0]["status"], "parsed")
+            self.assertEqual(dry_run.data["ownership_file_inputs"][0]["row_count"], 2)
+            self.assertFalse(self.service.store.company_relationships)
+
+            executed = self.router.dispatch(
+                "POST",
+                "/api/company-database/relationships/build",
+                {**payload, "execute": True},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(executed.success, executed.error)
+            self.assertEqual(executed.data["relationships_created"], 2)
+            self.assertEqual(executed.data["relationship_review_candidate_count"], 2)
+            self.assertEqual(len(executed.data["relationship_review_candidates"]), 2)
+            self.assertEqual(
+                {row["relationship_type"] for row in executed.data["relationship_review_candidates"]},
+                {"shareholder_candidate", "controller_candidate"},
+            )
+            self.assertTrue(all(row["review_recommendation"]["next_action"] for row in executed.data["relationship_review_candidates"]))
+            self.assertEqual({row.relationship_type for row in self.service.store.company_relationships.values()}, {"shareholder_candidate", "controller_candidate"})
+
+    def test_approved_ownership_candidate_promotes_to_active_graph_relationship(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ownership_file = root / "demo-ownership.csv"
+            ownership_file.write_text(
+                "\n".join(
+                    [
+                        "股票代码,关系类型,股东名称,持股比例,报告期,来源",
+                        "DEMO,十大股东,Alpha Capital,12.3%,2026Q1,annual_report_2026",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            build = self.router.dispatch(
+                "POST",
+                "/api/company-database/relationships/build",
+                {
+                    "symbols": ["DEMO"],
+                    "include_listings": False,
+                    "include_institution_coverage": False,
+                    "include_disclosure_candidates": False,
+                    "ownership_root_path": str(root),
+                    "ownership_file_paths": ["demo-ownership.csv"],
+                    "execute": True,
+                },
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(build.success, build.error)
+            relationship_id = build.data["relationship_review_candidates"][0]["relationship_id"]
+
+            reviewed = self.router.dispatch(
+                "POST",
+                f"/api/company-relationships/{relationship_id}/review",
+                {"action": "approve", "reason": "ownership source checked"},
+                actor="analyst",
+                role="analyst",
+            )
+            self.assertTrue(reviewed.success, reviewed.error)
+            self.assertEqual(reviewed.data["relationship_type"], "shareholder")
+            self.assertEqual(reviewed.data["relationship_status"], "active")
+            self.assertEqual(reviewed.data["review_status"], "approved")
+            self.assertEqual(reviewed.data["metadata"]["candidate_relationship_type"], "shareholder_candidate")
+            self.assertEqual(self.service.store.company_relationships[relationship_id].relationship_type, "shareholder")
+
+            graph = self.router.dispatch(
+                "GET",
+                "/api/graph/query",
+                {"issuer_id": "issuer_001", "relationship_type": "shareholder"},
+                role="analyst",
+            )
+            self.assertTrue(graph.success, graph.error)
+            self.assertEqual([item["relationship_id"] for item in graph.data["company_relationships"]], [relationship_id])
+            self.assertTrue(any(item["relationship_type"] == "shareholder" for item in graph.data["edges"] if item["type"] == "HAS_COMPANY_RELATIONSHIP"))
+
+            old_candidate_graph = self.router.dispatch(
+                "GET",
+                "/api/graph/query",
+                {"issuer_id": "issuer_001", "relationship_type": "shareholder_candidate"},
+                role="analyst",
+            )
+            self.assertTrue(old_candidate_graph.success, old_candidate_graph.error)
+            self.assertEqual(old_candidate_graph.data["company_relationships"], [])
+
+            aggregated = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
+            self.assertTrue(aggregated.success, aggregated.error)
+            ownership = aggregated.data["relationships"]["relationship_context"]["ownership"]
+            self.assertEqual([item["relationship_id"] for item in ownership["approved_relationships"]], [relationship_id])
+            self.assertEqual(ownership["approved_relationships"][0]["relationship_type"], "shareholder")
+            self.assertEqual(ownership["relationship_candidates"], [])
+            self.assertEqual(aggregated.data["relationships"]["relationship_context"]["summary"]["approved_ownership_relationships"], 1)
+            self.assertEqual(aggregated.data["relationships"]["relationship_context"]["summary"]["ownership_candidates"], 0)
+
+    def test_relationship_context_links_approved_same_shareholder_companies(self) -> None:
+        self.service.store.issuers["issuer_peer_holder"] = Issuer(
+            issuer_id="issuer_peer_holder",
+            legal_name="Peer Holder Demo Inc",
+            country="US",
+            data_sources=["local_test"],
+        )
+        self.service.store.securities["sec_peer_holder"] = Security(
+            security_id="sec_peer_holder",
+            issuer_id="issuer_peer_holder",
+            ticker="PEERH",
+            market="US",
+            exchange="NASDAQ",
+            currency="USD",
+        )
+        self.service.store.issuers["issuer_unrelated_holder"] = Issuer(
+            issuer_id="issuer_unrelated_holder",
+            legal_name="Unrelated Holder Demo Inc",
+            country="US",
+            data_sources=["local_test"],
+        )
+        self.service.store.securities["sec_unrelated_holder"] = Security(
+            security_id="sec_unrelated_holder",
+            issuer_id="issuer_unrelated_holder",
+            ticker="UNREL",
+            market="US",
+            exchange="NASDAQ",
+            currency="USD",
+        )
+        for relationship_id, issuer_id, security_id, object_id, status, review_status in [
+            ("rel_alpha_holder_demo", "issuer_001", "sec_001", "external_company_alpha_capital", "active", "approved"),
+            ("rel_alpha_holder_peer", "issuer_peer_holder", "sec_peer_holder", "external_company_alpha_capital", "active", "approved"),
+            ("rel_alpha_holder_candidate", "issuer_unrelated_holder", "sec_unrelated_holder", "external_company_alpha_capital", "active", "needs_review"),
+            ("rel_beta_holder_peer", "issuer_unrelated_holder", "sec_unrelated_holder", "external_company_beta_capital", "active", "approved"),
+        ]:
+            self.service.register_company_relationship(
+                {
+                    "relationship_id": relationship_id,
+                    "issuer_id": issuer_id,
+                    "security_id": security_id,
+                    "subject_type": "company",
+                    "subject_id": issuer_id,
+                    "object_type": "company",
+                    "object_id": object_id,
+                    "relationship_type": "shareholder" if review_status == "approved" else "shareholder_candidate",
+                    "relationship_status": status,
+                    "review_status": review_status,
+                    "confidence": 0.86,
+                    "metadata": {
+                        "entity_name": "Alpha Capital" if "alpha" in object_id else "Beta Capital",
+                        "candidate_relationship_type": "shareholder_candidate",
+                    },
+                },
+                actor="data",
+            )
+
+        aggregated = self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 20}, role="analyst")
+        self.assertTrue(aggregated.success, aggregated.error)
+        context = aggregated.data["relationships"]["relationship_context"]
+        related = context["ownership"]["approved_shareholder_related_companies"]
+        approved = context["ownership"]["approved_relationships"]
+        self.assertEqual(context["summary"]["approved_shareholder_related_companies"], 1)
+        self.assertEqual(context["summary"]["shareholder_related_companies_total"], 1)
+        coverage_by_layer = {item["layer"]: item for item in context["coverage_diagnostics"]["diagnostics"]}
+        self.assertEqual(coverage_by_layer["approved_shareholder_network"]["count"], 1)
+        self.assertTrue(coverage_by_layer["approved_shareholder_network"]["available"])
+        self.assertFalse(coverage_by_layer["approved_shareholder_network"]["required"])
+        self.assertEqual(coverage_by_layer["shareholder_network"]["count"], 0)
+        self.assertEqual(
+            context["coverage_diagnostics"]["shareholder_network_summary"],
+            {
+                "total": 1,
+                "fact_network": 1,
+                "holding_network": 0,
+                "available": True,
+                "source_layers": ["approved active ownership CompanyRelationship records", "same-holder InstitutionalHolding records"],
+            },
+        )
+        self.assertIn("ownership_holder_key", context["dynamic_graph"]["recommended_filters"])
+        recommended_queries = context["dynamic_graph"]["recommended_queries"]
+        self.assertTrue(any(item["query"].get("issuer_id") == "issuer_001" for item in recommended_queries))
+        self.assertTrue(
+            any(
+                item["query"].get("relationship_type") == "shareholder"
+                and item["query"].get("ownership_holder_key") == "external_company_alpha_capital"
+                for item in recommended_queries
+            )
+        )
+        self.assertEqual(related[0]["related_issuer_id"], "issuer_peer_holder")
+        self.assertEqual(related[0]["holder_name"], "Alpha Capital")
+        self.assertEqual(related[0]["holder_key"], "external_company_alpha_capital")
+        self.assertEqual(related[0]["relationship_type"], "shareholder")
+        self.assertEqual(related[0]["source"], "approved_company_relationship")
+        self.assertEqual(approved[0]["holder_name"], "Alpha Capital")
+        self.assertEqual(approved[0]["holder_key"], "external_company_alpha_capital")
+        holder_graph = self.router.dispatch(
+            "GET",
+            "/api/graph/query",
+            {
+                "issuer_id": "issuer_001",
+                "relationship_type": "shareholder",
+                "ownership_holder_key": "external_company_alpha_capital",
+            },
+            role="analyst",
+        )
+        self.assertTrue(holder_graph.success, holder_graph.error)
+        self.assertEqual(
+            {item["relationship_id"] for item in holder_graph.data["company_relationships"]},
+            {"rel_alpha_holder_demo", "rel_alpha_holder_peer"},
+        )
+        self.assertIn("issuer_peer_holder", {item["issuer_id"] for item in holder_graph.data["issuers"]})
+        self.assertNotIn("rel_alpha_holder_candidate", {item["relationship_id"] for item in holder_graph.data["company_relationships"]})
+        self.assertNotIn("rel_beta_holder_peer", {item["relationship_id"] for item in holder_graph.data["company_relationships"]})
+
+    def test_company_ownership_table_import_script_uses_relationship_builder(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ownership_file = root / "demo-ownership.csv"
+            ownership_file.write_text(
+                "\n".join(
+                    [
+                        "股票代码,关系类型,股东名称,持股比例,报告期,来源",
+                        "DEMO,十大股东,Alpha Capital,12.3%,2026Q1,annual_report_2026",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            output = root / "ownership-import.json"
+            self_router = self.router
+            import scripts.import_company_ownership_tables as ownership_script
+
+            class LocalClient:
+                def __init__(self, _base_url: str, *, timeout: float = 120.0) -> None:
+                    self.timeout = timeout
+
+                def request(self, method: str, path: str, body: dict | None = None) -> dict:
+                    response = self_router.dispatch(method, path, body or {}, actor="ownership_script_test", role="data_engineer")
+                    if not response.success:
+                        raise RuntimeError(str(response.error))
+                    return response.data
+
+            original_client = ownership_script.ApiClient
+            try:
+                ownership_script.ApiClient = LocalClient
+                dry_summary = ownership_script.run_import(
+                    base_url="local",
+                    symbols=["DEMO"],
+                    issuer_ids=[],
+                    root_path=str(root),
+                    file_paths=[],
+                    manifest_path="",
+                    scan_patterns=["*ownership.csv"],
+                    scan_limit=10,
+                    infer_symbols=True,
+                    relationship_limit=10,
+                    execute=False,
+                    output=output,
+                    extensions=[".csv"],
+                    file_limit=10,
+                    file_max_bytes=10000,
+                    timeout=1,
+                )
+                self.assertEqual(dry_summary["relationships_planned"], 1)
+                self.assertEqual(dry_summary["discovered_files"], ["demo-ownership.csv"])
+                self.assertTrue(output.exists())
+                self.assertFalse(self.service.store.company_relationships)
+                exec_summary = ownership_script.run_import(
+                    base_url="local",
+                    symbols=["DEMO"],
+                    issuer_ids=[],
+                    root_path=str(root),
+                    file_paths=[],
+                    manifest_path="",
+                    scan_patterns=["*ownership.csv"],
+                    scan_limit=10,
+                    infer_symbols=True,
+                    relationship_limit=10,
+                    execute=True,
+                    output=output,
+                    extensions=[".csv"],
+                    file_limit=10,
+                    file_max_bytes=10000,
+                    timeout=1,
+                )
+            finally:
+                ownership_script.ApiClient = original_client
+            self.assertEqual(exec_summary["relationships_created"], 1)
+            relationship = next(iter(self.service.store.company_relationships.values()))
+            self.assertEqual(relationship.relationship_type, "shareholder_candidate")
+            self.assertEqual(relationship.review_status, "needs_review")
+
+    def test_company_ownership_table_import_script_infers_symbol_from_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ownership_file = root / "DEMO-ownership.csv"
+            ownership_file.write_text(
+                "\n".join(
+                    [
+                        "关系类型,股东名称,持股比例,报告期,来源",
+                        "十大股东,Alpha Capital,12.3%,2026Q1,annual_report_2026",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            output = root / "ownership-import.json"
+            self_router = self.router
+            import scripts.import_company_ownership_tables as ownership_script
+
+            class LocalClient:
+                def __init__(self, _base_url: str, *, timeout: float = 120.0) -> None:
+                    self.timeout = timeout
+
+                def request(self, method: str, path: str, body: dict | None = None) -> dict:
+                    response = self_router.dispatch(method, path, body or {}, actor="ownership_symbol_test", role="data_engineer")
+                    if not response.success:
+                        raise RuntimeError(str(response.error))
+                    return response.data
+
+            original_client = ownership_script.ApiClient
+            try:
+                ownership_script.ApiClient = LocalClient
+                summary = ownership_script.run_import(
+                    base_url="local",
+                    symbols=[],
+                    issuer_ids=[],
+                    root_path=str(root),
+                    file_paths=[],
+                    manifest_path="",
+                    scan_patterns=["*ownership.csv"],
+                    scan_limit=10,
+                    infer_symbols=True,
+                    relationship_limit=10,
+                    execute=False,
+                    output=output,
+                    extensions=[".csv"],
+                    file_limit=10,
+                    file_max_bytes=10000,
+                    timeout=1,
+                )
+            finally:
+                ownership_script.ApiClient = original_client
+            self.assertEqual(summary["inferred_symbols"], ["DEMO"])
+            self.assertEqual(summary["symbols"], ["DEMO"])
+            self.assertEqual(summary["relationships_planned"], 1)
+
+    def test_company_ownership_table_import_script_uses_manifest_metadata(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ownership_file = root / "manifest-ownership.csv"
+            ownership_file.write_text(
+                "\n".join(
+                    [
+                        "关系类型,名称,持股比例,报告期",
+                        "子公司,Demo Cloud Ltd,80%,2026Q1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            manifest = root / "ownership.manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "files": [
+                            {
+                                "file_path": "manifest-ownership.csv",
+                                "symbol": "DEMO",
+                                "default_kind": "subsidiary",
+                                "source_id": "annual_report_2026",
+                                "source_table": "subsidiary_table",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output = root / "ownership-import.json"
+            self_router = self.router
+            import scripts.import_company_ownership_tables as ownership_script
+
+            class LocalClient:
+                def __init__(self, _base_url: str, *, timeout: float = 120.0) -> None:
+                    self.timeout = timeout
+
+                def request(self, method: str, path: str, body: dict | None = None) -> dict:
+                    response = self_router.dispatch(method, path, body or {}, actor="ownership_manifest_test", role="data_engineer")
+                    if not response.success:
+                        raise RuntimeError(str(response.error))
+                    return response.data
+
+            original_client = ownership_script.ApiClient
+            try:
+                ownership_script.ApiClient = LocalClient
+                summary = ownership_script.run_import(
+                    base_url="local",
+                    symbols=[],
+                    issuer_ids=[],
+                    root_path=str(root),
+                    file_paths=[],
+                    manifest_path=str(manifest),
+                    scan_patterns=[],
+                    scan_limit=10,
+                    infer_symbols=True,
+                    relationship_limit=10,
+                    execute=True,
+                    output=output,
+                    extensions=[".csv"],
+                    file_limit=10,
+                    file_max_bytes=10000,
+                    timeout=1,
+                )
+            finally:
+                ownership_script.ApiClient = original_client
+            self.assertEqual(summary["explicit_symbols"], ["DEMO"])
+            self.assertEqual(summary["manifest_file_count"], 1)
+            self.assertEqual(summary["relationships_created"], 1)
+            relationship = next(iter(self.service.store.company_relationships.values()))
+            self.assertEqual(relationship.relationship_type, "subsidiary_candidate")
+            self.assertEqual(relationship.source_ids, ["annual_report_2026"])
+            self.assertEqual(relationship.metadata["source_table"], "subsidiary_table")
+
+    def test_company_ownership_table_import_script_builds_manifest_template(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "DEMO-ownership.csv").write_text("关系类型,名称\n十大股东,Alpha Capital\n", encoding="utf-8")
+            import scripts.import_company_ownership_tables as ownership_script
+
+            template = ownership_script.build_manifest_template(
+                root_path=str(root),
+                file_paths=[],
+                scan_patterns=["*ownership.csv"],
+                scan_limit=10,
+                infer_symbols=True,
+                default_source_id="annual_report_2026",
+                default_source_table="top_ten_shareholders",
+                default_kind="shareholder",
+            )
+            self.assertEqual(template["schema_id"], "company-ownership-table-manifest-v1")
+            self.assertEqual(template["files"][0]["file_path"], "DEMO-ownership.csv")
+            self.assertEqual(template["files"][0]["symbol"], "DEMO")
+            self.assertEqual(template["files"][0]["source_id"], "annual_report_2026")
+            self.assertEqual(template["files"][0]["source_table"], "top_ten_shareholders")
+            self.assertEqual(template["files"][0]["default_kind"], "shareholder")
+
+    def test_company_ownership_manifest_template_api_previews_and_writes(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "DEMO-ownership.csv").write_text("关系类型,名称\n十大股东,Alpha Capital\n", encoding="utf-8")
+            output = root / "ownership.manifest.json"
+            payload = {
+                "root_path": str(root),
+                "glob": "*ownership.csv",
+                "scan_limit": 10,
+                "default_source_id": "annual_report_2026",
+                "default_source_table": "top_ten_shareholders",
+                "default_kind": "shareholder",
+            }
+            preview = self.router.dispatch("POST", "/api/company-database/ownership/manifest-template", payload, actor="data", role="data_engineer")
+            self.assertTrue(preview.success, preview.error)
+            self.assertEqual(preview.data["status"], "dry_run")
+            self.assertFalse(output.exists())
+            self.assertEqual(preview.data["file_count"], 1)
+            self.assertEqual(preview.data["template"]["files"][0]["file_path"], "DEMO-ownership.csv")
+            self.assertEqual(preview.data["template"]["files"][0]["symbol"], "DEMO")
+
+            executed = self.router.dispatch(
+                "POST",
+                "/api/company-database/ownership/manifest-template",
+                {**payload, "output_path": str(output), "execute": True, "dry_run": False},
+                actor="data",
+                role="data_engineer",
+            )
+            self.assertTrue(executed.success, executed.error)
+            self.assertEqual(executed.data["status"], "executed")
+            self.assertTrue(executed.data["written"])
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema_id"], "company-ownership-table-manifest-v1")
+            self.assertEqual(manifest["files"][0]["symbol"], "DEMO")
 
     def test_company_relationship_review_approves_rejects_and_merges_candidates(self) -> None:
         approved = self.service.register_company_relationship(

@@ -25258,11 +25258,16 @@ class SystemService:
         include_listings = self._truthy(payload.get("include_listings", True))
         include_institution_coverage = self._truthy(payload.get("include_institution_coverage", True))
         include_disclosure_candidates = self._truthy(payload.get("include_disclosure_candidates", True))
+        include_structured_ownership = self._truthy(payload.get("include_structured_ownership", True))
+        structured_ownership_rows = company_intelligence_module.ownership_rows_from_payload(payload)
+        ownership_file_rows, ownership_file_inputs = self._ownership_rows_from_local_files(payload)
+        structured_ownership_rows.extend(ownership_file_rows)
         issuers = self._company_database_target_issuers(payload, limit=limit)
         planned_relationships: list[CompanyRelationship] = []
         rows: list[dict[str, Any]] = []
         for issuer in issuers:
             securities = [item for item in self.store.securities.values() if item.issuer_id == issuer.issuer_id]
+            security_ids = {security.security_id for security in securities}
             relationships: list[CompanyRelationship] = []
             if include_listings:
                 for security in securities:
@@ -25345,6 +25350,29 @@ class SystemService:
                         limit=max(0, relationship_limit - len(relationships)),
                     )
                 )
+            if include_structured_ownership and structured_ownership_rows and len(relationships) < relationship_limit:
+                issuer_ownership_rows = [
+                    row
+                    for row in structured_ownership_rows
+                    if isinstance(row, Mapping)
+                    and (
+                        not str(row.get("issuer_id", "") or row.get("subject_id", "") or row.get("ticker", "") or row.get("symbol", "")).strip()
+                        or str(row.get("issuer_id", "") or row.get("subject_id", "")).strip() == issuer.issuer_id
+                        or str(row.get("security_id", "") or "").strip() in security_ids
+                        or str(row.get("ticker", "") or row.get("symbol", "")).strip().upper() in {security.ticker.upper() for security in securities}
+                    )
+                ]
+                ownership_specs = company_intelligence_module.structured_ownership_relationship_specs(
+                    issuer_id=issuer.issuer_id,
+                    security_id=securities[0].security_id if securities else "",
+                    ownership_rows=issuer_ownership_rows,
+                    existing_relationship_ids=[
+                        *self.store.company_relationships.keys(),
+                        *[relationship.relationship_id for relationship in relationships],
+                    ],
+                    limit=max(0, relationship_limit - len(relationships)),
+                )
+                relationships.extend(CompanyRelationship(**spec) for spec in ownership_specs)
             relationships = relationships[:relationship_limit]
             if execute:
                 for relationship in relationships:
@@ -25358,6 +25386,7 @@ class SystemService:
                     "listing_relationship_count": sum(1 for relationship in relationships if relationship.relationship_type == "listed_security"),
                     "institution_coverage_relationship_count": sum(1 for relationship in relationships if relationship.relationship_type == "institution_coverage"),
                     "disclosure_candidate_relationship_count": sum(1 for relationship in relationships if str(relationship.relationship_type).endswith("_candidate")),
+                    "structured_ownership_candidate_count": sum(1 for relationship in relationships if relationship.metadata.get("source_layer") == "structured_ownership_candidate"),
                     "sample_relationship_ids": [relationship.relationship_id for relationship in relationships[:5]],
                 }
             )
@@ -25373,6 +25402,12 @@ class SystemService:
             if callable(marker):
                 marker("company_relationship")
             self.store.commit()
+        all_review_candidates = [
+            self._company_relationship_review_row(relationship)
+            for relationship in planned_relationships
+            if self._company_relationship_is_review_candidate(relationship)
+        ]
+        review_candidates = all_review_candidates[:50]
         return {
             "status": "executed" if execute else "dry_run",
             "execute": execute,
@@ -25383,8 +25418,145 @@ class SystemService:
             "include_listings": include_listings,
             "include_institution_coverage": include_institution_coverage,
             "include_disclosure_candidates": include_disclosure_candidates,
+            "include_structured_ownership": include_structured_ownership,
+            "ownership_file_inputs": ownership_file_inputs,
+            "relationship_review_candidates": review_candidates,
+            "relationship_review_candidate_count": len(all_review_candidates),
             "companies": rows,
-            "usage_boundary": "company_relationships_from_listings_research_coverage_and_public_disclosure_candidates_only_no_live_trading",
+            "usage_boundary": "company_relationships_from_listings_research_coverage_public_disclosure_and_reviewed_local_ownership_inputs_only_no_live_trading",
+        }
+
+    def _ownership_rows_from_local_files(self, payload: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        raw_files = payload.get("ownership_file_paths", payload.get("ownership_files", []))
+        if isinstance(raw_files, (str, Mapping)):
+            raw_files = [raw_files]
+        if not isinstance(raw_files, list):
+            raw_files = []
+        root_path = Path(str(payload.get("ownership_root_path", "") or ".")).expanduser()
+        allowed_extensions = {
+            str(item).strip().lower()
+            for item in payload.get("ownership_file_extensions", [".csv", ".tsv", ".txt", ".md"])
+            if str(item).strip()
+        }
+        max_files = self._bounded_limit(payload.get("ownership_file_limit", 20), 100)
+        max_bytes = self._bounded_limit(payload.get("ownership_file_max_bytes", 1_000_000), 5_000_000)
+        rows: list[dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
+        for raw_item in raw_files[:max_files]:
+            if isinstance(raw_item, Mapping):
+                raw_path = str(raw_item.get("file_path", raw_item.get("path", ""))).strip()
+                default_kind = str(raw_item.get("default_kind", raw_item.get("kind", payload.get("ownership_file_default_kind", "shareholder"))) or "shareholder")
+                source_id = str(raw_item.get("source_id", payload.get("ownership_file_source_id", "local_structured_ownership")) or "local_structured_ownership")
+                source_table = str(raw_item.get("source_table", "") or Path(raw_path).stem or "ownership_file")
+                encoding = str(raw_item.get("encoding", payload.get("ownership_file_encoding", "utf-8")) or "utf-8")
+            else:
+                raw_path = str(raw_item).strip()
+                default_kind = str(payload.get("ownership_file_default_kind", "shareholder") or "shareholder")
+                source_id = str(payload.get("ownership_file_source_id", "local_structured_ownership") or "local_structured_ownership")
+                source_table = Path(raw_path).stem or "ownership_file"
+                encoding = str(payload.get("ownership_file_encoding", "utf-8") or "utf-8")
+            item = {
+                "file_path": raw_path,
+                "source_table": source_table,
+                "source_id": source_id,
+                "status": "skipped",
+                "row_count": 0,
+                "errors": [],
+            }
+            if not raw_path:
+                item["errors"].append("missing_file_path")
+                items.append(item)
+                continue
+            candidate = Path(raw_path).expanduser()
+            if not candidate.is_absolute():
+                candidate = root_path / candidate
+            if not candidate.exists() or not candidate.is_file():
+                item["errors"].append("file_not_found")
+                items.append(item)
+                continue
+            if candidate.suffix.lower() not in allowed_extensions:
+                item["errors"].append("unsupported_extension")
+                items.append(item)
+                continue
+            size = candidate.stat().st_size
+            item["size_bytes"] = size
+            if size > max_bytes:
+                item["errors"].append("file_too_large")
+                items.append(item)
+                continue
+            text = candidate.read_text(encoding=encoding, errors="replace")
+            parsed_rows = company_intelligence_module.parse_structured_ownership_table(
+                text,
+                default_kind=default_kind,
+                source_table=source_table,
+                source_id=source_id,
+            )
+            item["status"] = "parsed"
+            item["file_path"] = str(candidate)
+            item["row_count"] = len(parsed_rows)
+            rows.extend(parsed_rows)
+            items.append(item)
+        return rows, items
+
+    def company_ownership_manifest_template(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        payload = payload or {}
+        execute = self._truthy(payload.get("execute", False))
+        dry_run = self._truthy(payload.get("dry_run", not execute))
+        if dry_run:
+            execute = False
+        root_path = str(payload.get("root_path") or payload.get("ownership_root_path") or ".").strip() or "."
+        output_path = str(payload.get("output_path") or payload.get("manifest_path") or "").strip()
+        if execute and not output_path:
+            raise ValidationError("output_path is required when execute=true")
+        scan_limit = self._bounded_limit(payload.get("scan_limit", 100), 1000)
+        file_paths = company_intelligence_module.split_csv(payload.get("files", payload.get("file_paths", payload.get("ownership_file_paths", []))))
+        scan_patterns = company_intelligence_module.split_csv(payload.get("glob", payload.get("scan_patterns", "")))
+        infer_symbols = self._truthy(payload.get("infer_symbols_from_path", payload.get("infer_symbols", True)))
+        template = company_intelligence_module.build_ownership_manifest_template(
+            root_path=root_path,
+            file_paths=file_paths,
+            scan_patterns=scan_patterns,
+            scan_limit=scan_limit,
+            infer_symbols=infer_symbols,
+            default_source_id=str(payload.get("default_source_id") or "local_structured_ownership"),
+            default_source_table=str(payload.get("default_source_table") or ""),
+            default_kind=str(payload.get("default_kind") or "shareholder"),
+        )
+        written = False
+        if execute:
+            target_path = Path(output_path).expanduser()
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(json.dumps(to_plain(template), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            written = True
+        self._audit(
+            actor,
+            "company_ownership_manifest_template",
+            "company_relationship",
+            "ownership_manifest_template",
+            approval_state=f"execute={execute};files={len(template.get('files', []))};written={written}",
+        )
+        return {
+            "schema_id": "company-ownership-table-manifest-template-result-v1",
+            "status": "executed" if execute else "dry_run",
+            "execute": execute,
+            "dry_run": not execute,
+            "root_path": root_path,
+            "output_path": output_path,
+            "written": written,
+            "file_count": len(template.get("files", [])),
+            "template": template,
+            "next_actions": [
+                {
+                    "action": "edit_manifest",
+                    "reason": "补齐 symbol、source_id、source_table 和 default_kind 后再执行股权表导入。",
+                },
+                {
+                    "action": "import_ownership_tables",
+                    "endpoint": "/api/company-database/relationships/build",
+                    "reason": "确认 manifest 或文件列表后生成待复核股权关系候选。",
+                },
+            ],
+            "usage_boundary": "local_ownership_manifest_template_generation_no_external_download_no_live_trading",
         }
 
     def _company_relationship_candidates_from_disclosures(
@@ -25470,10 +25642,16 @@ class SystemService:
             ("supplier_candidate", r"\bsupplier\s+(?:named\s+|including\s+|is\s+)?([A-Z][A-Za-z0-9&.,'()\- ]{2,80}?)(?:,|;|\.|\sand\s|$)", "en_supplier"),
             ("partner_candidate", r"\bpartner(?:ship)?(?:\s+with)?\s+([A-Z][A-Za-z0-9&.,'()\- ]{2,80}?)(?:,|;|\.|\sand\s|$)", "en_partner"),
             ("subsidiary_candidate", r"\bsubsidiary\s+([A-Z][A-Za-z0-9&.,'()\- ]{2,80}?)(?:,|;|\.|\sand\s|$)", "en_subsidiary"),
+            ("shareholder_candidate", r"\b(?:shareholder|holder)\s+(?:named\s+|including\s+|is\s+)?([A-Z][A-Za-z0-9&.,'()\- ]{2,80}?)(?:,|;|\.|\sand\s|$)", "en_shareholder"),
+            ("controller_candidate", r"\b(?:controller|controlling shareholder|beneficial owner)\s+(?:named\s+|including\s+|is\s+)?([A-Z][A-Za-z0-9&.,'()\- ]{2,80}?)(?:,|;|\.|\sand\s|$)", "en_controller"),
+            ("investee_candidate", r"\b(?:investee|equity investment in)\s+([A-Z][A-Za-z0-9&.,'()\- ]{2,80}?)(?:,|;|\.|\sand\s|$)", "en_investee"),
             ("customer_candidate", r"(?:客户|主要客户)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_customer"),
             ("supplier_candidate", r"(?:供应商|主要供应商)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_supplier"),
             ("partner_candidate", r"(?:合作方|合作伙伴)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_partner"),
             ("subsidiary_candidate", r"(?:子公司)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_subsidiary"),
+            ("shareholder_candidate", r"(?:股东|主要股东|持有人)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_shareholder"),
+            ("controller_candidate", r"(?:实控人|实际控制人|控股股东)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_controller"),
+            ("investee_candidate", r"(?:参股公司|被投资公司|参股)[:：\s]*([\u4e00-\u9fffA-Za-z0-9（）()&·\-]{2,40})", "zh_investee"),
         ]
         mentions: list[tuple[str, str, str]] = []
         for relationship_type, pattern, rule_name in patterns:
@@ -25489,7 +25667,7 @@ class SystemService:
         cleaned = re.sub(r"\b(the|a|an|our|its|their|major|key)\b\s+", "", cleaned, flags=re.IGNORECASE).strip()
         if len(cleaned) < 2 or len(cleaned) > 80:
             return ""
-        blocked = {"customer", "supplier", "partner", "subsidiary", "company", "group", "客户", "供应商", "合作伙伴", "子公司"}
+        blocked = {"customer", "supplier", "partner", "subsidiary", "shareholder", "holder", "controller", "investee", "company", "group", "客户", "供应商", "合作伙伴", "子公司", "股东", "持有人", "实控人", "实际控制人", "参股"}
         if cleaned.lower() in blocked:
             return ""
         return cleaned
@@ -26831,6 +27009,7 @@ class SystemService:
         if isinstance(relationship.metadata["review_history"], list):
             relationship.metadata["review_history"].append(dict(review_record))
         if action == "approve":
+            self._promote_company_relationship_candidate(relationship)
             relationship.review_status = "approved"
             relationship.relationship_status = "active"
             relationship.confidence = max(float(relationship.confidence), float(payload.get("confidence", 0.8) or 0.8))
@@ -26873,6 +27052,17 @@ class SystemService:
             marker("company_relationship")
         self.store.commit()
         return relationship
+
+    def _promote_company_relationship_candidate(self, relationship: CompanyRelationship) -> None:
+        relationship_type = str(relationship.relationship_type or "")
+        if not relationship_type.endswith("_candidate"):
+            return
+        promoted_type = relationship_type.removesuffix("_candidate")
+        if not promoted_type:
+            return
+        relationship.metadata.setdefault("candidate_relationship_type", relationship_type)
+        relationship.metadata["promoted_relationship_type"] = promoted_type
+        relationship.relationship_type = promoted_type
 
     def _company_relationship_review_row(self, relationship: CompanyRelationship) -> dict[str, Any]:
         row = to_plain(relationship)
@@ -28408,9 +28598,22 @@ class SystemService:
         graph_filters: dict[str, Any] = {"limit": limit, "market_data_limit": limit}
         if primary_issuer:
             graph_filters["issuer_id"] = primary_issuer.issuer_id
-        if primary_security:
+        if primary_security and not primary_issuer:
             graph_filters["security_id"] = primary_security.security_id
         graph = self.query_graph(graph_filters) if (primary_issuer or primary_security) else {"issuers": [], "securities": [], "edges": []}
+        relationship_context = company_intelligence_module.relationship_context(
+            issuer_ids=issuer_ids,
+            company_relationships=company_relationships,
+            company_positions=company_positions,
+            all_company_positions=self.store.company_positions.values(),
+            industry_chains=self.store.industry_chains.values(),
+            institutional_holdings=institutional_holdings,
+            all_institutional_holdings=self.store.institutional_holdings.values(),
+            issuers=self.store.issuers,
+            graph=graph,
+            limit=limit,
+            all_company_relationships=self.store.company_relationships.values(),
+        )
         search_filter: dict[str, Any] = {"q": raw_symbol, "limit": limit}
         if primary_issuer:
             search_filter["issuer_id"] = primary_issuer.issuer_id
@@ -28565,6 +28768,7 @@ class SystemService:
                 "company_positions": plain_rows(company_positions),
                 "institutional_holdings": plain_rows(institutional_holdings),
                 "crowding": plain_rows(crowding),
+                "relationship_context": relationship_context,
                 "graph": graph,
             },
             "research_results": {
@@ -28684,6 +28888,17 @@ class SystemService:
         theme_id = str(filters.get("theme_id", "")).strip()
         chain_id = str(filters.get("chain_id", "")).strip()
         chain_node_id = str(filters.get("chain_node_id", "")).strip()
+        relationship_type_filter = str(filters.get("relationship_type", "") or filters.get("relationshipType", "")).strip()
+        ownership_holder_key_filter = str(
+            filters.get("ownership_holder_key", "")
+            or filters.get("ownershipHolderKey", "")
+            or filters.get("holder_key", "")
+        ).strip().lower()
+        institutional_holder_key_filter = str(
+            filters.get("institutional_holder_key", "")
+            or filters.get("institutionalHolderKey", "")
+            or filters.get("13f_holder_key", "")
+        ).strip().upper()
         graph_limit = self._bounded_limit(filters["limit"], 1000) if str(filters.get("limit", "")).strip() else 0
         market_data_limit = self._bounded_limit(filters.get("market_data_limit", 20), 200)
         security_filter_ids: set[str] = {security_id} if security_id else set()
@@ -28765,6 +28980,26 @@ class SystemService:
 
         def position_in_scope(position: CompanyPosition) -> bool:
             return not security_filter_ids or position.security_id in security_filter_ids
+
+        def relationship_matches_holder_filter(relationship: CompanyRelationship) -> bool:
+            if not ownership_holder_key_filter:
+                return True
+            row = to_plain(relationship)
+            holder_key = company_intelligence_module.ownership_holder_key(row)
+            if holder_key != ownership_holder_key_filter:
+                return False
+            relationship_type = str(relationship.relationship_type or "")
+            if relationship_type.endswith("_candidate"):
+                return False
+            if company_intelligence_module._relationship_bucket(relationship_type) != "ownership":
+                return False
+            return relationship.relationship_status == "active" and relationship.review_status in {"approved", "auto_generated", "reviewed"}
+
+        def institutional_holding_holder_key(holding: InstitutionalHolding) -> str:
+            return company_intelligence_module.institutional_holder_key(to_plain(holding))
+
+        def holding_matches_institutional_holder_filter(holding: InstitutionalHolding) -> bool:
+            return not institutional_holder_key_filter or institutional_holding_holder_key(holding) == institutional_holder_key_filter
 
         def task_in_scope(task: ResearchTask) -> bool:
             if not security_filter_ids:
@@ -29063,12 +29298,29 @@ class SystemService:
                         add_node("evidence", evidence.evidence_id, evidence)
                     add_edge("EVENT_EVIDENCE", company_event.event_id, evidence_id, confidence=company_event.confidence)
             for relationship in self.store.company_relationships.values():
-                if relationship.issuer_id != issuer.issuer_id and relationship.subject_id != issuer.issuer_id and relationship.object_id != issuer.issuer_id:
+                relationship_in_focus = (
+                    relationship.issuer_id == issuer.issuer_id
+                    or relationship.subject_id == issuer.issuer_id
+                    or relationship.object_id == issuer.issuer_id
+                )
+                if not ownership_holder_key_filter and not relationship_in_focus:
+                    continue
+                if ownership_holder_key_filter and not relationship_matches_holder_filter(relationship):
                     continue
                 if security_filter_ids and relationship.security_id and relationship.security_id not in security_filter_ids:
                     continue
+                if relationship_type_filter and relationship.relationship_type != relationship_type_filter:
+                    continue
+                relationship_anchor_id = relationship.issuer_id or relationship.subject_id or issuer.issuer_id
+                relationship_anchor = self.store.issuers.get(relationship_anchor_id)
+                if relationship_anchor is not None:
+                    add_node("issuers", relationship_anchor.issuer_id, relationship_anchor)
+                relationship_security = self.store.securities.get(relationship.security_id) if relationship.security_id else None
+                if relationship_security is not None and security_in_scope(relationship_security.security_id):
+                    add_node("securities", relationship_security.security_id, relationship_security)
+                    add_edge("ISSUES", relationship_security.issuer_id, relationship_security.security_id, market=relationship_security.market, ticker=relationship_security.ticker)
                 add_node("company_relationships", relationship.relationship_id, relationship)
-                add_edge("HAS_COMPANY_RELATIONSHIP", issuer.issuer_id, relationship.relationship_id, relationship_type=relationship.relationship_type, confidence=relationship.confidence)
+                add_edge("HAS_COMPANY_RELATIONSHIP", relationship_anchor_id, relationship.relationship_id, relationship_type=relationship.relationship_type, confidence=relationship.confidence)
                 add_edge("RELATIONSHIP_SUBJECT", relationship.relationship_id, relationship.subject_id, subject_type=relationship.subject_type, confidence=relationship.confidence)
                 add_edge("RELATIONSHIP_OBJECT", relationship.relationship_id, relationship.object_id, object_type=relationship.object_type, confidence=relationship.confidence)
                 for evidence_id in relationship.evidence_ids:
@@ -29176,12 +29428,28 @@ class SystemService:
                         add_node("execution_intents", intent.intent_id, intent)
                         add_edge("INTENT_ON", intent.intent_id, intent.security_id, action=intent.action, target_weight=intent.target_weight)
             for holding in self.store.institutional_holdings.values():
-                if holding.issuer_id == issuer.issuer_id:
+                if holding.issuer_id == issuer.issuer_id or (institutional_holder_key_filter and holding_matches_institutional_holder_filter(holding)):
                     if security_filter_ids and holding.security_id not in security_filter_ids:
                         continue
+                    holding_issuer = self.store.issuers.get(holding.issuer_id)
+                    if holding_issuer is not None:
+                        add_node("issuers", holding_issuer.issuer_id, holding_issuer)
                     add_node("institutional_holdings", holding.holding_id, holding)
-                    add_edge("HAS_13F_HOLDING", issuer.issuer_id, holding.holding_id, report_period=holding.report_period, value_usd=holding.value_usd)
+                    add_edge("HAS_13F_HOLDING", holding.issuer_id, holding.holding_id, report_period=holding.report_period, value_usd=holding.value_usd)
                     add_edge("HOLDS_SECURITY", holding.holding_id, holding.security_id, shares=holding.shares, value_usd=holding.value_usd)
+                    holder_key = institutional_holding_holder_key(holding)
+                    if holder_key:
+                        for related_holding in self.store.institutional_holdings.values():
+                            related_key = institutional_holding_holder_key(related_holding)
+                            if related_holding.holding_id == holding.holding_id or related_key != holder_key:
+                                continue
+                            related_issuer = self.store.issuers.get(related_holding.issuer_id)
+                            if related_issuer is not None:
+                                add_node("issuers", related_issuer.issuer_id, related_issuer)
+                            add_node("institutional_holdings", related_holding.holding_id, related_holding)
+                            add_edge("SAME_HOLDER_RELATED_COMPANY", holding.holding_id, related_holding.holding_id, holder_name=holding.filer_name, confidence=0.7)
+                            add_edge("HAS_13F_HOLDING", related_holding.issuer_id, related_holding.holding_id, report_period=related_holding.report_period, value_usd=related_holding.value_usd)
+                            add_edge("HOLDS_SECURITY", related_holding.holding_id, related_holding.security_id, shares=related_holding.shares, value_usd=related_holding.value_usd)
             for snapshot in self.store.crowding.values():
                 if snapshot.issuer_id == issuer.issuer_id:
                     add_node("crowding", snapshot.snapshot_id, snapshot)
