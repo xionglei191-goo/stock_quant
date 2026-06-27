@@ -28,6 +28,8 @@ REQUIRED_HEADINGS = [
     "## Next Recommended Action",
 ]
 
+SYSTEMSERVICE_FREEZE_HEADING = "## SystemService Growth Freeze Review"
+
 
 def validate_file(path: Path) -> list[str]:
     errors: list[str] = []
@@ -46,7 +48,20 @@ def validate_file(path: Path) -> list[str]:
         if heading not in text:
             errors.append(f"{path}: missing required section `{heading}`")
 
+    if _requires_systemservice_freeze_review(path, text) and SYSTEMSERVICE_FREEZE_HEADING not in text:
+        errors.append(
+            f"{path}: touches app/services.py or SystemService but is missing `{SYSTEMSERVICE_FREEZE_HEADING}`"
+        )
+
     return errors
+
+
+def _requires_systemservice_freeze_review(path: Path, text: str) -> bool:
+    task_match = re.search(r"-T-(\d{3,})-", path.name)
+    task_id = int(task_match.group(1)) if task_match else 0
+    if task_id < 503:
+        return False
+    return "app/services.py" in text or re.search(r"\bSystemService\b", text) is not None
 
 
 def main() -> int:

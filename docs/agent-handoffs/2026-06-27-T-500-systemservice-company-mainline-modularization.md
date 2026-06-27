@@ -94,6 +94,13 @@ T-501 established a golden API baseline. T-496 already extracted feedback scorin
 - `app/service_modules/graph_intelligence.py`: graph identity and Neo4j export helper rules.
 - `tests/test_system.py`: focused facade delegation regression.
 
+## SystemService Growth Freeze Review
+
+- New `SystemService` business logic added: no; existing helper behavior was moved into domain modules and the facade delegates to them.
+- Domain module usage: yes; deterministic company-intelligence, market-data, research-report, graph, and feedback rules live under `app/service_modules/`.
+- Focused regression: `test_systemservice_company_intelligence_helpers_delegate_to_domain_modules` plus the T-501 golden API baseline.
+- API schema, storage schema, UI behavior, and paper-only/no-broker boundary changes: none.
+
 ## Next Recommended Action
 
 Proceed to T-503 service-layer growth freeze rules so future features default to domain modules and handoffs must justify any new `SystemService` logic.

@@ -719,11 +719,13 @@
   - **已完成（本轮）**：ADR 明确 ingestion、company build、package import、company intelligence cycle、material inbox、daily pipeline 和 personal refresh 等 run families、规范字段、来源健康映射和迁移触发条件。
   - 验收：ADR 能指导 T-493 数据健康中心实现，不引入破坏性迁移。
 
-- `TODO` T-503 服务层增长冻结规则
+- `DONE` T-503 服务层增长冻结规则
   - 对应：E8-US2, E9-US2；愿景扩展/生产化增强
   - Owner：PM / Release Coordination, Platform and Quality
   - 目标：防止新功能继续直接堆进 `app/services.py`。
   - 交付：更新后端开发规则：新业务默认进入领域模块；`SystemService` 只做代理、兼容和跨模块编排。
+  - **已完成（本轮）**：`AGENTS.md` 新增 `SystemService Growth Freeze` 规则，明确新业务默认进入领域模块，`SystemService` 仅保留 facade、兼容、跨模块编排和审计/权限/存储上下文。
+  - **已完成（本轮）**：`docs/pr-checklist.md` 增加服务层 review gate；`scripts/check_handoffs.py` 要求触及 `app/services.py` 或 `SystemService` 的 handoff 必须包含 `SystemService Growth Freeze Review`。
   - 验收：`AGENTS.md` 或开发文档记录规则；后续任务 handoff 必须说明是否新增 `SystemService` 逻辑及原因。
 
 ## 运维/非本机发布附录 / 当前工程治理待办

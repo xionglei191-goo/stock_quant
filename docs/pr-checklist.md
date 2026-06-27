@@ -6,6 +6,7 @@
 - [ ] Tests relevant to the change were run and results recorded
 - [ ] No secrets, tokens, or local credential material were introduced
 - [ ] Documentation impacted by the change was updated
+- [ ] If `app/services.py` or `SystemService` changed, new business logic was placed in a domain module or the handoff includes a `SystemService Growth Freeze Review`
 
 ## Multi-Agent Handoff Requirement
 - [ ] If this PR continues, modifies, or closes work that changed hands across agents or groups, the corresponding file in `docs/agent-handoffs/` was created or updated
@@ -16,3 +17,4 @@
 - [ ] Reviewer confirmed the handoff record is consistent with the code change
 - [ ] Reviewer confirmed `tasks/todo.md` status is still accurate
 - [ ] Reviewer confirmed validation evidence is reproducible
+- [ ] Reviewer confirmed any `SystemService` facade change preserves API schema, storage schema, UI behavior, and paper-only/no-broker boundaries

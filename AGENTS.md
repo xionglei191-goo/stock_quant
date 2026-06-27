@@ -255,6 +255,26 @@ All agents must follow these standards:
 - Keep artifact churn out of commits unless the artifact is an intended evidence deliverable.
 - When splitting `app/services.py`, preserve `SystemService` as a facade until API compatibility is proven.
 
+### 8.1 SystemService Growth Freeze
+
+New business behavior must not be added directly to `app/services.py` by default. The default destination is a domain module under `app/service_modules/` or another established domain file.
+
+Allowed `SystemService` changes:
+
+- facade methods that preserve existing API compatibility
+- cross-module orchestration that cannot live inside one domain module
+- compatibility shims during gradual extraction
+- audit/permission/store plumbing needed by existing public methods
+
+Every handoff that touches `app/services.py` or `SystemService` must include a `SystemService Growth Freeze Review` section stating:
+
+- whether new `SystemService` business logic was added
+- why a domain module was or was not used
+- what focused regression protects the facade behavior
+- whether API schema, storage schema, UI behavior, or paper-only/no-broker boundaries changed
+
+Do not mark the task done until this review is present and the relevant facade or golden API regression has passed.
+
 ## 9. Verification Standards
 
 Default checks for code changes:
