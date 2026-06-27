@@ -267,7 +267,8 @@ TASK_EVIDENCE_COLLECTION_PLAN = {
         "artifact_fields": [
             "query_gold_refs_uri",
             "llm_rerank_eval_uri",
-            "research_task_queue_uri",
+            "company_position_review_uri",
+            "chain_taxonomy_review_uri",
         ],
     },
     "T-407": {
@@ -339,7 +340,7 @@ TASK_EVIDENCE_COLLECTION_PLAN = {
         "owner_role": "风险/合规",
         "readiness_endpoint": "/api/research/citation-boundary/readiness-report",
         "artifact_fields": [
-            "policy_review_uri",
+            "citation_policy_uri",
             "source_review_uri",
             "manual_reference_review_uri",
             "research_governance_uri",

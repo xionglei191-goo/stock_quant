@@ -14,9 +14,9 @@
 - Tasks: 17
 - Ready for inventory: 0
 - Waiting for external URI: 17
-- Artifact fields: 80
+- Artifact fields: 81
 - Filled URIs: 0
-- Placeholder URIs: 80
+- Placeholder URIs: 81
 - Invalid URIs: 0
 - Boundary: status board only; not release evidence and not a substitute for artifact inventory or release gate
 
@@ -46,12 +46,12 @@
 ## 分析师
 
 - Tasks: 1
-- Artifact fields: 3
-- Filled / placeholder / invalid: 0 / 3 / 0
+- Artifact fields: 4
+- Filled / placeholder / invalid: 0 / 4 / 0
 
 | Task | Status | Endpoint | Filled | Placeholder | Invalid | Next action |
 | --- | --- | --- | ---: | ---: | ---: | --- |
-| `T-406A` | `waiting_for_external_uri` | `/api/hotspots/readiness-report` | 0 | 3 | 0 | Replace every placeholder with a concrete external staging/production archive URI. |
+| `T-406A` | `waiting_for_external_uri` | `/api/hotspots/readiness-report` | 0 | 4 | 0 | Replace every placeholder with a concrete external staging/production archive URI. |
 
 ## 平台负责人
 

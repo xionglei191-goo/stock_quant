@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: 平台负责人
-- Owner group: PM / Release Coordination
+- Owner group: Platform and Quality
 - Last updated: 2026-06-27
 - Related task: T-412
 - Scope: collect real external staging/production evidence for this task
@@ -43,6 +43,30 @@ Collect and archive the external evidence required to unblock `T-412` for non-lo
 - `release_checklist_uri`: `s3://<production-evidence-bucket>/<release-id>/T-412/release_checklist_uri`
 - `canary_plan_uri`: `s3://<production-evidence-bucket>/<release-id>/T-412/canary_plan_uri`
 - `rollback_plan_uri`: `s3://<production-evidence-bucket>/<release-id>/T-412/rollback_plan_uri`
+
+## Collection Procedure
+
+- Complete the production parameter checklist and secret manager integration proof without exposing secret values.
+- Run or reference the backup/restore artifact for this deployment target.
+- Archive canary scope, rollback triggers, release checklist, and owner approval.
+
+## Minimum Artifact Contents
+
+- Production parameters, secret metadata, backup restore evidence, and capacity baseline.
+- Release checklist with named approver.
+- Canary plan and rollback plan with trigger criteria.
+
+## Reviewer Routing
+
+- Governance, Security, and Compliance
+- PM / Release Coordination
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

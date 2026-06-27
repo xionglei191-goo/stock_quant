@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: 平台负责人
-- Owner group: PM / Release Coordination
+- Owner group: Platform and Quality
 - Last updated: 2026-06-27
 - Related task: T-411
 - Scope: collect real external staging/production evidence for this task
@@ -39,6 +39,29 @@ Collect and archive the external evidence required to unblock `T-411` for non-lo
 - `retention_policy_uri`: `s3://<production-evidence-bucket>/<release-id>/T-411/retention_policy_uri`
 - `external_alert_evidence_uri`: `s3://<production-evidence-bucket>/<release-id>/T-411/external_alert_evidence_uri`
 - `drill_evidence_uri`: `s3://<production-evidence-bucket>/<release-id>/T-411/drill_evidence_uri`
+
+## Collection Procedure
+
+- Run OTel collector ingestion against the real backend and capture query examples for metrics, logs, and traces.
+- Prove retention policy execution, alert channel delivery, and incident drill flow.
+- Record timestamps, alert recipient/channel, and drill acceptance criteria.
+
+## Minimum Artifact Contents
+
+- Collector evidence, logs backend proof, and query evidence.
+- Retention policy artifact and external alert delivery evidence.
+- Incident drill evidence with owner, timeline, and result.
+
+## Reviewer Routing
+
+- Governance, Security, and Compliance
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: CIO
-- Owner group: PM / Release Coordination
+- Owner group: Research and AI Workflows / Portfolio
 - Last updated: 2026-06-27
 - Related task: T-409
 - Scope: collect real external staging/production evidence for this task
@@ -32,6 +32,30 @@ Collect and archive the external evidence required to unblock `T-409` for non-lo
 - `solver_artifact_uri`: `s3://<production-evidence-bucket>/<release-id>/T-409/solver_artifact_uri`
 - `comparison_report_uri`: `s3://<production-evidence-bucket>/<release-id>/T-409/comparison_report_uri`
 - `constraint_report_uri`: `s3://<production-evidence-bucket>/<release-id>/T-409/constraint_report_uri`
+
+## Collection Procedure
+
+- Run the production PyPortfolioOpt/CVXPY solver comparison with declared versions and parameters.
+- Capture constraint reports and comparison output using paper-only portfolio inputs.
+- Record infeasible-solver handling and reviewer sign-off.
+
+## Minimum Artifact Contents
+
+- Solver version, parameter artifact, and reproducible input snapshot.
+- Comparison report and constraint report.
+- Paper-only/no-order-execution boundary statement.
+
+## Reviewer Routing
+
+- Platform and Quality
+- Governance, Security, and Compliance
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

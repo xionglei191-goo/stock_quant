@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: 数据工程
-- Owner group: PM / Release Coordination
+- Owner group: Data and Evidence
 - Last updated: 2026-06-27
 - Related task: T-406
 - Scope: collect real external staging/production evidence for this task
@@ -36,6 +36,30 @@ Collect and archive the external evidence required to unblock `T-406` for non-lo
 - `entity_page_acceptance_uri`: `s3://<production-evidence-bucket>/<release-id>/T-406/entity_page_acceptance_uri`
 - `neo4j_sync_artifact_uri`: `s3://<production-evidence-bucket>/<release-id>/T-406/neo4j_sync_artifact_uri`
 - `qdrant_sync_artifact_uri`: `s3://<production-evidence-bucket>/<release-id>/T-406/qdrant_sync_artifact_uri`
+
+## Collection Procedure
+
+- Run ADR/Chinese ADR real batch entity mapping and export source-to-entity decisions.
+- Verify entity page browser acceptance and external Neo4j/Qdrant sync artifacts.
+- Route review across data quality, UI acceptance, and platform sync owners.
+
+## Minimum Artifact Contents
+
+- Batch mapping artifact with duplicate/ambiguous entity counts and reviewer decisions.
+- Entity page browser acceptance evidence using real mapped entities.
+- Neo4j/Qdrant sync record counts, failure count, and recovery notes.
+
+## Reviewer Routing
+
+- Product and UI
+- Platform and Quality
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

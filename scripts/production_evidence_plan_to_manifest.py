@@ -29,7 +29,7 @@ READINESS_CHECK_FIELD_MAPPINGS: dict[tuple[str, str], str] = {
     ("T-412", "backup_restore_evidence_uri"): "backup_restore_drill",
     ("T-411", "drill_evidence_uri"): "otel_collector_drill",
     ("T-421", "permission_review_uri"): "permission_red_team_test",
-    ("T-414", "policy_review_uri"): "compliance_review_record",
+    ("T-414", "citation_policy_uri"): "compliance_review_record",
     ("T-412", "release_checklist_uri"): "launch_checklist",
 }
 

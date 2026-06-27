@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: NLP/ML 负责人
-- Owner group: PM / Release Coordination
+- Owner group: Research and AI Workflows
 - Last updated: 2026-06-27
 - Related task: T-402
 - Scope: collect real external staging/production evidence for this task
@@ -46,6 +46,30 @@ Collect and archive the external evidence required to unblock `T-402` for non-lo
 - `table_cell_gold_uri`: `s3://<production-evidence-bucket>/<release-id>/T-402/table_cell_gold_uri`
 - `summary_quality_uri`: `s3://<production-evidence-bucket>/<release-id>/T-402/summary_quality_uri`
 - `regression_baseline_uri`: `s3://<production-evidence-bucket>/<release-id>/T-402/regression_baseline_uri`
+
+## Collection Procedure
+
+- Build the benchmark from public filings, official company reports, and explicitly licensed/local documents only.
+- Record the benchmark id, schema version, sample inclusion/exclusion rules, annotator QA process, and pass metrics.
+- Exclude restricted sell-side reports, transcripts, and boundary-unclear material from training or benchmark gold labels.
+
+## Minimum Artifact Contents
+
+- 300-500 real Chinese filing/report samples plus an English SEC sample set with source and rights metadata.
+- OCR bbox/table-cell gold labels, annotation manual, summary quality sample, and regression baseline report.
+- Pass/fail metrics for extraction accuracy, table quality, summary quality, and boundary compliance.
+
+## Reviewer Routing
+
+- Data and Evidence
+- Governance, Security, and Compliance
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

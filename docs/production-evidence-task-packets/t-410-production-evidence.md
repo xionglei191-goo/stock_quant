@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: NLP/ML 负责人
-- Owner group: PM / Release Coordination
+- Owner group: Research and AI Workflows
 - Last updated: 2026-06-27
 - Related task: T-410
 - Scope: collect real external staging/production evidence for this task
@@ -32,6 +32,30 @@ Collect and archive the external evidence required to unblock `T-410` for non-lo
 - `model_quality_eval_uri`: `s3://<production-evidence-bucket>/<release-id>/T-410/model_quality_eval_uri`
 - `fallback_comparison_uri`: `s3://<production-evidence-bucket>/<release-id>/T-410/fallback_comparison_uri`
 - `summary_rubric_uri`: `s3://<production-evidence-bucket>/<release-id>/T-410/summary_rubric_uri`
+
+## Collection Procedure
+
+- Run real research-answer quality evaluation with declared dataset, rubric, judge/human process, and pass threshold.
+- Check citation provenance, unsupported claims, hallucination rate, and restricted-source exclusion.
+- Compare fallback behavior at scale and archive both model and fallback outputs.
+
+## Minimum Artifact Contents
+
+- Model quality eval, fallback comparison, and summary rubric artifacts.
+- Dataset definition, scoring rubric, pass threshold, and reviewer process.
+- Citation/provenance and source-boundary compliance results.
+
+## Reviewer Routing
+
+- Governance, Security, and Compliance
+- Data and Evidence
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

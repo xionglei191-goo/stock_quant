@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: 风险/合规
-- Owner group: PM / Release Coordination
+- Owner group: Governance, Security, and Compliance
 - Last updated: 2026-06-27
 - Related task: T-421
 - Scope: collect real external staging/production evidence for this task
@@ -35,6 +35,30 @@ Collect and archive the external evidence required to unblock `T-421` for non-lo
 - `least_privilege_policy_uri`: `s3://<production-evidence-bucket>/<release-id>/T-421/least_privilege_policy_uri`
 - `external_delete_evidence_uri`: `s3://<production-evidence-bucket>/<release-id>/T-421/external_delete_evidence_uri`
 - `permission_review_uri`: `s3://<production-evidence-bucket>/<release-id>/T-421/permission_review_uri`
+
+## Collection Procedure
+
+- Collect secret/KMS evidence as metadata only; never archive secret values, tokens, private keys, or signed URLs.
+- Run external delete evidence from the approved executor identity and capture permission-denied/audit or red-team proof.
+- Verify scoped API permissions, key rotation evidence, and object/search delete behavior in the external environment.
+
+## Minimum Artifact Contents
+
+- Secret manager/KMS metadata with no secret values, provider scope, key rotation evidence, and least-privilege policy.
+- External delete executor identity, object/search delete result, and audit trail.
+- Permission review or red-team proof with no credentials in artifacts.
+
+## Reviewer Routing
+
+- Platform and Quality
+- PM / Release Coordination
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

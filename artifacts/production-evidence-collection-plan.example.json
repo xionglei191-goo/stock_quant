@@ -118,12 +118,14 @@
       "artifact_fields": [
         "query_gold_refs_uri",
         "llm_rerank_eval_uri",
-        "research_task_queue_uri"
+        "company_position_review_uri",
+        "chain_taxonomy_review_uri"
       ],
       "artifact_uri_template": {
+        "chain_taxonomy_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-406A/chain_taxonomy_review_uri",
+        "company_position_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-406A/company_position_review_uri",
         "llm_rerank_eval_uri": "s3://<production-evidence-bucket>/<release-id>/T-406A/llm_rerank_eval_uri",
-        "query_gold_refs_uri": "s3://<production-evidence-bucket>/<release-id>/T-406A/query_gold_refs_uri",
-        "research_task_queue_uri": "s3://<production-evidence-bucket>/<release-id>/T-406A/research_task_queue_uri"
+        "query_gold_refs_uri": "s3://<production-evidence-bucket>/<release-id>/T-406A/query_gold_refs_uri"
       },
       "external_evidence_blockers": [
         "real hotspot query/gold reference LLM rerank evaluation"
@@ -290,14 +292,14 @@
     {
       "acceptance_rule": "artifact_uri must be a real staging/production archive URI and pass readiness/report gate; local/demo/sample URI is not accepted",
       "artifact_fields": [
-        "policy_review_uri",
+        "citation_policy_uri",
         "source_review_uri",
         "manual_reference_review_uri",
         "research_governance_uri"
       ],
       "artifact_uri_template": {
+        "citation_policy_uri": "s3://<production-evidence-bucket>/<release-id>/T-414/citation_policy_uri",
         "manual_reference_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-414/manual_reference_review_uri",
-        "policy_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-414/policy_review_uri",
         "research_governance_uri": "s3://<production-evidence-bucket>/<release-id>/T-414/research_governance_uri",
         "source_review_uri": "s3://<production-evidence-bucket>/<release-id>/T-414/source_review_uri"
       },

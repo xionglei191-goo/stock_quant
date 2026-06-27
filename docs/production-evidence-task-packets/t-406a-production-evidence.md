@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: 分析师
-- Owner group: PM / Release Coordination
+- Owner group: Research and AI Workflows
 - Last updated: 2026-06-27
 - Related task: T-406A
 - Scope: collect real external staging/production evidence for this task
@@ -24,13 +24,39 @@ Collect and archive the external evidence required to unblock `T-406A` for non-l
 
 - `query_gold_refs_uri`
 - `llm_rerank_eval_uri`
-- `research_task_queue_uri`
+- `company_position_review_uri`
+- `chain_taxonomy_review_uri`
 
 ## URI Template
 
 - `query_gold_refs_uri`: `s3://<production-evidence-bucket>/<release-id>/T-406A/query_gold_refs_uri`
 - `llm_rerank_eval_uri`: `s3://<production-evidence-bucket>/<release-id>/T-406A/llm_rerank_eval_uri`
-- `research_task_queue_uri`: `s3://<production-evidence-bucket>/<release-id>/T-406A/research_task_queue_uri`
+- `company_position_review_uri`: `s3://<production-evidence-bucket>/<release-id>/T-406A/company_position_review_uri`
+- `chain_taxonomy_review_uri`: `s3://<production-evidence-bucket>/<release-id>/T-406A/chain_taxonomy_review_uri`
+
+## Collection Procedure
+
+- Collect hotspot query/gold refs and offline rerank evaluation without invoking live trading or broker workflows.
+- Attach company positioning and industry-chain taxonomy review artifacts required by `/api/hotspots/readiness-report`.
+- Prove persisted or reviewed research tasks through the readiness report gates, not through a standalone queue URI.
+
+## Minimum Artifact Contents
+
+- Hotspot gold refs artifact, rerank evaluation sample count, top-1 accuracy, and model/fallback version.
+- Company positioning review and chain taxonomy review artifacts accepted by the readiness endpoint.
+- Evidence that research tasks are persisted or explicitly reviewed while automation remains disabled.
+
+## Reviewer Routing
+
+- Data and Evidence
+- Governance, Security, and Compliance
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

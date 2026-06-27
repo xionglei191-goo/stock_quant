@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: CIO
-- Owner group: PM / Release Coordination
+- Owner group: Research and AI Workflows / Portfolio
 - Last updated: 2026-06-27
 - Related task: T-408
 - Scope: collect real external staging/production evidence for this task
@@ -36,6 +36,29 @@ Collect and archive the external evidence required to unblock `T-408` for non-lo
 - `ledger_extract_uri`: `s3://<production-evidence-bucket>/<release-id>/T-408/ledger_extract_uri`
 - `board_pack_uri`: `s3://<production-evidence-bucket>/<release-id>/T-408/board_pack_uri`
 - `strategy_replay_uri`: `s3://<production-evidence-bucket>/<release-id>/T-408/strategy_replay_uri`
+
+## Collection Procedure
+
+- Reconcile simulated portfolio performance against NAV/ledger extracts using paper-only data.
+- Generate the board pack and replay evidence from the same immutable ledger snapshot.
+- Confirm the packet contains no broker connection, order placement, or live execution artifact.
+
+## Minimum Artifact Contents
+
+- Performance and NAV/ledger reconciliation with variance explanation.
+- Board pack artifact and strategy replay acceptance.
+- Paper-only boundary statement and reviewer sign-off.
+
+## Reviewer Routing
+
+- Governance, Security, and Compliance
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

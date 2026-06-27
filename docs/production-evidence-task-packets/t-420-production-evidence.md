@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: 平台负责人
-- Owner group: PM / Release Coordination
+- Owner group: Platform and Quality
 - Last updated: 2026-06-27
 - Related task: T-420
 - Scope: collect real external staging/production evidence for this task
@@ -41,6 +41,30 @@ Collect and archive the external evidence required to unblock `T-420` for non-lo
 - `backfill_drill_uri`: `s3://<production-evidence-bucket>/<release-id>/T-420/backfill_drill_uri`
 - `openlineage_client_uri`: `s3://<production-evidence-bucket>/<release-id>/T-420/openlineage_client_uri`
 - `mlflow_registry_uri`: `s3://<production-evidence-bucket>/<release-id>/T-420/mlflow_registry_uri`
+
+## Collection Procedure
+
+- Declare scheduler choice and environment, then run deployment evidence for the real orchestration target.
+- Prove external sensor connectivity, distributed worker queue isolation, and a large-window backfill drill.
+- Capture OpenLineage and MLflow client evidence with lineage/run identifiers.
+
+## Minimum Artifact Contents
+
+- Scheduler deployment, worker pool, external sensor, and backfill drill artifacts.
+- OpenLineage client and MLflow registry proof.
+- Run logs with environment, backfill window, status, and failure handling.
+
+## Reviewer Routing
+
+- Data and Evidence
+- Governance, Security, and Compliance
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

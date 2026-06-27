@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: 平台负责人
-- Owner group: PM / Release Coordination
+- Owner group: Platform and Quality
 - Last updated: 2026-06-27
 - Related task: T-419
 - Scope: collect real external staging/production evidence for this task
@@ -35,6 +35,29 @@ Collect and archive the external evidence required to unblock `T-419` for non-lo
 - `qdrant_sync_artifact_uri`: `s3://<production-evidence-bucket>/<release-id>/T-419/qdrant_sync_artifact_uri`
 - `throughput_baseline_uri`: `s3://<production-evidence-bucket>/<release-id>/T-419/throughput_baseline_uri`
 - `failure_recovery_uri`: `s3://<production-evidence-bucket>/<release-id>/T-419/failure_recovery_uri`
+
+## Collection Procedure
+
+- Run non-local Neo4j/Qdrant sync jobs and record expected record counts and actual counts.
+- Measure batch throughput against declared thresholds.
+- Inject or document a failure/retry scenario and recovery result.
+
+## Minimum Artifact Contents
+
+- Neo4j and Qdrant sync artifacts with record counts and job identifiers.
+- Throughput baseline with threshold and environment.
+- Failure injection/retry recovery evidence.
+
+## Reviewer Routing
+
+- Data and Evidence
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

@@ -12,7 +12,7 @@
 
 ## Objective
 
-Convert the remaining external-evidence-blocked production tasks into owner-specific evidence collection packets so PM can route the work by group instead of leaving a flat blocked list.
+Convert the remaining external-evidence-blocked production tasks into owner-specific evidence collection packets so PM can route the work by group instead of leaving a flat blocked list. After owner-agent review, refine the packets so each task includes collection procedure, minimum artifact contents, reviewer routing, and API-aligned artifact fields.
 
 ## Scope
 
@@ -30,8 +30,9 @@ The code layer is complete for the remaining productionization tasks, but non-lo
 ## Expected Deliverables
 
 - `scripts/production_evidence_owner_packets.py` generates JSON and Markdown owner packets.
-- `docs/production-evidence-owner-packets.md` lists 6 owner groups, 17 external evidence tasks, and 80 required artifact fields.
+- `docs/production-evidence-owner-packets.md` lists 6 owner groups, 17 external evidence tasks, and 81 required artifact fields.
 - `docs/production-evidence-task-packets/` contains one agent/issue packet per external evidence task.
+- Each task packet states collection procedure, minimum artifact contents, reviewer routing, and source/boundary rules.
 - Tests validate owner grouping and output files.
 - Docs and todo notes point future agents to the packet.
 
@@ -40,18 +41,22 @@ The code layer is complete for the remaining productionization tasks, but non-lo
 - `production_task_closure_audit.py` reports `needs_code_work_count=0`.
 - The remaining 17 audit entries are all `blocked_external_evidence`.
 - The `tasks/todo.md` visible task list has 16 `BLOCKED` parent tasks; the audit expands `T-406A` as an additional evidence subtask.
+- Owner-agent review found that T-406A's prior `research_task_queue_uri` was not a direct readiness endpoint gate; the plan now requires `company_position_review_uri` and `chain_taxonomy_review_uri`.
+- T-414 now uses `citation_policy_uri`, matching the citation-boundary readiness API input alias and test payload.
+- Generated task packets now map role labels to AGENTS.md owner groups instead of showing every task as PM owned.
 
 ## Proposed Work Plan
 
 1. Add owner packet generator.
 2. Generate Markdown packet from the current evidence collection plan.
-3. Add focused test coverage.
-4. Link the packet from docs and todo.
-5. Run validation and push.
+3. Add collection-procedure and minimum-content requirements for each blocked evidence task.
+4. Add focused test coverage.
+5. Link the packet from docs and todo.
+6. Run validation and push.
 
 ## Validation Plan
 
-- `python3 scripts/production_evidence_owner_packets.py artifacts/production-evidence-collection-plan-current.json --output-json artifacts/production-evidence-owner-packets-current.json --output-md docs/production-evidence-owner-packets.md`
+- `python3 scripts/production_evidence_owner_packets.py artifacts/production-evidence-collection-plan-current.json --output-json artifacts/production-evidence-owner-packets-current.json --output-md docs/production-evidence-owner-packets.md --output-dir docs/production-evidence-task-packets`
 - `python3 -m unittest tests.test_system.SystemServiceTests.test_production_evidence_owner_packets_group_external_evidence_by_owner tests.test_system.SystemServiceTests.test_production_task_closure_audit_separates_external_evidence_blockers`
 - `python3 -m py_compile app/*.py app/service_modules/*.py tests/test_system.py scripts/*.py`
 - `python3 scripts/check_handoffs.py`
@@ -62,7 +67,7 @@ The code layer is complete for the remaining productionization tasks, but non-lo
 
 - The packet is not release evidence and must not be used to mark blocked tasks DONE.
 - The generated Markdown includes template URIs with placeholders; real release still requires filled external URIs, artifact inventory, readiness evidence package, and release gate.
-- Owner names are role labels from the evidence plan, not confirmed human assignees.
+- Owner names are role labels mapped to owner groups from AGENTS.md, not confirmed human assignees.
 
 ## Dependencies
 
@@ -89,6 +94,7 @@ The code layer is complete for the remaining productionization tasks, but non-lo
 - `docs/production-evidence-owner-packets.md`: owner-readable collection instructions.
 - `docs/production-evidence-task-packets/`: task-level agent/issue packets.
 - `scripts/production_evidence_owner_packets.py`: packet generator and validator.
+- `artifacts/production-evidence-collection-plan.example.json`: versioned placeholder plan aligned with readiness endpoint artifact fields.
 - `tests/test_system.py`: focused owner-packet regression.
 
 ## Next Recommended Action

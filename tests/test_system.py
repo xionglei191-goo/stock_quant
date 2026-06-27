@@ -18796,6 +18796,11 @@ class SystemServiceTests(unittest.TestCase):
         plan_rows = {item["task_id"]: item for item in plan["tasks"]}
         self.assertEqual(plan_rows["T-416"]["readiness_endpoint"], "/api/connectors/astock/verification-readiness")
         self.assertIn("field_sample_uri", plan_rows["T-416"]["artifact_fields"])
+        self.assertNotIn("research_task_queue_uri", plan_rows["T-406A"]["artifact_fields"])
+        self.assertIn("company_position_review_uri", plan_rows["T-406A"]["artifact_fields"])
+        self.assertIn("chain_taxonomy_review_uri", plan_rows["T-406A"]["artifact_fields"])
+        self.assertIn("citation_policy_uri", plan_rows["T-414"]["artifact_fields"])
+        self.assertNotIn("policy_review_uri", plan_rows["T-414"]["artifact_fields"])
         self.assertEqual(plan_rows["T-412"]["owner_role"], "平台负责人")
         self.assertIn("production_parameters_uri", plan_rows["T-412"]["artifact_uri_template"])
         plan_validation = validate_evidence_collection_plan(plan)
@@ -18955,7 +18960,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(validation["passed"], validation["failures"])
         self.assertEqual(validation["owner_count"], 6)
         self.assertEqual(validation["task_count"], 17)
-        self.assertEqual(validation["artifact_field_count"], 80)
+        self.assertEqual(validation["artifact_field_count"], 81)
         self.assertIn("not release evidence", packets["production_boundary"])
         owners = {item["owner_role"]: item for item in packets["owners"]}
         self.assertIn("平台负责人", owners)
@@ -18967,6 +18972,12 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("## Release Gate Handoff", rendered)
         self.assertIn("artifact://staging-local", rendered)
         self.assertIn("/api/governance/security-readiness-report", rendered)
+        self.assertIn("Owner group: Data and Evidence", rendered)
+        self.assertIn("company_position_review_uri", rendered)
+        self.assertIn("chain_taxonomy_review_uri", rendered)
+        self.assertIn("citation_policy_uri", rendered)
+        self.assertNotIn("research_task_queue_uri", rendered)
+        self.assertNotIn("policy_review_uri", rendered)
 
         with TemporaryDirectory() as tmpdir:
             plan_path = Path(tmpdir) / "plan.json"
@@ -18995,7 +19006,18 @@ class SystemServiceTests(unittest.TestCase):
             self.assertTrue(output_json.exists())
             self.assertTrue(output_md.exists())
             self.assertEqual(len(list(output_dir.glob("*.md"))), 17)
-            self.assertIn("T-421", (output_dir / "t-421-production-evidence.md").read_text(encoding="utf-8"))
+            t421_packet = (output_dir / "t-421-production-evidence.md").read_text(encoding="utf-8")
+            t405_packet = (output_dir / "t-405-production-evidence.md").read_text(encoding="utf-8")
+            t406a_packet = (output_dir / "t-406a-production-evidence.md").read_text(encoding="utf-8")
+            self.assertIn("T-421", t421_packet)
+            self.assertIn("no secret values", t421_packet)
+            self.assertIn("external delete executor identity", t421_packet.lower())
+            self.assertIn("Owner group: Data and Evidence", t405_packet)
+            self.assertIn("Sample size", t405_packet)
+            self.assertIn("accuracy report with threshold", t405_packet)
+            self.assertIn("company_position_review_uri", t406a_packet)
+            self.assertIn("chain_taxonomy_review_uri", t406a_packet)
+            self.assertNotIn("research_task_queue_uri", t406a_packet)
             self.assertFalse((output_json.parent / f".{output_json.name}.tmp").exists())
             self.assertFalse((output_md.parent / f".{output_md.name}.tmp").exists())
 
@@ -19010,9 +19032,9 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(board["task_count"], 17)
         self.assertEqual(board["ready_task_count"], 0)
         self.assertEqual(board["waiting_task_count"], 17)
-        self.assertEqual(board["artifact_field_count"], 80)
+        self.assertEqual(board["artifact_field_count"], 81)
         self.assertEqual(board["filled_uri_count"], 0)
-        self.assertEqual(board["placeholder_uri_count"], 80)
+        self.assertEqual(board["placeholder_uri_count"], 81)
         self.assertEqual(board["invalid_uri_count"], 0)
         rendered = render_status_board_markdown(board)
         self.assertIn("# Production External Evidence Status Board", rendered)
@@ -19025,7 +19047,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(filled_board["status"], "ready_for_release_gate")
         self.assertEqual(filled_board["ready_task_count"], 17)
         self.assertEqual(filled_board["placeholder_uri_count"], 0)
-        self.assertEqual(filled_board["filled_uri_count"], 80)
+        self.assertEqual(filled_board["filled_uri_count"], 81)
 
         with TemporaryDirectory() as tmpdir:
             plan_path = Path(tmpdir) / "plan.json"

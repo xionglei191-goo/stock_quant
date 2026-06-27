@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: 平台负责人
-- Owner group: PM / Release Coordination
+- Owner group: Platform and Quality
 - Last updated: 2026-06-27
 - Related task: T-407
 - Scope: collect real external staging/production evidence for this task
@@ -38,6 +38,30 @@ Collect and archive the external evidence required to unblock `T-407` for non-lo
 - `real_data_workflow_uri`: `s3://<production-evidence-bucket>/<release-id>/T-407/real_data_workflow_uri`
 - `visual_overflow_review_uri`: `s3://<production-evidence-bucket>/<release-id>/T-407/visual_overflow_review_uri`
 - `access_control_review_uri`: `s3://<production-evidence-bucket>/<release-id>/T-407/access_control_review_uri`
+
+## Collection Procedure
+
+- Run real-volume browser acceptance on desktop and mobile viewports across the declared browser matrix.
+- Record target workflows, screenshot manifest, console errors, overflow criteria, and access-control scenarios.
+- Store screenshots and acceptance logs under immutable external staging/production URIs.
+
+## Minimum Artifact Contents
+
+- Browser matrix with versions, viewport sizes, workflows, and pass/fail result.
+- Screenshot manifest and visual overflow review.
+- Access-control review for unauthorized, analyst, and governance roles.
+
+## Reviewer Routing
+
+- Product and UI
+- Governance, Security, and Compliance
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

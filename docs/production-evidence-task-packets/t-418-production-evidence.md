@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: NLP/ML 负责人
-- Owner group: PM / Release Coordination
+- Owner group: Research and AI Workflows
 - Last updated: 2026-06-27
 - Related task: T-418
 - Scope: collect real external staging/production evidence for this task
@@ -36,6 +36,30 @@ Collect and archive the external evidence required to unblock `T-418` for non-lo
 - `fallback_quality_uri`: `s3://<production-evidence-bucket>/<release-id>/T-418/fallback_quality_uri`
 - `llm_gateway_smoke_uri`: `s3://<production-evidence-bucket>/<release-id>/T-418/llm_gateway_smoke_uri`
 - `budget_sync_evidence_uri`: `s3://<production-evidence-bucket>/<release-id>/T-418/budget_sync_evidence_uri`
+
+## Collection Procedure
+
+- Separate LLM gateway readiness from research-answer quality; reuse T-410 evidence only when source URI and scope are explicit.
+- Run gateway smoke covering provider/model versions, timeout/fallback behavior, and redacted request ids.
+- Archive budget/spend limit snapshot and failure-mode evidence without secrets.
+
+## Minimum Artifact Contents
+
+- Real model quality, fallback quality, gateway smoke, and budget sync artifacts.
+- Provider/model version, timeout, fallback, and failure-mode coverage.
+- Secret-free request metadata and spend/limit snapshot.
+
+## Reviewer Routing
+
+- Governance, Security, and Compliance
+- Platform and Quality
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 

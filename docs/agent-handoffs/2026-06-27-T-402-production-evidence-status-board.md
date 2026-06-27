@@ -36,8 +36,9 @@ Without a status board, the next agent has to inspect a large evidence plan manu
 
 ## Current Findings
 
-- Current plan has 6 owner groups, 17 evidence tasks, and 80 artifact fields.
-- All 80 current URIs are placeholders.
+- Current plan has 6 owner groups, 17 evidence tasks, and 81 artifact fields.
+- All 81 current URIs are placeholders.
+- Owner-agent review aligned T-406A and T-414 artifact fields with readiness endpoint gates after this status board was first introduced.
 - Board status is `waiting_for_external_evidence`.
 - A filled production/staging prefix moves the board to `ready_for_release_gate`, but release still requires artifact inventory and strict gate.
 

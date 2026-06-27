@@ -2,7 +2,7 @@
 
 - Status: blocked_external_evidence
 - Owner role: 数据工程
-- Owner group: PM / Release Coordination
+- Owner group: Data and Evidence
 - Last updated: 2026-06-27
 - Related task: T-405
 - Scope: collect real external staging/production evidence for this task
@@ -32,6 +32,29 @@ Collect and archive the external evidence required to unblock `T-405` for non-lo
 - `batch_parse_artifact_uri`: `s3://<production-evidence-bucket>/<release-id>/T-405/batch_parse_artifact_uri`
 - `gold_mapping_uri`: `s3://<production-evidence-bucket>/<release-id>/T-405/gold_mapping_uri`
 - `unmapped_review_queue_uri`: `s3://<production-evidence-bucket>/<release-id>/T-405/unmapped_review_queue_uri`
+
+## Collection Procedure
+
+- Run a large real Form 13F parsing batch for a declared source window.
+- Compare CUSIP/FIGI/issuer mapping against a gold set and record the accuracy threshold.
+- Publish the unresolved/unmapped review queue with owner and next action.
+
+## Minimum Artifact Contents
+
+- Sample size, filing date window, accepted 13F source list, and parser version.
+- CUSIP/FIGI/issuer mapping accuracy report with threshold and failures.
+- Unmapped review queue grouped by issuer/security and severity.
+
+## Reviewer Routing
+
+- Platform and Quality
+
+## Source And Boundary Rules
+
+- Evidence must come from the declared external staging/production environment.
+- Preserve local-first and paper-only boundaries; do not include broker credentials, live order execution, or automatic trading evidence.
+- Redact secrets, tokens, signed URLs, private keys, and personal credentials before archiving.
+- Restricted or boundary-unclear research content may be metadata/manual-reference evidence only, not training data or automated fact evidence.
 
 ## Acceptance
 
