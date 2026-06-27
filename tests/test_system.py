@@ -65,7 +65,7 @@ from scripts.production_evidence_plan_to_manifest import build_manifest_from_evi
 from scripts.production_release_gate import run_production_release_gate
 from scripts.production_task_status_finalize import finalize_production_task_statuses
 from scripts.project_completion_audit import build_completion_audit
-from scripts.production_task_closure_audit import TASKS_WITH_EXTERNAL_EVIDENCE, audit_production_tasks, build_evidence_collection_plan
+from scripts.production_task_closure_audit import TASKS_WITH_EXTERNAL_EVIDENCE, TASK_CODE_MARKERS, audit_production_tasks, build_evidence_collection_plan
 from scripts.readiness_evidence_package_check import REQUIRED_CHECK_IDS, REQUIRED_EXTERNAL_VALIDATION_SCOPES, validate_readiness_evidence_package
 from scripts.security_check import scan_repository
 from scripts.staging_acceptance import run_staging_acceptance
@@ -18782,6 +18782,13 @@ class SystemServiceTests(unittest.TestCase):
         self.assertGreater(rows["T-416"]["external_artifact_count_in_manifest"], 0)
         self.assertIn("T-412", rows)
         self.assertIn("production parameter confirmation", rows["T-412"]["external_evidence_blockers"])
+        api_marker_paths = {
+            path
+            for markers in TASK_CODE_MARKERS.values()
+            for path, needle in markers
+            if needle.startswith("/api/")
+        }
+        self.assertEqual(api_marker_paths, {"app/api_routes.py"})
         plan = build_evidence_collection_plan(audit)
         self.assertEqual(plan["task_count"], 17)
         plan_rows = {item["task_id"]: item for item in plan["tasks"]}

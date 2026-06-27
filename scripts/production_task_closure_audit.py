@@ -130,62 +130,62 @@ TASK_ARTIFACT_KEYS = {
 TASK_CODE_MARKERS = {
     "T-402": [
         ("app/services.py", "def benchmark_readiness_report("),
-        ("app/api.py", "/api/benchmarks/(?P<benchmark_id>[^/]+)/readiness-report"),
+        ("app/api_routes.py", "/api/benchmarks/(?P<benchmark_id>[^/]+)/readiness-report"),
         ("tests/test_system.py", "benchmark_readiness_report_tracks_real_sample"),
     ],
     "T-404": [
         ("app/services.py", "def storage_readiness_report("),
-        ("app/api.py", "/api/governance/storage-readiness-report"),
+        ("app/api_routes.py", "/api/governance/storage-readiness-report"),
         ("tests/test_system.py", "test_storage_readiness_report_requires_external_storage_search_and_restore_evidence"),
     ],
     "T-405": [
         ("app/services.py", "def form13f_mapping_readiness_report("),
-        ("app/api.py", "/api/13f/filings/mapping-readiness"),
+        ("app/api_routes.py", "/api/13f/filings/mapping-readiness"),
         ("tests/test_system.py", "mapping-readiness"),
     ],
     "T-406": [
         ("app/services.py", "def entity_mapping_readiness_report("),
-        ("app/api.py", "/api/entity-mappings/readiness-report"),
+        ("app/api_routes.py", "/api/entity-mappings/readiness-report"),
         ("tests/test_system.py", "test_entity_mapping_readiness_report_requires_ahu_graph_and_adapter_evidence"),
     ],
     "T-406A": [
         ("app/services.py", "def hotspot_readiness_report("),
-        ("app/api.py", "/api/hotspots/readiness-report"),
+        ("app/api_routes.py", "/api/hotspots/readiness-report"),
         ("tests/test_system.py", "test_hotspot_readiness_report_requires_layer_boundaries_tasks_and_rerank_evidence"),
     ],
     "T-407": [
         ("app/services.py", "def ui_readiness_report("),
-        ("app/api.py", "/api/readiness/ui-report"),
+        ("app/api_routes.py", "/api/readiness/ui-report"),
         ("scripts/ui_cross_browser_matrix_check.py", "def validate_cross_browser_matrix("),
     ],
     "T-408": [
         ("app/services.py", "def portfolio_attribution_readiness_report("),
-        ("app/api.py", "/api/portfolio/attribution/readiness-report"),
+        ("app/api_routes.py", "/api/portfolio/attribution/readiness-report"),
         ("tests/test_system.py", "test_portfolio_attribution_readiness_report_tracks_reports_replays_and_ledger"),
     ],
     "T-409": [
         ("app/services.py", "def portfolio_optimizer_readiness_report("),
-        ("app/api.py", "/api/portfolio/optimizer/readiness-report"),
+        ("app/api_routes.py", "/api/portfolio/optimizer/readiness-report"),
         ("tests/test_system.py", "portfolio_optimizer_readiness_archives_paper_solver_comparison"),
     ],
     "T-410": [
         ("app/services.py", "def research_answer_readiness_report("),
-        ("app/api.py", "/api/research/answers/readiness-report"),
+        ("app/api_routes.py", "/api/research/answers/readiness-report"),
         ("tests/test_system.py", "test_research_answer_readiness_report_requires_model_and_fallback_quality_evidence"),
     ],
     "T-411": [
         ("app/services.py", "def observability_readiness_report("),
-        ("app/api.py", "/api/observability/readiness-report"),
+        ("app/api_routes.py", "/api/observability/readiness-report"),
         ("scripts/staging_otel_acceptance.py", "def run_staging_otel_acceptance("),
     ],
     "T-412": [
         ("app/services.py", "def readiness_deployment_report("),
-        ("app/api.py", "/api/readiness/deployment-report"),
+        ("app/api_routes.py", "/api/readiness/deployment-report"),
         ("scripts/production_closure.py", "def run_production_closure("),
     ],
     "T-414": [
         ("app/services.py", "def citation_boundary_readiness_report("),
-        ("app/api.py", "/api/research/citation-boundary/readiness-report"),
+        ("app/api_routes.py", "/api/research/citation-boundary/readiness-report"),
         ("tests/test_system.py", "test_citation_boundary_readiness_report_requires_reviews_and_policy_artifacts"),
     ],
     "T-416": [
@@ -195,22 +195,22 @@ TASK_CODE_MARKERS = {
     ],
     "T-418": [
         ("app/services.py", "def llm_readiness_report("),
-        ("app/api.py", "/api/llm/readiness-report"),
+        ("app/api_routes.py", "/api/llm/readiness-report"),
         ("tests/test_system.py", "test_llm_readiness_report_tracks_prompt_quality_budget_and_challenger_evidence"),
     ],
     "T-419": [
         ("app/services.py", "def graph_vector_readiness_report("),
-        ("app/api.py", "/api/graph-vector/readiness-report"),
+        ("app/api_routes.py", "/api/graph-vector/readiness-report"),
         ("scripts/staging_graph_vector_acceptance.py", "def run_staging_graph_vector_acceptance("),
     ],
     "T-420": [
         ("app/services.py", "def orchestration_readiness_report("),
-        ("app/api.py", "/api/orchestration/readiness-report"),
+        ("app/api_routes.py", "/api/orchestration/readiness-report"),
         ("scripts/staging_lineage_registry_acceptance.py", "def run_staging_lineage_registry_acceptance("),
     ],
     "T-421": [
         ("app/services.py", "def security_readiness_report("),
-        ("app/api.py", "/api/governance/security-readiness-report"),
+        ("app/api_routes.py", "/api/governance/security-readiness-report"),
         ("scripts/staging_security_acceptance.py", "def run_staging_security_acceptance("),
     ],
 }
