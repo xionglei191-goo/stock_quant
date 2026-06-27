@@ -72,6 +72,7 @@ from scripts.staging_acceptance import run_staging_acceptance
 from scripts.staging_lineage_registry_acceptance import run_staging_lineage_registry_acceptance
 from scripts.staging_security_acceptance import run_staging_security_acceptance
 from scripts.ui_cross_browser_matrix_check import validate_cross_browser_matrix
+from scripts.ui_research_workbench_matrix import REQUIRED_SCENARIOS, validate_research_workbench_matrix
 from scripts.ui_static_check import REQUIRED_IDS, REQUIRED_JS_FUNCTIONS, REQUIRED_STATUS_LABELS, validate_ui_html
 
 
@@ -18145,6 +18146,32 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(valid["passed"])
         self.assertEqual(valid["browser_families"], ["chromium", "firefox"])
         self.assertEqual(valid["missing_viewports"], [])
+
+    def test_ui_research_workbench_matrix_validator_requires_t495_scenarios_and_local_boundary(self) -> None:
+        valid = validate_research_workbench_matrix(
+            {
+                "local_only": True,
+                "acceptable_for_non_local_release": False,
+                "browser_matrix": [
+                    {"scenario": scenario, "browser": "chromium", "viewport": "desktop", "status": "passed"}
+                    for scenario in sorted(REQUIRED_SCENARIOS)
+                ],
+            }
+        )
+        self.assertTrue(valid["passed"])
+        self.assertEqual(valid["missing_scenarios"], [])
+
+        invalid = validate_research_workbench_matrix(
+            {
+                "local_only": False,
+                "acceptable_for_non_local_release": True,
+                "browser_matrix": [{"scenario": "personal_workspace_default", "status": "passed"}],
+            }
+        )
+        self.assertFalse(invalid["passed"])
+        failure_checks = {item["check"] for item in invalid["failures"]}
+        self.assertIn("required_scenarios", failure_checks)
+        self.assertIn("local_only_boundary", failure_checks)
 
     def test_readiness_evidence_package_validator_requires_ready_external_artifacts(self) -> None:
         self.assertTrue(is_external_artifact_uri("artifact://staging-local/real-data-smoke.json"))

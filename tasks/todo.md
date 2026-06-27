@@ -632,12 +632,15 @@
   - **已完成（本轮）**：`scripts/ui_static_check.py` 增加工作台模式、维护模式和 `maintenance-only` 契约，防止回退到扁平调试导航。
   - 验收：个人用户首屏不需要理解 run、manifest、trace、调度、复核队列；高级能力仍可在后台找到。
 
-- `TODO` T-495 真实浏览器验收矩阵补齐
+- `DONE` T-495 真实浏览器验收矩阵补齐
   - 对应：E7-US1, E8-US2, E9-US2；愿景扩展/生产化增强
   - Owner：Platform and Quality
   - 目标：把 UI 验收从静态契约升级到关键真实路径。
   - 交付：新增浏览器验收覆盖 AAPL、A 股样例、未知标的、K 线真实 API 加载、周期切换、拖拽缩放、图谱节点详情、数据健康中心、高级详情 HTML 转义。
   - 后端关联：建立 golden API payload 验收样例，覆盖公司情报、行情、图谱、模拟反馈和来源健康；为后续后端模块化提供行为基线。
+  - **已完成（本轮）**：新增 `scripts/ui_research_workbench_matrix.py`，用本机 Chromium 真实浏览器覆盖个人研究默认视图、来源健康中心、A 股样例 K 线路径、真实 K 线 API 载入、周期切换、缩放、平移、AAPL 公司情报、未知标的空态、知识图谱节点详情和高级详情 HTML 转义。
+  - **已完成（本轮）**：浏览器矩阵输出 `artifacts/t495-ui-research-workbench-matrix/ui-research-workbench-matrix.json`，明确 `local_only=true` 且 `acceptable_for_non_local_release=false`，不把本机 artifact 误标为生产证据。
+  - **已完成（本轮）**：新增 focused regression，要求 T-495 必备场景、桌面/移动视口、local-only 边界和现有 cross-browser matrix 校验契约不退化。
   - 验收：新增验收脚本输出 local-only artifact；console error 为 0；失败时能定位页面、接口和断言。
 
 - `TODO` T-496 结论兑现与模拟反馈评分增强
