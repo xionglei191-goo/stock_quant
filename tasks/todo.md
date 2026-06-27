@@ -690,12 +690,15 @@
   - **已完成（本轮）**：新增 `scripts/non_local_production_readiness_check.py`，校验 T-499 准备包必须声明 local-first、paper-only、no-broker/no-auto-trading、拒绝 local-only evidence、必备证据字段和发布门禁命令。
   - 验收：不改变当前本机使用体验；非本机发布前置条件清晰，不把 local-only artifact 误标为 production evidence。
 
-- `TODO` T-500 SystemService 公司情报主线模块化
+- `DONE` T-500 SystemService 公司情报主线模块化
   - 对应：E3-US4, E5-US1, E6-US4, E8-US2；愿景扩展/生产化增强
   - Owner：Platform and Quality
   - 目标：把 `SystemService` 从 3 万行级单体服务逐步拆成领域模块。
   - 第一批抽取：company database、market data、research reports、graph intelligence、simulation feedback。
   - 约束：保留 `SystemService` facade；不改 API schema；不做数据库迁移；不改变 UI 行为。
+  - **已完成（本轮）**：新增 `app/service_modules/company_intelligence.py`、`market_data.py`、`research_reports.py`、`graph_intelligence.py`，并沿用已存在的 `feedback_scoring.py`，把公司情报主线中的确定性规则从 `SystemService` 抽出。
+  - **已完成（本轮）**：`SystemService` 保留 facade helper 和 API 行为，委托模块处理符号匹配、完整度判断、行情复权因子、研报映射/观点摘要和图谱导出节点/关系转换。
+  - **已完成（本轮）**：新增 focused regression，确认 facade helper 委托领域模块且 golden API baseline 不退化。
   - 验收：每批抽取前后 golden API payload 不变；全量单测和 UI 验收通过。
 
 - `DONE` T-501 后端领域模块测试基线

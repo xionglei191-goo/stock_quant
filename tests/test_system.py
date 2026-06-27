@@ -24,7 +24,7 @@ from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, CompanyDatabaseBuildRun, CompanyIntelligenceCycleRun, CompanyPackageImportRun, CompanyProfileFieldAssertion, DecisionPack, DisclosureEvent, Document, Evidence, IngestionJob, IngestionSchedule, ResearchReportAsset, RightsTag, SystemAlert
+from app.models import AlertNotification, CompanyDatabaseBuildRun, CompanyIntelligenceCycleRun, CompanyPackageImportRun, CompanyProfileFieldAssertion, CorporateAction, DecisionPack, DisclosureEvent, Document, Evidence, IngestionJob, IngestionSchedule, MarketDataPoint, ResearchReportAsset, RightsTag, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
 from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
@@ -470,6 +470,71 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(any(item["report_id"] == "rr_spcx_local" for item in view.data["research_results"]["research_reports"]))
         self.assertTrue(any(item["resource_type"] == "research_report" for item in view.data["research_results"]["search"]["results"]))
         self.assertEqual(view.data["usage_boundary"], "company_intelligence_research_only_simulation_feedback_only_no_broker_execution")
+
+    def test_systemservice_company_intelligence_helpers_delegate_to_domain_modules(self) -> None:
+        from app.service_modules import company_intelligence, graph_intelligence, market_data, research_reports
+
+        tokens = self.service._company_intelligence_symbol_tokens("000001")
+        self.assertEqual(
+            tokens,
+            company_intelligence.symbol_tokens(
+                "000001",
+                normalize_us_symbol=self.service._normalize_us_backfill_symbol,
+                normalize_tdx_symbol=self.service._normalize_tdx_symbol,
+            ),
+        )
+        self.assertTrue(self.service._company_intelligence_issuer_matches(self.service.store.issuers["issuer_001"], {"ISSUER_001"}))
+        verdict = self.service._company_intelligence_completeness_verdict(
+            "DEMO",
+            {
+                "profile_available": True,
+                "market_data_available": True,
+                "event_timeline_available": False,
+                "relationship_graph_available": False,
+                "research_results_available": False,
+                "simulation_feedback_available": False,
+                "profile_coverage": 0.5,
+            },
+            {"company_profiles": 1, "securities": 1},
+            database_coverage={"coverage_score": 0.25},
+            profile_field_coverage={"field_coverage_score": 0.5, "required_fields": ["legal_name"], "missing_fields": []},
+        )
+        self.assertEqual(verdict["schema_id"], "company-intelligence-completeness-verdict-v1")
+        self.assertIn("events", verdict["blocking_gaps"])
+
+        row = {"relationship_id": "rel_demo"}
+        self.assertEqual(self.service._graph_node_identity("company_relationships", row), graph_intelligence.graph_node_identity("company_relationships", row))
+        self.assertEqual(self.service._neo4j_relationship_type("has company"), "HAS_COMPANY")
+
+        action = CorporateAction(action_id="split_demo", security_id="sec_001", source_id="src_sec", action_type="split", ex_date="2026-01-01", ratio=2.0)
+        point = MarketDataPoint(data_id="md_delegate", security_id="sec_001", source_id="src_sec", market="A", as_of_date="2025-12-31", close=10.0)
+        self.assertEqual(
+            self.service._corporate_action_price_factor(action, adjustment_mode="backward"),
+            market_data.corporate_action_price_factor(action, adjustment_mode="backward"),
+        )
+        self.assertEqual(
+            self.service._market_data_adjustment_factor(point, [action], adjustment_mode="backward"),
+            market_data.market_data_adjustment_factor(point, [action], adjustment_mode="backward"),
+        )
+
+        report = ResearchReportAsset(
+            report_id="rra_delegate",
+            source_id="src_sec",
+            file_path="/tmp/report.pdf",
+            file_name="report.pdf",
+            title="Revenue risk report",
+            broker="Broker",
+            year=2026,
+            month=6,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            industry="Tech",
+            status="indexed",
+        )
+        self.assertEqual(self.service._research_report_month_date(report), research_reports.research_report_month_date(report))
+        viewpoint = self.service._research_report_viewpoint_row(report)
+        self.assertIn("revenue", viewpoint["topic_terms"])
+        self.assertEqual(viewpoint["usage_boundary"], "local_reference_only_not_training_or_fact_source")
 
     def test_company_database_bootstrap_creates_local_stub_for_unknown_symbol(self) -> None:
         empty = self.router.dispatch("GET", "/api/company-intelligence/NEWC", {"limit": 10}, role="analyst")

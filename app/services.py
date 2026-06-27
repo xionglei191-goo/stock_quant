@@ -114,6 +114,10 @@ from .search import LocalSearchIndex, LocalSemanticIndex, SearchRecord, create_s
 from .store import InMemoryStore
 from .service_modules import safe_identifier
 from .service_modules import company_quality
+from .service_modules import company_intelligence as company_intelligence_module
+from .service_modules import graph_intelligence
+from .service_modules import market_data as market_data_module
+from .service_modules import research_reports as research_report_module
 from .service_modules.feedback_scoring import score_simulation_feedback
 from .utils import chunk_text, chunk_text_by_page, env_float, env_int, looks_like_html, new_id, parse_datetime, pdf_bytes_to_text, to_plain, utcnow
 
@@ -3650,57 +3654,16 @@ class SystemService:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def _graph_node_identity(self, collection: str, row: Mapping[str, Any]) -> str:
-        candidates = [
-            f"{collection[:-1]}_id" if collection.endswith("s") else f"{collection}_id",
-            "id",
-            "data_id",
-            "issuer_id",
-            "security_id",
-            "card_id",
-            "document_id",
-            "evidence_id",
-            "thesis_id",
-            "signal_id",
-            "decision_id",
-            "intent_id",
-            "proposal_id",
-            "mapping_id",
-            "snapshot_id",
-            "holding_id",
-            "event_id",
-            "replay_id",
-            "action_id",
-            "challenger_id",
-            "review_id",
-            "exception_id",
-            "task_id",
-            "relationship_id",
-            "research_report_id",
-            "viewpoint_id",
-            "forecast_id",
-            "analyst_id",
-            "score_id",
-            "observation_id",
-            "analysis_conclusion_id",
-            "simulation_feedback_id",
-        ]
-        for key in candidates:
-            value = str(row.get(key, "")).strip()
-            if value:
-                return value
-        return ""
+        return graph_intelligence.graph_node_identity(collection, row)
 
     def _neo4j_label(self, collection: str) -> str:
-        return "".join(part.capitalize() for part in collection.split("_"))
+        return graph_intelligence.neo4j_label(collection)
 
     def _neo4j_relationship_type(self, value: str) -> str:
-        normalized = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_").upper()
-        return normalized or "RELATED_TO"
+        return graph_intelligence.neo4j_relationship_type(value)
 
     def _neo4j_properties(self, values: Mapping[str, Any], defaults: Mapping[str, Any]) -> dict[str, Any]:
-        props = {str(key): to_plain(value) for key, value in values.items()}
-        props.update(defaults)
-        return props
+        return graph_intelligence.neo4j_properties(values, defaults)
 
     def _qdrant_point(self, record: SearchRecord) -> dict[str, Any]:
         boundary = self._search_record_boundary(record)
@@ -28641,39 +28604,20 @@ class SystemService:
         }
 
     def _company_intelligence_symbol_tokens(self, symbol: str) -> set[str]:
-        raw = str(symbol or "").strip()
-        if not raw:
-            return set()
-        upper = raw.upper()
-        tokens = {raw, upper}
-        us_symbol = self._normalize_us_backfill_symbol(raw)
-        if us_symbol:
-            tokens.add(us_symbol)
-        tdx_symbol = self._normalize_tdx_symbol(raw)
-        if tdx_symbol:
-            tokens.add(tdx_symbol)
-            tokens.add(f"SH{tdx_symbol}")
-            tokens.add(f"SZ{tdx_symbol}")
-            tokens.add(f"{tdx_symbol}.SH")
-            tokens.add(f"{tdx_symbol}.SZ")
-        return {token for token in tokens if token}
+        return company_intelligence_module.symbol_tokens(
+            symbol,
+            normalize_us_symbol=self._normalize_us_backfill_symbol,
+            normalize_tdx_symbol=self._normalize_tdx_symbol,
+        )
 
     def _company_intelligence_security_matches(self, security: Security, symbol_tokens: set[str]) -> bool:
-        values = {
-            security.security_id,
-            security.ticker,
-            security.figi,
-            security.isin,
-        }
-        return any(str(value).strip().upper() in symbol_tokens for value in values if str(value).strip())
+        return company_intelligence_module.security_matches(security, symbol_tokens)
 
     def _company_intelligence_mapping_matches(self, mapping: EntityMapping, symbol_tokens: set[str]) -> bool:
-        values = {mapping.mapping_id, mapping.ticker, mapping.figi, mapping.isin, mapping.cik, mapping.lei}
-        return any(str(value).strip().upper() in symbol_tokens for value in values if str(value).strip())
+        return company_intelligence_module.mapping_matches(mapping, symbol_tokens)
 
     def _company_intelligence_issuer_matches(self, issuer: Issuer, symbol_tokens: set[str]) -> bool:
-        values = {issuer.issuer_id, issuer.legal_name, issuer.cik, issuer.lei, *issuer.aliases}
-        return any(str(value).strip().upper() in symbol_tokens for value in values if str(value).strip())
+        return company_intelligence_module.issuer_matches(issuer, symbol_tokens)
 
     def _company_intelligence_completeness_verdict(
         self,
@@ -28684,156 +28628,20 @@ class SystemService:
         database_coverage: Mapping[str, Any],
         profile_field_coverage: Mapping[str, Any],
     ) -> dict[str, Any]:
-        section_specs = [
-            ("company_profile", "公司画像", "profile_available", 0.22, True, "fact_or_governed_record", "运行单标的研究或登记主体/证券"),
-            ("market_data", "行情快照", "market_data_available", 0.14, True, "public_or_local_market_data", "导入公开/本地 EOD 行情"),
-            ("events", "事件时间线", "event_timeline_available", 0.16, True, "official_public_fact_or_reviewed_event", "执行事件构建或补充公告证据"),
-            ("relationships", "关系图谱", "relationship_graph_available", 0.16, True, "fact_or_reviewed_relationship_candidate", "执行关系构建并审核候选"),
-            ("research_results", "研究观点", "research_results_available", 0.16, False, "opinion_layer_not_fact_source", "结构化研报或记录研究答案"),
-            ("simulation_feedback", "模拟反馈", "simulation_feedback_available", 0.10, False, "paper_only_feedback", "记录 paper-only 模拟反馈"),
-        ]
-        profile_coverage = max(0.0, min(1.0, float(data_quality.get("profile_coverage", 0.0) or 0.0)))
-        event_backlink_rate = max(0.0, min(1.0, float(data_quality.get("event_backlink_rate", 0.0) or 0.0)))
-        relationship_backlink_rate = max(0.0, min(1.0, float(data_quality.get("relationship_backlink_rate", 0.0) or 0.0)))
-        evidence_score = round(((event_backlink_rate + relationship_backlink_rate) / 2.0) if (event_backlink_rate or relationship_backlink_rate) else 0.0, 4)
-        sections: list[dict[str, Any]] = []
-        score = 0.0
-        blocking_gaps: list[str] = []
-        warning_gaps: list[str] = []
-        for section, label, quality_key, weight, blocking, source_policy, action in section_specs:
-            available = bool(data_quality.get(quality_key))
-            if section == "company_profile" and available:
-                contribution = weight * max(0.5, profile_coverage)
-            else:
-                contribution = weight if available else 0.0
-            score += contribution
-            gap = not available
-            if gap and blocking:
-                blocking_gaps.append(section)
-            elif gap:
-                warning_gaps.append(section)
-            sections.append(
-                {
-                    "section": section,
-                    "label": label,
-                    "available": available,
-                    "blocking": blocking,
-                    "weight": weight,
-                    "score_contribution": round(contribution, 4),
-                    "source_policy": source_policy,
-                    "recommended_action": action,
-                    "record_count": int(section_counts.get(section, 0) or 0)
-                    if section in section_counts
-                    else self._company_intelligence_verdict_section_count(section, section_counts),
-                }
-            )
-        if event_backlink_rate == 0.0 and data_quality.get("event_timeline_available"):
-            warning_gaps.append("event_evidence_backlinks")
-        if relationship_backlink_rate == 0.0 and data_quality.get("relationship_graph_available"):
-            warning_gaps.append("relationship_evidence_backlinks")
-        score = min(1.0, score + (0.06 * evidence_score))
-        ready_for_fact_review = not blocking_gaps
-        ready_for_analysis = ready_for_fact_review and bool(data_quality.get("research_results_available"))
-        ready_for_feedback_review = ready_for_analysis and bool(data_quality.get("simulation_feedback_available"))
-        required_layers = [section for section, _label, _quality_key, _weight, _blocking, _source_policy, _action in section_specs]
-        missing_layers = list(dict.fromkeys([*blocking_gaps, *warning_gaps]))
-        database_coverage_score = max(0.0, min(1.0, float(database_coverage.get("coverage_score", 0.0) or 0.0)))
-        profile_field_coverage_score = max(0.0, min(1.0, float(profile_field_coverage.get("field_coverage_score", 0.0) or 0.0)))
-        required_fact_fields = [str(field) for field in (profile_field_coverage.get("required_fields") or self._company_profile_deep_coverage_fields(include_optional=False))]
-        missing_fact_fields = [str(field) for field in profile_field_coverage.get("missing_fields", [])]
-        if score >= 0.9 and not missing_layers:
-            level = "complete"
-        elif score >= 0.7:
-            level = "near_complete"
-        elif score >= 0.35:
-            level = "partial"
-        else:
-            level = "sparse"
-        if not data_quality.get("profile_available"):
-            status = "not_found"
-            label = "未建档"
-        elif blocking_gaps:
-            status = "incomplete"
-            label = "需要补库"
-        elif ready_for_feedback_review and score >= 0.9 and not warning_gaps:
-            status = "complete"
-            label = "完整"
-        else:
-            status = "usable_with_gaps"
-            if ready_for_feedback_review:
-                label = "可复盘"
-            elif ready_for_analysis:
-                label = "可分析"
-            elif ready_for_fact_review:
-                label = "事实层可用"
-            else:
-                label = "可用但有缺口"
-        recommended_next_action = self._company_intelligence_verdict_next_action(symbol, blocking_gaps, warning_gaps, data_quality)
-        return {
-            "schema_id": "company-intelligence-completeness-verdict-v1",
-            "status": status,
-            "label": label,
-            "is_complete": status == "complete",
-            "level": level,
-            "score": round(score, 4),
-            "required_layers": required_layers,
-            "missing_layers": missing_layers,
-            "database_coverage_score": database_coverage_score,
-            "profile_field_coverage_score": profile_field_coverage_score,
-            "required_fact_fields": required_fact_fields,
-            "missing_fact_fields": missing_fact_fields,
-            "blocking_gaps": list(dict.fromkeys(blocking_gaps)),
-            "warning_gaps": list(dict.fromkeys(warning_gaps)),
-            "ready_for_fact_review": ready_for_fact_review,
-            "ready_for_analysis": ready_for_analysis,
-            "ready_for_feedback_review": ready_for_feedback_review,
-            "sections": sections,
-            "evidence_backlink_score": evidence_score,
-            "profile_coverage": profile_coverage,
-            "source_policy_summary": {
-                "fact_fields": "official_disclosure_company_ir_public_market_or_governed_local_records_only",
-                "research_reports": "opinion_and_attention_slots_only_not_fact_source",
-                "research_reports_can_complete_fact_fields": False,
-            },
-            "recommended_actions": [recommended_next_action] if recommended_next_action.get("action") != "none" else [],
-            "usage_boundary": "completeness_verdict_is_data_readiness_only_not_investment_advice_no_live_trading",
-            "recommended_next_action": recommended_next_action,
-        }
+        return company_intelligence_module.completeness_verdict(
+            symbol,
+            data_quality,
+            section_counts,
+            database_coverage=database_coverage,
+            profile_field_coverage=profile_field_coverage,
+            deep_coverage_fields=self._company_profile_deep_coverage_fields,
+        )
 
     def _company_intelligence_verdict_section_count(self, section: str, section_counts: Mapping[str, Any]) -> int:
-        if section == "company_profile":
-            return int(section_counts.get("company_profiles", 0) or 0) + int(section_counts.get("securities", 0) or 0)
-        if section == "market_data":
-            return int(section_counts.get("market_data", 0) or 0)
-        if section == "events":
-            return int(section_counts.get("company_events", 0) or 0) + int(section_counts.get("disclosure_events", 0) or 0)
-        if section == "relationships":
-            return int(section_counts.get("company_relationships", 0) or 0) + int(section_counts.get("graph_edges", 0) or 0)
-        if section == "research_results":
-            return int(section_counts.get("research_reports", 0) or 0) + int(section_counts.get("structured_research_reports", 0) or 0) + int(section_counts.get("report_viewpoints", 0) or 0) + int(section_counts.get("analysis_conclusions", 0) or 0)
-        if section == "simulation_feedback":
-            return int(section_counts.get("simulation_feedback_records", 0) or 0) + int(section_counts.get("simulated_executions", 0) or 0) + int(section_counts.get("portfolio_transactions", 0) or 0)
-        return 0
+        return company_intelligence_module.verdict_section_count(section, section_counts)
 
     def _company_intelligence_verdict_next_action(self, symbol: str, blocking_gaps: list[str], warning_gaps: list[str], data_quality: Mapping[str, Any]) -> dict[str, str]:
-        action_map = {
-            "company_profile": ("bootstrap_company_database", f"为 {symbol.upper()} 建立本地公司主体"),
-            "market_data": ("coverage_audit", "补齐公开或本地行情"),
-            "events": ("preview_batch_build", "生成公司事件时间线"),
-            "relationships": ("preview_batch_build", "生成并审核公司关系"),
-            "research_results": ("preview_research_structure", "结构化研报观点"),
-            "simulation_feedback": ("record_simulation_feedback", "记录 paper-only 模拟反馈"),
-            "event_evidence_backlinks": ("coverage_audit", "补齐事件证据回链"),
-            "relationship_evidence_backlinks": ("coverage_audit", "补齐关系证据回链"),
-        }
-        for gap in [*blocking_gaps, *warning_gaps]:
-            action, label = action_map.get(gap, ("coverage_audit", "查看覆盖审计"))
-            return {"action": action, "label": label, "reason": f"完整度判断仍缺 {gap}"}
-        if not data_quality.get("research_results_available"):
-            return {"action": "preview_research_structure", "label": "结构化研报观点", "reason": "事实层可用后需要观点层支撑分析"}
-        if not data_quality.get("simulation_feedback_available"):
-            return {"action": "record_simulation_feedback", "label": "记录模拟反馈", "reason": "分析结果需要 paper-only 反馈验证"}
-        return {"action": "none", "label": "继续复盘", "reason": "主要公司情报层已可用"}
+        return company_intelligence_module.verdict_next_action(symbol, blocking_gaps, warning_gaps, data_quality)
 
     def _company_intelligence_next_actions(self, symbol: str, data_quality: Mapping[str, Any]) -> list[dict[str, str]]:
         actions: list[dict[str, str]] = []
@@ -32236,33 +32044,10 @@ class SystemService:
         return round(min(0.99, max(0.1, score)), 4)
 
     def _market_data_adjustment_factor(self, point: MarketDataPoint, actions: list[CorporateAction], *, adjustment_mode: str) -> tuple[float, list[str]]:
-        if adjustment_mode == "raw":
-            return 1.0, []
-        factor = 1.0
-        event_ids: list[str] = []
-        for action in actions:
-            applies = action.ex_date > point.as_of_date if adjustment_mode == "backward" else action.ex_date <= point.as_of_date
-            if not applies:
-                continue
-            event_factor = self._corporate_action_price_factor(action, adjustment_mode=adjustment_mode)
-            if event_factor == 1.0:
-                continue
-            factor *= event_factor
-            event_ids.append(action.action_id)
-        return factor, event_ids
+        return market_data_module.market_data_adjustment_factor(point, actions, adjustment_mode=adjustment_mode)
 
     def _corporate_action_price_factor(self, action: CorporateAction, *, adjustment_mode: str) -> float:
-        ratio = float(action.ratio or 1.0)
-        if ratio <= 0:
-            return 1.0
-        if action.action_type == "split":
-            return (1.0 / ratio) if adjustment_mode == "backward" else ratio
-        if action.action_type == "reverse_split":
-            return ratio if adjustment_mode == "backward" else (1.0 / ratio)
-        if action.action_type == "stock_dividend":
-            base = 1.0 + ratio
-            return (1.0 / base) if adjustment_mode == "backward" else base
-        return 1.0
+        return market_data_module.corporate_action_price_factor(action, adjustment_mode=adjustment_mode)
 
     def _cash_dividend_for_date(self, as_of_date: str, actions: list[CorporateAction]) -> float:
         return sum(float(action.cash_amount or 0.0) for action in actions if action.action_type == "cash_dividend" and action.ex_date == as_of_date)
@@ -32687,100 +32472,24 @@ class SystemService:
         }
 
     def _research_report_month_date(self, report: ResearchReportAsset) -> date | None:
-        try:
-            year = int(report.year)
-            month = int(report.month or 1)
-            if not 1 <= month <= 12:
-                return None
-            return date(year, month, 1)
-        except (TypeError, ValueError):
-            return None
+        return research_report_module.research_report_month_date(report)
 
     def _research_report_mapping_row(self, report: ResearchReportAsset, *, include_candidate_events: bool) -> dict[str, Any]:
         document = self.store.documents.get(report.document_id) if report.document_id else None
-        issuer_id = report.issuer_id or (document.issuer_id if document else "")
-        security_id = report.security_id or (document.security_id if document else "")
-        candidate_event_ids: list[str] = []
-        if include_candidate_events and (issuer_id or security_id):
-            for event in self.store.disclosure_events.values():
-                if issuer_id and event.issuer_id != issuer_id:
-                    continue
-                if security_id and event.security_id and event.security_id != security_id:
-                    continue
-                if report.document_id and event.document_id == report.document_id:
-                    continue
-                candidate_event_ids.append(event.event_id)
-        event_ids = list(dict.fromkeys(str(item) for item in report.event_ids if str(item).strip()))
-        candidate_event_ids = list(dict.fromkeys(candidate_event_ids))
-        linked_event_count = len(event_ids) + len([item for item in candidate_event_ids if item not in event_ids])
-        issues: list[str] = []
-        if not issuer_id:
-            issues.append("missing_issuer_mapping")
-        if not security_id:
-            issues.append("missing_security_mapping")
-        if not report.industry:
-            issues.append("missing_industry_mapping")
-        if not event_ids and not candidate_event_ids:
-            issues.append("missing_event_mapping")
-        return {
-            "report_id": report.report_id,
-            "document_id": report.document_id,
-            "broker": report.broker,
-            "source_id": report.source_id,
-            "title": report.title,
-            "file_name": report.file_name,
-            "year": report.year,
-            "month": report.month,
-            "status": report.status,
-            "issuer_id": issuer_id,
-            "security_id": security_id,
-            "industry": report.industry,
-            "event_ids": event_ids,
-            "candidate_event_ids": candidate_event_ids,
-            "linked_event_count": linked_event_count,
-            "mapped": bool(issuer_id or security_id or report.industry or linked_event_count),
-            "issues": issues,
-            "source_boundary": "local_reference_research_report",
-            "usage_boundary": "local_reference_only_not_training_or_fact_source",
-        }
+        return research_report_module.research_report_mapping_row(
+            report,
+            document=document,
+            disclosure_events=list(self.store.disclosure_events.values()),
+            include_candidate_events=include_candidate_events,
+        )
 
     def _research_report_viewpoint_row(self, report: ResearchReportAsset) -> dict[str, Any]:
         document = self.store.documents.get(report.document_id) if report.document_id else None
-        text = f"{report.title} {report.file_name} {document.body if document else ''} {self._read_research_report_text(report)}"
-        normalized = text.lower()
-        topic_terms = [
-            topic
-            for topic, keywords in {
-                "revenue": ["revenue", "sales", "收入", "营收"],
-                "margin": ["margin", "gross margin", "毛利", "利润率"],
-                "guidance": ["guidance", "outlook", "指引", "展望"],
-                "risk": ["risk", "headwind", "风险", "压力"],
-                "valuation": ["valuation", "target price", "估值", "目标价"],
-                "capital_return": ["buyback", "dividend", "回购", "分红"],
-                "management": ["management", "ceo", "cfo", "管理层"],
-            }.items()
-            if any(keyword in normalized for keyword in keywords)
-        ]
-        positive_hits = sum(1 for token in ("positive", "upgrade", "beat", "bullish", "strong", "上调", "利好", "强劲") if token in normalized)
-        negative_hits = sum(1 for token in ("negative", "downgrade", "miss", "bearish", "weak", "下调", "利空", "疲弱") if token in normalized)
-        sentiment = "positive" if positive_hits > negative_hits else "negative" if negative_hits > positive_hits else "mixed"
-        return {
-            "report_id": report.report_id,
-            "document_id": report.document_id,
-            "broker": report.broker,
-            "source_id": report.source_id,
-            "title": report.title,
-            "file_name": report.file_name,
-            "year": report.year,
-            "month": report.month,
-            "issuer_id": report.issuer_id or (document.issuer_id if document else ""),
-            "security_id": report.security_id or (document.security_id if document else ""),
-            "industry": report.industry,
-            "topic_terms": topic_terms,
-            "sentiment": sentiment,
-            "sentiment_hits": {"positive": positive_hits, "negative": negative_hits},
-            "usage_boundary": "local_reference_only_not_training_or_fact_source",
-        }
+        return research_report_module.research_report_viewpoint_row(
+            report,
+            document=document,
+            report_text=self._read_research_report_text(report),
+        )
 
     def _research_report_citation_evidence(self, document: Document, text: str, *, parser_version: str) -> list[Evidence]:
         chunks = chunk_text(text)

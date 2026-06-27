@@ -38,6 +38,25 @@ Keep `SystemService` as a facade during migration. Extract low-risk helpers and 
 - `SystemService._safe_identifier()` now delegates to the shared helper.
 - Behavior unchanged; API and data model unchanged.
 
+## Company Intelligence Mainline Extraction (T-500)
+
+Status: completed for the first company-intelligence slice on 2026-06-27.
+
+Extracted modules:
+
+1. `app/service_modules/company_intelligence.py`: symbol matching, company intelligence completeness verdict, section counts, and next-action selection.
+2. `app/service_modules/market_data.py`: corporate-action price factors and market-data adjustment factor calculation.
+3. `app/service_modules/research_reports.py`: research report month normalization, mapping rows, and viewpoint topic/sentiment rows.
+4. `app/service_modules/graph_intelligence.py`: graph node identity, Neo4j labels, relationship types, and property shaping.
+5. `app/service_modules/feedback_scoring.py`: simulation feedback realization scoring, added before T-500 and kept as the feedback domain module.
+
+Facade rule:
+
+- `SystemService` keeps the existing method names and API surface.
+- Extracted modules own deterministic domain calculations.
+- `SystemService` still owns store access, audit, permission context, and cross-domain orchestration.
+- No API URL, payload, database schema, UI behavior, or paper-only boundary changed.
+
 ## Regression Checklist
 
 Run after each extraction batch:
