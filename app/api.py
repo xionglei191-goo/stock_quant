@@ -711,6 +711,78 @@ class ApiRouter:
         daily_insight = daily_run.get("daily_insight") if isinstance(daily_run.get("daily_insight"), dict) else {}
         personal_intelligence = daily_run.get("personal_intelligence") if isinstance(daily_run.get("personal_intelligence"), dict) else {}
         pipeline = daily_run.get("pipeline") if isinstance(daily_run.get("pipeline"), dict) else {}
+        company_intelligence = payload.get("company_intelligence") if isinstance(payload.get("company_intelligence"), dict) else {}
+        if not company_intelligence:
+            overview_assets = analysis.get("assets") or []
+            if isinstance(overview_assets, list) and overview_assets:
+                company_intelligence_rows: list[dict[str, Any]] = []
+                ready_count = 0
+                attention_count = 0
+                for asset in overview_assets:
+                    if not isinstance(asset, dict):
+                        continue
+                    symbol = str(asset.get("label") or asset.get("symbol") or asset.get("security_id") or "").strip()
+                    if not symbol:
+                        continue
+                    try:
+                        intelligence = to_plain(self.service.company_intelligence({"symbol": symbol, "limit": 10}))
+                    except Exception:
+                        intelligence = {}
+                    relationship_context = intelligence.get("relationships", {}).get("relationship_context", {}) if isinstance(intelligence.get("relationships"), dict) else {}
+                    section_counts = intelligence.get("section_counts", {}) if isinstance(intelligence.get("section_counts"), dict) else {}
+                    completeness = intelligence.get("completeness_verdict", {}) if isinstance(intelligence.get("completeness_verdict"), dict) else {}
+                    data_quality = intelligence.get("data_quality", {}) if isinstance(intelligence.get("data_quality"), dict) else {}
+                    next_actions = intelligence.get("next_actions") if isinstance(intelligence.get("next_actions"), list) else []
+                    summary = relationship_context.get("summary", {}) if isinstance(relationship_context.get("summary"), dict) else {}
+                    coverage_diagnostics = relationship_context.get("coverage_diagnostics", {}) if isinstance(relationship_context.get("coverage_diagnostics"), dict) else {}
+                    if completeness.get("is_complete"):
+                        ready_count += 1
+                    else:
+                        attention_count += 1
+                    company_intelligence_rows.append(
+                        {
+                            "symbol": intelligence.get("symbol") or symbol,
+                            "status": intelligence.get("status") or "missing",
+                            "company_counts": {
+                                "company_profiles": section_counts.get("company_profiles", 0),
+                                "company_events": section_counts.get("company_events", 0),
+                                "company_relationships": section_counts.get("company_relationships", 0),
+                                "analysis_conclusions": section_counts.get("analysis_conclusions", 0),
+                                "simulation_feedback_records": section_counts.get("simulation_feedback_records", 0),
+                                "research_reports": section_counts.get("research_reports", 0),
+                                "report_viewpoints": section_counts.get("report_viewpoints", 0),
+                            },
+                            "relationship_summary": {
+                                "industry_related_companies_total": summary.get("industry_related_companies_total", 0),
+                                "shareholder_related_companies_total": summary.get("shareholder_related_companies_total", 0),
+                                "peer_companies": summary.get("peer_companies", 0),
+                                "upstream_companies": summary.get("upstream_companies", 0),
+                                "downstream_companies": summary.get("downstream_companies", 0),
+                                "approved_ownership_relationships": summary.get("approved_ownership_relationships", 0),
+                                "ownership_candidates": summary.get("ownership_candidates", 0),
+                            },
+                            "coverage_score": coverage_diagnostics.get("coverage_score", 0),
+                            "relationship_status": coverage_diagnostics.get("status", ""),
+                            "next_actions": next_actions[:3],
+                            "completeness_verdict": completeness,
+                            "data_quality": {
+                                "profile_available": data_quality.get("profile_available", False),
+                                "event_timeline_available": data_quality.get("event_timeline_available", False),
+                                "relationship_graph_available": data_quality.get("relationship_graph_available", False),
+                                "research_results_available": data_quality.get("research_results_available", False),
+                                "simulation_feedback_available": data_quality.get("simulation_feedback_available", False),
+                            },
+                        }
+                    )
+                company_intelligence = {
+                    "schema_id": "latest-analysis-company-intelligence-v1",
+                    "status": "ready" if ready_count else ("watch" if company_intelligence_rows else "missing"),
+                    "company_count": len(company_intelligence_rows),
+                    "ready_count": ready_count,
+                    "needs_attention_count": attention_count,
+                    "companies": company_intelligence_rows,
+                    "usage_boundary": "latest_analysis_company_intelligence_overview_is_local_research_only_no_broker_execution",
+                }
         return {
             "status": payload.get("status") or "available",
             "artifact_path": str(artifact_path),
@@ -759,6 +831,7 @@ class ApiRouter:
                 "pipeline_status": pipeline.get("status") or "",
                 "pipeline_effective_end_dates": pipeline.get("effective_end_dates") or {},
             },
+            "company_intelligence": company_intelligence,
             "personal_intelligence": personal_intelligence,
             "business_acceptance": acceptance,
             "board_pack": analysis.get("board_pack") or {},

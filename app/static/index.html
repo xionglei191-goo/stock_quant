@@ -1570,6 +1570,16 @@
               <tbody id="companyRecentActivityRows"></tbody>
             </table>
           </div>
+          <div class="panel span-12">
+            <h2>公司情报链路</h2>
+            <div class="system-strip" style="margin-bottom:10px">
+              <div class="system-box"><strong>公司数</strong><span id="companyIntelCount">0</span></div>
+              <div class="system-box"><strong>已就绪</strong><span id="companyIntelReadyCount">0</span></div>
+              <div class="system-box"><strong>需关注</strong><span id="companyIntelAttentionCount">0</span></div>
+              <div class="system-box"><strong>链路产物</strong><span id="companyIntelArtifact">-</span></div>
+            </div>
+            <table><thead><tr><th>公司</th><th>状态</th><th>形成内容</th><th>下一步</th></tr></thead><tbody id="companyIntelligenceRows"></tbody></table>
+          </div>
           <div class="panel span-6">
             <h2>产业链覆盖</h2>
             <div class="system-strip">
@@ -6592,6 +6602,8 @@
       const dailySummary = dailyInsight.actionable_research_summary || {};
       const directWatchItems = dailySummary.direct_report_watch_items || [];
       const companyRecentActivity = dailySummary.company_recent_activity_items || dailyInsight.research_and_events?.company_recent_activity || [];
+      const companyIntelligence = data.company_intelligence || {};
+      const companyIntelligenceRows = companyIntelligence.companies || [];
       const decision = data.decision_summary || {};
       const quality = data.data_quality || {};
       $("decisionHeadline").textContent = dailySummary.headline || decision.headline || "当前没有可用结论";
@@ -6643,6 +6655,32 @@
           <td>${item.activity_summary || "-"}</td>
         </tr>
       `);
+      $("companyIntelligenceRows").innerHTML = rows(companyIntelligenceRows, "暂无公司情报链路", (item) => {
+        const counts = item.company_counts || {};
+        const relationships = item.relationship_summary || {};
+        const nextAction = (item.next_actions || [])[0] || {};
+        const coverage = item.coverage_score == null ? "-" : pct(item.coverage_score);
+        const statusTone = item.status === "missing" ? "warn" : item.status === "available" || item.status === "ready" ? "ok" : "block";
+        const formed = [
+          `画像 ${counts.company_profiles || 0}`,
+          `事件 ${counts.company_events || 0}`,
+          `关系 ${counts.company_relationships || 0}`,
+          `结论 ${counts.analysis_conclusions || 0}`,
+          `反馈 ${counts.simulation_feedback_records || 0}`
+        ].join(" · ");
+        const relationText = [
+          `产业链 ${relationships.industry_related_companies_total || 0}`,
+          `股东 ${relationships.shareholder_related_companies_total || 0}`,
+          `事实股权 ${relationships.approved_ownership_relationships || 0}`,
+          `候选 ${relationships.ownership_candidates || 0}`
+        ].join(" · ");
+        const next = nextAction.label || nextAction.reason || "继续补齐链路";
+        return `<tr data-action="open-company-intel" data-symbol="${item.symbol || ""}" title="点击载入公司情报"><td>${item.symbol || "-"}</td><td><span class="badge ${statusTone}">${statusLabel(item.status || "")}</span>${metaLine("完整度", coverage)}${metaLine("关系", item.relationship_status || "-")}</td><td>${formed}${metaLine("链路", relationText)}</td><td>${next}${nextAction.endpoint ? metaLine("动作", nextAction.endpoint) : ""}</td></tr>`;
+      });
+      $("companyIntelCount").textContent = `${companyIntelligence.company_count || companyIntelligenceRows.length || 0}`;
+      $("companyIntelReadyCount").textContent = `${companyIntelligence.ready_count || 0}`;
+      $("companyIntelAttentionCount").textContent = `${companyIntelligence.needs_attention_count || 0}`;
+      $("companyIntelArtifact").textContent = shortPath(data.artifact_path || "");
       const topReturns = (data.returns || []).slice().sort((a, b) => Math.abs(b.total_return_pct || 0) - Math.abs(a.total_return_pct || 0)).slice(0, 9);
       $("analysisReturns").innerHTML = topReturns.length ? topReturns.map((item) => `
         <div class="return-tile" data-action="open-security" data-security-id="${item.security_id || ""}" data-label="${item.label || ""}" title="点击查看行情数据">

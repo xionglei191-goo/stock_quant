@@ -245,6 +245,86 @@ def _pull_latest_data(client: ApiClient, symbols: list[str], *, research_root: s
     return result
 
 
+def _company_intelligence_overview(
+    client: ApiClient,
+    assets: list[dict[str, str]],
+    *,
+    limit: int = 10,
+) -> dict[str, Any]:
+    companies: list[dict[str, Any]] = []
+    ready_count = 0
+    attention_count = 0
+    for asset in assets:
+        symbol = str(asset.get("label") or asset.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        response = client.request(
+            "GET",
+            f"/api/company-intelligence/{symbol}",
+            {"limit": limit},
+            role="analyst",
+            allow_error=True,
+            timeout=20.0,
+        )
+        intelligence = response if isinstance(response, dict) else {}
+        relationship_context = intelligence.get("relationships", {}).get("relationship_context", {}) if isinstance(intelligence.get("relationships"), dict) else {}
+        section_counts = intelligence.get("section_counts", {}) if isinstance(intelligence.get("section_counts"), dict) else {}
+        completeness = intelligence.get("completeness_verdict", {}) if isinstance(intelligence.get("completeness_verdict"), dict) else {}
+        data_quality = intelligence.get("data_quality", {}) if isinstance(intelligence.get("data_quality"), dict) else {}
+        next_actions = intelligence.get("next_actions") if isinstance(intelligence.get("next_actions"), list) else []
+        summary = relationship_context.get("summary", {}) if isinstance(relationship_context.get("summary"), dict) else {}
+        coverage_diagnostics = relationship_context.get("coverage_diagnostics", {}) if isinstance(relationship_context.get("coverage_diagnostics"), dict) else {}
+        if completeness.get("is_complete"):
+            ready_count += 1
+        else:
+            attention_count += 1
+        companies.append(
+            {
+                "symbol": intelligence.get("symbol") or symbol,
+                "status": intelligence.get("status") or "missing",
+                "company_counts": {
+                    "company_profiles": section_counts.get("company_profiles", 0),
+                    "company_events": section_counts.get("company_events", 0),
+                    "company_relationships": section_counts.get("company_relationships", 0),
+                    "analysis_conclusions": section_counts.get("analysis_conclusions", 0),
+                    "simulation_feedback_records": section_counts.get("simulation_feedback_records", 0),
+                    "research_reports": section_counts.get("research_reports", 0),
+                    "report_viewpoints": section_counts.get("report_viewpoints", 0),
+                },
+                "relationship_summary": {
+                    "industry_related_companies_total": summary.get("industry_related_companies_total", 0),
+                    "shareholder_related_companies_total": summary.get("shareholder_related_companies_total", 0),
+                    "peer_companies": summary.get("peer_companies", 0),
+                    "upstream_companies": summary.get("upstream_companies", 0),
+                    "downstream_companies": summary.get("downstream_companies", 0),
+                    "approved_ownership_relationships": summary.get("approved_ownership_relationships", 0),
+                    "ownership_candidates": summary.get("ownership_candidates", 0),
+                },
+                "coverage_score": coverage_diagnostics.get("coverage_score", 0),
+                "relationship_status": coverage_diagnostics.get("status", ""),
+                "next_actions": next_actions[:3],
+                "completeness_verdict": completeness,
+                "data_quality": {
+                    "profile_available": data_quality.get("profile_available", False),
+                    "event_timeline_available": data_quality.get("event_timeline_available", False),
+                    "relationship_graph_available": data_quality.get("relationship_graph_available", False),
+                    "research_results_available": data_quality.get("research_results_available", False),
+                    "simulation_feedback_available": data_quality.get("simulation_feedback_available", False),
+                },
+            }
+        )
+    companies.sort(key=lambda item: (item.get("status") == "missing", item.get("symbol") or ""))
+    return {
+        "schema_id": "latest-analysis-company-intelligence-v1",
+        "status": "ready" if ready_count else ("watch" if companies else "missing"),
+        "company_count": len(companies),
+        "ready_count": ready_count,
+        "needs_attention_count": attention_count,
+        "companies": companies,
+        "usage_boundary": "latest_analysis_company_intelligence_overview_is_local_research_only_no_broker_execution",
+    }
+
+
 def _research_evidence_audit(
     client: ApiClient,
     counts: dict[str, Any] | None = None,
@@ -1147,6 +1227,7 @@ def _run_analysis(
     # false "zero research data" conclusions.
     metrics_counts = dict(dashboard_counts)
     research_evidence = _research_evidence_audit(client, metrics_counts, assets=assets, semantic_timeout_seconds=semantic_timeout_seconds)
+    company_intelligence = _company_intelligence_overview(client, assets, limit=min(10, len(assets) or 10))
     report_id = f"opr_latest_{suffix}"
     operating_report = client.request(
         "POST",
@@ -1197,6 +1278,7 @@ def _run_analysis(
         "portfolio_forward": forward,
         "hotspot": hotspot,
         "research_evidence": research_evidence,
+        "company_intelligence": company_intelligence,
         "dashboard_counts": dashboard_counts,
         "metrics_counts": metrics_counts,
         "operating_report": operating_report,
@@ -1305,6 +1387,34 @@ def _markdown_report(result: dict[str, Any]) -> str:
             lines.append(
                 f"| {item.get('scope') or '-'} | {item.get('resource_type') or '-'} | {title} | {snippet} | "
                 f"{item.get('source_boundary', '')} |"
+            )
+    company_intelligence = analysis.get("company_intelligence") or {}
+    company_intelligence_rows = company_intelligence.get("companies") or []
+    if company_intelligence_rows:
+        lines.extend(
+            [
+                "",
+                "## 公司情报链路",
+                "",
+                "| 公司 | 状态 | 关系摘要 | 研究/反馈 | 下一步 |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+        )
+        for item in company_intelligence_rows:
+            relationship_summary = item.get("relationship_summary") or {}
+            counts = item.get("company_counts") or {}
+            relationship_text = (
+                f"产业链 {int(relationship_summary.get('industry_related_companies_total', 0))}"
+                f" / 股东 {int(relationship_summary.get('shareholder_related_companies_total', 0))}"
+            )
+            research_feedback_text = f"结论 {int(counts.get('analysis_conclusions', 0))} / 反馈 {int(counts.get('simulation_feedback_records', 0))}"
+            next_actions = item.get("next_actions") or []
+            next_action = next_actions[0] if next_actions else {}
+            next_text = next_action.get("label") or next_action.get("action") or "-"
+            if next_action.get("endpoint"):
+                next_text = f"{next_text} · {next_action['endpoint']}"
+            lines.append(
+                f"| {item.get('symbol')} | {item.get('status', '-')} | {relationship_text} | {research_feedback_text} | {next_text} |"
             )
     supplemental = analysis.get("supplemental_market_observations") or {}
     observations = supplemental.get("observations") or []

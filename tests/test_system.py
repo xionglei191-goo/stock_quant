@@ -5314,6 +5314,9 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(response.data["latest_market_date"], "2026-05-25")
         self.assertTrue(response.data["daily_insight"]["actionable_research_summary"]["headline"].startswith("直接研报证据优先:"))
         self.assertEqual(response.data["daily_insight"]["quality_gates"]["direct_report_evidence_company_count"], 1)
+        self.assertEqual(response.data["company_intelligence"]["schema_id"], "latest-analysis-company-intelligence-v1")
+        self.assertGreaterEqual(response.data["company_intelligence"]["company_count"], 1)
+        self.assertIn("companies", response.data["company_intelligence"])
 
     def test_latest_analysis_cross_market_date_mismatch_is_warning_not_blocker(self) -> None:
         analysis = {
