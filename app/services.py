@@ -117,6 +117,7 @@ from .service_modules import company_quality
 from .service_modules import company_intelligence as company_intelligence_module
 from .service_modules import graph_intelligence
 from .service_modules import market_data as market_data_module
+from .service_modules import personal_research_loop
 from .service_modules import research_reports as research_report_module
 from .service_modules.feedback_scoring import score_simulation_feedback
 from .utils import chunk_text, chunk_text_by_page, env_float, env_int, looks_like_html, new_id, parse_datetime, pdf_bytes_to_text, to_plain, utcnow
@@ -24104,6 +24105,25 @@ class SystemService:
             "acceptable_for_non_local_release": False,
             "usage_boundary": "data_health_summary_is_local_read_model_no_schema_migration_no_live_trading",
         }
+
+    def personal_research_loop_overview(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        filters = filters or {}
+        limit = self._bounded_limit(filters.get("limit", 50), 500)
+        scoped_filters = {key: value for key, value in filters.items() if value not in (None, "")}
+        coverage = self.company_database_coverage_audit({**scoped_filters, "limit": limit}, actor=actor)
+        feedback_preview = self.update_simulation_feedback_performance({**scoped_filters, "limit": limit, "dry_run": True, "execute": False}, actor=actor)
+        quality_preview = self.reconcile_company_database_quality({**scoped_filters, "limit": limit, "dry_run": True, "execute": False}, actor=actor)
+        cycle_runs = self.company_intelligence_cycle_runs_payload({"limit": self._bounded_limit(filters.get("cycle_limit", 10), 100)})
+        latest_analysis = filters.get("latest_analysis") if isinstance(filters.get("latest_analysis"), Mapping) else {}
+        return personal_research_loop.build_personal_research_loop(
+            generated_at=to_plain(utcnow()),
+            data_health=self.data_health_summary({"run_limit": filters.get("run_limit", 200)}, actor=actor),
+            coverage=coverage,
+            cycle_runs=cycle_runs,
+            feedback_preview=feedback_preview,
+            quality_preview=quality_preview,
+            latest_analysis=latest_analysis,
+        )
 
     def company_database_build_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}

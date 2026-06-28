@@ -1610,6 +1610,13 @@
               <div class="system-box"><strong>待补齐</strong><span id="personalIntelAttentionCount">0</span></div>
               <div class="system-box"><strong>最近产物</strong><span id="personalIntelArtifact">-</span></div>
             </div>
+            <div class="system-strip">
+              <div class="system-box"><strong>研究闭环</strong><span id="personalLoopStatus">待载入</span></div>
+              <div class="system-box"><strong>数据待处理</strong><span id="personalLoopDataIssues">0</span></div>
+              <div class="system-box"><strong>兑现待评分</strong><span id="personalLoopFeedbackItems">0</span></div>
+              <div class="system-box"><strong>图谱待降噪</strong><span id="personalLoopGraphIssues">0</span></div>
+            </div>
+            <table><thead><tr><th>主题</th><th>状态</th><th>关键指标</th><th>下一步</th></tr></thead><tbody id="personalLoopRows"></tbody></table>
             <table><thead><tr><th>标的</th><th>完整度</th><th>已形成内容</th><th>下一步</th></tr></thead><tbody id="personalIntelRows"></tbody></table>
           </div>
           <div class="panel span-6">
@@ -6740,6 +6747,38 @@
       });
     }
 
+    function renderPersonalResearchLoopOverview(data) {
+      const sections = data.sections || [];
+      const sectionMap = Object.fromEntries(sections.map((item) => [item.section, item]));
+      const dataHealth = sectionMap.data_health?.summary || {};
+      const feedback = sectionMap.realization_scoring?.summary || {};
+      const graph = sectionMap.relationship_denoise?.summary || {};
+      $("personalLoopStatus").textContent = statusLabel(data.status || "pending");
+      $("personalLoopDataIssues").textContent = `${Number(dataHealth.failure_count || 0) + Number(dataHealth.pending_count || 0)}`;
+      $("personalLoopFeedbackItems").textContent = `${Number(feedback.feedback_planned || 0) + Number(feedback.feedback_skipped || 0)}`;
+      $("personalLoopGraphIssues").textContent = `${Number(graph.event_duplicates || 0) + Number(graph.relationship_duplicates || 0) + Number(graph.entity_merge_candidates || 0)}`;
+      $("personalLoopRows").innerHTML = rows(sections, "暂无研究闭环总览", (item) => {
+        const summary = item.summary || {};
+        const metrics = Object.entries(summary).slice(0, 4).map(([key, value]) => `${statusLabel(key)} ${Array.isArray(value) ? value.filter(Boolean).join("/") : value}`).join(" · ");
+        const action = item.primary_action || {};
+        const tone = item.status === "needs_action" ? "block" : item.status === "watch" ? "warn" : "ok";
+        return `<tr><td>${item.title || statusLabel(item.section)}${renderAdvancedTrace("闭环追溯", item)}</td><td><span class="badge ${tone}">${statusLabel(item.status)}</span></td><td>${metrics || "-"}</td><td>${statusLabel(action.action || "monitor")} ${action.endpoint || ""}</td></tr>`;
+      });
+    }
+
+    async function loadPersonalResearchLoopOverview(latestAnalysis = {}) {
+      try {
+        const response = await api("/api/personal-research/loop-overview", {
+          method: "POST",
+          role: "analyst",
+          body: { latest_analysis: latestAnalysis, limit: 50 }
+        });
+        renderPersonalResearchLoopOverview(response.data || {});
+      } catch (error) {
+        renderPersonalResearchLoopOverview({ status: "pending", sections: [] });
+      }
+    }
+
     async function loadIndustryChainSummary() {
       const [chains, positions, coverage, panorama, readiness] = await Promise.all([
         api("/api/industry-chains?limit=20", { role: "analyst" }),
@@ -6788,6 +6827,7 @@
         const latest = await latestPromise;
         const counts = latest.data?.counts || {};
         renderLatestAnalysis(latest.data || {});
+        const personalLoopPromise = loadPersonalResearchLoopOverview(latest.data || {});
         $("chipResearch").textContent = `研报 ${latest.data?.research_evidence?.counts?.research_reports || latest.data?.counts?.research_reports || counts.research_reports || 0}`;
         setStatus("最新分析已载入");
 
@@ -6798,6 +6838,7 @@
         $("chipService").className = health.data.status === "ok" ? "chip green" : "chip block";
 
         await industryChainPromise;
+        await personalLoopPromise;
         const { data, trace_id } = await api("/api/dashboard/ceo");
         const dashboardCounts = data.counts || counts;
         const extractionQuality = dashboardCounts.extraction_results ? Math.min(96, 72 + dashboardCounts.extraction_results * 4) : 72;

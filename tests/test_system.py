@@ -1674,6 +1674,98 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(sources["workflow_feedback"]["usage_boundary"], "workflow_feedback_is_paper_only_no_broker_no_auto_trading")
         self.assertGreater(summary.data["summary"]["next_action_count"], 0)
 
+    def test_personal_research_loop_overview_unifies_daily_research_status(self) -> None:
+        self.router.dispatch("POST", "/api/company-profiles", {"issuer_id": "issuer_001", "business_summary": "Demo supplier"}, role="analyst")
+        self.service.register_market_data_point(
+            {
+                "data_id": "md_loop_entry",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "as_of_date": "2026-06-20",
+                "data_type": "eod",
+                "market": "A",
+                "close": 10.0,
+            },
+            actor="data",
+        )
+        self.service.register_market_data_point(
+            {
+                "data_id": "md_loop_latest",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "as_of_date": "2026-06-24",
+                "data_type": "eod",
+                "market": "A",
+                "close": 10.8,
+            },
+            actor="data",
+        )
+        conclusion = self.router.dispatch(
+            "POST",
+            "/api/analysis-conclusions",
+            {
+                "analysis_conclusion_id": "ac_loop_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "title": "Demo loop conclusion",
+                "conclusion": "Daily research loop should surface data health, feedback scoring, and graph cleanup in one view.",
+                "conclusion_type": "watch",
+                "confidence": 0.7,
+                "valid_from": "2026-06-20T00:00:00+00:00",
+            },
+            role="analyst",
+        )
+        self._assert_api_envelope(conclusion)
+        feedback = self.router.dispatch(
+            "POST",
+            "/api/simulation-feedback",
+            {
+                "simulation_feedback_id": "sf_loop_demo",
+                "analysis_conclusion_id": "ac_loop_demo",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "feedback_type": "paper_position",
+                "simulated_action": "buy",
+                "entry_price": 10.0,
+                "start_at": "2026-06-20T00:00:00+00:00",
+                "performance": {},
+            },
+            role="analyst",
+        )
+        self._assert_api_envelope(feedback)
+        for relationship_id, object_id in [("rel_loop_a", "customer_alpha"), ("rel_loop_b", "customer-alpha")]:
+            created = self.router.dispatch(
+                "POST",
+                "/api/company-relationships",
+                {
+                    "relationship_id": relationship_id,
+                    "issuer_id": "issuer_001",
+                    "security_id": "sec_001",
+                    "subject_type": "company",
+                    "subject_id": "issuer_001",
+                    "object_type": "customer",
+                    "object_id": object_id,
+                    "relationship_type": "customer_candidate",
+                    "source_ids": ["src_sec"],
+                    "confidence": 0.6,
+                    "metadata": {"entity_name": "Customer Alpha"},
+                },
+                role="analyst",
+            )
+            self._assert_api_envelope(created)
+
+        overview = self.router.dispatch("GET", "/api/personal-research/loop-overview", {"symbol": "DEMO", "limit": 20}, role="analyst")
+        self._assert_api_envelope(overview)
+        self.assertEqual(overview.data["schema_id"], "personal-research-loop-overview-v1")
+        self.assertFalse(overview.data["live_execution_allowed"])
+        sections = {item["section"]: item for item in overview.data["sections"]}
+        self.assertEqual(set(sections), {"data_health", "personal_workspace", "realization_scoring", "relationship_denoise"})
+        self.assertEqual(sections["data_health"]["primary_action"]["endpoint"], "/api/data-health/summary")
+        self.assertGreaterEqual(sections["personal_workspace"]["summary"]["issuer_count"], 1)
+        self.assertGreaterEqual(sections["realization_scoring"]["summary"]["feedback_planned"], 1)
+        self.assertGreaterEqual(sections["relationship_denoise"]["summary"]["relationship_duplicates"], 1)
+        self.assertEqual(overview.data["source_payloads"]["feedback_preview"]["usage_boundary"], "simulation_feedback_realization_scoring_uses_local_market_data_only_paper_only_no_broker_execution")
+
     def test_company_database_builder_materializes_profiles_and_binds_reports(self) -> None:
         self.service.store.research_reports["rr_demo_unbound"] = ResearchReportAsset(
             report_id="rr_demo_unbound",

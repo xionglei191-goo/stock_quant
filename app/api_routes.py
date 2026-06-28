@@ -358,6 +358,8 @@ def build_route_table(owner: Any) -> list[tuple[str, str, Callable[..., Any]]]:
             ("POST", r"^/api/data-health/runs/summary$", owner._data_health_runs_summary),
             ("GET", r"^/api/data-health/summary$", owner._data_health_summary),
             ("POST", r"^/api/data-health/summary$", owner._data_health_summary),
+            ("GET", r"^/api/personal-research/loop-overview$", owner._personal_research_loop_overview),
+            ("POST", r"^/api/personal-research/loop-overview$", owner._personal_research_loop_overview),
             ("POST", r"^/api/company-database/material-inbox/ingest$", owner._company_material_inbox_ingest),
             ("GET", r"^/api/company-database/profile-field-coverage/audit$", owner._company_profile_coverage_audit),
             ("POST", r"^/api/company-database/profile-field-coverage/audit$", owner._company_profile_coverage_audit),
