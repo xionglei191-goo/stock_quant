@@ -7,26 +7,17 @@
 - [latest-analysis-chain.md](./latest-analysis-chain.md): 最新分析链路总览，串联最新分析产物、证据回读和个人关注池
 - [multidimensional-relationship-closure.md](./multidimensional-relationship-closure.md): 多维关系链总收口证明，覆盖产业链、同类、上下游、股东、股东关联公司和动态图谱探索能力
 - [personal-research-loop-overview.md](./personal-research-loop-overview.md): 个人研究闭环总览，覆盖数据健康、公司覆盖、兑现评分和图谱降噪
+## 文档入口
+
 - [../README.md](../README.md): 产品入口、主线叙事和本机运行边界
-- [../docs/project-support.md](./project-support.md): 项目支持文档与逻辑链条阅读顺序
-
-## 主文档
-
-- [../README.md](../README.md): 公司情报与市场综合分析平台入口、运行方式和当前能力说明
-- [product-requirements-document.md](./product-requirements-document.md): 公司情报平台 PRD，定义产品定位、目标用户、主流程、研报边界和成功指标
+- [project-requirements-document.md](./product-requirements-document.md): 公司情报平台 PRD，定义产品定位、目标用户、主流程、研报边界和成功指标
 - [system-architecture.md](./system-architecture.md): 公司情报平台目标架构，主线为数据、实体、事件、关系、观点和反馈
 - [data-structure-design.md](./data-structure-design.md): 公司画像、画像字段抽取、画像字段级证据断言、字段断言冲突复核、本地公司材料 inbox、画像深字段覆盖审计、事件/关系质量归并、研报观点、观察任务、分析结论、模拟反馈、补库运行历史、公司包导入运行历史、retry/resume、覆盖率趋势和工作台操作数据结构
 - [../tasks/todo.md](../tasks/todo.md): 执行待办清单；T-431 至 T-491 记录公司情报平台重定位、公司数据库构建、事实事件层、关系候选抽取与审核、覆盖率审计、批量补库、模拟反馈表现更新、研报兑现复盘、工作台操作面板、细粒度披露事件抽取、空状态缺口诊断、补库运行历史、运行历史 UI、覆盖率趋势报告、补库断点续跑/失败重试、覆盖趋势 UI 接入、画像深字段覆盖审计、官方/IR 画像字段抽取、事件/关系质量归并、深字段/抽取/质量归并 UI 接入、画像字段级证据断言、本地公司材料 inbox、完整度总判断、字段断言冲突复核、字段冲突复核工作台、字段断言批量复核推荐增强、关系/事件复核工作台、闭环刷新、财务指标事实层、本地单标的 bootstrap、本地 watchlist / 公司包导入、公司包导入运行历史、导入历史工作台入口、材料 manifest 模板导出、闭环刷新历史、材料 URL 自动填充、待补材料队列、个人阅读视图、关注池自动闭环、知识图谱、K 线行情和全页面 UI 信息降噪；T-492 至 T-503 记录长效完善、数据健康、个人研究桌面、真实验收、结论兑现、事件/关系可信度、前后端模块化、非本机生产化准备和 `SystemService` 渐进式重构路线
-
-## 研报、观点和数据边界
-
 - [chokepoint-research-module.md](./chokepoint-research-module.md): 瓶颈研究模块方向文档，包含 T-406C 本地质量包和版本化人工 review 基线
 - [transcript-research-citation-policy.md](./transcript-research-citation-policy.md): 电话会、转录稿、卖方研报引用和训练边界策略
 - [us-compliance-open-questions.md](./us-compliance-open-questions.md): Reg FD、Non-Display、投顾、券商、衍生品和跨境合规开放问题
 - [risk-register.md](./risk-register.md): 风险与依赖登记册
-
-## 交付、协作和质量
-
 - [agent-handoffs/README.md](./agent-handoffs/README.md): 多 agent 交接记录目录与使用规则
 - [agent-handoffs/TEMPLATE.md](./agent-handoffs/TEMPLATE.md): 标准交接记录模板
 - [pr-checklist.md](./pr-checklist.md): PR 与合并检查清单（含多 agent 交接必查项）
@@ -34,9 +25,6 @@
 - [development-ready-checklist.md](./development-ready-checklist.md): 开发就绪清单
 - [mvp-backlog.md](./mvp-backlog.md): MVP backlog
 - [workstreams-by-role.md](./workstreams-by-role.md): 按角色拆分的执行包
-
-## 架构和运维附录
-
 - [api-contracts.md](./api-contracts.md): 接口契约；包含公司画像、画像字段抽取、字段断言冲突/批量复核、本地公司材料 inbox 脚本、公司包导入运行历史、材料 manifest 模板导出、画像深字段覆盖审计、事件/关系质量归并、研报观点、观察结论和模拟反馈 API
 - [multidimensional-relationship-closure.md](./multidimensional-relationship-closure.md): 多维关系链总收口证明，覆盖产业链、同类、上下游、股东、股东关联公司和动态图谱探索能力
 - [postgresql-schema.sql](./postgresql-schema.sql): PostgreSQL 状态库基线 schema
