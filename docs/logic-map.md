@@ -36,6 +36,14 @@
 - 最新分析链路已经形成独立总览和产物回读入口。
 - 个人研究闭环已经形成单独总览。
 
+## Verification
+
+- `make local-ci`
+  - Result: passed on 2026-06-29.
+  - Covered: Python compile, full unit discovery, UI static contract, security scan, Markdown link validation, and handoff validation.
+- `python3 scripts/check_markdown_links.py`
+  - Result: passed as part of `make local-ci`, checked 195 Markdown files.
+
 ## Navigation
 
 - 根入口：[`README.md`](../README.md)
