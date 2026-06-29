@@ -632,6 +632,13 @@ def run_ui_interaction_acceptance(
                 "document.querySelector('[data-open=\"committee\"]').click(); document.querySelector('#loadPortfolioProposal').click(); true",
                 "document.querySelector('[data-tab=\"committee\"]').classList.contains('active') && document.querySelector('#portfolioProposalBox').textContent.includes('组合方案') && document.querySelector('#portfolioProposalBox').textContent.includes('组合权重') && document.querySelector('#portfolioFeedbackDecision').textContent.includes('已载入')",
             ),
+            _run_check(
+                client,
+                "latest_analysis_company_intelligence_chain_visible",
+                "document.querySelector('[data-open=\"dashboard\"]').click(); true",
+                "document.querySelector('[data-tab=\"dashboard\"]').classList.contains('active') && document.querySelector('#companyIntelligenceRows')?.textContent.trim().length > 0 && document.querySelector('#companyIntelCount')?.textContent.trim().length > 0 && document.querySelector('#companyIntelArtifact')?.textContent.trim().length > 0",
+                wait_timeout=max(timeout, 45.0),
+            ),
         ]
     finally:
         if client:
