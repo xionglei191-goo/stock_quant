@@ -2098,10 +2098,12 @@
 - `returns`
 - `weights`
 - `research_evidence`
+- `company_intelligence`
 - `counts`
 - `source_summary`
 
 `research_evidence` 包含本地研报数量、`research_report_citation` 证据数量、语义检索召回状态、热点扩散召回状态和用途边界。研报 evidence 固定为观点/参考层，不能升级为事实真相源、训练源或真实交易信号。
+`company_intelligence` 是按本机资产列表补出的公司情报链路快照，返回 `schema_id=latest-analysis-company-intelligence-v1`、`company_count`、`ready_count`、`needs_attention_count`、`companies[]` 和 `usage_boundary`。每条 company 条目会带 `company_counts`、`relationship_summary`、`coverage_score`、`relationship_status`、`next_actions`、`completeness_verdict` 和 `data_quality`，用于把公司画像、产业链、关系、结论和模拟反馈串成一条可视化链路；它只使用本地已有公司情报，不下载外部资料，也不触发真实交易。
 
 #### `GET /api/company-positions/schema`
 
