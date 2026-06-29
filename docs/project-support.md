@@ -109,6 +109,16 @@ AI Native 虚拟量化基金组织
 - `artifacts/local-production-audit.json`：本机生产审计 `status=passed`、`ready_for_launch=true`，保留 graph/vector outbox 与历史 workflow drill warning，不阻塞本机长期使用。
 - `artifacts/project-completion-audit.json`：部署目标为 `local_only_personal_production` 时 `status=achieved`；剩余 `BLOCKED` 任务均为非本机组织级发布 artifact URI、inventory、签批证据，不是本机代码或数据闭环阻塞。
 
+## 逻辑链条阅读顺序
+
+如果需要按产品主线快速理解当前系统，优先按下面顺序阅读：
+
+1. [`README.md`](../README.md) - 产品入口与本机运行边界。
+2. [`docs/logic-chain-overview.md`](./logic-chain-overview.md) - 当前逻辑链条总览地图。
+3. [`docs/multidimensional-relationship-closure.md`](./multidimensional-relationship-closure.md) - 多维关系链总收口证明。
+4. [`docs/agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md`](./agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md) - 个人研究闭环总览。
+5. [`artifacts/latest-analysis/latest-analysis.json`](../artifacts/latest-analysis/latest-analysis.json) - 最新分析产物与证据层回读。
+
 本机新增研报的推荐流程：
 
 1. 用户把新研报文件放入宿主机研报目录 `/home/xionglei/文档/6大投行研报汇总/inbox`，可按 `券商/年份/月/文件.pdf` 分层；容器内对应路径为 `/data/local/research_reports/inbox`。

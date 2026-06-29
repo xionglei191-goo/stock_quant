@@ -77,14 +77,17 @@
 - [x] 任务范围和目标记录
 - [x] 总览文档已新增
 - [x] 文档索引已更新
+- [x] 项目支持文档已加入阅读顺序
 - [x] 交接格式按模板补齐
-- [ ] 校验已复验
-- [ ] 提交并推送
+- [x] 校验已复验
+- [x] 提交并推送
 
 ## Evidence
 
 - `docs/logic-chain-overview.md`: 当前逻辑链条总览。
 - `docs/README.md`: 新增总览入口。
+- `README.md`: 新增总览入口说明。
+- `docs/project-support.md`: 新增逻辑链条阅读顺序。
 - `docs/agent-handoffs/2026-06-29-T-554-logic-chain-overview.md`: 当前交接。
 
 ## Commands Run
@@ -101,9 +104,9 @@ git diff --check
 
 Result:
 
-- Passed: 文档读取、差异检查。
+- Passed: 文档读取、差异检查、交接校验。
 - Failed: 首次交接校验失败，原因是缺少模板必需章节；已补齐。
-- Not run: 提交与推送尚未执行。
+- Not run: 无。
 
 ## Decisions
 
