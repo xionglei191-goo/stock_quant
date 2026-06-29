@@ -114,11 +114,12 @@ AI Native 虚拟量化基金组织
 如果需要按产品主线快速理解当前系统，优先按下面顺序阅读：
 
 1. [`README.md`](../README.md) - 产品入口与本机运行边界。
-2. [`docs/logic-chain-overview.md`](./logic-chain-overview.md) - 当前逻辑链条总览地图。
-3. [`docs/latest-analysis-chain.md`](./latest-analysis-chain.md) - 最新分析链路总览地图。
-4. [`docs/multidimensional-relationship-closure.md`](./multidimensional-relationship-closure.md) - 多维关系链总收口证明。
-5. [`docs/agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md`](./agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md) - 个人研究闭环总览。
-6. [`artifacts/latest-analysis/latest-analysis.json`](../artifacts/latest-analysis/latest-analysis.json) - 最新分析产物与证据层回读。
+2. [`docs/logic-map.md`](./logic-map.md) - 四条主线的逻辑总地图。
+3. [`docs/logic-chain-overview.md`](./logic-chain-overview.md) - 当前逻辑链条总览地图。
+4. [`docs/latest-analysis-chain.md`](./latest-analysis-chain.md) - 最新分析链路总览地图。
+5. [`docs/multidimensional-relationship-closure.md`](./multidimensional-relationship-closure.md) - 多维关系链总收口证明。
+6. [`docs/agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md`](./agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md) - 个人研究闭环总览。
+7. [`artifacts/latest-analysis/latest-analysis.json`](../artifacts/latest-analysis/latest-analysis.json) - 最新分析产物与证据层回读。
 
 本机新增研报的推荐流程：
 
