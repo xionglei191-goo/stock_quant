@@ -37,6 +37,7 @@
 - 根入口：[`README.md`](../README.md)
 - 文档索引：[`docs/README.md`](./README.md)
 - 项目支持文档：[`docs/project-support.md`](./project-support.md)
+- 逻辑链条总览：[`docs/logic-chain-overview.md`](./logic-chain-overview.md)
 - 产物：[`artifacts/latest-analysis/latest-analysis.json`](../artifacts/latest-analysis/latest-analysis.json)
 - 召回审计：[`artifacts/latest-analysis/research-evidence-recall-audit.json`](../artifacts/latest-analysis/research-evidence-recall-audit.json)
 

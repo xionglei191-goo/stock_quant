@@ -115,9 +115,10 @@ AI Native 虚拟量化基金组织
 
 1. [`README.md`](../README.md) - 产品入口与本机运行边界。
 2. [`docs/logic-chain-overview.md`](./logic-chain-overview.md) - 当前逻辑链条总览地图。
-3. [`docs/multidimensional-relationship-closure.md`](./multidimensional-relationship-closure.md) - 多维关系链总收口证明。
-4. [`docs/agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md`](./agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md) - 个人研究闭环总览。
-5. [`artifacts/latest-analysis/latest-analysis.json`](../artifacts/latest-analysis/latest-analysis.json) - 最新分析产物与证据层回读。
+3. [`docs/latest-analysis-chain.md`](./latest-analysis-chain.md) - 最新分析链路总览地图。
+4. [`docs/multidimensional-relationship-closure.md`](./multidimensional-relationship-closure.md) - 多维关系链总收口证明。
+5. [`docs/agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md`](./agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md) - 个人研究闭环总览。
+6. [`artifacts/latest-analysis/latest-analysis.json`](../artifacts/latest-analysis/latest-analysis.json) - 最新分析产物与证据层回读。
 
 本机新增研报的推荐流程：
 

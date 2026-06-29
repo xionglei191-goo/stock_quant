@@ -84,6 +84,8 @@
 
 - `docs/latest-analysis-chain.md`: 最新分析链路总览。
 - `docs/README.md`: 新增最新分析链路主线入口。
+- `docs/project-support.md`: 新增最新分析链路阅读顺序。
+- `docs/logic-chain-overview.md`: 与最新分析链路互链。
 
 ## Commands Run
 

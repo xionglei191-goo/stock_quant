@@ -61,6 +61,7 @@
 
 - 根入口：[`README.md`](../README.md)
 - 文档索引：[`docs/README.md`](./README.md)
+- 最新分析链路：[`docs/latest-analysis-chain.md`](./latest-analysis-chain.md)
 - 关系链证明：[`docs/multidimensional-relationship-closure.md`](./multidimensional-relationship-closure.md)
 - 个人研究闭环：[`docs/agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md`](./agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md)
 - 最新分析链路：`artifacts/latest-analysis/latest-analysis.json`
