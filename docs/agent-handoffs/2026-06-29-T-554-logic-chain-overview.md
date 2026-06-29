@@ -85,7 +85,7 @@
 ## Evidence
 
 - `docs/logic-chain-overview.md`: 当前逻辑链条总览。
-- `docs/README.md`: 新增总览入口。
+- `docs/README.md`: 新增总览入口与主线入口区块。
 - `README.md`: 新增总览入口说明。
 - `docs/project-support.md`: 新增逻辑链条阅读顺序。
 - `docs/agent-handoffs/2026-06-29-T-554-logic-chain-overview.md`: 当前交接。
