@@ -47,8 +47,8 @@
 ## 历史研究底稿
 
 - [deep-research-report.md](./deep-research-report.md): 历史战略研究底稿，保留作背景，不再作为当前产品主叙事
-- [deep-research-report-加美股.md](./deep-research-report-%E5%8A%A0%E7%BE%8E%E8%82%A1.md): 历史美股扩展研究
-- [deep-research-report -next.md](./deep-research-report%20-next.md): 历史下一步研究清单
+- [deep-research-report-加美股.md](./deep-research-report-加美股.md): 历史美股扩展研究
+- [deep-research-report -next.md](<./deep-research-report -next.md>): 历史下一步研究清单
 - [project-audit.md](./project-audit.md): 资料完整性审查
 - [project-support.md](./project-support.md): 项目支持文档
 - [development-task-book.md](./development-task-book.md): 开发任务书
