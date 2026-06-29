@@ -6,6 +6,7 @@
 - [ ] Tests relevant to the change were run and results recorded
 - [ ] No secrets, tokens, or local credential material were introduced
 - [ ] Documentation impacted by the change was updated
+- [ ] Documentation changes ran `python3 scripts/check_markdown_links.py`
 - [ ] If `app/services.py` or `SystemService` changed, new business logic was placed in a domain module or the handoff includes a `SystemService Growth Freeze Review`
 
 ## Multi-Agent Handoff Requirement

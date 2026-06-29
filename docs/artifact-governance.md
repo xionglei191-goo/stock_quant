@@ -31,4 +31,12 @@ Run:
 make local-ci
 ```
 
-This chains compile, unit tests, UI static contract, security scan, and handoff validation.
+This chains compile, unit tests, UI static contract, security scan, Markdown link validation, and handoff validation.
+
+For documentation-only changes, at minimum run:
+
+```bash
+python3 scripts/check_markdown_links.py
+python3 scripts/check_handoffs.py
+git diff --check
+```
