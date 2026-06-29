@@ -74,6 +74,7 @@ A 股财务摘要已覆盖自动生产公司宇宙；美股 SEC companyfacts 已
 - `artifacts/latest-analysis/latest-analysis.json`：A 股 `600000/000001/300750/600519` 与美股 `AAPL/MSFT/NVDA/TSLA/SPY` 最新分析 `status=passed`，包含 `11702` 份本地研报和 `88515` 条受限研报引用证据的观点层召回。
 - `artifacts/local-production-audit.json`：本机生产审计 `status=passed`、`ready_for_launch=true`。
 - `artifacts/project-completion-audit.json`：本机个人生产目标 `status=achieved`。
+- `docs/logic-chain-overview.md`：逻辑链条总览入口，串联公司情报、多维关系、最新分析和个人研究闭环。
 
 新增研报采用本机 inbox 模式，不做外部登录或下载。默认把新文件放入宿主机研报目录 `/home/xionglei/文档/6大投行研报汇总/inbox`；服务容器会通过只读挂载在 `/data/local/research_reports/inbox` 扫描同一批文件。先 dry-run：
 
