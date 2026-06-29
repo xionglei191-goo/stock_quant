@@ -1189,6 +1189,17 @@
   - **已完成（本轮）**：`docs/README.md` 纳入多维关系链总收口证明文档。
   - 验收：`python3 -m py_compile app/*.py app/service_modules/*.py tests/*.py scripts/*.py`、重点关系链单测、`python3 scripts/ui_static_check.py`、`python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance-t553 --timeout 60`、`python3 scripts/check_handoffs.py`、`git diff --check`。
 
+- `DONE` T-565 逻辑链条总地图、文档导览和质量门收口
+  - 对应：E7-US1, E8-US2, E9-US2；愿景扩展/生产化增强
+  - Owner：PM / Release Coordination, Product and UI, Platform and Quality
+  - 目标：把公司情报、最新分析、多维关系和个人研究闭环四条主线收束成可导航、可复验、可维护的文档体系，并把 Markdown 相对链接检查纳入本地质量门。
+  - **已完成（本轮）**：新增 `docs/logic-map.md` 作为四条主线第一入口；新增或完善 `docs/logic-chain-overview.md`、`docs/latest-analysis-chain.md`、`docs/multidimensional-relationship-closure.md`、`docs/personal-research-loop-overview.md`。
+  - **已完成（本轮）**：根 `README.md`、`docs/README.md` 和 `docs/project-support.md` 已加入逻辑总地图、主线入口和阅读顺序。
+  - **已完成（本轮）**：新增 `scripts/check_markdown_links.py`，默认检查 `README.md` 与 `docs/**/*.md` 的本地相对链接；`make local-ci` 已接入该检查。
+  - **已完成（本轮）**：`docs/artifact-governance.md` 与 `docs/pr-checklist.md` 已加入文档链接检查说明；历史底稿链接断链已修正。
+  - **已完成（本轮）**：`docs/logic-map.md` 已记录完整 `make local-ci` 证据：Python 编译、全量单测、UI 静态契约、安全检查、Markdown 链接检查和 handoff 校验全部通过。
+  - 验收：`make local-ci` 通过；`python3 scripts/check_markdown_links.py` 通过，检查 195 个 Markdown 文件；`python3 scripts/check_handoffs.py` 通过；`git diff --check` 通过。
+
 ## 运维/非本机发布附录 / 当前工程治理待办
 
 项目经理口径：以下任务来自 2026-05-28 项目分析，目标是把本机长期使用状态从“可运行”提升为“可维护、可复验、可交接”。这些任务不改变系统边界：仍只做公司情报、证据研究、观点复盘、模拟反馈，不接真实券商，不做自动下单。
