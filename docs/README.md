@@ -27,7 +27,6 @@
 - [mvp-backlog.md](./mvp-backlog.md): MVP backlog
 - [workstreams-by-role.md](./workstreams-by-role.md): 按角色拆分的执行包
 - [api-contracts.md](./api-contracts.md): 接口契约；包含公司画像、画像字段抽取、字段断言冲突/批量复核、本地公司材料 inbox 脚本、公司包导入运行历史、材料 manifest 模板导出、画像深字段覆盖审计、事件/关系质量归并、研报观点、观察结论和模拟反馈 API
-- [multidimensional-relationship-closure.md](./multidimensional-relationship-closure.md): 多维关系链总收口证明，覆盖产业链、同类、上下游、股东、股东关联公司和动态图谱探索能力
 - [postgresql-schema.sql](./postgresql-schema.sql): PostgreSQL 状态库基线 schema
 - [postgresql-migrations.md](./postgresql-migrations.md): PostgreSQL schema 迁移、dry-run、迁移记录和回滚策略
 - [systemservice-modularization-adr.md](./systemservice-modularization-adr.md): `SystemService` 模块化拆分 ADR 与迁移顺序
