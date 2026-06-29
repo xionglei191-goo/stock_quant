@@ -227,6 +227,65 @@ def _run_check(
         }
 
 
+def _run_latest_analysis_chain_check(
+    base_url: str,
+    *,
+    chrome_bin: str = "",
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    chrome = _chrome_binary(chrome_bin)
+    port = _free_port()
+    process = subprocess.Popen(
+        [
+            chrome,
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-background-networking",
+            f"--remote-debugging-port={port}",
+            "--user-data-dir=/tmp/ui-interaction-latest-analysis-chain-profile",
+            "about:blank",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    client: DevToolsClient | None = None
+    try:
+        _wait_for_debugger(port, timeout=timeout)
+        pages = _http_json(f"http://127.0.0.1:{port}/json", timeout=timeout)
+        page = next((item for item in pages if item.get("type") == "page"), pages[0])
+        client = DevToolsClient(page["webSocketDebuggerUrl"], timeout=timeout)
+        client.call("Runtime.enable")
+        client.call("Page.enable")
+        client.call("Page.navigate", {"url": base_url.rstrip("/") + "/ui"})
+        _wait_for(client, "location.pathname === '/ui' && document.querySelector('#companyIntelligenceRows') !== null", timeout=timeout)
+        _wait_for(
+            client,
+            "document.querySelector('#companyIntelligenceRows')?.textContent.trim().length > 0 && document.querySelector('#companyIntelCount')?.textContent.trim().length > 0 && document.querySelector('#companyIntelArtifact')?.textContent.trim().length > 0",
+            timeout=timeout,
+        )
+        return {
+            "status": "passed",
+            "ui_url": base_url.rstrip("/") + "/ui",
+            "browser": chrome,
+            "checks": [
+                {
+                    "name": "latest_analysis_company_intelligence_chain_visible",
+                    "status": "passed",
+                }
+            ],
+        }
+    finally:
+        if client:
+            client.close()
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
 def run_ui_interaction_acceptance(
     base_url: str,
     *,
