@@ -77,6 +77,16 @@ A 股财务摘要已覆盖自动生产公司宇宙；美股 SEC companyfacts 已
 - `docs/logic-map.md`：逻辑总地图入口，作为四条主线的第一入口。
 - `docs/logic-chain-overview.md`：逻辑链条总览入口，串联公司情报、多维关系、最新分析和个人研究闭环。
 
+## 文档导览
+
+如果需要快速理解当前系统，建议先看：
+
+1. [`docs/logic-map.md`](docs/logic-map.md) - 四条主线的第一入口。
+2. [`docs/logic-chain-overview.md`](docs/logic-chain-overview.md) - 公司情报与逻辑链条总览。
+3. [`docs/latest-analysis-chain.md`](docs/latest-analysis-chain.md) - 最新分析链路总览。
+4. [`docs/multidimensional-relationship-closure.md`](docs/multidimensional-relationship-closure.md) - 多维关系链总收口证明。
+5. [`docs/personal-research-loop-overview.md`](docs/personal-research-loop-overview.md) - 个人研究闭环总览。
+
 新增研报采用本机 inbox 模式，不做外部登录或下载。默认把新文件放入宿主机研报目录 `/home/xionglei/文档/6大投行研报汇总/inbox`；服务容器会通过只读挂载在 `/data/local/research_reports/inbox` 扫描同一批文件。先 dry-run：
 
 ```bash
