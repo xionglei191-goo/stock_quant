@@ -6,6 +6,7 @@
 - [logic-chain-overview.md](./logic-chain-overview.md): 当前逻辑链条总览，串联公司情报、多维关系、最新分析和个人研究闭环
 - [latest-analysis-chain.md](./latest-analysis-chain.md): 最新分析链路总览，串联最新分析产物、证据回读和个人关注池
 - [multidimensional-relationship-closure.md](./multidimensional-relationship-closure.md): 多维关系链总收口证明，覆盖产业链、同类、上下游、股东、股东关联公司和动态图谱探索能力
+- [personal-research-loop-overview.md](./personal-research-loop-overview.md): 个人研究闭环总览，覆盖数据健康、公司覆盖、兑现评分和图谱降噪
 - [../README.md](../README.md): 产品入口、主线叙事和本机运行边界
 - [../docs/project-support.md](./project-support.md): 项目支持文档与逻辑链条阅读顺序
 

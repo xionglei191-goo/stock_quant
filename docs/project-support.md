@@ -118,7 +118,7 @@ AI Native 虚拟量化基金组织
 3. [`docs/logic-chain-overview.md`](./logic-chain-overview.md) - 当前逻辑链条总览地图。
 4. [`docs/latest-analysis-chain.md`](./latest-analysis-chain.md) - 最新分析链路总览地图。
 5. [`docs/multidimensional-relationship-closure.md`](./multidimensional-relationship-closure.md) - 多维关系链总收口证明。
-6. [`docs/agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md`](./agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md) - 个人研究闭环总览。
+6. [`docs/personal-research-loop-overview.md`](./personal-research-loop-overview.md) - 个人研究闭环总览。
 7. [`artifacts/latest-analysis/latest-analysis.json`](../artifacts/latest-analysis/latest-analysis.json) - 最新分析产物与证据层回读。
 
 本机新增研报的推荐流程：

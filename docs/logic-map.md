@@ -26,7 +26,7 @@
    - 适合先看产业链、同类、上下游、股东和动态图谱探索。
 
 4. 个人研究闭环
-   - [`docs/agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md`](./agent-handoffs/2026-06-28-T-494-personal-research-loop-overview.md)
+   - [`docs/personal-research-loop-overview.md`](./personal-research-loop-overview.md)
    - 适合先看数据健康、兑现评分和图谱降噪。
 
 ## Current Completion
@@ -44,6 +44,7 @@
 - 逻辑链条总览：[`docs/logic-chain-overview.md`](./logic-chain-overview.md)
 - 最新分析链路：[`docs/latest-analysis-chain.md`](./latest-analysis-chain.md)
 - 多维关系链收口：[`docs/multidimensional-relationship-closure.md`](./multidimensional-relationship-closure.md)
+- 个人研究闭环：[`docs/personal-research-loop-overview.md`](./personal-research-loop-overview.md)
 
 ## Notes
 
