@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict, deque
+from dataclasses import dataclass
 import re
 from typing import Any, Mapping
 
@@ -10,7 +11,129 @@ from . import knowledge_graph_bulk
 from .graph_intelligence import graph_node_identity
 
 
-RAW_LABEL_MARKERS = ("obsidian", "relationship", "pos_", "doc_", "hold_", "issuer_", "security_", "sec_", "md_")
+RAW_LABEL_MARKERS = ("obsidian", "relationship", "pos_", "doc_", "hold_", "issuer_", "security_", "sec_", "md_", "vp_rr_", "rr_", "srr_")
+
+RELATIONSHIP_TYPE_LABELS = {
+    "industry_position": "产业链位置",
+    "industry_peer": "同类关系",
+    "upstream_of": "上游关系",
+    "downstream_of": "下游关系",
+    "ownership": "股权关系",
+    "shareholder": "事实股东",
+    "shareholder_candidate": "股东候选",
+    "controller": "实际控制",
+    "controller_candidate": "实控候选",
+    "subsidiary": "子公司",
+    "subsidiary_candidate": "子公司候选",
+    "investee": "参股公司",
+    "investee_candidate": "参股候选",
+    "customer": "客户关系",
+    "customer_candidate": "客户候选",
+    "supplier": "供应商关系",
+    "supplier_candidate": "供应商候选",
+    "partner": "合作伙伴",
+    "partner_candidate": "合作候选",
+    "institution_coverage": "机构覆盖",
+    "listed_security": "上市证券",
+    "relationship": "关系",
+    "relationship_subject": "关系主体",
+    "relationship_object": "关系对象",
+    "same_holder_related_company": "同持有人",
+    "has_13f_holding": "13F 持仓",
+    "holds_security": "持有证券",
+    "issues": "发行证券",
+    "positioned_as": "产业定位",
+    "has_company_position": "产业定位",
+    "security_for_position": "定位证券",
+    "position_in_chain_node": "产业定位",
+    "event_from_document": "事件资料",
+    "event_on_security": "事件证券",
+    "covered_by_report": "研报覆盖",
+    "analyst_covers": "分析师覆盖",
+    "report_has_viewpoint": "研报观点",
+    "viewpoint_on_company": "观点覆盖",
+    "viewpoint_evidence": "观点证据",
+    "event_evidence": "事件证据",
+    "relationship_evidence": "关系证据",
+}
+
+
+@dataclass(frozen=True)
+class GraphQualityThresholds:
+    min_edges: int = 12
+    min_communities: int = 3
+    min_layers: int = 5
+    max_duplicate_labels: int = 0
+    max_raw_label_leaks: int = 0
+    max_display_duplicate_edges: int = 0
+    max_duplicate_edges: int = 4
+    min_structural_nodes: int = 8
+    max_hub_edge_share: float = 0.72
+    max_leaf_ratio: float = 0.86
+    min_largest_component_ratio: float = 0.72
+
+    def as_dict(self) -> dict[str, int | float]:
+        return {
+            "min_edges": self.min_edges,
+            "min_communities": self.min_communities,
+            "min_layers": self.min_layers,
+            "max_duplicate_labels": self.max_duplicate_labels,
+            "max_raw_label_leaks": self.max_raw_label_leaks,
+            "max_display_duplicate_edges": self.max_display_duplicate_edges,
+            "max_duplicate_edges": self.max_duplicate_edges,
+            "min_structural_nodes": self.min_structural_nodes,
+            "max_hub_edge_share": self.max_hub_edge_share,
+            "max_leaf_ratio": self.max_leaf_ratio,
+            "min_largest_component_ratio": self.min_largest_component_ratio,
+        }
+
+
+DEFAULT_GRAPH_QUALITY_THRESHOLDS = GraphQualityThresholds()
+
+
+def _threshold_int(payload: Mapping[str, Any], key: str, default: int) -> int:
+    if key not in payload:
+        return default
+    value = payload.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _threshold_float(payload: Mapping[str, Any], key: str, default: float) -> float:
+    if key not in payload:
+        return default
+    value = payload.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _graph_quality_thresholds(payload: Mapping[str, Any]) -> GraphQualityThresholds:
+    defaults = DEFAULT_GRAPH_QUALITY_THRESHOLDS
+    return GraphQualityThresholds(
+        min_edges=_threshold_int(payload, "min_edges", defaults.min_edges),
+        min_communities=_threshold_int(payload, "min_communities", defaults.min_communities),
+        min_layers=_threshold_int(payload, "min_layers", defaults.min_layers),
+        max_duplicate_labels=_threshold_int(payload, "max_duplicate_labels", defaults.max_duplicate_labels),
+        max_raw_label_leaks=_threshold_int(payload, "max_raw_label_leaks", defaults.max_raw_label_leaks),
+        max_display_duplicate_edges=_threshold_int(payload, "max_display_duplicate_edges", defaults.max_display_duplicate_edges),
+        max_duplicate_edges=_threshold_int(payload, "max_duplicate_edges", defaults.max_duplicate_edges),
+        min_structural_nodes=_threshold_int(payload, "min_structural_nodes", defaults.min_structural_nodes),
+        max_hub_edge_share=_threshold_float(payload, "max_hub_edge_share", defaults.max_hub_edge_share),
+        max_leaf_ratio=_threshold_float(payload, "max_leaf_ratio", defaults.max_leaf_ratio),
+        min_largest_component_ratio=_threshold_float(
+            payload,
+            "min_largest_component_ratio",
+            defaults.min_largest_component_ratio,
+        ),
+    )
 
 
 def _status_label(value: Any) -> str:
@@ -18,6 +141,67 @@ def _status_label(value: Any) -> str:
     if not text:
         return ""
     return text.replace("_", " ").replace("-", " ").strip().title()
+
+
+def _relationship_type_label(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    if not key:
+        return ""
+    return RELATIONSHIP_TYPE_LABELS.get(key, "")
+
+
+def _holding_label(row: Mapping[str, Any]) -> str:
+    holder = str(row.get("filer_name") or row.get("filer_cik") or "机构").strip()
+    target = (
+        _readable_id_label(row.get("security_id", ""), row)
+        or _readable_id_label(row.get("issuer_id", ""), row)
+        or str(row.get("security_id") or row.get("issuer_id") or "").strip()
+    )
+    period = str(row.get("report_period", "") or "").strip()
+    parts = [holder]
+    if target:
+        parts.append(target)
+    label = " / ".join(parts)
+    if period:
+        label = f"{label} · {period}"
+    return f"13F 持仓 · {label}"
+
+
+def _first_alias(row: Mapping[str, Any]) -> str:
+    aliases = row.get("aliases") or row.get("entity_aliases") or []
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    if not isinstance(aliases, list):
+        return ""
+    for alias in aliases:
+        text = str(alias or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _issuer_label(row: Mapping[str, Any]) -> str:
+    ticker = str(row.get("ticker") or row.get("symbol") or "").strip()
+    if not ticker:
+        ticker = _first_alias(row)
+    if not ticker:
+        ticker = _readable_id_label(row.get("issuer_id") or row.get("node_id") or "", row)
+    if ticker:
+        return f"{ticker.upper()} · 公司"
+    legal_name = str(row.get("legal_name") or row.get("name") or row.get("issuer_name") or "").strip()
+    if legal_name:
+        return f"{legal_name} · 公司"
+    return ""
+
+
+def _security_label(row: Mapping[str, Any]) -> str:
+    ticker = str(row.get("ticker") or row.get("symbol") or "").strip()
+    if not ticker:
+        ticker = _readable_id_label(row.get("security_id") or row.get("node_id") or "", row)
+    if ticker:
+        market = str(row.get("market") or row.get("exchange") or "证券").strip()
+        return f"{ticker.upper()} · {market}"
+    return ""
 
 
 def _readable_id_label(value: Any, row: Mapping[str, Any] | None = None) -> str:
@@ -40,6 +224,10 @@ def _readable_id_label(value: Any, row: Mapping[str, Any] | None = None) -> str:
         date = str(row.get("as_of_date", "") or "").strip()
         security_label = _readable_id_label(row.get("security_id", ""))
         return f"行情 {security_label} {date}".strip()
+    if lower.startswith("vp_rr_") or lower.startswith("vp_"):
+        return "研究观点"
+    if lower.startswith("rr_") or lower.startswith("srr_"):
+        return "研报主题"
     return ""
 
 
@@ -65,14 +253,15 @@ def _node_label(collection: str, row: Mapping[str, Any]) -> str:
         if readable:
             return readable
     if collection == "issuers":
-        ticker = str(row.get("ticker") or row.get("symbol") or "").strip()
-        if ticker:
-            return f"{ticker.upper()} · 公司"
+        label = _issuer_label(row)
+        if label:
+            return label
     if collection == "securities":
-        ticker = str(row.get("ticker") or row.get("symbol") or "").strip()
-        if ticker:
-            market = str(row.get("market") or row.get("exchange") or "证券").strip()
-            return f"{ticker.upper()} · {market}"
+        label = _security_label(row)
+        if label:
+            return label
+    if collection == "institutional_holdings":
+        return _holding_label(row)
     for key in [
         "label",
         "name",
@@ -88,6 +277,10 @@ def _node_label(collection: str, row: Mapping[str, Any]) -> str:
     ]:
         value = str(row.get(key, "") or "").strip()
         if value:
+            if key == "relationship_type":
+                readable_relationship = _relationship_type_label(value)
+                if readable_relationship:
+                    return readable_relationship
             readable = _readable_id_label(value, row)
             return readable or value
     metadata = row.get("metadata")
@@ -100,13 +293,165 @@ def _node_label(collection: str, row: Mapping[str, Any]) -> str:
     return _readable_id_label(identity, row) or _status_label(identity)
 
 
+def _edge_endpoint(edge: Mapping[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = str(edge.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _chain_node_identity(row: Mapping[str, Any]) -> str:
+    node_id = str(row.get("node_id", "") or "").strip()
+    chain_id = str(row.get("chain_id", "") or "").strip()
+    if not node_id:
+        return graph_node_identity("chain_nodes", row)
+    if chain_id and ":" not in node_id:
+        return f"{chain_id}:{node_id}"
+    return node_id
+
+
+def _position_chain_node_identity(row: Mapping[str, Any], node_id: Any) -> str:
+    raw_node_id = str(node_id or "").strip()
+    chain_id = str(row.get("chain_id", "") or "").strip()
+    if chain_id and raw_node_id and ":" not in raw_node_id:
+        return f"{chain_id}:{raw_node_id}"
+    return raw_node_id
+
+
+def _display_relationship_edge(row: Mapping[str, Any]) -> tuple[str, str, str] | None:
+    source = _edge_endpoint(row, ("source_issuer_id", "from_issuer_id", "subject_id", "issuer_id", "from"))
+    target = _edge_endpoint(row, ("target_issuer_id", "to_issuer_id", "object_id", "related_issuer_id", "to"))
+    edge_type = str(row.get("relationship_type") or "COMPANY_RELATIONSHIP").strip() or "COMPANY_RELATIONSHIP"
+    if not source or not target or source == target:
+        return None
+    return source, target, edge_type
+
+
+def _graph_structure_metrics(graph: Mapping[str, Any], *, display_model: bool = True) -> dict[str, Any]:
+    node_ids: set[str] = set()
+    redirects: dict[str, str] = {}
+    for collection, rows in graph.items():
+        if collection == "edges" or not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, Mapping):
+                identity = _chain_node_identity(row) if display_model and collection == "chain_nodes" else graph_node_identity(collection, row)
+                if display_model and collection == "market_data":
+                    security_id = str(row.get("security_id", "") or "").strip()
+                    if security_id:
+                        redirects[identity] = f"market_data_summary:{security_id}"
+                if display_model and collection == "company_relationships":
+                    display_edge = _display_relationship_edge(row)
+                    if display_edge:
+                        redirects[identity] = f"relationship_summary:{display_edge[0]}:{display_edge[1]}:{display_edge[2]}"
+                node_ids.add(redirects.get(identity, identity))
+                if display_model and collection == "company_positions":
+                    for node_id in row.get("node_ids", []) or []:
+                        scoped_node_id = _position_chain_node_identity(row, node_id)
+                        if scoped_node_id:
+                            node_ids.add(scoped_node_id)
+
+    degree: Counter[str] = Counter()
+    edge_type_counts: Counter[str] = Counter()
+    edge_keys: Counter[tuple[str, str, str]] = Counter()
+    adjacency: dict[str, set[str]] = defaultdict(set)
+    valid_edge_count = 0
+    seen_display_edges: set[tuple[str, str, str]] = set()
+    if display_model:
+        for row in graph.get("company_relationships", []) or []:
+            if not isinstance(row, Mapping):
+                continue
+            display_edge = _display_relationship_edge(row)
+            if not display_edge:
+                continue
+            source, target, edge_type = display_edge
+            node_ids.add(source)
+            node_ids.add(target)
+            ordered = (source, target) if source <= target else (target, source)
+            edge_key = (ordered[0], ordered[1], edge_type)
+            edge_keys[edge_key] += 1
+            if edge_key in seen_display_edges:
+                continue
+            seen_display_edges.add(edge_key)
+            valid_edge_count += 1
+            degree[source] += 1
+            degree[target] += 1
+            edge_type_counts[edge_type] += 1
+            adjacency[source].add(target)
+            adjacency[target].add(source)
+    for edge in graph.get("edges", []) or []:
+        if not isinstance(edge, Mapping):
+            continue
+        raw_edge_type = str(edge.get("type") or edge.get("relationship_type") or edge.get("label") or "RELATED").strip()
+        if display_model and raw_edge_type in {"HAS_COMPANY_RELATIONSHIP", "RELATIONSHIP_SUBJECT", "RELATIONSHIP_OBJECT"}:
+            continue
+        raw_source = _edge_endpoint(edge, ("from", "source", "source_id", "from_id"))
+        raw_target = _edge_endpoint(edge, ("to", "target", "target_id", "to_id"))
+        source = redirects.get(raw_source, raw_source)
+        target = redirects.get(raw_target, raw_target)
+        edge_type = raw_edge_type
+        if not source or not target:
+            continue
+        node_ids.add(source)
+        node_ids.add(target)
+        ordered = (source, target) if source <= target else (target, source)
+        edge_key = (ordered[0], ordered[1], edge_type)
+        if display_model and edge_key in seen_display_edges:
+            continue
+        seen_display_edges.add(edge_key)
+        edge_keys[edge_key] += 1
+        valid_edge_count += 1
+        degree[source] += 1
+        degree[target] += 1
+        edge_type_counts[edge_type] += 1
+        adjacency[source].add(target)
+        adjacency[target].add(source)
+
+    connected_nodes = set(degree)
+    isolated_node_count = len(node_ids - connected_nodes)
+    leaf_count = sum(1 for node_id in node_ids if degree.get(node_id, 0) == 1)
+    max_degree = max(degree.values(), default=0)
+    duplicate_edge_count = sum(count - 1 for count in edge_keys.values() if count > 1)
+
+    visited: set[str] = set()
+    component_sizes: list[int] = []
+    for node_id in node_ids:
+        if node_id in visited:
+            continue
+        size = 0
+        queue: deque[str] = deque([node_id])
+        visited.add(node_id)
+        while queue:
+            current = queue.popleft()
+            size += 1
+            for neighbor in adjacency.get(current, set()):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        component_sizes.append(size)
+
+    node_count = len(node_ids)
+    largest_component_size = max(component_sizes, default=0)
+    return {
+        "node_count": node_count,
+        "valid_edge_count": valid_edge_count,
+        "isolated_node_count": isolated_node_count,
+        "component_count": len(component_sizes),
+        "largest_component_ratio": round(largest_component_size / node_count, 4) if node_count else 0.0,
+        "leaf_node_count": leaf_count,
+        "leaf_ratio": round(leaf_count / node_count, 4) if node_count else 0.0,
+        "max_degree": max_degree,
+        "hub_edge_share": round(max_degree / valid_edge_count, 4) if valid_edge_count else 0.0,
+        "duplicate_edge_count": duplicate_edge_count,
+        "edge_type_counts": edge_type_counts.most_common(12),
+        "display_model": display_model,
+    }
+
+
 def _graph_quality_snapshot(graph: Mapping[str, Any], readiness: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
-    max_duplicate_labels = int(payload.get("max_duplicate_labels", 4) or 4)
-    max_raw_label_leaks = int(payload.get("max_raw_label_leaks", 8) or 8)
-    min_edges = int(payload.get("min_edges", 12) or 12)
-    min_communities = int(payload.get("min_communities", 3) or 3)
-    min_layers = int(payload.get("min_layers", 5) or 5)
-    labels: list[str] = []
+    thresholds = _graph_quality_thresholds(payload)
+    labels_by_identity: dict[str, str] = {}
     node_count = 0
     for collection, rows in graph.items():
         if collection == "edges" or not isinstance(rows, list):
@@ -115,9 +460,11 @@ def _graph_quality_snapshot(graph: Mapping[str, Any], readiness: Mapping[str, An
             if not isinstance(row, Mapping):
                 continue
             node_count += 1
+            identity = graph_node_identity(collection, row)
             label = _node_label(collection, row)
-            if label:
-                labels.append(label)
+            if label and identity not in labels_by_identity:
+                labels_by_identity[identity] = label
+    labels = list(labels_by_identity.values())
     label_counts = Counter(labels)
     duplicate_labels = [
         {"label": label, "count": count}
@@ -133,32 +480,47 @@ def _graph_quality_snapshot(graph: Mapping[str, Any], readiness: Mapping[str, An
     communities = len(readiness.get("visible_communities", []) or [])
     present_layers = len(readiness.get("present_layers", []) or [])
     failures: list[dict[str, Any]] = []
-    if edge_count < min_edges:
-        failures.append({"check": "edge_density", "actual": edge_count, "expected_min": min_edges})
-    if communities < min_communities:
-        failures.append({"check": "community_count", "actual": communities, "expected_min": min_communities})
-    if present_layers < min_layers:
-        failures.append({"check": "layer_count", "actual": present_layers, "expected_min": min_layers})
-    if len(duplicate_labels) > max_duplicate_labels:
-        failures.append({"check": "duplicate_labels", "actual": len(duplicate_labels), "expected_max": max_duplicate_labels})
-    if len(raw_label_leaks) > max_raw_label_leaks:
-        failures.append({"check": "raw_label_leaks", "actual": len(raw_label_leaks), "expected_max": max_raw_label_leaks})
+    if edge_count < thresholds.min_edges:
+        failures.append({"check": "edge_density", "actual": edge_count, "expected_min": thresholds.min_edges})
+    if communities < thresholds.min_communities:
+        failures.append({"check": "community_count", "actual": communities, "expected_min": thresholds.min_communities})
+    if present_layers < thresholds.min_layers:
+        failures.append({"check": "layer_count", "actual": present_layers, "expected_min": thresholds.min_layers})
+    if len(duplicate_labels) > thresholds.max_duplicate_labels:
+        failures.append({"check": "duplicate_labels", "actual": len(duplicate_labels), "expected_max": thresholds.max_duplicate_labels})
+    if len(raw_label_leaks) > thresholds.max_raw_label_leaks:
+        failures.append({"check": "raw_label_leaks", "actual": len(raw_label_leaks), "expected_max": thresholds.max_raw_label_leaks})
+    structure = _graph_structure_metrics(graph, display_model=True)
+    raw_structure = _graph_structure_metrics(graph, display_model=False)
+    if structure["duplicate_edge_count"] > thresholds.max_display_duplicate_edges:
+        failures.append(
+            {
+                "check": "display_duplicate_edges",
+                "actual": structure["duplicate_edge_count"],
+                "expected_max": thresholds.max_display_duplicate_edges,
+            }
+        )
+    if raw_structure["duplicate_edge_count"] > thresholds.max_duplicate_edges:
+        failures.append({"check": "duplicate_edges", "actual": raw_structure["duplicate_edge_count"], "expected_max": thresholds.max_duplicate_edges})
+    if structure["node_count"] >= thresholds.min_structural_nodes and structure["valid_edge_count"] >= thresholds.min_edges:
+        if structure["hub_edge_share"] > thresholds.max_hub_edge_share:
+            failures.append({"check": "hub_dominance", "actual": structure["hub_edge_share"], "expected_max": thresholds.max_hub_edge_share})
+        if structure["leaf_ratio"] > thresholds.max_leaf_ratio:
+            failures.append({"check": "leaf_ratio", "actual": structure["leaf_ratio"], "expected_max": thresholds.max_leaf_ratio})
+        if structure["largest_component_ratio"] < thresholds.min_largest_component_ratio:
+            failures.append({"check": "graph_fragmentation", "actual": structure["largest_component_ratio"], "expected_min": thresholds.min_largest_component_ratio})
     return {
         "status": "passed" if not failures else "needs_attention",
         "node_count": node_count,
         "edge_count": edge_count,
+        "structure": structure,
+        "raw_structure": raw_structure,
         "community_count": communities,
         "present_layer_count": present_layers,
         "duplicate_labels": duplicate_labels,
         "raw_label_leaks": raw_label_leaks,
         "failures": failures,
-        "thresholds": {
-            "min_edges": min_edges,
-            "min_communities": min_communities,
-            "min_layers": min_layers,
-            "max_duplicate_labels": max_duplicate_labels,
-            "max_raw_label_leaks": max_raw_label_leaks,
-        },
+        "thresholds": thresholds.as_dict(),
     }
 
 
@@ -177,6 +539,116 @@ def _layer_gap_summary(items: list[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _enhancement_actions(target: knowledge_graph_bulk.BulkGraphTarget, readiness: Mapping[str, Any], payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    missing_layers = {str(item) for item in readiness.get("missing_layers", []) or []}
+    thin_layers = {str(item) for item in readiness.get("thin_layers", []) or []}
+    gap_layers = missing_layers | thin_layers
+    symbol_payload = _symbols_payload(target.symbol, payload, execute=False)
+    target_payload = {"issuer_id": target.issuer_id, "security_id": target.security_id, "symbol": target.symbol}
+    action_specs = [
+        (
+            "company_event",
+            {
+                "action": "build_company_events",
+                "label": "从本地行情、披露和已绑定研报构建公司事件",
+                "endpoint": "/api/company-database/events/build",
+                "execute_required": True,
+                "payload": symbol_payload,
+            },
+        ),
+        (
+            "company_relationship",
+            {
+                "action": "build_company_relationships",
+                "label": "从上市证券、研报覆盖、披露和股权表构建关系候选",
+                "endpoint": "/api/company-database/relationships/build",
+                "execute_required": True,
+                "payload": symbol_payload,
+            },
+        ),
+        (
+            "shareholder_holding",
+            {
+                "action": "import_13f_holdings",
+                "label": "导入或映射公开 13F/持仓数据，补齐持有人网络",
+                "endpoint": "/api/13f/filings/parse",
+                "fallback_endpoint": "/api/13f/holdings",
+                "execute_required": True,
+                "payload": {**target_payload, "import_holdings": False},
+            },
+        ),
+        (
+            "document",
+            {
+                "action": "ingest_source_documents",
+                "label": "登记本地或公开来源文档，补齐图谱文档层",
+                "endpoint": "/api/ingestion/documents",
+                "execute_required": True,
+                "payload": {**target_payload, "automation_allowed": False},
+            },
+        ),
+        (
+            "evidence",
+            {
+                "action": "extract_and_link_evidence",
+                "label": "从已登记文档抽取证据并回链事件、关系和观点",
+                "endpoint": "/api/evidence/extract",
+                "secondary_endpoint": "/api/graph/knowledge-network/evidence-links/backfill",
+                "execute_required": True,
+                "payload": {**target_payload, "execute": False},
+            },
+        ),
+        (
+            "research_report",
+            {
+                "action": "structure_research_reports",
+                "label": "把已入库研报结构化为观点层对象，保持观点边界",
+                "endpoint": "/api/research-reports/structure",
+                "execute_required": True,
+                "payload": {**symbol_payload, "dry_run": True},
+            },
+        ),
+        (
+            "viewpoint",
+            {
+                "action": "structure_or_register_viewpoints",
+                "label": "生成或登记研报观点，补齐观点节点和观点边",
+                "endpoint": "/api/research-reports/structure",
+                "fallback_endpoint": "/api/research-report-viewpoints",
+                "execute_required": True,
+                "payload": {**symbol_payload, "dry_run": True},
+            },
+        ),
+    ]
+    actions: list[dict[str, Any]] = []
+    for layer, spec in action_specs:
+        if layer not in gap_layers:
+            continue
+        action = {
+            "layer": layer,
+            "method": "POST",
+            "default_execute": False,
+            "usage_boundary": "local_public_or_provided_data_only_no_broker_no_trade_execution",
+            **spec,
+        }
+        actions.append(action)
+    if {"company_event", "company_relationship"} & gap_layers:
+        actions.append(
+            {
+                "layer": "candidate_review",
+                "action": "review_relationship_and_event_candidates",
+                "label": "审核候选事件和关系后再提升为可信图谱事实",
+                "endpoint": "/api/company-database/events/review and /api/company-database/relationships/review",
+                "method": "POST",
+                "execute_required": False,
+                "default_execute": False,
+                "payload": {"issuer_id": target.issuer_id, "security_id": target.security_id},
+                "usage_boundary": "manual_review_required_before_fact_promotion",
+            }
+        )
+    return actions
+
+
 def graph_quality_center(service: Any, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
     payload = payload or {}
     execute = _truthy(payload.get("execute", False))
@@ -184,6 +656,7 @@ def graph_quality_center(service: Any, payload: Mapping[str, Any] | None = None,
     include_events = _truthy(payload.get("include_events", True))
     include_relationships = _truthy(payload.get("include_relationships", True))
     batch_size = max(1, min(100, int(payload.get("batch_size", payload.get("limit", 20)) or 20)))
+    thresholds = _graph_quality_thresholds(payload)
     universe = knowledge_graph_bulk.select_full_graph_universe(service.store, payload)
     targets = [knowledge_graph_bulk.BulkGraphTarget(**item) for item in universe["targets"][:batch_size]]
     started_at = utcnow().isoformat()
@@ -193,36 +666,14 @@ def graph_quality_center(service: Any, payload: Mapping[str, Any] | None = None,
         filters = {
             "issuer_id": target.issuer_id,
             "security_id": target.security_id,
-            "min_layers": payload.get("min_layers", 5),
-            "min_edges": payload.get("min_edges", 12),
-            "min_communities": payload.get("min_communities", 3),
+            "min_layers": thresholds.min_layers,
+            "min_edges": thresholds.min_edges,
+            "min_communities": thresholds.min_communities,
         }
         graph = service.query_graph(filters)
         readiness = service.graph_knowledge_network_readiness(filters, actor=actor)
         quality = _graph_quality_snapshot(graph, readiness, payload)
-        actions = [
-            {
-                "action": "build_company_events",
-                "label": "从本地行情、披露和已绑定研报构建公司事件",
-                "endpoint": "/api/company-database/events/build",
-                "execute_required": True,
-                "payload": _symbols_payload(target.symbol, payload, execute=False),
-            },
-            {
-                "action": "build_company_relationships",
-                "label": "从上市证券、研报覆盖、披露和股权表构建关系候选",
-                "endpoint": "/api/company-database/relationships/build",
-                "execute_required": True,
-                "payload": _symbols_payload(target.symbol, payload, execute=False),
-            },
-            {
-                "action": "review_relationship_and_event_candidates",
-                "label": "审核候选事件和关系后再提升为可信图谱事实",
-                "endpoint": "/api/company-database/events/review and /api/company-database/relationships/review",
-                "execute_required": False,
-                "payload": {"issuer_id": target.issuer_id, "security_id": target.security_id},
-            },
-        ]
+        actions = _enhancement_actions(target, readiness, payload)
         item = {
             "issuer_id": target.issuer_id,
             "security_id": target.security_id,

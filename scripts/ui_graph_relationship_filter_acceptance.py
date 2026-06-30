@@ -5,9 +5,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from graph_acceptance_fixture import prepare_graph_acceptance_fixture
-from seed_obsidian_knowledge_graph import post_seed as seed_obsidian_knowledge_graph
-from ui_graph_layout_acceptance import run_graph_layout_acceptance
+try:
+    from scripts.graph_acceptance_fixture import prepare_graph_acceptance_fixture
+    from scripts.seed_obsidian_knowledge_graph import post_seed as seed_obsidian_knowledge_graph
+    from scripts.ui_graph_layout_acceptance import run_graph_layout_acceptance
+except ModuleNotFoundError:
+    from graph_acceptance_fixture import prepare_graph_acceptance_fixture
+    from seed_obsidian_knowledge_graph import post_seed as seed_obsidian_knowledge_graph
+    from ui_graph_layout_acceptance import run_graph_layout_acceptance
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,15 +20,16 @@ DEFAULT_OUTPUT = ROOT / "artifacts" / "ui-graph-relationship-filter-acceptance.j
 
 DEFAULT_CASES = [
     {"symbol": "AAPL", "relationship_type": "listed_security", "min_relationships": 1, "min_nodes": 2, "min_links": 2},
-    {"symbol": "AAPL", "relationship_type": "institution_coverage", "min_relationships": 4, "min_nodes": 5, "min_links": 8},
+    {"symbol": "AAPL", "relationship_type": "institution_coverage", "min_relationships": 4, "min_nodes": 5, "min_links": 8, "requires_acceptance_fixture": True},
     {"symbol": "AAPL", "relationship_type": "industry_peer", "min_relationships": 1, "min_links": 8},
     {"symbol": "AAPL", "relationship_type": "upstream_of", "min_relationships": 1, "min_links": 8},
     {"symbol": "AAPL", "relationship_type": "downstream_of", "min_relationships": 1, "min_links": 8},
+    {"symbol": "AAPL", "relationship_type": "shareholder", "ownership_holder_key": "external_graph_acceptance_alpha_capital", "case_label": "ownership_holder_alpha", "min_nodes": 5, "min_links": 8, "min_relationships": 2, "requires_acceptance_fixture": True},
     {"symbol": "AAPL", "institutional_holder_key": "0000102909", "case_label": "institutional_holder_vanguard", "min_nodes": 8, "min_links": 8, "min_relationships": 0},
     {"symbol": "NVDA", "relationship_type": "listed_security", "min_relationships": 1, "min_nodes": 2, "min_links": 2},
-    {"symbol": "NVDA", "relationship_type": "institution_coverage", "min_relationships": 5, "min_nodes": 5, "min_links": 8},
+    {"symbol": "NVDA", "relationship_type": "institution_coverage", "min_relationships": 5, "min_nodes": 5, "min_links": 8, "requires_acceptance_fixture": True},
     {"symbol": "600519", "relationship_type": "listed_security", "min_relationships": 1, "min_nodes": 2, "min_links": 2},
-    {"symbol": "600519", "relationship_type": "institution_coverage", "min_relationships": 3, "min_nodes": 5, "min_links": 8},
+    {"symbol": "600519", "relationship_type": "institution_coverage", "min_relationships": 3, "min_nodes": 5, "min_links": 8, "requires_acceptance_fixture": True},
 ]
 
 def _case_output_path(output: Path, case: dict[str, Any]) -> Path:
@@ -32,6 +38,14 @@ def _case_output_path(output: Path, case: dict[str, Any]) -> Path:
     symbol = str(case["symbol"]).lower().replace(".", "_")
     label = str(case.get("case_label") or case.get("relationship_type") or case.get("institutional_holder_key") or "all").lower().replace(".", "_")
     return output.with_name(f"{stem}-{symbol}-{label}{suffix}")
+
+
+def _artifact_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(ROOT))
+    except ValueError:
+        return str(resolved)
 
 
 def run_filter_matrix(
@@ -48,8 +62,21 @@ def run_filter_matrix(
     fixture_result = prepare_graph_acceptance_fixture(base_url, timeout=timeout) if prepare_industry_fixture else {"status": "skipped"}
     obsidian_seed_result = seed_obsidian_knowledge_graph(base_url, timeout=timeout) if prepare_industry_fixture else {"status": "skipped"}
     results: list[dict[str, Any]] = []
+    skipped_cases: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     for case in selected_cases:
+        if not prepare_industry_fixture and case.get("requires_acceptance_fixture"):
+            skipped_cases.append(
+                {
+                    "symbol": case["symbol"],
+                    "relationship_type": case.get("relationship_type", ""),
+                    "ownership_holder_key": case.get("ownership_holder_key", ""),
+                    "institutional_holder_key": case.get("institutional_holder_key", ""),
+                    "case_label": case.get("case_label", ""),
+                    "reason": "requires_acceptance_fixture",
+                }
+            )
+            continue
         case_output = _case_output_path(output_path, case)
         report = run_graph_layout_acceptance(
             base_url,
@@ -64,6 +91,7 @@ def run_filter_matrix(
             max_near_edge_nodes=int(case.get("max_near_edge_nodes", 2)),
             min_community_labels=int(case.get("min_community_labels", 1)),
             relationship_type=str(case.get("relationship_type", "")),
+            ownership_holder_key=str(case.get("ownership_holder_key", "")),
             institutional_holder_key=str(case.get("institutional_holder_key", "")),
             min_filtered_relationships=int(case.get("min_relationships", 1)),
             check_persistence=False,
@@ -76,10 +104,11 @@ def run_filter_matrix(
         row = {
             "symbol": case["symbol"],
             "relationship_type": case.get("relationship_type", ""),
+            "ownership_holder_key": case.get("ownership_holder_key", ""),
             "institutional_holder_key": case.get("institutional_holder_key", ""),
             "case_label": case.get("case_label", ""),
             "status": report["status"],
-            "artifact": str(case_output.resolve().relative_to(ROOT)),
+            "artifact": _artifact_path(case_output),
             "measurement": {
                 "nodes": measurement.get("nodes"),
                 "links": measurement.get("links"),
@@ -104,8 +133,10 @@ def run_filter_matrix(
         "industry_fixture": fixture_result,
         "obsidian_seed": obsidian_seed_result,
         "case_count": len(results),
+        "skipped_case_count": len(skipped_cases),
         "failure_count": len(failures),
         "results": results,
+        "skipped_cases": skipped_cases,
         "failures": failures,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)

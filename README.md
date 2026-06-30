@@ -466,6 +466,13 @@ python3 scripts/graph_quality_center.py http://127.0.0.1:8000 \
 
 python3 scripts/graph_quality_center.py http://127.0.0.1:8000 \
   --market A,U \
+  --limit 20 \
+  --max-duplicate-labels 2 \
+  --max-raw-label-leaks 3 \
+  --output artifacts/graph-quality-center/diagnostic-relaxed-labels.json
+
+python3 scripts/graph_quality_center.py http://127.0.0.1:8000 \
+  --market A,U \
   --limit 10 \
   --run-enrichment \
   --output artifacts/graph-quality-center/enrichment-dry-run.json
@@ -481,6 +488,7 @@ python3 scripts/graph_enrichment_runner.py http://127.0.0.1:8000 \
   --limit 100 \
   --batch-size 20 \
   --priority-layers company_event,company_relationship \
+  --quality-mode fast \
   --output artifacts/graph-enrichment-runner/latest.json
 
 python3 scripts/graph_enrichment_runner.py http://127.0.0.1:8000 \
@@ -494,9 +502,9 @@ python3 scripts/graph_enrichment_runner.py http://127.0.0.1:8000 \
 
 `backfill_full_knowledge_graph.py` 默认只生产基础关系图谱层和缺口状态，不逐股票跑完整图查询式证据链回填；需要补历史事件/关系/观点的 evidence links 时，再显式追加 `--include-evidence-links` 单独分批运行。
 
-`graph_quality_center.py` 是 T-568 的统一验收入口：默认只读输出每只样本的图谱缺口、质量门、重复/底层标签泄漏、跨层链接和下一步增强动作；质量门会按前端语义标签清洗口径评估 issuer/security/market_data 等内部 ID，避免已清洗展示的行情节点被误判为 raw label 泄漏；`--run-enrichment` 会调用已有公司事件和关系 builder，默认仍是 dry-run，只有同时传 `--execute` 才写入本地事件/关系候选；`--browser-matrix` 会复用浏览器级图谱验收，确认 UI 不空图、可点击展开和布局质量。
+`graph_quality_center.py` 是 T-568 的统一验收入口：默认只读输出每只样本的图谱缺口、质量门、重复/底层标签泄漏、跨层链接和下一步增强动作；质量门会按前端语义标签清洗口径评估 issuer/security/market_data 等内部 ID，避免已清洗展示的行情节点被误判为 raw label 泄漏。默认展示质量门对重复标签和 raw label 泄漏采用 0 容忍，需要临时放宽时必须显式传 `max_duplicate_labels` / `max_raw_label_leaks`。质量门同时输出 `structure` 与 `raw_structure`：`structure` 使用 UI 展示模型聚合多日行情节点后评估 hub dominance、leaf ratio、fragmentation、边类型分布和有效展示边，`raw_structure` 保留底层原始边诊断；`--run-enrichment` 会调用已有公司事件和关系 builder，默认仍是 dry-run，只有同时传 `--execute` 才写入本地事件/关系候选；`--browser-matrix` 会复用浏览器级图谱验收，确认 UI 不空图、可点击展开和布局质量。
 
-`graph_enrichment_runner.py` 是 T-569 的批量增厚入口：按质量中心缺口优先筛选股票，分批调用现有公司事件和关系 builder，输出候选事件/关系数量、执行状态和可恢复 state。默认 dry-run；`--execute` 只写入本地 `needs_review` 候选事件/关系，仍需审核后才可提升为可信事实边。若某只股票没有任何 planned/created/review-candidate 活动，行状态会是 `no_candidate_sources`，不会写入 `completed_issuer_ids`，方便后续补入公告、研报、股东表或行情后继续 `--resume`。
+`graph_enrichment_runner.py` 是 T-569 的批量增厚入口：按图谱层缺口优先筛选股票，分批调用现有公司事件和关系 builder，并为文档、证据、持仓、研报和观点层输出 `layer_action_plan`。默认 `--quality-mode fast` 使用轻量层计数做规划，批后再用 `graph_quality_center.py` / 浏览器矩阵验收；需要逐股票完整质量中心 before/after 时可显式传 `--quality-mode full`。默认 dry-run；`--execute` 只写入本地 `needs_review` 候选事件/关系，仍需审核后才可提升为可信事实边。`document`、`evidence`、`shareholder_holding`、`research_report` 和 `viewpoint` 不会被 runner 伪造写入；它们会进入 `manual_input_required_layers`，状态为 `waiting_for_source_inputs`，并指向 `/api/ingestion/documents`、`/api/evidence/extract`、`/api/13f/filings/parse`、`/api/research-reports/structure` 等来源入口。报告顶层还会输出 `source_input_queue`，按层汇总待补齐标的、入口 endpoint 和 `required_source_fields`，可直接作为本地来源材料收集队列；它只是来源输入清单，不代表已导入数据，也不允许自动事实提升。runner 只对实际缺口层调用对应 builder；例如 `company_relationship` 已存在时会跳过关系 builder，除非显式传 `--force-build`。若某只股票没有任何 planned/created/review-candidate 活动且没有可执行来源计划，行状态会是 `no_candidate_sources`，不会写入 `completed_issuer_ids`，方便后续补入公告、研报、股东表或行情后继续 `--resume`。
 
 ## 愿景上线闸门
 

@@ -20,11 +20,12 @@ import zlib
 
 from app.api import ApiRouter
 import app.services as services_module
+from app.service_modules import graph_derived_relationships
 from app.connectors import AShareConnector, ConnectorDocument
 from app.document_parser import PaddleOCRParser
 from app.errors import ConflictError, PermissionDenied
 from app.llm_gateway import LLMGateway
-from app.models import AlertNotification, CompanyDatabaseBuildRun, CompanyIntelligenceCycleRun, CompanyPackageImportRun, CompanyPosition, CompanyProfileFieldAssertion, CorporateAction, DecisionPack, DisclosureEvent, Document, Evidence, IngestionJob, IngestionSchedule, InstitutionalHolding, IndustryChain, Issuer, MarketDataPoint, ResearchReportAsset, RightsTag, Security, SystemAlert
+from app.models import AlertNotification, CompanyDatabaseBuildRun, CompanyIntelligenceCycleRun, CompanyPackageImportRun, CompanyPosition, CompanyProfileFieldAssertion, CompanyRelationship, CorporateAction, DecisionPack, DisclosureEvent, Document, Evidence, IngestionJob, IngestionSchedule, InstitutionalHolding, IndustryChain, Issuer, MarketDataPoint, ResearchReportAsset, RightsTag, Security, SystemAlert
 from app.object_store import LocalObjectStore, S3CompatibleObjectStore
 from app.readiness_artifacts import is_external_artifact_uri, is_production_artifact_uri
 from app.search import OpenSearchIndex, SearchRecord
@@ -47,6 +48,7 @@ import scripts.backfill_market_data as backfill_market_data_script
 import scripts.backfill_full_knowledge_graph as backfill_full_knowledge_graph_script
 import scripts.graph_quality_center as graph_quality_center_script
 import scripts.graph_enrichment_runner as graph_enrichment_runner_script
+import scripts.ui_graph_relationship_filter_acceptance as ui_graph_relationship_filter_acceptance_script
 import scripts.daily_data_update_pipeline as daily_data_update_pipeline_script
 import scripts.audit_daily_update_schedule as audit_daily_update_schedule_script
 import scripts.daily_market_insight as daily_market_insight_script
@@ -1344,6 +1346,135 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(enhancement_actions_by_layer["shareholder_network"]["target"]["endpoint"], "/api/company-database/relationships/build")
         self.assertEqual(enhancement_actions_by_layer["approved_shareholder_network"]["target"]["ui_action"], "ownership_import_guidance")
 
+    def test_graph_derived_relationships_plans_display_edges(self) -> None:
+        self.service.store.issuers["issuer_focus"] = Issuer(issuer_id="issuer_focus", legal_name="Focus Co")
+        self.service.store.issuers["issuer_peer"] = Issuer(issuer_id="issuer_peer", legal_name="Peer Co")
+        self.service.store.issuers["issuer_upstream"] = Issuer(issuer_id="issuer_upstream", legal_name="Upstream Co")
+        self.service.store.issuers["issuer_downstream"] = Issuer(issuer_id="issuer_downstream", legal_name="Downstream Co")
+        self.service.store.industry_chains["chain_plan"] = IndustryChain(
+            chain_id="chain_plan",
+            name="Planner chain",
+            nodes=[
+                {"node_id": "materials", "name": "材料"},
+                {"node_id": "components", "name": "组件"},
+                {"node_id": "devices", "name": "设备"},
+            ],
+            edges=[
+                {"source_node_id": "materials", "target_node_id": "components", "relation_type": "upstream_of"},
+                {"source_node_id": "components", "target_node_id": "devices", "relation_type": "downstream_of"},
+            ],
+        )
+        for position in [
+            CompanyPosition(position_id="pos_focus", issuer_id="issuer_focus", chain_id="chain_plan", node_ids=["components"]),
+            CompanyPosition(position_id="pos_peer", issuer_id="issuer_peer", chain_id="chain_plan", node_ids=["components"]),
+            CompanyPosition(position_id="pos_upstream", issuer_id="issuer_upstream", chain_id="chain_plan", node_ids=["materials"]),
+            CompanyPosition(position_id="pos_downstream", issuer_id="issuer_downstream", chain_id="chain_plan", node_ids=["devices"]),
+        ]:
+            self.service.store.company_positions[position.position_id] = position
+
+        plans = graph_derived_relationships.plan_industry_relationship_edges(self.service.store, "issuer_focus")
+
+        self.assertEqual(
+            {(item.edge_type, item.from_id, item.to_id, item.relationship_type) for item in plans},
+            {
+                ("INDUSTRY_PEER", "issuer_focus", "issuer_peer", "industry_peer"),
+                ("INDUSTRY_UPSTREAM_OF", "issuer_upstream", "issuer_focus", "upstream_of"),
+                ("INDUSTRY_DOWNSTREAM_OF", "issuer_focus", "issuer_downstream", "downstream_of"),
+            },
+        )
+        upstream = graph_derived_relationships.plan_industry_relationship_edges(
+            self.service.store,
+            "issuer_focus",
+            relationship_type_filter="upstream_of",
+            chain_id="chain_plan",
+            chain_node_id="materials",
+        )
+        self.assertEqual([item.edge_type for item in upstream], ["INDUSTRY_UPSTREAM_OF"])
+        self.assertEqual(upstream[0].node_ids, ["materials"])
+        for holding in [
+            InstitutionalHolding(holding_id="hold_focus_a", issuer_id="issuer_focus", security_id="sec_focus", source_id="13f", filer_cik="000HOLDER", filer_name="Alpha", report_period="2026Q1"),
+            InstitutionalHolding(holding_id="hold_peer_a", issuer_id="issuer_peer", security_id="sec_peer", source_id="13f", filer_cik="000HOLDER", filer_name="Alpha", report_period="2026Q1"),
+            InstitutionalHolding(holding_id="hold_other_b", issuer_id="issuer_downstream", security_id="sec_downstream", source_id="13f", filer_cik="000OTHER", filer_name="Other", report_period="2026Q1"),
+        ]:
+            self.service.store.institutional_holdings[holding.holding_id] = holding
+
+        holder_plans = graph_derived_relationships.plan_institutional_holder_edges(
+            self.service.store,
+            "issuer_focus",
+            holding_key=lambda holding: holding.filer_cik,
+        )
+        self.assertEqual([item.holding.holding_id for item in holder_plans], ["hold_focus_a"])
+        self.assertEqual([item.holding_id for item in holder_plans[0].related_holdings], ["hold_peer_a"])
+
+        filtered_holder_plans = graph_derived_relationships.plan_institutional_holder_edges(
+            self.service.store,
+            "issuer_focus",
+            holder_key_filter="000HOLDER",
+            holding_key=lambda holding: holding.filer_cik,
+        )
+        self.assertEqual(
+            {item.holding.holding_id for item in filtered_holder_plans},
+            {"hold_focus_a", "hold_peer_a"},
+        )
+        active_shareholder = CompanyRelationship(
+            relationship_id="rel_active_shareholder",
+            issuer_id="issuer_focus",
+            subject_type="shareholder",
+            subject_id="holder_alpha",
+            object_type="company",
+            object_id="issuer_focus",
+            relationship_type="shareholder",
+            relationship_status="active",
+            review_status="approved",
+        )
+        peer_shareholder = CompanyRelationship(
+            relationship_id="rel_peer_shareholder",
+            issuer_id="issuer_peer",
+            subject_type="shareholder",
+            subject_id="holder_alpha",
+            object_type="company",
+            object_id="issuer_peer",
+            relationship_type="shareholder",
+            relationship_status="active",
+            review_status="reviewed",
+        )
+        candidate_shareholder = CompanyRelationship(
+            relationship_id="rel_candidate_shareholder",
+            issuer_id="issuer_downstream",
+            subject_type="shareholder",
+            subject_id="holder_alpha",
+            object_type="company",
+            object_id="issuer_downstream",
+            relationship_type="shareholder_candidate",
+            relationship_status="unknown",
+            review_status="needs_review",
+        )
+        customer_relationship = CompanyRelationship(
+            relationship_id="rel_customer",
+            issuer_id="issuer_upstream",
+            subject_type="customer",
+            subject_id="holder_alpha",
+            object_type="company",
+            object_id="issuer_upstream",
+            relationship_type="customer",
+            relationship_status="active",
+            review_status="approved",
+        )
+        for relationship in [active_shareholder, peer_shareholder, candidate_shareholder, customer_relationship]:
+            self.service.store.company_relationships[relationship.relationship_id] = relationship
+
+        ownership = graph_derived_relationships.plan_ownership_holder_relationships(
+            self.service.store,
+            "issuer_focus",
+            holder_key_filter="holder_alpha",
+            holder_key=lambda relationship: relationship.subject_id,
+            relationship_bucket=lambda relationship_type: "ownership" if "shareholder" in relationship_type else "commercial",
+        )
+        self.assertEqual(
+            {relationship.relationship_id for relationship in ownership},
+            {"rel_active_shareholder", "rel_peer_shareholder"},
+        )
+
     def test_graph_acceptance_fixture_supports_industry_relationship_filters(self) -> None:
         for company in GRAPH_ACCEPTANCE_COMPANIES:
             issuer_id = str(company["issuer_id"])
@@ -1370,6 +1501,8 @@ class SystemServiceTests(unittest.TestCase):
                         "currency": str(company.get("currency", "USD")),
                         "market": str(company.get("market", "U")),
                         "status": "active",
+                        "company_universe_scope": "out_of_scope",
+                        "company_universe_reason": "local_graph_acceptance_fixture_only",
                     },
                     actor="test",
                 )
@@ -1429,6 +1562,52 @@ class SystemServiceTests(unittest.TestCase):
                 {item["relationship_type"] for item in graph.data["edges"] if item["type"] == expected_edge_type},
                 {relationship_type},
             )
+
+    def test_relationship_filter_matrix_skips_fixture_only_cases_when_fixture_disabled(self) -> None:
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        output = Path(temp_dir.name) / "matrix.json"
+        original_runner = ui_graph_relationship_filter_acceptance_script.run_graph_layout_acceptance
+        calls: list[dict[str, object]] = []
+
+        def fake_runner(base_url: str, **kwargs: object) -> dict[str, object]:
+            calls.append({"base_url": base_url, **kwargs})
+            return {
+                "status": "passed",
+                "failure_count": 0,
+                "failures": [],
+                "measurement": {
+                    "nodes": 10,
+                    "links": 10,
+                    "raw_relationships": int(kwargs.get("min_filtered_relationships", 0) or 0),
+                    "raw_relationship_types": [kwargs.get("relationship_type")] if kwargs.get("relationship_type") else [],
+                    "raw_edge_relationships": int(kwargs.get("min_filtered_relationships", 0) or 0),
+                    "raw_edge_relationship_types": [kwargs.get("relationship_type")] if kwargs.get("relationship_type") else [],
+                    "raw_edge_types": [],
+                    "filter_chips": "",
+                    "performance": {"fps": 60.0, "avg_frame_ms": 1.0},
+                },
+            }
+
+        ui_graph_relationship_filter_acceptance_script.run_graph_layout_acceptance = fake_runner
+        self.addCleanup(setattr, ui_graph_relationship_filter_acceptance_script, "run_graph_layout_acceptance", original_runner)
+
+        result = ui_graph_relationship_filter_acceptance_script.run_filter_matrix(
+            "http://127.0.0.1:1",
+            output=output,
+            prepare_industry_fixture=False,
+        )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["case_count"], 7)
+        self.assertEqual(result["skipped_case_count"], 4)
+        self.assertEqual(result["failure_count"], 0)
+        skipped_types = {row["relationship_type"] for row in result["skipped_cases"]}
+        self.assertIn("institution_coverage", skipped_types)
+        self.assertIn("shareholder", skipped_types)
+        self.assertFalse(any(call.get("relationship_type") == "institution_coverage" for call in calls))
+        self.assertFalse(any(call.get("ownership_holder_key") == "external_graph_acceptance_alpha_capital" for call in calls))
+        self.assertTrue(output.exists())
 
     def test_obsidian_knowledge_graph_seed_creates_multi_dimension_network(self) -> None:
         seeded = self.router.dispatch("POST", "/api/graph/seed/obsidian", {}, role="data_engineer", actor="test")
@@ -19478,6 +19657,15 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(result["required_functions"], len(REQUIRED_JS_FUNCTIONS))
         self.assertEqual(result["node_check"], "skipped")
 
+    def test_ui_graph_model_consumes_structured_research_reports(self) -> None:
+        ui = Path("app/static/index.html").read_text(encoding="utf-8")
+
+        self.assertIn("data.structured_research_reports", ui)
+        self.assertIn("item.research_report_id || item.report_id || item.document_id", ui)
+        self.assertIn("COVERED_BY_REPORT", ui)
+        self.assertIn("REPORT_HAS_VIEWPOINT", ui)
+        self.assertIn("raw_structured_reports", Path("scripts/ui_graph_layout_acceptance.py").read_text(encoding="utf-8"))
+
     def test_api_route_table_is_registered_outside_router_resolve(self) -> None:
         from app.api_routes import build_route_table
 
@@ -22250,11 +22438,28 @@ class SystemServiceTests(unittest.TestCase):
             chain_id="chain_scope",
             node_ids=["other_node"],
         )
+        self.service.store.company_positions["pos_full_graph_peer_needs_review_scope"] = CompanyPosition(
+            position_id="pos_full_graph_peer_needs_review_scope",
+            issuer_id="issuer_002",
+            security_id="sec_002",
+            chain_id="chain_scope",
+            node_ids=["focus_node"],
+            role="生产 universe 基础产业定位",
+            positioning_summary="OTHR production-universe graph position generated from security industry metadata.",
+            data_quality="needs_review",
+        )
 
         graph = self.service.query_graph({"issuer_id": "issuer_001", "security_id": "sec_001"})
 
         self.assertEqual({item["position_id"] for item in graph["company_positions"]}, {"pos_focus_scope"})
+        self.assertEqual({item["node_id"] for item in graph["chain_nodes"]}, {"focus_node"})
         self.assertNotIn("pos_other_scope", {edge.get("from") for edge in graph["edges"]} | {edge.get("to") for edge in graph["edges"]})
+        self.assertNotIn("pos_full_graph_peer_needs_review_scope", {item["position_id"] for item in graph["company_positions"]})
+
+        peer_graph = self.service.query_graph({"issuer_id": "issuer_001", "security_id": "sec_001", "relationship_type": "industry_peer"})
+        self.assertIn("pos_full_graph_peer_needs_review_scope", {item["position_id"] for item in peer_graph["company_positions"]})
+        self.assertEqual({item["node_id"] for item in peer_graph["chain_nodes"]}, {"focus_node"})
+        self.assertTrue(any(edge.get("relationship_type") == "industry_peer" for edge in peer_graph["edges"]))
 
     def test_full_knowledge_graph_universe_excludes_out_of_scope_and_reports_hk_gap(self) -> None:
         self.service.register_issuer({"issuer_id": "issuer_old", "legal_name": "Old Co", "market": ["A"]}, actor="test")
@@ -22275,6 +22480,28 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(result["universe_count"], 1)
         self.assertTrue(result["universe"]["hk_universe_missing"])
         self.assertEqual(result["items"][0]["issuer_id"], "issuer_001")
+
+    def test_graph_quality_center_excludes_local_acceptance_fixture_securities(self) -> None:
+        self.service.register_issuer({"issuer_id": "issuer_graph_aapl_downstream", "legal_name": "AAPL Graph Downstream Co", "market": ["U"]}, actor="test")
+        self.service.register_security(
+            {
+                "security_id": "security_graph_aapl_downstream",
+                "issuer_id": "issuer_graph_aapl_downstream",
+                "ticker": "AAPL-D",
+                "market": "U",
+                "status": "active",
+                "company_universe_scope": "out_of_scope",
+                "company_universe_reason": "local_graph_acceptance_fixture_only",
+            },
+            actor="test",
+        )
+
+        result = self.service.graph_quality_center({"market": "A,U", "limit": 10}, actor="test")
+
+        symbols = {item["symbol"] for item in result["items"]}
+        self.assertIn("DEMO", symbols)
+        self.assertNotIn("AAPL-D", symbols)
+        self.assertEqual(result["universe"]["skipped_by_market"].get("U"), 1)
 
     def test_full_knowledge_graph_script_writes_artifacts(self) -> None:
         temp_dir = TemporaryDirectory()
@@ -22341,7 +22568,104 @@ class SystemServiceTests(unittest.TestCase):
         action_names = {item["action"] for item in row["enhancement_actions"]}
         self.assertIn("build_company_events", action_names)
         self.assertIn("build_company_relationships", action_names)
+        self.assertIn("ingest_source_documents", action_names)
+        self.assertIn("extract_and_link_evidence", action_names)
+        self.assertIn("structure_research_reports", action_names)
         self.assertFalse(result.data["live_execution_allowed"])
+
+    def test_graph_quality_center_actions_follow_remaining_missing_layers(self) -> None:
+        self.router.dispatch("POST", "/api/company-events", {"event_id": "ce_graph_action", "issuer_id": "issuer_001", "security_id": "sec_001", "event_type": "market", "title": "Graph action event"}, role="analyst")
+        relationship = self.router.dispatch(
+            "POST",
+            "/api/company-relationships",
+            {
+                "relationship_id": "rel_graph_action_listing",
+                "issuer_id": "issuer_001",
+                "security_id": "sec_001",
+                "subject_type": "company",
+                "subject_id": "issuer_001",
+                "object_type": "security",
+                "object_id": "sec_001",
+                "relationship_type": "listed_security",
+                "relationship_status": "active",
+                "review_status": "auto_generated",
+            },
+            role="analyst",
+        )
+        self.assertTrue(relationship.success, relationship.error)
+        result = self.router.dispatch(
+            "POST",
+            "/api/graph/quality-center",
+            {"market": "A", "limit": 1, "min_edges": 1, "min_communities": 1, "min_layers": 1},
+            actor="analyst",
+            role="analyst",
+        )
+
+        self.assertTrue(result.success, result.error)
+        row = result.data["items"][0]
+        action_names = {item["action"] for item in row["enhancement_actions"]}
+        self.assertNotIn("build_company_events", action_names)
+        self.assertNotIn("build_company_relationships", action_names)
+        self.assertIn("import_13f_holdings", action_names)
+        self.assertIn("ingest_source_documents", action_names)
+        self.assertIn("extract_and_link_evidence", action_names)
+        self.assertIn("structure_research_reports", action_names)
+        self.assertIn("structure_or_register_viewpoints", action_names)
+        self.assertTrue(
+            all(item.get("usage_boundary") == "local_public_or_provided_data_only_no_broker_no_trade_execution" for item in row["enhancement_actions"])
+        )
+
+    def test_graph_quality_center_get_route_uses_query_thresholds(self) -> None:
+        result = self.router.dispatch(
+            "GET",
+            "/api/graph/quality-center",
+            {"market": "A", "limit": "1", "min_edges": "1", "min_communities": "1", "min_layers": "1", "max_duplicate_labels": "2", "max_raw_label_leaks": "3"},
+            actor="analyst",
+            role="analyst",
+        )
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.data["schema_id"], "graph-quality-center-v1")
+        quality_gate = result.data["items"][0]["quality_gate"]
+        self.assertEqual(quality_gate["thresholds"]["max_duplicate_labels"], 2)
+        self.assertEqual(quality_gate["thresholds"]["max_raw_label_leaks"], 3)
+        self.assertFalse(result.data["automation_allowed"])
+        self.assertFalse(result.data["live_execution_allowed"])
+
+    def test_graph_quality_center_thresholds_preserve_explicit_zero_values(self) -> None:
+        result = self.router.dispatch(
+            "GET",
+            "/api/graph/quality-center",
+            {
+                "market": "A",
+                "limit": "1",
+                "min_edges": "0",
+                "min_communities": "0",
+                "min_layers": "0",
+                "min_structural_nodes": "0",
+                "max_duplicate_edges": "0",
+                "max_duplicate_labels": "0",
+                "max_raw_label_leaks": "0",
+                "max_hub_edge_share": "0",
+                "max_leaf_ratio": "0",
+                "min_largest_component_ratio": "0",
+            },
+            actor="analyst",
+            role="analyst",
+        )
+
+        self.assertTrue(result.success, result.error)
+        thresholds = result.data["items"][0]["quality_gate"]["thresholds"]
+        self.assertEqual(thresholds["min_edges"], 0)
+        self.assertEqual(thresholds["min_communities"], 0)
+        self.assertEqual(thresholds["min_layers"], 0)
+        self.assertEqual(thresholds["min_structural_nodes"], 0)
+        self.assertEqual(thresholds["max_duplicate_edges"], 0)
+        self.assertEqual(thresholds["max_duplicate_labels"], 0)
+        self.assertEqual(thresholds["max_raw_label_leaks"], 0)
+        self.assertEqual(thresholds["max_hub_edge_share"], 0.0)
+        self.assertEqual(thresholds["max_leaf_ratio"], 0.0)
+        self.assertEqual(thresholds["min_largest_component_ratio"], 0.0)
 
     def test_graph_quality_center_no_targets_is_not_passed(self) -> None:
         result = self.service.graph_quality_center({"market": "HK", "limit": 1}, actor="test")
@@ -22376,6 +22700,404 @@ class SystemServiceTests(unittest.TestCase):
 
         leaks = result["items"][0]["quality_gate"]["raw_label_leaks"]
         self.assertNotIn("md_public_eod_market_data_sec_001_2026-06-29_eod", leaks)
+
+    def test_graph_quality_center_cleans_generic_research_ids(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        graph = {
+            "structured_research_reports": [{"research_report_id": "srr_eb9bae6c61ec8eb6"}],
+            "report_viewpoints": [{"viewpoint_id": "vp_rr_eb9bae6c61ec8eb6_main"}],
+            "edges": [{"from": "srr_eb9bae6c61ec8eb6", "to": "vp_rr_eb9bae6c61ec8eb6_main", "type": "REPORT_HAS_VIEWPOINT"}],
+        }
+        readiness = {"visible_communities": ["research"], "present_layers": ["research_report", "viewpoint"]}
+
+        snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1, "max_raw_label_leaks": 0},
+        )
+
+        self.assertEqual(snapshot["raw_label_leaks"], [])
+        self.assertEqual(snapshot["status"], "passed")
+
+    def test_graph_quality_center_structure_links_structured_report_viewpoints(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        graph = {
+            "issuers": [{"issuer_id": "issuer_001", "ticker": "DEMO"}],
+            "structured_research_reports": [
+                {"research_report_id": "srr_demo_001", "issuer_id": "issuer_001", "title": "Demo report"}
+            ],
+            "report_viewpoints": [
+                {"viewpoint_id": "vp_demo_001", "research_report_id": "srr_demo_001", "issuer_id": "issuer_001", "topic": "Growth"}
+            ],
+            "edges": [
+                {"from": "issuer_001", "to": "srr_demo_001", "type": "COVERED_BY_REPORT"},
+                {"from": "srr_demo_001", "to": "vp_demo_001", "type": "REPORT_HAS_VIEWPOINT"},
+                {"from": "vp_demo_001", "to": "issuer_001", "type": "VIEWPOINT_ON_COMPANY"},
+            ],
+        }
+        readiness = {
+            "visible_communities": ["company", "research", "evidence"],
+            "present_layers": ["company_profile", "industry_position", "company_relationship", "research_report", "viewpoint"],
+        }
+
+        snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1, "max_hub_edge_share": 1.0, "max_leaf_ratio": 1.0},
+        )
+
+        self.assertEqual(snapshot["structure"]["node_count"], 3)
+        self.assertEqual(snapshot["structure"]["valid_edge_count"], 3)
+        self.assertIn(("REPORT_HAS_VIEWPOINT", 1), [tuple(item) for item in snapshot["structure"]["edge_type_counts"]])
+        self.assertEqual(snapshot["status"], "passed")
+
+    def test_graph_quality_center_uses_relationship_display_labels(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        graph = {
+            "issuers": [{"issuer_id": "issuer_001", "ticker": "DEMO"}],
+            "securities": [{"security_id": "sec_001", "ticker": "DEMO", "issuer_id": "issuer_001"}],
+            "company_relationships": [
+                {
+                    "relationship_id": "rel_listing_demo",
+                    "issuer_id": "issuer_001",
+                    "subject_id": "issuer_001",
+                    "object_id": "sec_001",
+                    "relationship_type": "listed_security",
+                },
+                {
+                    "relationship_id": "rel_customer_candidate_demo",
+                    "issuer_id": "issuer_001",
+                    "subject_id": "issuer_001",
+                    "object_id": "external_customer",
+                    "relationship_type": "customer_candidate",
+                },
+            ],
+            "edges": [
+                {"from": "issuer_001", "to": "sec_001", "type": "HAS_COMPANY_RELATIONSHIP", "relationship_type": "listed_security"},
+                {"from": "issuer_001", "to": "external_customer", "type": "HAS_COMPANY_RELATIONSHIP", "relationship_type": "customer_candidate"},
+            ],
+        }
+        readiness = {
+            "visible_communities": ["company", "relationship", "evidence"],
+            "present_layers": ["company_profile", "industry_position", "company_relationship", "document", "evidence"],
+        }
+
+        snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1, "max_raw_label_leaks": 0},
+        )
+
+        labels = {
+            graph_quality_center_module._node_label("company_relationships", row)
+            for row in graph["company_relationships"]
+        }
+        self.assertEqual(labels, {"上市证券", "客户候选"})
+        self.assertEqual(snapshot["raw_label_leaks"], [])
+        self.assertEqual(snapshot["status"], "passed")
+
+    def test_graph_quality_center_structure_uses_direct_relationship_display_edges(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        graph = {
+            "issuers": [
+                {"issuer_id": "issuer_001", "ticker": "DEMO"},
+                {"issuer_id": "issuer_customer", "ticker": "CUST"},
+            ],
+            "company_relationships": [
+                {
+                    "relationship_id": "rel_customer_candidate_demo",
+                    "issuer_id": "issuer_001",
+                    "subject_id": "issuer_001",
+                    "object_id": "issuer_customer",
+                    "relationship_type": "customer_candidate",
+                }
+            ],
+            "edges": [
+                {"from": "issuer_001", "to": "rel_customer_candidate_demo", "type": "HAS_COMPANY_RELATIONSHIP", "relationship_type": "customer_candidate"},
+                {"from": "rel_customer_candidate_demo", "to": "issuer_001", "type": "RELATIONSHIP_SUBJECT", "relationship_type": "customer_candidate"},
+                {"from": "rel_customer_candidate_demo", "to": "issuer_customer", "type": "RELATIONSHIP_OBJECT", "relationship_type": "customer_candidate"},
+            ],
+        }
+        readiness = {
+            "visible_communities": ["company", "relationship", "evidence"],
+            "present_layers": ["company_profile", "industry_position", "company_relationship", "document", "evidence"],
+        }
+
+        snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1},
+        )
+
+        self.assertEqual(snapshot["structure"]["valid_edge_count"], 1)
+        self.assertEqual(snapshot["structure"]["edge_type_counts"][0], ("customer_candidate", 1))
+        self.assertEqual(snapshot["raw_structure"]["valid_edge_count"], 3)
+
+    def test_graph_quality_center_default_gate_rejects_display_duplicate_edges(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        graph = {
+            "issuers": [
+                {"issuer_id": "issuer_001", "ticker": "DEMO"},
+                {"issuer_id": "issuer_customer", "ticker": "CUST"},
+            ],
+            "company_relationships": [
+                {
+                    "relationship_id": "rel_customer_1",
+                    "issuer_id": "issuer_001",
+                    "subject_id": "issuer_001",
+                    "object_id": "issuer_customer",
+                    "relationship_type": "customer_candidate",
+                },
+                {
+                    "relationship_id": "rel_customer_2",
+                    "issuer_id": "issuer_001",
+                    "subject_id": "issuer_001",
+                    "object_id": "issuer_customer",
+                    "relationship_type": "customer_candidate",
+                },
+            ],
+            "edges": [],
+        }
+        readiness = {
+            "visible_communities": ["company", "relationship", "evidence"],
+            "present_layers": ["company_profile", "industry_position", "company_relationship", "document", "evidence"],
+        }
+
+        strict_snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 0, "min_communities": 1, "min_layers": 1},
+        )
+        relaxed_snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 0, "min_communities": 1, "min_layers": 1, "max_display_duplicate_edges": 1},
+        )
+
+        self.assertEqual(strict_snapshot["thresholds"]["max_display_duplicate_edges"], 0)
+        self.assertEqual(strict_snapshot["structure"]["duplicate_edge_count"], 1)
+        self.assertEqual(strict_snapshot["status"], "needs_attention")
+        self.assertIn("display_duplicate_edges", {failure["check"] for failure in strict_snapshot["failures"]})
+        self.assertEqual(relaxed_snapshot["status"], "passed")
+
+    def test_graph_quality_center_disambiguates_same_holder_labels(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        graph = {
+            "securities": [
+                {"security_id": "security_aapl_us", "ticker": "AAPL", "market": "U"},
+                {"security_id": "security_nvda_us", "ticker": "NVDA", "market": "U"},
+            ],
+            "institutional_holdings": [
+                {
+                    "holding_id": "hold_vanguard_aapl",
+                    "issuer_id": "issuer_aapl",
+                    "security_id": "security_aapl_us",
+                    "filer_name": "Vanguard Group Inc.",
+                    "filer_cik": "0000102909",
+                    "report_period": "2026-03-31",
+                },
+                {
+                    "holding_id": "hold_vanguard_nvda",
+                    "issuer_id": "issuer_nvda",
+                    "security_id": "security_nvda_us",
+                    "filer_name": "Vanguard Group Inc.",
+                    "filer_cik": "0000102909",
+                    "report_period": "2026-03-31",
+                },
+            ],
+            "edges": [
+                {"from": "security_aapl_us", "to": "hold_vanguard_aapl", "type": "HAS_13F_HOLDING"},
+                {"from": "security_nvda_us", "to": "hold_vanguard_nvda", "type": "HAS_13F_HOLDING"},
+            ],
+        }
+        readiness = {
+            "visible_communities": ["company", "portfolio", "relationship"],
+            "present_layers": ["company_profile", "industry_position", "company_relationship", "shareholder_holding", "document"],
+        }
+
+        snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1},
+        )
+
+        labels = [
+            graph_quality_center_module._node_label("institutional_holdings", row)
+            for row in graph["institutional_holdings"]
+        ]
+        self.assertEqual(len(set(labels)), 2)
+        self.assertTrue(all(label.startswith("13F 持仓 · Vanguard Group Inc.") for label in labels))
+        self.assertEqual(snapshot["duplicate_labels"], [])
+
+    def test_graph_quality_center_disambiguates_issuer_and_security_labels(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        graph = {
+            "issuers": [{"issuer_id": "issuer_aapl", "legal_name": "Apple Inc.", "aliases": ["AAPL"]}],
+            "securities": [{"security_id": "security_aapl_us", "issuer_id": "issuer_aapl", "ticker": "AAPL", "market": "U"}],
+            "company_positions": [{"position_id": "pos_aapl", "issuer_id": "issuer_aapl", "security_id": "security_aapl_us"}],
+            "report_viewpoints": [{"viewpoint_id": "vp_aapl", "issuer_id": "issuer_aapl", "security_id": "security_aapl_us"}],
+            "edges": [{"from": "issuer_aapl", "to": "security_aapl_us", "type": "HAS_SECURITY"}],
+        }
+        readiness = {
+            "visible_communities": ["company"],
+            "present_layers": ["company_profile", "industry_position", "company_relationship"],
+        }
+
+        snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1},
+        )
+
+        labels = [
+            graph_quality_center_module._node_label("issuers", graph["issuers"][0]),
+            graph_quality_center_module._node_label("securities", graph["securities"][0]),
+        ]
+        self.assertEqual(labels, ["AAPL · 公司", "AAPL · U"])
+        self.assertEqual(snapshot["duplicate_labels"], [])
+
+    def test_graph_quality_center_default_gate_rejects_any_duplicate_or_raw_label(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        readiness = {
+            "visible_communities": ["company", "relationship", "evidence"],
+            "present_layers": ["company_profile", "industry_position", "company_relationship", "document", "evidence"],
+        }
+        duplicate_graph = {
+            "issuers": [
+                {"issuer_id": "issuer_dup_a", "ticker": "DUP"},
+                {"issuer_id": "issuer_dup_b", "ticker": "DUP"},
+            ],
+            "edges": [{"from": "issuer_dup_a", "to": "issuer_dup_b", "type": "RELATED"}],
+        }
+        duplicate_snapshot = graph_quality_center_module._graph_quality_snapshot(
+            duplicate_graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1},
+        )
+
+        self.assertEqual(duplicate_snapshot["thresholds"]["max_duplicate_labels"], 0)
+        self.assertEqual(duplicate_snapshot["status"], "needs_attention")
+        self.assertIn("duplicate_labels", {failure["check"] for failure in duplicate_snapshot["failures"]})
+
+        raw_label_graph = {
+            "documents": [{"document_id": "doc_raw_without_semantic_name", "label": "relationship_raw_without_semantic_name"}],
+            "edges": [{"from": "doc_raw_without_semantic_name", "to": "issuer_demo", "type": "DOCUMENT_FOR"}],
+        }
+        raw_label_snapshot = graph_quality_center_module._graph_quality_snapshot(
+            raw_label_graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1},
+        )
+
+        self.assertEqual(raw_label_snapshot["thresholds"]["max_raw_label_leaks"], 0)
+        self.assertEqual(raw_label_snapshot["status"], "needs_attention")
+        self.assertIn("raw_label_leaks", {failure["check"] for failure in raw_label_snapshot["failures"]})
+
+    def test_graph_quality_center_flags_star_shaped_graphs(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        leaves = [{"entity_id": f"leaf_{index}", "label": f"节点 {index}"} for index in range(10)]
+        graph = {
+            "issuers": [{"issuer_id": "issuer_star", "ticker": "STAR"}],
+            "company_relationships": leaves,
+            "edges": [{"from": "issuer_star", "to": f"leaf_{index}", "type": "RELATED"} for index in range(10)],
+        }
+        readiness = {
+            "visible_communities": ["company", "relationship", "evidence"],
+            "present_layers": ["company_profile", "company_relationship", "document", "evidence", "company_event"],
+        }
+
+        snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1, "max_hub_edge_share": 0.7, "max_leaf_ratio": 0.8},
+        )
+
+        failure_checks = {failure["check"] for failure in snapshot["failures"]}
+        self.assertEqual(snapshot["status"], "needs_attention")
+        self.assertIn("hub_dominance", failure_checks)
+        self.assertIn("leaf_ratio", failure_checks)
+        self.assertGreater(snapshot["structure"]["hub_edge_share"], 0.7)
+
+    def test_graph_quality_center_structure_uses_display_market_data_model(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        market_rows = [
+            {
+                "data_id": f"md_public_eod_market_data_sec_001_2026-06-{day:02d}_eod",
+                "security_id": "sec_001",
+                "as_of_date": f"2026-06-{day:02d}",
+            }
+            for day in range(1, 11)
+        ]
+        graph = {
+            "issuers": [{"issuer_id": "issuer_001", "ticker": "DEMO"}],
+            "securities": [{"security_id": "sec_001", "ticker": "DEMO", "issuer_id": "issuer_001"}],
+            "market_data": market_rows,
+            "edges": [{"from": "issuer_001", "to": "sec_001", "type": "ISSUES"}]
+            + [{"from": "sec_001", "to": row["data_id"], "type": "HAS_MARKET_DATA"} for row in market_rows],
+        }
+        readiness = {
+            "visible_communities": ["company", "market", "evidence"],
+            "present_layers": ["company_profile", "industry_position", "company_relationship", "document", "evidence"],
+        }
+
+        snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1, "max_hub_edge_share": 0.72, "max_leaf_ratio": 0.86},
+        )
+
+        failure_checks = {failure["check"] for failure in snapshot["failures"]}
+        self.assertNotIn("hub_dominance", failure_checks)
+        self.assertNotIn("leaf_ratio", failure_checks)
+        self.assertEqual(snapshot["structure"]["valid_edge_count"], 2)
+        self.assertEqual(snapshot["structure"]["duplicate_edge_count"], 0)
+        self.assertEqual(snapshot["raw_structure"]["valid_edge_count"], 11)
+
+    def test_graph_quality_center_structure_uses_canonical_chain_node_ids(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        graph = {
+            "issuers": [{"issuer_id": "issuer_001", "ticker": "DEMO"}],
+            "industry_chains": [{"chain_id": "chain_scope", "name": "Scope Chain"}],
+            "chain_nodes": [{"chain_id": "chain_scope", "node_id": "focus_node", "name": "Focus"}],
+            "company_positions": [
+                {
+                    "position_id": "pos_focus_scope",
+                    "issuer_id": "issuer_001",
+                    "chain_id": "chain_scope",
+                    "node_ids": ["focus_node"],
+                }
+            ],
+            "edges": [
+                {"from": "chain_scope", "to": "chain_scope:focus_node", "type": "HAS_CHAIN_NODE"},
+                {"from": "pos_focus_scope", "to": "chain_scope:focus_node", "type": "POSITION_IN_CHAIN_NODE"},
+            ],
+        }
+        readiness = {
+            "visible_communities": ["company", "industry", "evidence"],
+            "present_layers": ["company_profile", "industry_position", "company_relationship", "document", "evidence"],
+        }
+
+        snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {"min_edges": 1, "min_communities": 1, "min_layers": 1, "max_hub_edge_share": 1.0, "max_leaf_ratio": 1.0},
+        )
+
+        self.assertEqual(snapshot["structure"]["valid_edge_count"], 2)
+        self.assertEqual(snapshot["structure"]["node_count"], 4)
+        self.assertEqual(snapshot["structure"]["component_count"], 2)
+        self.assertEqual(snapshot["raw_structure"]["node_count"], 4)
 
     def test_graph_quality_center_enrichment_dry_run_does_not_write(self) -> None:
         self.service.store.evidence["ev_graph_quality"] = Evidence(
@@ -22416,10 +23138,12 @@ class SystemServiceTests(unittest.TestCase):
         self.assertFalse(self.service.store.company_relationships)
 
     def test_graph_quality_center_script_writes_artifact(self) -> None:
+        captured_payloads: list[dict[str, object]] = []
+
         class Handler(BaseHTTPRequestHandler):
             def do_POST(handler_self):  # noqa: N802
                 length = int(handler_self.headers.get("Content-Length", "0"))
-                json.loads(handler_self.rfile.read(length).decode("utf-8"))
+                captured_payloads.append(json.loads(handler_self.rfile.read(length).decode("utf-8")))
                 payload = {
                     "success": True,
                     "trace_id": "trace_graph_quality",
@@ -22456,11 +23180,36 @@ class SystemServiceTests(unittest.TestCase):
             markets="A",
             limit=1,
             timeout=5,
+            max_duplicate_labels=2,
+            max_raw_label_leaks=3,
         )
 
         self.assertEqual(result["schema_id"], "graph-quality-center-v1")
         self.assertTrue(output.exists())
         self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["processed_count"], 1)
+        self.assertEqual(captured_payloads[0]["max_duplicate_labels"], 2)
+        self.assertEqual(captured_payloads[0]["max_raw_label_leaks"], 3)
+
+    def test_graph_quality_center_api_contract_documents_strict_display_gate(self) -> None:
+        api_contracts = Path("docs/api-contracts.md").read_text(encoding="utf-8")
+
+        for fragment in [
+            "GET|POST /api/graph/quality-center",
+            "graph-quality-center-v1",
+            "max_duplicate_labels",
+            "max_raw_label_leaks",
+            "max_display_duplicate_edges",
+            "默认 `0`",
+            "max_duplicate_edges",
+            "默认 `4`",
+            "quality_gate",
+            "structure",
+            "raw_structure",
+            "automation_allowed=false",
+            "live_execution_allowed=false",
+            "usage_boundary",
+        ]:
+            self.assertIn(fragment, api_contracts)
 
     def _add_graph_enrichment_fixture(self) -> None:
         self.service.store.evidence["ev_graph_enrich"] = Evidence(
@@ -22585,6 +23334,90 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(row["status"], "no_candidate_sources")
         self.assertEqual(row["candidate_activity"]["events_planned"], 0)
         self.assertIn("补充公告", row["next_action"])
+
+    def test_graph_enrichment_runner_skips_relationship_builder_when_layer_present(self) -> None:
+        self.service.store.company_relationships["rel_listing_demo"] = CompanyRelationship(
+            relationship_id="rel_listing_demo",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            subject_type="company",
+            subject_id="issuer_001",
+            object_type="security",
+            object_id="sec_001",
+            relationship_type="listed_security",
+            confidence=0.95,
+            relationship_status="active",
+            review_status="auto_generated",
+        )
+
+        result = self.service.graph_enrichment_runner(
+            {
+                "market": "A",
+                "limit": 1,
+                "batch_size": 1,
+                "priority_layers": "company_event,company_relationship",
+                "include_events": False,
+                "include_relationships": True,
+            },
+            actor="test",
+        )
+
+        row = result["items"][0]
+        self.assertEqual(row["relationship_result"]["status"], "skipped_no_company_relationship_gap")
+        self.assertEqual(row["candidate_activity"]["relationships_planned"], 0)
+        self.assertEqual(row["status"], "no_candidate_sources")
+
+    def test_graph_enrichment_runner_plans_manual_input_layers(self) -> None:
+        result = self.service.graph_enrichment_runner(
+            {
+                "market": "A",
+                "limit": 1,
+                "batch_size": 1,
+                "priority_layers": "document,evidence,shareholder_holding,research_report,viewpoint",
+                "include_events": False,
+                "include_relationships": False,
+            },
+            actor="test",
+        )
+
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["processed_count"], 1)
+        self.assertEqual(result["manual_input_required_count"], 1)
+        self.assertEqual(
+            set(result["manual_input_required_layers"]),
+            {"document", "evidence", "research_report", "shareholder_holding", "viewpoint"},
+        )
+        self.assertEqual(result["source_input_queue"]["schema_id"], "graph-source-input-queue-v1")
+        self.assertEqual(result["source_input_queue"]["status"], "needs_source_inputs")
+        self.assertEqual(result["source_input_queue"]["layer_count"], 5)
+        self.assertEqual(result["source_input_queue"]["target_count"], 5)
+        self.assertEqual(result["source_input_queue"]["unique_target_count"], 1)
+        queue_by_layer = {item["layer"]: item for item in result["source_input_queue"]["layers"]}
+        self.assertEqual(queue_by_layer["document"]["target_count"], 1)
+        self.assertEqual(queue_by_layer["document"]["targets"][0]["issuer_id"], "issuer_001")
+        document_action = next(item for item in result["items"][0]["layer_action_plan"] if item["layer"] == "document")
+        self.assertIn("source URI or local path", document_action["required_source_fields"])
+        self.assertIn("source URI or local path", queue_by_layer["document"]["required_source_fields"])
+        self.assertEqual(queue_by_layer["shareholder_holding"]["endpoint"], "/api/13f/filings/parse")
+        self.assertEqual(
+            result["source_input_queue"]["usage_boundary"],
+            "local_public_or_provided_source_input_queue_no_auto_fact_promotion_no_broker_no_trade_execution",
+        )
+        row = result["items"][0]
+        self.assertEqual(row["status"], "waiting_for_source_inputs")
+        self.assertEqual(
+            set(row["manual_input_required_layers"]),
+            {"document", "evidence", "research_report", "shareholder_holding", "viewpoint"},
+        )
+        action_names = {item["action"] for item in row["layer_action_plan"]}
+        self.assertIn("ingest_source_documents", action_names)
+        self.assertIn("extract_and_link_evidence", action_names)
+        self.assertIn("import_13f_holdings", action_names)
+        self.assertIn("structure_research_reports", action_names)
+        self.assertIn("structure_or_register_viewpoints", action_names)
+        self.assertTrue(all(item["required_source_fields"] for item in row["layer_action_plan"]))
+        self.assertFalse(any(item["action"] == "build_company_events" for item in row["layer_action_plan"]))
+        self.assertFalse(any(item["action"] == "build_company_relationships" for item in row["layer_action_plan"]))
 
     def test_graph_enrichment_runner_script_dry_run_does_not_mark_completed_state(self) -> None:
         class Handler(BaseHTTPRequestHandler):

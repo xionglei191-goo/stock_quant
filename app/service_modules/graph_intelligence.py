@@ -39,6 +39,9 @@ GRAPH_NODE_ID_CANDIDATES = [
     "observation_id",
     "analysis_conclusion_id",
     "simulation_feedback_id",
+    "chain_id",
+    "node_id",
+    "position_id",
 ]
 
 

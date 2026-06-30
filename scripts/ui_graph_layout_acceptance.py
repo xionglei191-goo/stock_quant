@@ -176,6 +176,7 @@ def run_graph_layout_acceptance(
     min_industry_nodes: int = 0,
     min_raw_knowledge_nodes: int = 0,
     min_visible_knowledge_types: int = 0,
+    min_raw_structured_reports: int = 0,
     min_expansion_neighbor_delta: int = 1,
     min_visible_neighbors_after_click: int = 2,
     relationship_type: str = "",
@@ -192,6 +193,8 @@ def run_graph_layout_acceptance(
     check_view_controls: bool = True,
     check_trail: bool = True,
     check_saved_subgraph: bool = True,
+    expect_performance_mode: str = "",
+    max_chain_node_splits: int = 0,
 ) -> dict[str, Any]:
     chrome = _chrome_binary(chrome_bin)
     port = _free_port()
@@ -537,7 +540,15 @@ def run_graph_layout_acceptance(
                   item.id && item.id !== beforeFocusId && (['event', 'research', 'evidence'].includes(item.type) || ['research', 'evidence'].includes(item.community))
                 ) || (window.knowledgeGraphState?.nodes || []).find((item) => item.id && item.id !== beforeFocusId);
                 if (focusTarget && window.CSS?.escape) {{
-                  document.querySelector(`.graph-node-svg[data-node-id="${{CSS.escape(focusTarget.id)}}"]`)?.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
+                  const targetElement = document.querySelector(`.graph-node-svg[data-node-id="${{CSS.escape(focusTarget.id)}}"]`);
+                  const targetBox = targetElement?.getBoundingClientRect?.();
+                  const targetX = targetBox ? targetBox.left + targetBox.width / 2 : 0;
+                  const targetY = targetBox ? targetBox.top + targetBox.height / 2 : 0;
+                  if (targetElement && targetBox) {{
+                    targetElement.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true, pointerId: 7301, clientX: targetX, clientY: targetY, pointerType: 'mouse', isPrimary: true }}));
+                    targetElement.dispatchEvent(new PointerEvent('pointerup', {{ bubbles: true, pointerId: 7301, clientX: targetX, clientY: targetY, pointerType: 'mouse', isPrimary: true }}));
+                    targetElement.dispatchEvent(new MouseEvent('click', {{ bubbles: true, clientX: targetX, clientY: targetY }}));
+                  }}
                   await wait(700);
                   document.querySelector('#graphFocusSelected')?.click();
                   await wait(1200);
@@ -551,6 +562,7 @@ def run_graph_layout_acceptance(
                     checked: true,
                     before_focus_id: beforeFocusId,
                     target_id: focusTarget.id,
+                    pointer_checked: Boolean(targetElement && targetBox),
                     after_focus_id: afterFocusId,
                     after_back_focus_id: afterBackFocusId,
                     selected_id: window.knowledgeGraphState?.selectedId || '',
@@ -676,17 +688,29 @@ def run_graph_layout_acceptance(
                 industry_nodes: nodes.filter((item) => item.community === 'industry').length,
                 visible_knowledge_types: [...new Set(nodes.filter((item) => ['event', 'evidence', 'research', 'decision'].includes(item.type) || ['research', 'evidence'].includes(item.community)).map((item) => item.type || item.community).filter(Boolean))],
                 performance: perfBeforeInteractions,
+                performance_mode: window.knowledgeGraphState?.performanceMode || '',
+                render_stats: window.knowledgeGraphState?.renderStats || {{}},
+                graph_stage_performance_mode: Boolean(document.querySelector('.graph-stage.is-performance-mode')),
+                link_label_dom_count: document.querySelectorAll('.graph-link-label').length,
                 filter_chips: document.querySelector('#knowledgeGraphFilterChips')?.textContent || '',
                 raw_knowledge_nodes: (window.knowledgeGraphState?.raw?.documents?.length || 0)
                   + (window.knowledgeGraphState?.raw?.company_events?.length || 0)
                   + (window.knowledgeGraphState?.raw?.structured_research_reports?.length || 0)
                   + (window.knowledgeGraphState?.raw?.report_viewpoints?.length || 0)
                   + (window.knowledgeGraphState?.raw?.evidence?.length || 0),
+                raw_structured_reports: window.knowledgeGraphState?.raw?.structured_research_reports?.length || 0,
                 raw_relationships: window.knowledgeGraphState?.raw?.company_relationships?.length || 0,
                 raw_relationship_types: [...new Set((window.knowledgeGraphState?.raw?.company_relationships || []).map((item) => item.relationship_type).filter(Boolean))],
                 raw_edge_relationships: (window.knowledgeGraphState?.raw?.edges || []).filter((item) => item.relationship_type).length,
                 raw_edge_relationship_types: [...new Set((window.knowledgeGraphState?.raw?.edges || []).map((item) => item.relationship_type).filter(Boolean))],
                 raw_edge_types: [...new Set((window.knowledgeGraphState?.raw?.edges || []).map((item) => item.type).filter(Boolean))],
+                chain_node_splits: (window.knowledgeGraphState?.raw?.chain_nodes || []).filter((item) => {{
+                  const nodeId = String(item.node_id || '').trim();
+                  const chainId = String(item.chain_id || '').trim();
+                  if (!nodeId || !chainId || nodeId.includes(':')) return false;
+                  const ids = new Set((window.knowledgeGraphState?.nodes || []).map((node) => node.id));
+                  return ids.has(nodeId) && ids.has(`${{chainId}}:${{nodeId}}`);
+                }}).map((item) => `${{item.chain_id}}:${{item.node_id}}`).slice(0, 20),
                 raw_text_probe: rawTextProbe,
                 focus_switch: focusSwitch,
                 community_click: communityClick,
@@ -752,6 +776,7 @@ def run_graph_layout_acceptance(
             int(expansion.get("neighbor_delta", 0)) < min_expansion_neighbor_delta
             and int(expansion.get("node_delta", 0)) < 1
             and int(expansion.get("link_delta", 0)) < 2
+            and int(expansion.get("visible_neighbors_after", 0)) < min_visible_neighbors_after_click
         ):
             failures.append({"check": "node_expansion_delta", "expected": f"neighbor delta >= {min_expansion_neighbor_delta} or visible graph growth", "actual": expansion})
         expected_scope_label = "全局图" if scope == "global" else "局部图"
@@ -767,6 +792,10 @@ def run_graph_layout_acceptance(
             failures.append({"check": "industry_nodes", "expected": f">={min_industry_nodes}", "actual": result.get("industry_nodes")})
         if min_raw_knowledge_nodes and int(result.get("raw_knowledge_nodes", 0)) < min_raw_knowledge_nodes:
             failures.append({"check": "raw_knowledge_nodes", "expected": f">={min_raw_knowledge_nodes}", "actual": result.get("raw_knowledge_nodes")})
+        if min_raw_structured_reports and int(result.get("raw_structured_reports", 0)) < min_raw_structured_reports:
+            failures.append({"check": "raw_structured_reports", "expected": f">={min_raw_structured_reports}", "actual": result.get("raw_structured_reports")})
+        if int(result.get("raw_structured_reports", 0)) > 0 and "research" not in (result.get("visible_node_types") or []):
+            failures.append({"check": "structured_reports_visible_research", "expected": "research node visible when structured reports exist", "actual": result.get("visible_node_types")})
         if min_visible_knowledge_types and len(result.get("visible_knowledge_types", []) or []) < min_visible_knowledge_types:
             failures.append({"check": "visible_knowledge_types", "expected": f">={min_visible_knowledge_types}", "actual": result.get("visible_knowledge_types")})
         perf = result.get("performance") if isinstance(result.get("performance"), dict) else {}
@@ -778,6 +807,16 @@ def run_graph_layout_acceptance(
             failures.append({"check": "graph_avg_frame_ms", "expected": f"<={max_frame_ms}", "actual": perf})
         if "FPS" not in str(perf.get("status", "")) or "帧" not in str(perf.get("status", "")):
             failures.append({"check": "graph_performance_status", "expected": "status includes FPS and frame time", "actual": perf})
+        if expect_performance_mode:
+            if result.get("performance_mode") != expect_performance_mode:
+                failures.append({"check": "graph_performance_mode", "expected": expect_performance_mode, "actual": result.get("performance_mode")})
+            if expect_performance_mode == "large" and not result.get("graph_stage_performance_mode"):
+                failures.append({"check": "graph_stage_performance_mode", "expected": "graph-stage.is-performance-mode", "actual": result.get("graph_stage_performance_mode")})
+            if expect_performance_mode == "large" and "高性能" not in str(result.get("motion_status", "")):
+                failures.append({"check": "graph_performance_mode_status", "expected": "status includes 高性能", "actual": result.get("motion_status")})
+        chain_node_splits = result.get("chain_node_splits") or []
+        if len(chain_node_splits) > max_chain_node_splits:
+            failures.append({"check": "chain_node_splits", "expected": f"<={max_chain_node_splits}", "actual": len(chain_node_splits), "examples": chain_node_splits[:5]})
         if result.get("raw_label_text_leaks"):
             failures.append({"check": "raw_label_text_leaks", "expected": "no raw graph ids in visible graph text", "actual": result.get("raw_label_text_leaks")})
         raw_text_probe = result.get("raw_text_probe") if isinstance(result.get("raw_text_probe"), dict) else {}
@@ -807,6 +846,16 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "institutional_holder_related_edge", "expected": "SAME_HOLDER_RELATED_COMPANY", "actual": sorted(raw_edge_types)})
             if institutional_holder_key not in filter_chips and "机构持有人" not in filter_chips:
                 failures.append({"check": "institutional_holder_filter_chip", "expected": institutional_holder_key, "actual": filter_chips})
+        if ownership_holder_key:
+            filter_chips = str(result.get("filter_chips", ""))
+            raw_relationship_types = set(result.get("raw_relationship_types", []) or [])
+            raw_edge_types = set(result.get("raw_edge_types", []) or [])
+            if "shareholder" not in raw_relationship_types:
+                failures.append({"check": "ownership_holder_relationship", "expected": "shareholder", "actual": sorted(raw_relationship_types)})
+            if "HAS_COMPANY_RELATIONSHIP" not in raw_edge_types:
+                failures.append({"check": "ownership_holder_relationship_edge", "expected": "HAS_COMPANY_RELATIONSHIP", "actual": sorted(raw_edge_types)})
+            if ownership_holder_key not in filter_chips and "股东" not in filter_chips:
+                failures.append({"check": "ownership_holder_filter_chip", "expected": ownership_holder_key, "actual": filter_chips})
         view_controls = result.get("view_controls") if isinstance(result.get("view_controls"), dict) else {}
         if check_view_controls:
             if not view_controls.get("checked"):
@@ -825,6 +874,8 @@ def run_graph_layout_acceptance(
         if check_focus_switch:
             if not focus_switch.get("checked"):
                 failures.append({"check": "focus_switch", "expected": "checked", "actual": focus_switch})
+            elif not focus_switch.get("pointer_checked"):
+                failures.append({"check": "focus_switch_pointer_chain", "expected": "pointerdown + pointerup target coordinates", "actual": focus_switch})
             elif not focus_switch.get("button_present"):
                 failures.append({"check": "focus_switch_button", "expected": "graphFocusSelected", "actual": focus_switch})
             elif not focus_switch.get("back_button_present"):
@@ -911,6 +962,7 @@ def run_graph_layout_acceptance(
             "min_visible_communities": min_visible_communities,
             "min_industry_nodes": min_industry_nodes,
             "min_raw_knowledge_nodes": min_raw_knowledge_nodes,
+            "min_raw_structured_reports": min_raw_structured_reports,
             "min_visible_knowledge_types": min_visible_knowledge_types,
             "min_expansion_neighbor_delta": min_expansion_neighbor_delta,
             "min_visible_neighbors_after_click": min_visible_neighbors_after_click,
@@ -928,6 +980,8 @@ def run_graph_layout_acceptance(
             "check_view_controls": check_view_controls,
             "check_trail": check_trail,
             "check_saved_subgraph": check_saved_subgraph,
+            "expect_performance_mode": expect_performance_mode,
+            "max_chain_node_splits": max_chain_node_splits,
         },
         "measurement": result,
         "failure_count": len(failures),
@@ -957,6 +1011,7 @@ def main() -> None:
     parser.add_argument("--min-visible-communities", type=int, default=0)
     parser.add_argument("--min-industry-nodes", type=int, default=0)
     parser.add_argument("--min-raw-knowledge-nodes", type=int, default=0)
+    parser.add_argument("--min-raw-structured-reports", type=int, default=0)
     parser.add_argument("--min-visible-knowledge-types", type=int, default=0)
     parser.add_argument("--min-expansion-neighbor-delta", type=int, default=1)
     parser.add_argument("--min-visible-neighbors-after-click", type=int, default=2)
@@ -974,6 +1029,8 @@ def main() -> None:
     parser.add_argument("--skip-view-controls", action="store_true")
     parser.add_argument("--skip-trail", action="store_true")
     parser.add_argument("--skip-saved-subgraph", action="store_true")
+    parser.add_argument("--expect-performance-mode", choices=["", "standard", "large"], default="")
+    parser.add_argument("--max-chain-node-splits", type=int, default=0)
     args = parser.parse_args()
     report = run_graph_layout_acceptance(
         args.base_url,
@@ -992,6 +1049,7 @@ def main() -> None:
         min_visible_communities=args.min_visible_communities,
         min_industry_nodes=args.min_industry_nodes,
         min_raw_knowledge_nodes=args.min_raw_knowledge_nodes,
+        min_raw_structured_reports=args.min_raw_structured_reports,
         min_visible_knowledge_types=args.min_visible_knowledge_types,
         min_expansion_neighbor_delta=args.min_expansion_neighbor_delta,
         min_visible_neighbors_after_click=args.min_visible_neighbors_after_click,
@@ -1009,6 +1067,8 @@ def main() -> None:
         check_view_controls=not args.skip_view_controls,
         check_trail=not args.skip_trail,
         check_saved_subgraph=not args.skip_saved_subgraph,
+        expect_performance_mode=args.expect_performance_mode,
+        max_chain_node_splits=args.max_chain_node_splits,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     if report["status"] != "passed":

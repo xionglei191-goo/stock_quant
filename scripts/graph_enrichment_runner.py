@@ -82,8 +82,10 @@ def run_graph_enrichment_runner(
     priority_layers: str = "company_event,company_relationship",
     include_events: bool = True,
     include_relationships: bool = True,
+    force_build: bool = False,
     resume_state: str | Path = DEFAULT_STATE,
     resume: bool = False,
+    quality_mode: str = "fast",
     timeout: float = 60.0,
 ) -> dict[str, Any]:
     output_path = Path(output)
@@ -98,6 +100,8 @@ def run_graph_enrichment_runner(
         "priority_layers": priority_layers,
         "include_events": include_events,
         "include_relationships": include_relationships,
+        "force_build": force_build,
+        "quality_mode": quality_mode,
         "skip_issuer_ids": state.get("completed_issuer_ids", []) if resume else [],
     }
     report = _post_json(base_url, "/api/graph/enrichment-runner", payload, timeout=timeout)
@@ -121,8 +125,10 @@ def main() -> None:
     parser.add_argument("--priority-layers", default="company_event,company_relationship")
     parser.add_argument("--no-events", action="store_true")
     parser.add_argument("--no-relationships", action="store_true")
+    parser.add_argument("--force-build", action="store_true", help="Run selected builders even when the fast layer scan does not show that layer as missing.")
     parser.add_argument("--resume-state", default=str(DEFAULT_STATE))
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--quality-mode", choices=["fast", "full"], default="fast", help="Use fast layer counts for planning, or full graph quality center before/after each row.")
     parser.add_argument("--timeout", type=float, default=60.0)
     args = parser.parse_args()
     report = run_graph_enrichment_runner(
@@ -136,8 +142,10 @@ def main() -> None:
         priority_layers=args.priority_layers,
         include_events=not args.no_events,
         include_relationships=not args.no_relationships,
+        force_build=args.force_build,
         resume_state=args.resume_state,
         resume=args.resume,
+        quality_mode=args.quality_mode,
         timeout=args.timeout,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))

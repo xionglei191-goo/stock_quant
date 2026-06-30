@@ -774,6 +774,15 @@
     .graph-link-label.is-highlighted {
       opacity: 1;
     }
+    .graph-stage.is-performance-mode .graph-link-label:not(.is-highlighted):not(.is-path-link) {
+      display: none;
+    }
+    .graph-stage.is-performance-mode .graph-node-svg text {
+      font-size: 10px;
+    }
+    .graph-stage.is-performance-mode .graph-node-svg:not(.is-selected):not(.is-path-node):not(.is-expanded) circle {
+      filter: none;
+    }
     .graph-community-label text {
       fill: #334155;
       font-size: 12px;
@@ -3431,6 +3440,8 @@
       pendingFilters: {},
       activeFilters: {},
       readiness: null,
+      performanceMode: "standard",
+      renderStats: { fullNodes: 0, fullLinks: 0, visibleNodes: 0, visibleLinks: 0, labelBudget: 0 },
     };
     window.knowledgeGraphState = knowledgeGraphState;
     const chokepointPlaybooks = {
@@ -5563,7 +5574,8 @@
 
     function graphSemanticLabel(type, label, meta = {}) {
       if (type === "issuer") {
-        const value = String(meta.ticker || meta.symbol || meta.name || meta.issuer_name || graphHumanText(label)).toUpperCase();
+        const alias = Array.isArray(meta.aliases) ? meta.aliases.find((item) => item) : "";
+        const value = String(meta.ticker || meta.symbol || alias || meta.name || meta.issuer_name || meta.legal_name || graphHumanText(label)).toUpperCase();
         return `${value} · 公司`;
       }
       if (type === "security") {
@@ -5578,9 +5590,19 @@
       if (type === "evidence") return readable || meta.statement || meta.quote || meta.title || meta.source_uri || graphHumanText(label, "证据");
       if (type === "research") return readable || meta.viewpoint || meta.topic || meta.title || meta.hypothesis || "研究观点";
       if (type === "decision") return meta.verdict || meta.approval_state || meta.status || "分析结论";
-      if (type === "portfolio") return readable || meta.feedback_type || meta.action || meta.filer_name || meta.status || "模拟反馈";
+      if (type === "portfolio") {
+        if (meta.holding_id) return graphHoldingLabel(meta);
+        return readable || meta.feedback_type || meta.action || meta.filer_name || meta.status || "模拟反馈";
+      }
       if (type === "risk") return meta.task_type || meta.severity || meta.status || "风险/复盘";
       return readable || label || meta.name || "-";
+    }
+
+    function graphHoldingLabel(meta = {}) {
+      const holder = meta.filer_name || meta.filer_cik || "机构";
+      const target = graphReadableIdLabel(meta.security_id || meta.issuer_id || "") || graphHumanText(meta.security_id || meta.issuer_id || "");
+      const period = meta.report_period || "";
+      return `13F 持仓 · ${holder}${target ? ` / ${target}` : ""}${period ? ` · ${period}` : ""}`;
     }
 
     function graphEventLabel(value = "") {
@@ -5839,6 +5861,12 @@
       const nodeMap = new Map();
       const links = [];
       const linkKeys = new Set();
+      const chainNodeGraphId = (item = {}, nodeId = "") => {
+        const rawNodeId = String(nodeId || item.node_id || "").trim();
+        const chainId = String(item.chain_id || "").trim();
+        if (!rawNodeId) return "";
+        return chainId && !rawNodeId.includes(":") ? `${chainId}:${rawNodeId}` : rawNodeId;
+      };
       const addNode = (id, type, label, meta = {}) => {
         if (!id) return null;
         const normalizedId = String(id);
@@ -5897,7 +5925,10 @@
         });
       };
 
-      (data.issuers || []).forEach((item) => addNode(item.issuer_id, "issuer", item.name || item.issuer_name || item.ticker || item.issuer_id, item));
+      (data.issuers || []).forEach((item) => {
+        const alias = Array.isArray(item.aliases) ? item.aliases.find((value) => value) : "";
+        addNode(item.issuer_id, "issuer", item.ticker || item.symbol || alias || item.name || item.issuer_name || item.legal_name || item.issuer_id, item);
+      });
       (data.securities || []).forEach((item) => {
         addNode(item.security_id, "security", item.ticker || item.security_id, item);
         addLink(item.issuer_id, item.security_id, "HAS_SECURITY", "证券", { market: item.market });
@@ -5930,22 +5961,23 @@
       });
       (data.industry_chains || []).forEach((item) => addNode(item.chain_id, "industry", item.name || item.chain_id, item));
       (data.chain_nodes || []).forEach((item) => {
-        addNode(item.node_id, "chain_node", item.name || item.node_id, item);
-        addLink(item.chain_id, item.node_id, "CHAIN_HAS_NODE", "产业节点", item);
+        const graphNodeId = chainNodeGraphId(item);
+        addNode(graphNodeId, "chain_node", item.name || item.node_id || graphNodeId, { ...item, graph_node_id: graphNodeId });
+        addLink(item.chain_id, graphNodeId, "CHAIN_HAS_NODE", "产业节点", item);
       });
       (data.company_positions || []).forEach((item) => {
         addLink(item.issuer_id, item.chain_id, "POSITION_IN_CHAIN", "产业定位", item);
-        (item.node_ids || []).forEach((nodeId) => addLink(item.issuer_id, nodeId, "POSITION_IN_CHAIN_NODE", "环节定位", item));
+        (item.node_ids || []).forEach((nodeId) => addLink(item.issuer_id, chainNodeGraphId(item, nodeId), "POSITION_IN_CHAIN_NODE", "环节定位", item));
       });
       (data.company_events || []).forEach((item) => {
         addNode(item.event_id, "event", item.event_type || item.title || item.event_id, item);
         addLink(item.issuer_id, item.event_id, "HAS_COMPANY_EVENT", "公司事件", item);
       });
       (data.company_relationships || []).forEach((item) => {
-        const from = item.source_issuer_id || item.from_issuer_id || item.issuer_id || item.from;
-        const to = item.target_issuer_id || item.to_issuer_id || item.related_issuer_id || item.to;
+        const from = item.source_issuer_id || item.from_issuer_id || item.subject_id || item.issuer_id || item.from;
+        const to = item.target_issuer_id || item.to_issuer_id || item.object_id || item.related_issuer_id || item.to;
         addNode(from, "issuer", from);
-        addNode(to, "issuer", item.target_name || to);
+        addNode(to, inferGraphNodeType(to, "issuer"), item.target_name || item.object_name || to);
         addLink(from, to, item.relationship_type || "COMPANY_RELATIONSHIP", relationshipTypeDisplayLabel(item.relationship_type || "关系"), item);
       });
       (data.disclosure_events || []).forEach((item) => {
@@ -5965,9 +5997,15 @@
         addNode(item.report_id || item.document_id, "research", item.title || item.report_id || item.document_id, item);
         addLink(item.issuer_id, item.report_id || item.document_id, "HAS_RESEARCH_REPORT", "研报", item);
       });
+      (data.structured_research_reports || []).forEach((item) => {
+        const reportId = item.research_report_id || item.report_id || item.document_id;
+        addNode(reportId, "research", item.title || item.institution_name || item.broker || reportId, item);
+        addLink(item.issuer_id, reportId, "COVERED_BY_REPORT", "研报覆盖", item);
+      });
       (data.report_viewpoints || []).forEach((item) => {
+        const reportId = item.research_report_id || item.report_id || item.document_id;
         addNode(item.viewpoint_id, "research", item.viewpoint || item.topic || item.viewpoint_id, item);
-        addLink(item.report_id || item.document_id, item.viewpoint_id, "REPORT_HAS_VIEWPOINT", "观点", item);
+        addLink(reportId, item.viewpoint_id, "REPORT_HAS_VIEWPOINT", "观点", item);
         addLink(item.issuer_id, item.viewpoint_id, "ISSUER_HAS_VIEWPOINT", "观点", item);
       });
       (data.theses || []).forEach((item) => {
@@ -6011,7 +6049,7 @@
         Object.keys(item.candidate_weights || {}).forEach((securityId) => addLink(securityId, item.proposal_id, "IN_PORTFOLIO_PROPOSAL", "建议权重", item));
       });
       (data.institutional_holdings || []).forEach((item) => {
-        addNode(item.holding_id, "portfolio", item.filer_name || item.holding_id, item);
+        addNode(item.holding_id, "portfolio", graphHoldingLabel(item), item);
         addLink(item.security_id, item.holding_id, "HAS_INSTITUTIONAL_HOLDING", "持仓", item);
       });
       (data.crowding || []).forEach((item) => {
@@ -6918,21 +6956,34 @@
         if (link.target === selected) neighborIds.add(link.source);
       });
       const labelBoxes = [];
+      const performanceMode = knowledgeGraphState.performanceMode === "large";
+      const labelBudget = performanceMode
+        ? Math.max(12, Math.min(28, Math.round((knowledgeGraphState.nodes || []).length * 0.36)))
+        : Math.max(24, Math.min(56, Math.round((knowledgeGraphState.nodes || []).length * 0.72)));
+      let visibleLabels = 0;
       document.querySelectorAll(".graph-node-svg").forEach((element) => {
         const id = element.getAttribute("data-node-id");
         const node = knowledgeGraphState.nodes.find((item) => item.id === id);
         const text = element.querySelector("text");
         if (!node || !text) return;
-        const priority = id === selected || id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(id) || neighborIds.has(id) || node.hiddenNeighborCount > 0 || graphKnowledgeNode(node) || (node.degree || 0) >= 6;
+        const basePriority = id === selected || id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(id) || neighborIds.has(id);
+        const graphPriority = performanceMode
+          ? basePriority || node.hiddenNeighborCount > 2 || (graphKnowledgeNode(node) && (node.degree || 0) >= 2) || (node.degree || 0) >= 8
+          : basePriority || node.hiddenNeighborCount > 0 || graphKnowledgeNode(node) || (node.degree || 0) >= 6;
+        const priority = graphPriority && (basePriority || visibleLabels < labelBudget);
         let hiddenByOverlap = false;
         if (priority) {
           const width = Math.max(38, Math.min(128, String(node.label || "").length * 6.2));
           const box = { x1: node.x - width / 2, x2: node.x + width / 2, y1: node.y + node.radius + 5, y2: node.y + node.radius + 21 };
           hiddenByOverlap = labelBoxes.some((item) => !(box.x2 < item.x1 || box.x1 > item.x2 || box.y2 < item.y1 || box.y1 > item.y2));
-          if (!hiddenByOverlap) labelBoxes.push(box);
+          if (!hiddenByOverlap) {
+            labelBoxes.push(box);
+            visibleLabels += 1;
+          }
         }
         element.classList.toggle("has-label", priority && !hiddenByOverlap);
       });
+      knowledgeGraphState.renderStats.labelBudget = labelBudget;
     }
 
     function updateKnowledgeGraphHighlight() {
@@ -6986,6 +7037,15 @@
       const layout = seedGraphLayout(filtered.nodes, filtered.links, width, height);
       knowledgeGraphState.nodes = layout.nodes;
       knowledgeGraphState.links = layout.links;
+      const largeGraph = model.nodes.length > 72 || model.links.length > 150 || layout.nodes.length > 48 || layout.links.length > 96;
+      knowledgeGraphState.performanceMode = largeGraph ? "large" : "standard";
+      knowledgeGraphState.renderStats = {
+        fullNodes: model.nodes.length,
+        fullLinks: model.links.length,
+        visibleNodes: layout.nodes.length,
+        visibleLinks: layout.links.length,
+        labelBudget: 0,
+      };
       const visibleNodeIds = new Set(layout.nodes.map((node) => node.id));
       if (knowledgeGraphState.pathStartId && !visibleNodeIds.has(knowledgeGraphState.pathStartId)) knowledgeGraphState.pathStartId = "";
       if (knowledgeGraphState.pathEndId && !visibleNodeIds.has(knowledgeGraphState.pathEndId)) knowledgeGraphState.pathEndId = "";
@@ -7005,6 +7065,8 @@
       $("knowledgeGraphLegend").innerHTML = legendTypes.map((type) => `<span><i style="background:${graphNodeColor(type)}"></i>${graphNodeTypeLabel(type)}</span>`).join("");
       renderKnowledgeGraphFilterChips();
       const transform = knowledgeGraphState.transform;
+      const graphStage = svg.closest(".graph-stage");
+      if (graphStage) graphStage.classList.toggle("is-performance-mode", knowledgeGraphState.performanceMode === "large");
       const edgeMarkup = layout.links.map((link) => {
         const source = layout.nodes.find((node) => node.id === link.source);
         const target = layout.nodes.find((node) => node.id === link.target);
@@ -7105,7 +7167,10 @@
       const fps = Number(perf.fps || 0);
       const frameMs = Number(perf.avgFrameMs || 0);
       const perfText = fps ? ` · FPS ${Math.round(Math.min(99, fps))} · 帧 ${frameMs.toFixed(1)}ms` : "";
-      setText("knowledgeGraphMotionStatus", `${motion} · 缩放 ${knowledgeGraphScaleLabel()}${perfText}`);
+      const renderMode = knowledgeGraphState.performanceMode === "large"
+        ? ` · 高性能 ${knowledgeGraphState.renderStats.visibleNodes}/${knowledgeGraphState.renderStats.fullNodes} 节点`
+        : "";
+      setText("knowledgeGraphMotionStatus", `${motion}${renderMode} · 缩放 ${knowledgeGraphScaleLabel()}${perfText}`);
     }
 
     function applyKnowledgeGraphTransform({ rerender = false } = {}) {

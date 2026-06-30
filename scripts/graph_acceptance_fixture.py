@@ -72,15 +72,20 @@ COMPANY_POSITIONS = [
 ]
 
 LISTING_RELATIONSHIPS = [
-    ("rel_graph_acceptance_aapl_listing", "issuer_aapl", "security_aapl_us"),
-    ("rel_graph_acceptance_nvda_listing", "issuer_nvda", "security_nvda_us"),
-    ("rel_graph_acceptance_600519_listing", "issuer_600519", "sec_600519"),
+    ("rel_obsidian_listing_aapl", "issuer_aapl", "security_aapl_us"),
+    ("rel_obsidian_listing_nvda", "issuer_nvda", "security_nvda_us"),
+    ("rel_obsidian_listing_600519", "issuer_600519", "sec_600519"),
 ]
 
 INSTITUTION_RELATIONSHIPS = [
     ("AAPL", "issuer_aapl", "security_aapl_us", 4),
     ("NVDA", "issuer_nvda", "security_nvda_us", 5),
     ("600519", "issuer_600519", "sec_600519", 3),
+]
+
+OWNERSHIP_RELATIONSHIPS = [
+    ("rel_graph_acceptance_aapl_alpha_holder", "issuer_aapl", "security_aapl_us"),
+    ("rel_graph_acceptance_peer_alpha_holder", "issuer_graph_aapl_peer", "security_graph_aapl_peer"),
 ]
 
 
@@ -133,6 +138,8 @@ def prepare_graph_acceptance_fixture(base_url: str, *, timeout: float = 10.0) ->
             "currency": str(company.get("currency", "USD")),
             "market": str(company.get("market", "U")),
             "status": "active",
+            "company_universe_scope": "out_of_scope",
+            "company_universe_reason": "local_graph_acceptance_fixture_only",
         }
         security_result = post_json(base_url, "/api/securities", security_payload, timeout=timeout)
         operations.append({"type": "security", "id": company["security_id"], "status": security_result.get("data", {}).get("status", "created")})
@@ -190,6 +197,28 @@ def prepare_graph_acceptance_fixture(base_url: str, *, timeout: float = 10.0) ->
                 timeout=timeout,
             )
             operations.append({"type": "company_relationship", "id": relationship_id, "status": relationship_result.get("data", {}).get("status", "created")})
+
+    for relationship_id, issuer_id, security_id in OWNERSHIP_RELATIONSHIPS:
+        relationship_result = post_json(
+            base_url,
+            "/api/company-relationships",
+            {
+                "relationship_id": relationship_id,
+                "issuer_id": issuer_id,
+                "security_id": security_id,
+                "subject_type": "company",
+                "subject_id": issuer_id,
+                "object_type": "company",
+                "object_id": "external_graph_acceptance_alpha_capital",
+                "relationship_type": "shareholder",
+                "relationship_status": "active",
+                "review_status": "approved",
+                "confidence": 0.86,
+                "metadata": {"entity_name": "Graph Acceptance Alpha Capital", "source_layer": "graph_acceptance_fixture"},
+            },
+            timeout=timeout,
+        )
+        operations.append({"type": "company_relationship", "id": relationship_id, "status": relationship_result.get("data", {}).get("status", "created")})
 
     return {
         "status": "prepared",

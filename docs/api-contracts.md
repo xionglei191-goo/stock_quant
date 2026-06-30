@@ -3315,7 +3315,67 @@ python3 scripts/import_company_ownership_tables.py --root-path /path/to/ownershi
 - `relationship_type`：可选；在主体图谱内只展开指定类型的 `CompanyRelationship`，用于从公司情报多维关系面板跳入关系类型子图。公司情报 UI 的图谱过滤 chip 会把常见关系类型显示为中文，例如 `upstream_of` 显示“上游关系”、`shareholder` 显示“事实股东”，但 `data-filter-raw-value` 和 title 仍保留原始关系类型。
 - `ownership_holder_key`：可选；与 `relationship_type=shareholder` 等事实股权关系配合使用，按已批准 active ownership fact 的股东/持有人 key 展开同一股东跨公司网络。该过滤只返回非候选、已批准/已复核/自动生成且 active 的 ownership 关系，不把 `*_candidate` 候选纳入事实网络。
 
-返回字段包含 `issuers`、`securities`、`market_data`、`corporate_actions`、`documents`、`evidence`、`manual_reviews`、`theses`、`signals`、`decisions`、`execution_intents`、`reviews`、`strategy_replays`、`exceptions`、`entity_mappings`、`research_cards`、`macro_themes`、`industry_chains`、`chain_nodes`、`company_positions`、`research_tasks`、`crowding`、`institutional_holdings`、`disclosure_events`、`challengers`、`portfolio_proposals`、`portfolio_positions` 和 `edges`。产业链研究任务通过 `CHAIN_HAS_RESEARCH_TASK`、`TASK_FOR_CHAIN_NODE`、`TASK_FOR_COMPANY_POSITION`、`ISSUER_HAS_RESEARCH_TASK` 与主题、链路、节点、公司定位和主体连接。每条 edge 默认包含 `source`、`timestamp`、`version`、`confidence` 元数据。其中 `portfolio_positions` 来自模拟/回测 ledger 或纸面执行意图，`portfolio_proposals` 是纸面组合候选方案，二者都不代表自动交易。
+返回字段包含 `issuers`、`securities`、`market_data`、`corporate_actions`、`documents`、`evidence`、`manual_reviews`、`theses`、`signals`、`decisions`、`execution_intents`、`reviews`、`strategy_replays`、`exceptions`、`entity_mappings`、`research_cards`、`structured_research_reports`、`report_viewpoints`、`macro_themes`、`industry_chains`、`chain_nodes`、`company_positions`、`research_tasks`、`crowding`、`institutional_holdings`、`disclosure_events`、`challengers`、`portfolio_proposals`、`portfolio_positions` 和 `edges`。产业链研究任务通过 `CHAIN_HAS_RESEARCH_TASK`、`TASK_FOR_CHAIN_NODE`、`TASK_FOR_COMPANY_POSITION`、`ISSUER_HAS_RESEARCH_TASK` 与主题、链路、节点、公司定位和主体连接。结构化研报展示层使用 `structured_research_reports[].research_report_id` 作为研报节点 ID，`report_viewpoints[]` 优先用 `research_report_id` 连接观点节点，缺省时才回退到 `report_id` 或 `document_id`。每条 edge 默认包含 `source`、`timestamp`、`version`、`confidence` 元数据。其中 `portfolio_positions` 来自模拟/回测 ledger 或纸面执行意图，`portfolio_proposals` 是纸面组合候选方案，二者都不代表自动交易。
+
+默认主体图会按焦点公司的产业定位裁剪 `chain_nodes`，并抑制 full-graph production universe 生成的低置信 `needs_review` 批量定位向同链公司扩散，避免首屏图谱被全市场目录污染。显式传入 `relationship_type`、`chain_id` 或 `chain_node_id` 时仍表示用户主动进入关系/产业链探索入口，返回结果继续保留原始 `relationship_type`、`chain_id`、`node_ids` 和 position 追溯。
+
+前端展示模型把产业链节点 canonical 化为 `chain_id:node_id`，与后端 `HAS_CHAIN_NODE`、`POSITION_IN_CHAIN_NODE` 等边的端点保持一致；`chain_nodes[].node_id` 仍保留原始链内节点 ID，供 API 追溯和 `chain_node_id` 过滤使用。
+
+#### `GET|POST /api/graph/quality-center`
+
+只读审计公司关系图谱的数据缺口、展示质量门和可执行增强动作。该接口复用 `/api/graph/query` 和 `/api/graph/knowledge-network/readiness`，不会连接真实券商、不会自动交易；只有传 `run_enrichment=true` 且 `execute=true` 时才会调用既有事件/关系 builder 写入本地候选记录，候选仍默认 `needs_review`，不能直接作为可信事实。
+
+请求字段：
+
+- `market` / `markets`：可选；逗号分隔市场，默认 `A,U`。
+- `limit` / `batch_size`：可选；抽样数量和批大小。
+- `symbols`：可选；按指定股票代码集合评估。
+- `run_enrichment`：默认 `false`；为 `true` 时调用已有公司事件和关系 builder。
+- `execute`：默认 `false`；只有同时配合 `run_enrichment=true` 才写入本地候选事件/关系。
+- `include_events` / `include_relationships`：可选；控制 enrichment builder 类型。
+- `min_edges`、`min_communities`、`min_layers`、`min_structural_nodes`、`max_hub_edge_share`、`max_leaf_ratio`、`min_largest_component_ratio`：可选；覆盖质量门结构阈值。
+- `max_display_duplicate_edges`：可选；默认 `0`，表示任何 UI 展示模型下的重复边都会让 `quality_gate.status=needs_attention`。临时诊断需要放宽时必须显式传值。
+- `max_duplicate_edges`：可选；默认 `4`，只用于 raw 底层结构诊断，避免把展示模型已折叠的底层关系记录边等同为 UI 重复边。
+- `max_duplicate_labels`：可选；默认 `0`，表示任何重复展示标签都会让 `quality_gate.status=needs_attention`。临时诊断需要放宽时必须显式传值。
+- `max_raw_label_leaks`：可选；默认 `0`，表示任何 raw/internal label 泄漏都会让 `quality_gate.status=needs_attention`。临时诊断需要放宽时必须显式传值。
+
+返回字段：
+
+- `schema_id`：固定 `graph-quality-center-v1`。
+- `status`：`passed`、`needs_attention` 或 `no_targets`。
+- `processed_count`、`ready_count`、`passed_quality_count`、`needs_attention_count`。
+- `global_failures`：例如空目标 universe 的 `target_universe`。
+- `gap_summary`：跨样本 missing/thin layer 汇总。
+- `items[]`：逐标的质量结果，包含 `issuer_id`、`security_id`、`symbol`、`market`、`readiness`、`quality_gate` 和 `enhancement_actions`。`enhancement_actions[]` 按该标的实际 `missing_layers` / `thin_layers` 生成，不是固定动作列表：`company_event` 指向 `/api/company-database/events/build`，`company_relationship` 指向 `/api/company-database/relationships/build`，`shareholder_holding` 指向 `/api/13f/filings/parse` / `/api/13f/holdings`，`document` 指向 `/api/ingestion/documents`，`evidence` 指向 `/api/evidence/extract` 和 `/api/graph/knowledge-network/evidence-links/backfill`，`research_report` / `viewpoint` 指向 `/api/research-reports/structure` 以及可选 `/api/research-report-viewpoints`。每条 action 固定 `default_execute=false`，且 `usage_boundary` 声明只使用本地、公开或已提供数据，不连接券商、不执行真实交易。
+- `quality_gate`：包含 `status`、`node_count`、`edge_count`、`structure`、`raw_structure`、`community_count`、`present_layer_count`、`duplicate_labels`、`raw_label_leaks`、`failures` 和 `thresholds`。`structure` 使用 UI 展示模型聚合行情节点、关系记录边，并用 `chain_id:node_id` canonical 产业节点评估图谱结构；`raw_structure` 保留原始底层边用于诊断，但同样使用稳定模型 identity，避免空 identity 或裸产业节点 ID 污染结构指标。
+- `enrichment_runs[]`：当 `run_enrichment=true` 时记录事件/关系 builder 的 dry-run 或执行摘要。
+- `next_recommended_actions`：下一步补齐建议。
+- `automation_allowed=false`、`live_execution_allowed=false`、`usage_boundary`：固定声明本地研究和 paper-only 边界。
+
+#### `GET|POST /api/graph/enrichment-runner`
+
+批量图谱增厚规划和小批执行入口。该接口按 production universe 与 `priority_layers` 选择标的，默认使用轻量层计数规划，事件/关系层可调用既有 builder；文档、证据、持仓、研报和观点层只输出 `layer_action_plan`，不会伪造来源材料或自动写入缺失事实。
+
+请求字段：
+
+- `market` / `markets`：可选；逗号分隔市场，默认 `A,U`。
+- `limit`、`batch_size`：可选；目标 universe 和本次处理批量。
+- `priority_layers`：可选；逗号分隔，支持 `company_event`、`company_relationship`、`document`、`evidence`、`shareholder_holding`、`research_report`、`viewpoint`。
+- `quality_mode`：`fast` 或 `full`，默认 `fast`。`full` 会逐标的调用质量中心，成本更高。
+- `include_events` / `include_relationships`：默认 `true`；控制是否调用事件/关系 builder。
+- `force_build`：默认 `false`；为 `true` 时即使目标层已存在也会规划对应 builder。
+- `execute`：默认 `false`；只对事件/关系 builder 生效。文档、证据、持仓、研报和观点层仍需要先通过 `layer_action_plan` 指向的来源入口补材料。
+- `skip_issuer_ids`：可选；用于 resume 跳过已完成 issuer。
+
+返回字段：
+
+- `schema_id=graph-enrichment-runner-v1`、`status`、`processed_count`、`skipped_count`、`failed_count`、`batch_size`、`priority_layers`。
+- `items[]`：逐标的结果，包含 `before`、`after`、`event_result`、`relationship_result`、`candidate_activity`、`layer_action_plan`、`manual_input_required_layers`、`status` 和 `next_action`。
+- `layer_action_plan[]`：机器可读补齐计划。事件层指向 `/api/company-database/events/build`，关系层指向 `/api/company-database/relationships/build`；`document`、`evidence`、`shareholder_holding`、`research_report`、`viewpoint` 分别指向 `/api/ingestion/documents`、`/api/evidence/extract` / `/api/graph/knowledge-network/evidence-links/backfill`、`/api/13f/filings/parse` / `/api/13f/holdings`、`/api/research-reports/structure`、`/api/research-reports/structure` / `/api/research-report-viewpoints`。需要人工/来源输入的 action 会包含 `required_source_fields`，声明补齐该层前必须准备的来源字段。
+- `manual_input_required_count`、`manual_input_required_layers`：当剩余层需要本地/公开来源材料时给出明确计数和层名；对应 item `status=waiting_for_source_inputs`，不会被 CLI resume state 记录为完成。
+- `source_input_queue`：按层汇总的来源输入队列，`schema_id=graph-source-input-queue-v1`。包含 `status`、`layer_count`、跨层 action-target 合计 `target_count`、去重后的 `unique_target_count`，以及 `layers[]`。每个 `layers[]` 声明 `layer`、`action`、`endpoint`、`fallback_endpoint`、`secondary_endpoint`、`method`、`required_source_fields`、`target_count` 和前 200 个 `targets[]`。该队列是本地/公开/用户提供材料的操作清单，不代表数据已导入，也不允许自动事实提升、券商接入或真实交易。
+- `event_totals`、`relationship_totals`：事件/关系 builder 的 planned/created 汇总。
+- `automation_allowed=false`、`live_execution_allowed=false`、`usage_boundary`：固定声明本地研究和 paper-only 边界。
 
 #### `GET|POST /api/graph/knowledge-network/readiness`
 

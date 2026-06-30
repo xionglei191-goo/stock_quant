@@ -49,6 +49,8 @@ def run_graph_quality_center(
     symbols: str = "",
     timeout: float = 45.0,
     chrome_bin: str = "",
+    max_duplicate_labels: int | None = None,
+    max_raw_label_leaks: int | None = None,
 ) -> dict[str, Any]:
     output_path = Path(output)
     payload = {
@@ -58,6 +60,10 @@ def run_graph_quality_center(
         "execute": execute,
         "run_enrichment": run_enrichment,
     }
+    if max_duplicate_labels is not None:
+        payload["max_duplicate_labels"] = max_duplicate_labels
+    if max_raw_label_leaks is not None:
+        payload["max_raw_label_leaks"] = max_raw_label_leaks
     report = _post_json(base_url, "/api/graph/quality-center", payload, timeout=timeout)
     browser_report: dict[str, Any] | None = None
     if browser_matrix:
@@ -110,6 +116,8 @@ def main() -> None:
     parser.add_argument("--symbols", default="", help="Comma-separated symbols for browser matrix; defaults to sampled symbols.")
     parser.add_argument("--timeout", type=float, default=45.0)
     parser.add_argument("--chrome-bin", default="")
+    parser.add_argument("--max-duplicate-labels", type=int, default=None, help="Explicitly relax duplicate display label tolerance; default is backend strict mode.")
+    parser.add_argument("--max-raw-label-leaks", type=int, default=None, help="Explicitly relax raw label leak tolerance; default is backend strict mode.")
     args = parser.parse_args()
     report = run_graph_quality_center(
         args.base_url,
@@ -122,6 +130,8 @@ def main() -> None:
         symbols=args.symbols,
         timeout=args.timeout,
         chrome_bin=args.chrome_bin,
+        max_duplicate_labels=args.max_duplicate_labels,
+        max_raw_label_leaks=args.max_raw_label_leaks,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     if report.get("status") in {"failed", "no_targets"} or report.get("browser_matrix", {}).get("status") == "failed":
