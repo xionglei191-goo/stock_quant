@@ -131,7 +131,7 @@ def main() -> None:
         timeout=args.timeout,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    if report.get("failed_count", 0):
+    if report.get("failed_count", 0) or report.get("status") == "no_targets":
         raise SystemExit(1)
 
 

@@ -22343,6 +22343,14 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("build_company_relationships", action_names)
         self.assertFalse(result.data["live_execution_allowed"])
 
+    def test_graph_quality_center_no_targets_is_not_passed(self) -> None:
+        result = self.service.graph_quality_center({"market": "HK", "limit": 1}, actor="test")
+
+        self.assertEqual(result["status"], "no_targets")
+        self.assertEqual(result["processed_count"], 0)
+        self.assertEqual(result["needs_attention_count"], 1)
+        self.assertEqual(result["global_failures"][0]["check"], "target_universe")
+
     def test_graph_quality_center_enrichment_dry_run_does_not_write(self) -> None:
         self.service.store.evidence["ev_graph_quality"] = Evidence(
             evidence_id="ev_graph_quality",
@@ -22522,6 +22530,13 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(result["skipped_items"][0]["reason"], "resume_completed")
         self.assertFalse(self.service.store.company_events)
         self.assertFalse(self.service.store.company_relationships)
+
+    def test_graph_enrichment_runner_no_targets_is_not_success(self) -> None:
+        result = self.service.graph_enrichment_runner({"market": "HK", "limit": 1}, actor="test")
+
+        self.assertEqual(result["status"], "no_targets")
+        self.assertEqual(result["processed_count"], 0)
+        self.assertEqual(result["global_failures"][0]["check"], "target_universe")
 
     def test_graph_enrichment_runner_script_writes_artifact_and_state(self) -> None:
         class Handler(BaseHTTPRequestHandler):

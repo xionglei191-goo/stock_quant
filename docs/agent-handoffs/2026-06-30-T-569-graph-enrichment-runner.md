@@ -54,6 +54,7 @@ Graph quality gaps were visible but not operationalized into a recoverable batch
 - Structured disclosure events remain `review_status=needs_review`.
 - The CLI writes both a report artifact and a resumable state file.
 - Resume behavior now passes completed issuer IDs to the service, and the service honors `skip_issuer_ids` with `resume_skipped_count`.
+- Empty target universes now return `status=no_targets` and a `target_universe` global failure; the CLI exits non-zero for that state.
 
 ### SystemService Growth Freeze Review
 
@@ -130,6 +131,7 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_r
   - `python3 scripts/graph_quality_center.py http://127.0.0.1:55610 --market A,U --limit 1 --output artifacts/graph-quality-center/current-code-smoke.json --timeout 20`
   - `python3 scripts/graph_enrichment_runner.py http://127.0.0.1:55610 --market A,U --limit 1 --batch-size 1 --output artifacts/graph-enrichment-runner/current-code-smoke.json --resume-state artifacts/graph-enrichment-runner/current-code-smoke-state.json --timeout 20`
   - Both returned valid schema/status. The isolated SQLite smoke had no universe rows, so `processed_count=0` is expected.
+- Current-code no-target smoke passed on port `55611`: `scripts/graph_enrichment_runner.py` returned `status=no_targets` and exited with code `1`.
 
 ## Next Recommended Action
 

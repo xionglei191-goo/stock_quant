@@ -49,6 +49,7 @@ Without a single quality center, graph work splits across separate readiness che
 
 - The quality center samples the same production universe selector used by T-567.
 - For each target it calls `query_graph` and `graph_knowledge_network_readiness`, then summarizes missing/thin layers, cross-links, seed dependency, duplicate labels, raw label leakage, edge density, and community count.
+- Empty target universes now return `status=no_targets`, `needs_attention_count=1`, and a `target_universe` global failure instead of passing.
 - Enrichment actions reuse `build_company_events` and `build_company_relationships`; default behavior is dry-run.
 - Writes require `run_enrichment=true` and `execute=true`.
 - Candidate event/relationship records remain review-gated and local-only.
@@ -124,6 +125,7 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_cent
 - `python3 scripts/ui_static_check.py`: passed.
 - `git diff --check`: passed.
 - `python3 scripts/check_handoffs.py`: rerun required after this template correction.
+- Current-code isolated service no-target smoke passed on port `55611`: `scripts/graph_quality_center.py` returned `status=no_targets` and exited with code `1`, which prevents empty graphs from being treated as quality-passed.
 
 ## Next Recommended Action
 

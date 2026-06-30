@@ -618,6 +618,7 @@
   - **已完成（本轮）**：真实事件/关系增强入口复用 `/api/company-database/events/build` 与 `/api/company-database/relationships/build`，只从本地行情、披露、研报覆盖、证据和股权表候选生成数据；候选默认 `needs_review`，不把研报观点提升为事实，不接外部收费源。
   - **已完成（本轮）**：修正 T-566 roadmap 重复状态，旧 DOING 口径统一为 DONE；T-568 作为后续质量闭环主任务。
   - 当前边界：质量中心不是新的事实抽取器；它只做编排、审计和调用已有 builder。不新增数据库 schema，不改变 `/api/graph/query` schema，不连接券商，不做真实交易。
+  - **已完成（质量门修正）**：空目标 universe 不再返回 `passed`，而是 `status=no_targets`、`global_failures.target_universe`，CLI 非零退出，避免空图被误判为最佳展示。
   - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_center_reports_gaps_and_actions tests.test_system.SystemServiceTests.test_graph_quality_center_enrichment_dry_run_does_not_write tests.test_system.SystemServiceTests.test_graph_quality_center_script_writes_artifact`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
 
 - `DONE` T-569 图谱真实事件与关系批量增厚
@@ -630,6 +631,7 @@
   - **已完成（本轮）**：`execute` 只写入本地事件/关系候选，关系候选默认 `review_status=needs_review`、`relationship_status=unknown`，结构化披露事件默认 `review_status=needs_review`；后续仍需审核队列提升为可信事实边。
   - **已完成（本轮）**：`knowledge_graph_bulk.select_full_graph_universe` 支持 `issuer_ids`、`security_ids` 和 `symbols` 精确过滤，便于质量中心和增厚 runner 对单 issuer 复验。
   - 当前边界：不连接外部收费数据，不把研报观点当事实，不自动审核候选，不接券商，不做真实交易。
+  - **已完成（质量门修正）**：空目标 universe 返回 `status=no_targets` 并非零退出，避免增厚 runner 在无数据环境中误报完成。
   - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_respects_skip_issuer_ids tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_writes_artifact_and_state`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
 
 - `DONE` T-486 公开行情 K 线板块

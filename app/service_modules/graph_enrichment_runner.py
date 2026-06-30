@@ -198,9 +198,11 @@ def graph_enrichment_runner(service: Any, payload: Mapping[str, Any] | None = No
         items.append(row)
     if execute and (event_totals["created"] or relationship_totals["created"]):
         service.store.commit()
+    no_targets = not targets
+    status = "no_targets" if no_targets else ("audit_only" if audit_only else ("executed" if execute else "dry_run"))
     return {
         "schema_id": "graph-enrichment-runner-v1",
-        "status": "audit_only" if audit_only else ("executed" if execute else "dry_run"),
+        "status": status,
         "execute": execute,
         "audit_only": audit_only,
         "started_at": started_at,
@@ -211,6 +213,7 @@ def graph_enrichment_runner(service: Any, payload: Mapping[str, Any] | None = No
         "skipped_count": len(skipped_items),
         "resume_skipped_count": sum(1 for item in skipped_items if item.get("reason") == "resume_completed"),
         "failed_count": len(failed_items),
+        "global_failures": [{"check": "target_universe", "actual": 0, "expected_min": 1}] if no_targets else [],
         "batch_size": batch_size,
         "priority_layers": sorted(priority_layers),
         "include_events": include_events,

@@ -124,7 +124,7 @@ def main() -> None:
         chrome_bin=args.chrome_bin,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    if report.get("browser_matrix", {}).get("status") == "failed":
+    if report.get("status") in {"failed", "no_targets"} or report.get("browser_matrix", {}).get("status") == "failed":
         raise SystemExit(1)
 
 

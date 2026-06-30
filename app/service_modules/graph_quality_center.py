@@ -206,9 +206,12 @@ def graph_quality_center(service: Any, payload: Mapping[str, Any] | None = None,
     failing = [item for item in items if item["quality_gate"]["status"] != "passed" or item["readiness"]["status"] != "ready"]
     ready_count = sum(1 for item in items if item["readiness"]["status"] == "ready")
     passed_quality_count = sum(1 for item in items if item["quality_gate"]["status"] == "passed")
+    no_targets = not items
+    status = "no_targets" if no_targets else ("passed" if not failing else "needs_attention")
+    global_failures = [{"check": "target_universe", "actual": 0, "expected_min": 1}] if no_targets else []
     return {
         "schema_id": "graph-quality-center-v1",
-        "status": "passed" if not failing else "needs_attention",
+        "status": status,
         "started_at": started_at,
         "completed_at": utcnow().isoformat(),
         "execute": execute,
@@ -217,7 +220,8 @@ def graph_quality_center(service: Any, payload: Mapping[str, Any] | None = None,
         "processed_count": len(items),
         "ready_count": ready_count,
         "passed_quality_count": passed_quality_count,
-        "needs_attention_count": len(failing),
+        "needs_attention_count": len(failing) + len(global_failures),
+        "global_failures": global_failures,
         "gap_summary": _layer_gap_summary(items),
         "items": items,
         "enrichment_runs": enrichment_runs,
