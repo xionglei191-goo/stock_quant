@@ -66,6 +66,12 @@ def select_full_graph_universe(store: Any, payload: Mapping[str, Any] | None = N
     payload = payload or {}
     markets = _split_markets(payload.get("market", payload.get("markets", "A,U")))
     limit = max(0, int(payload.get("limit", 0) or 0))
+    issuer_filter = {str(item).strip() for item in payload.get("issuer_ids", []) if str(item).strip()}
+    security_filter = {str(item).strip() for item in payload.get("security_ids", []) if str(item).strip()}
+    raw_symbols = payload.get("symbols", payload.get("symbol", []))
+    if isinstance(raw_symbols, str):
+        raw_symbols = raw_symbols.split(",")
+    symbol_filter = {str(item).strip().upper() for item in raw_symbols if str(item).strip()} if isinstance(raw_symbols, (list, tuple, set)) else set()
     targets: list[BulkGraphTarget] = []
     skipped_by_market: Counter[str] = Counter()
     hk_available = False
@@ -74,6 +80,15 @@ def select_full_graph_universe(store: Any, payload: Mapping[str, Any] | None = N
         market = str(security.market or "").upper()
         if market in {"H", "HK"}:
             hk_available = True
+        if issuer_filter and security.issuer_id not in issuer_filter:
+            skipped_by_market[f"{market}:issuer_filter"] += 1
+            continue
+        if security_filter and security.security_id not in security_filter:
+            skipped_by_market[f"{market}:security_filter"] += 1
+            continue
+        if symbol_filter and str(security.ticker or "").upper() not in symbol_filter:
+            skipped_by_market[f"{market}:symbol_filter"] += 1
+            continue
         if not _security_in_scope(security, markets):
             skipped_by_market[market or "unknown"] += 1
             continue

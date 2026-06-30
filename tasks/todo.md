@@ -620,6 +620,18 @@
   - 当前边界：质量中心不是新的事实抽取器；它只做编排、审计和调用已有 builder。不新增数据库 schema，不改变 `/api/graph/query` schema，不连接券商，不做真实交易。
   - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_center_reports_gaps_and_actions tests.test_system.SystemServiceTests.test_graph_quality_center_enrichment_dry_run_does_not_write tests.test_system.SystemServiceTests.test_graph_quality_center_script_writes_artifact`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
 
+- `DONE` T-569 图谱真实事件与关系批量增厚
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；T-568 后续
+  - 背景：T-568 已能指出每只股票图谱缺哪些层，但仍需要一个批量 runner 把缺口转化为事件/关系候选生产计划和小批执行入口。
+  - 目标：基于质量中心缺口，分批对 A/U 股票运行事件/关系 dry-run 或显式 execute，生成候选、统计候选数量、输出可恢复 state，并复验图谱缺口变化。
+  - **已完成（本轮）**：新增 `app/service_modules/graph_enrichment_runner.py`，按 production universe 和 priority layers 选择需要增厚的股票，调用质量中心生成 before/after 缺口摘要。
+  - **已完成（本轮）**：新增 `GET|POST /api/graph/enrichment-runner`，复用现有 `build_company_events` 和 `build_company_relationships`，不新增事实抽取器，不新增 schema。
+  - **已完成（本轮）**：新增 `scripts/graph_enrichment_runner.py`，支持 `--audit-only`、`--execute`、`--market`、`--limit`、`--batch-size`、`--priority-layers`、`--resume` 和 `--resume-state`，默认输出 `artifacts/graph-enrichment-runner/latest.json` 与 state。
+  - **已完成（本轮）**：`execute` 只写入本地事件/关系候选，关系候选默认 `review_status=needs_review`、`relationship_status=unknown`，结构化披露事件默认 `review_status=needs_review`；后续仍需审核队列提升为可信事实边。
+  - **已完成（本轮）**：`knowledge_graph_bulk.select_full_graph_universe` 支持 `issuer_ids`、`security_ids` 和 `symbols` 精确过滤，便于质量中心和增厚 runner 对单 issuer 复验。
+  - 当前边界：不连接外部收费数据，不把研报观点当事实，不自动审核候选，不接券商，不做真实交易。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_writes_artifact_and_state`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
+
 - `DONE` T-486 公开行情 K 线板块
   - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
   - 背景：公司情报和知识图谱已经能展示关系与证据，但个人用户还需要直接查看证券价格走势，避免在研究时离开系统另找行情图。

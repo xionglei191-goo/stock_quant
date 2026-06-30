@@ -1796,6 +1796,9 @@ class ApiRouter:
     def _graph_quality_center(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.graph_quality_center(body, actor=actor)
 
+    def _graph_enrichment_runner(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.graph_enrichment_runner(body, actor=actor)
+
     def _backfill_knowledge_network_evidence_links(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.backfill_knowledge_network_evidence_links(body, actor=actor)
 

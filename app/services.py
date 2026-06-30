@@ -116,6 +116,7 @@ from .service_modules import safe_identifier
 from .service_modules import company_quality
 from .service_modules import company_intelligence as company_intelligence_module
 from .service_modules import graph_intelligence
+from .service_modules import graph_enrichment_runner
 from .service_modules import graph_quality_center
 from .service_modules import graph_seed
 from .service_modules import knowledge_graph_bulk
@@ -18576,6 +18577,9 @@ class SystemService:
 
     def graph_quality_center(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         return graph_quality_center.graph_quality_center(self, payload or {}, actor=actor)
+
+    def graph_enrichment_runner(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        return graph_enrichment_runner.graph_enrichment_runner(self, payload or {}, actor=actor)
 
     def _decisions_for_issuer(self, issuer_id: str) -> list[DecisionPack]:
         if not issuer_id:

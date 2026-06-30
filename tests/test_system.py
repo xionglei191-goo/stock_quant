@@ -46,6 +46,7 @@ from scripts.local_data_unblock_audit import audit_local_data_unblock
 import scripts.backfill_market_data as backfill_market_data_script
 import scripts.backfill_full_knowledge_graph as backfill_full_knowledge_graph_script
 import scripts.graph_quality_center as graph_quality_center_script
+import scripts.graph_enrichment_runner as graph_enrichment_runner_script
 import scripts.daily_data_update_pipeline as daily_data_update_pipeline_script
 import scripts.audit_daily_update_schedule as audit_daily_update_schedule_script
 import scripts.daily_market_insight as daily_market_insight_script
@@ -22426,6 +22427,134 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(result["schema_id"], "graph-quality-center-v1")
         self.assertTrue(output.exists())
         self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["processed_count"], 1)
+
+    def _add_graph_enrichment_fixture(self) -> None:
+        self.service.store.evidence["ev_graph_enrich"] = Evidence(
+            evidence_id="ev_graph_enrich",
+            document_id="doc_graph_enrich",
+            section="official_disclosure",
+            page_no=1,
+            bbox="p1",
+            span_text="Revenue increased. The company reported customer Mega Cloud and supplier Wafer Co.",
+            canonical_text="revenue increased customer Mega Cloud supplier Wafer Co",
+            confidence=0.9,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+        self.service.store.disclosure_events["de_graph_enrich"] = DisclosureEvent(
+            event_id="de_graph_enrich",
+            document_id="doc_graph_enrich",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            event_type="annual_report",
+            item_code="10-K",
+            item_title="Annual report operating and relationship disclosure",
+            severity="medium",
+            summary="Revenue increased. The company reported customer Mega Cloud and supplier Wafer Co.",
+            evidence_ids=["ev_graph_enrich"],
+            source_id="src_sec",
+        )
+
+    def test_graph_enrichment_runner_dry_run_plans_candidates(self) -> None:
+        self._add_graph_enrichment_fixture()
+
+        result = self.service.graph_enrichment_runner(
+            {
+                "market": "A",
+                "limit": 1,
+                "batch_size": 1,
+                "priority_layers": "company_event,company_relationship",
+            },
+            actor="test",
+        )
+
+        self.assertEqual(result["schema_id"], "graph-enrichment-runner-v1")
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["processed_count"], 1)
+        row = result["items"][0]
+        self.assertEqual(row["event_result"]["events_planned"], 2)
+        self.assertGreaterEqual(row["relationship_result"]["relationships_planned"], 3)
+        self.assertFalse(self.service.store.company_events)
+        self.assertFalse(self.service.store.company_relationships)
+
+    def test_graph_enrichment_runner_execute_writes_review_gated_candidates(self) -> None:
+        self._add_graph_enrichment_fixture()
+
+        result = self.service.graph_enrichment_runner(
+            {
+                "market": "A",
+                "limit": 1,
+                "batch_size": 1,
+                "priority_layers": "company_event,company_relationship",
+                "execute": True,
+            },
+            actor="test",
+        )
+
+        self.assertEqual(result["status"], "executed")
+        self.assertGreaterEqual(result["event_totals"]["created"], 2)
+        self.assertGreaterEqual(result["relationship_totals"]["created"], 3)
+        relationship_types = {item.relationship_type for item in self.service.store.company_relationships.values()}
+        self.assertIn("customer_candidate", relationship_types)
+        self.assertIn("supplier_candidate", relationship_types)
+        customer = next(item for item in self.service.store.company_relationships.values() if item.relationship_type == "customer_candidate")
+        self.assertEqual(customer.review_status, "needs_review")
+        self.assertEqual(customer.relationship_status, "unknown")
+        detailed_events = [item for item in self.service.store.company_events.values() if item.event_type == "earnings_result"]
+        self.assertTrue(detailed_events)
+        self.assertEqual(detailed_events[0].review_status, "needs_review")
+
+    def test_graph_enrichment_runner_script_writes_artifact_and_state(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(handler_self):  # noqa: N802
+                length = int(handler_self.headers.get("Content-Length", "0"))
+                json.loads(handler_self.rfile.read(length).decode("utf-8"))
+                payload = {
+                    "success": True,
+                    "trace_id": "trace_graph_enrichment",
+                    "data": {
+                        "schema_id": "graph-enrichment-runner-v1",
+                        "status": "dry_run",
+                        "processed_count": 1,
+                        "failed_count": 0,
+                        "items": [{"issuer_id": "issuer_001", "status": "dry_run"}],
+                    },
+                }
+                body = json.dumps(payload).encode("utf-8")
+                handler_self.send_response(200)
+                handler_self.send_header("Content-Type", "application/json")
+                handler_self.send_header("Content-Length", str(len(body)))
+                handler_self.end_headers()
+                handler_self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A003
+                return
+
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        output = Path(temp_dir.name) / "enrichment.json"
+        state = Path(temp_dir.name) / "state.json"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+
+        result = graph_enrichment_runner_script.run_graph_enrichment_runner(
+            f"http://127.0.0.1:{server.server_port}",
+            output=output,
+            markets="A",
+            limit=1,
+            batch_size=1,
+            resume_state=state,
+            timeout=5,
+        )
+
+        self.assertEqual(result["schema_id"], "graph-enrichment-runner-v1")
+        self.assertTrue(output.exists())
+        self.assertTrue(state.exists())
+        state_payload = json.loads(state.read_text(encoding="utf-8"))
+        self.assertEqual(state_payload["completed_issuer_ids"], ["issuer_001"])
 
 
 if __name__ == "__main__":
