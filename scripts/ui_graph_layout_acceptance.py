@@ -606,6 +606,22 @@ def run_graph_layout_acceptance(
                 }};
                 if (storedRaw) window.localStorage?.removeItem(storageKey);
               }}
+              const visibleTextTargets = [
+                '#knowledgeGraphCanvas text',
+                '#knowledgeGraphNodeTitle',
+                '#knowledgeGraphNodeType',
+                '#knowledgeGraphNodeMeta',
+                '#knowledgeGraphNeighborRows',
+                '#knowledgeGraphPathSteps',
+                '#knowledgeGraphTrailList',
+                '#knowledgeGraphFocusHistoryList',
+                '#knowledgeGraphFocusLabel',
+                '#knowledgeGraphMotionStatus'
+              ];
+              const visibleTexts = visibleTextTargets.flatMap((selector) =>
+                [...document.querySelectorAll(selector)].map((el) => (el.textContent || '').trim()).filter(Boolean)
+              );
+              const rawTextPattern = /\\b(md_|market_data_summary:|doc_obsidian|hold_obsidian|pos_obsidian|srr_obsidian|rr_obsidian|vp_obsidian|event_obsidian|rel_obsidian|VIEWPOINT_ON_COMPANY|RELATIONSHIP|[a-f0-9]{{12,}}\\s+main)\\b/i;
               return {{
                 status: 'measured',
                 rect: {{ width: rect.width, height: rect.height }},
@@ -646,7 +662,9 @@ def run_graph_layout_acceptance(
                 saved_subgraph: savedSubgraph,
                 persistence,
                 path: pathCheck,
-                motion_status: document.querySelector('#knowledgeGraphMotionStatus')?.textContent || ''
+                motion_status: document.querySelector('#knowledgeGraphMotionStatus')?.textContent || '',
+                visible_text_count: visibleTexts.length,
+                raw_label_text_leaks: [...new Set(visibleTexts.filter((text) => rawTextPattern.test(text)))].slice(0, 20)
               }};
             }})()
             """
@@ -725,6 +743,8 @@ def run_graph_layout_acceptance(
             failures.append({"check": "graph_avg_frame_ms", "expected": f"<={max_frame_ms}", "actual": perf})
         if "FPS" not in str(perf.get("status", "")) or "帧" not in str(perf.get("status", "")):
             failures.append({"check": "graph_performance_status", "expected": "status includes FPS and frame time", "actual": perf})
+        if result.get("raw_label_text_leaks"):
+            failures.append({"check": "raw_label_text_leaks", "expected": "no raw graph ids in visible graph text", "actual": result.get("raw_label_text_leaks")})
         if expect_filter_chip and expect_filter_chip not in str(result.get("filter_chips", "")):
             failures.append({"check": "expected_filter_chip", "expected": expect_filter_chip, "actual": result.get("filter_chips", "")})
         if forbid_filter_chip and forbid_filter_chip in str(result.get("filter_chips", "")):

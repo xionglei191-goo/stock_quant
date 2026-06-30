@@ -57,6 +57,8 @@ Without a single quality center, graph work splits across separate readiness che
 - The quality gate now applies the same readable label cleanup used by the UI for issuer/security/market-data identifiers.
 - `market_data` graph nodes are treated as first-class display nodes in the SVG explorer and render as `行情 <security> <date>` instead of raw `md_public_eod...` IDs.
 - The SVG explorer now aggregates per-day `market_data` rows into one `行情走势` node per security and deduplicates repeated edges after node redirection. This keeps detailed K-line/table data intact outside the graph while reducing graph clutter.
+- Focus status now uses the visible node semantic label instead of `graphRef(focusId)`, and generic `vp_rr_*` / `rr_*` IDs are normalized to `研究观点` / `研报主题`.
+- Browser layout acceptance now checks visible graph text from SVG labels, inspector, path/trail panels, focus label, and motion status for raw identifiers such as `md_`, `market_data_summary:`, Obsidian seed IDs, and long hash-based viewpoint IDs.
 
 ### SystemService Growth Freeze Review
 
@@ -140,6 +142,9 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_cent
 - Browser graph acceptance after market-data aggregation passed:
   - `python3 scripts/ui_graph_multi_symbol_acceptance.py http://127.0.0.1:55612 --symbols 000001,AAPL --output artifacts/ui-graph-multi-symbol-market-summary-dedup-acceptance.json --timeout 60`
   - Result: `status=passed`, `000001` measured `35` nodes, `97` links, `overlap_pairs=1`, `near_edge_nodes=0`; `AAPL` measured `35` nodes, `98` links, `overlap_pairs=0`, `near_edge_nodes=0`.
+- Browser visible-text raw-leak acceptance passed:
+  - `python3 scripts/ui_graph_layout_acceptance.py http://127.0.0.1:55612 --symbol AAPL --min-nodes 8 --min-links 6 --max-overlap-pairs 8 --max-near-edge-nodes 2 --min-community-labels 1 --min-visible-neighbors-after-click 1 --min-expansion-neighbor-delta 0 --output artifacts/ui-graph-visible-raw-text-seeded-layout-pass.json --timeout 60`
+  - Result: `status=passed`, focus label `局部图 · 焦点 研究观点`, `raw_label_text_leaks=[]`, `visible_text_count=36`.
 
 ## Next Recommended Action
 

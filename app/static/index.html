@@ -5254,6 +5254,11 @@
       return readable || compactId(value, fallback);
     }
 
+    function graphNodeDisplayLabel(nodeId, fallback = "-") {
+      const node = (knowledgeGraphState.nodes || []).find((item) => item.id === nodeId);
+      return node?.fullLabel || node?.label || graphRef(nodeId, fallback);
+    }
+
     function graphList(values) {
       if (!Array.isArray(values) || !values.length) return "-";
       return values.map((item) => {
@@ -5489,6 +5494,8 @@
         const date = meta.as_of_date || "";
         return `行情${securityLabel ? ` ${securityLabel}` : ""}${date ? ` ${date}` : ""}`;
       }
+      if (lower.startsWith("vp_rr_") || lower.startsWith("vp_")) return "研究观点";
+      if (lower.startsWith("rr_") || lower.startsWith("srr_")) return "研报主题";
       const suffix = lower.includes(":") ? lower.split(":").at(-1) : "";
       const parts = lower.split(/[_:]+/).filter(Boolean);
       const company = parts.map(graphTokenLabel).find((item) => /^[A-Z0-9]{2,}$/.test(item || ""));
@@ -6965,7 +6972,7 @@
       $("knowledgeGraphEmpty").style.display = layout.nodes.length ? "none" : "grid";
       setText("knowledgeGraphNodeCount", `节点 ${layout.nodes.length}/${model.nodes.length}`);
       setText("knowledgeGraphLinkCount", `关系 ${layout.links.length}/${model.links.length}`);
-      setText("knowledgeGraphFocusLabel", `${knowledgeGraphState.scope === "global" ? "全局图" : "局部图"} · 焦点 ${graphRef(knowledgeGraphState.focusId, "-")}`);
+      setText("knowledgeGraphFocusLabel", `${knowledgeGraphState.scope === "global" ? "全局图" : "局部图"} · 焦点 ${graphNodeDisplayLabel(knowledgeGraphState.focusId, "-")}`);
       const legendTypes = [...new Set(layout.nodes.map((node) => node.type))];
       $("knowledgeGraphLegend").innerHTML = legendTypes.map((type) => `<span><i style="background:${graphNodeColor(type)}"></i>${graphNodeTypeLabel(type)}</span>`).join("");
       renderKnowledgeGraphFilterChips();
