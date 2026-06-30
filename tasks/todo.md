@@ -593,6 +593,21 @@
   - 当前限制：产业链三类关系和机构持有人网络已经通过受控浏览器 fixture + Obsidian seed 验证，并可通过 `scripts/graph_acceptance_fixture.py` / `scripts/seed_obsidian_knowledge_graph.py` 单独准备；当前 8000 端口上运行的旧 root 服务仍可能不是当前代码。下一步应把 seed 从“样本网络”继续推进到真实本地生产数据导入/增量更新。
   - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/check_handoffs.py`；`git diff --check`；headless Chromium 默认可见文本探针；`python3 scripts/ui_graph_layout_acceptance.py http://127.0.0.1:55552 --symbol AAPL --scope local --min-nodes 26 --min-links 60 --min-community-labels 3 --min-visible-communities 3 --min-industry-nodes 5 --min-raw-knowledge-nodes 5 --min-visible-knowledge-types 2 --max-overlap-pairs 12 --max-near-edge-nodes 2 --forbid-filter-chip "证券:" --check-focus-switch --output artifacts/ui-graph-layout-acceptance-label-cleanup.json --timeout 45`；`python3 scripts/ui_graph_relationship_filter_acceptance.py http://127.0.0.1:55550 --output artifacts/ui-graph-relationship-filter-acceptance-smoke-2.json --timeout 60`。
 
+- `DONE` T-567 全量关系图谱数据生产
+  - 对应：E7-US1, E8-US2；T-566 生产化后续
+  - 背景：T-566 已把样本知识网络和 Obsidian 式 UI 验收打通，但“所有股票”仍需要生产 universe 级别的可恢复图谱数据生成、覆盖率审计和缺口清单。
+  - 目标：以当前本地生产 universe 为口径，覆盖 A 股当前活跃普通股和美股 current in-scope 标的；港股在没有完整 universe 前进入缺口报告，不计入完成率。
+  - **已完成（本轮）**：新增 `app/service_modules/knowledge_graph_bulk.py`，提供全量 universe 选择、基础图谱层 dry-run/execute、上市证券关系幂等创建、缺失产业定位补位、readiness 汇总和缺口统计。
+  - **已完成（本轮）**：新增 `scripts/backfill_full_knowledge_graph.py`，支持 `--audit-only`、`--dry-run`、`--execute`、`--market`、`--batch-size`、`--limit`、`--resume-state` 和 `--output`，写出 `artifacts/full-knowledge-graph/latest.json` 与可恢复 state。
+  - **已完成（本轮）**：小批 PostgreSQL execute 写入 5 个样本并重复验证幂等；修复 bulk 默认产业节点共享导致的虚假全市场 peer 风险，已把样本 position 修回单 issuer scoped 节点。
+  - **已完成（本轮）**：将逐股票 evidence-link graph 查询移到显式 `--include-evidence-links` 慢路径后，A/U 当前 in-scope universe 以 `--execute --batch-size 500 --resume` 完成全量基础图谱生产：`10626/10626` processed，`failed_count=0`，上市关系 issuer 覆盖 `10626/10626`，公司定位 issuer 覆盖 `10626/10626`。
+  - **已完成（补齐）**：evidence-link 全量盘点完成，当前可由已有 document evidence 自动补齐的 event/relationship/viewpoint 缺口为 0，生成 `artifacts/full-knowledge-graph/evidence-link-audit.json`；`--include-evidence-links` 保留为后续慢路径。
+  - **已完成（补齐）**：HK/H universe 盘点完成，当前 PostgreSQL store 中 HK/H securities 为 0、in-scope 为 0，生成 `artifacts/full-knowledge-graph/hk-universe-gap.json`，不伪造港股数据。
+  - **已完成（补齐）**：UI 多股票抽样验收通过，`AAPL/MSFT/600519/000001/002078` 共 5 个 local graph case 全部 passed，artifact 为 `artifacts/ui-graph-multi-symbol-full-knowledge-acceptance-pass.json`。
+  - 证据：`artifacts/full-knowledge-graph/final-summary.json` / `artifacts/full-knowledge-graph/latest.json`；状态：`artifacts/full-knowledge-graph/state.json`。
+  - 当前边界：不新增数据库 schema，不改变 `/api/graph/query` schema；不物化 peer/upstream/downstream 派生边；不伪造事件、证据、研报或持仓，缺失层只记录 backfill action/readiness 缺口。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_full_knowledge_graph_bulk_dry_run_does_not_write tests.test_system.SystemServiceTests.test_full_knowledge_graph_bulk_execute_is_idempotent tests.test_system.SystemServiceTests.test_query_graph_scopes_company_positions_to_focus_issuer tests.test_system.SystemServiceTests.test_full_knowledge_graph_universe_excludes_out_of_scope_and_reports_hk_gap tests.test_system.SystemServiceTests.test_full_knowledge_graph_script_writes_artifacts`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`；`.venv/bin/python scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 --audit-only --market A,U --limit 50`；`.venv/bin/python scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 --dry-run --market A,U --limit 100 --batch-size 20`；`.venv/bin/python scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 --execute --market A,U --limit 20 --batch-size 5`；`.venv/bin/python scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 --execute --market A,U --batch-size 500 --resume`；A/U 样本图谱查询确认非空、上市关系和公司定位存在。
+
 - `DONE` T-486 公开行情 K 线板块
   - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
   - 背景：公司情报和知识图谱已经能展示关系与证据，但个人用户还需要直接查看证券价格走势，避免在研究时离开系统另找行情图。

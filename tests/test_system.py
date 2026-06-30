@@ -44,6 +44,7 @@ from scripts.graph_acceptance_fixture import (
 )
 from scripts.local_data_unblock_audit import audit_local_data_unblock
 import scripts.backfill_market_data as backfill_market_data_script
+import scripts.backfill_full_knowledge_graph as backfill_full_knowledge_graph_script
 import scripts.daily_data_update_pipeline as daily_data_update_pipeline_script
 import scripts.audit_daily_update_schedule as audit_daily_update_schedule_script
 import scripts.daily_market_insight as daily_market_insight_script
@@ -22190,6 +22191,134 @@ class SystemServiceTests(unittest.TestCase):
         from app.errors import NotFoundError
         with self.assertRaises(NotFoundError):
             svc.portfolio_simulated_feedback({"proposal_id": "nonexistent_proposal_xxx"})
+
+    def test_full_knowledge_graph_bulk_dry_run_does_not_write(self) -> None:
+        result = self.service.backfill_full_knowledge_graph({"market": "A", "limit": 1, "batch_size": 1}, actor="test")
+
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["universe_count"], 1)
+        self.assertEqual(result["processed_count"], 1)
+        self.assertEqual(len(self.service.store.company_relationships), 0)
+        self.assertEqual(len(self.service.store.company_positions), 0)
+        item = result["items"][0]
+        self.assertEqual(item["issuer_id"], "issuer_001")
+        self.assertTrue(any(action["action"] == "create_listed_security_relationship" for action in item["actions"]))
+        self.assertTrue(any(action["action"] == "create_company_position" for action in item["actions"]))
+
+    def test_full_knowledge_graph_bulk_execute_is_idempotent(self) -> None:
+        first = self.service.backfill_full_knowledge_graph({"market": "A", "limit": 1, "batch_size": 1, "execute": True}, actor="test")
+        second = self.service.backfill_full_knowledge_graph({"market": "A", "limit": 1, "batch_size": 1, "execute": True}, actor="test")
+
+        self.assertEqual(first["status"], "executed")
+        self.assertEqual(second["status"], "executed")
+        self.assertEqual(len(self.service.store.company_relationships), 1)
+        self.assertEqual(len(self.service.store.company_positions), 1)
+        relationship = next(iter(self.service.store.company_relationships.values()))
+        self.assertEqual(relationship.relationship_type, "listed_security")
+        self.assertEqual(relationship.review_status, "auto_generated")
+        position = next(iter(self.service.store.company_positions.values()))
+        self.assertEqual(position.data_quality, "needs_review")
+        self.assertIn(second["items"][0]["status"], {"ready", "needs_data"})
+
+    def test_query_graph_scopes_company_positions_to_focus_issuer(self) -> None:
+        self.service.register_issuer({"issuer_id": "issuer_002", "legal_name": "Other Corp", "market": ["A"]}, actor="test")
+        self.service.register_security(
+            {"security_id": "sec_002", "issuer_id": "issuer_002", "ticker": "OTHR", "market": "A"},
+            actor="test",
+        )
+        self.service.store.industry_chains["chain_scope"] = IndustryChain(
+            chain_id="chain_scope",
+            name="Scope Chain",
+            nodes=[
+                {"node_id": "focus_node", "name": "Focus"},
+                {"node_id": "other_node", "name": "Other"},
+            ],
+        )
+        self.service.store.company_positions["pos_focus_scope"] = CompanyPosition(
+            position_id="pos_focus_scope",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            chain_id="chain_scope",
+            node_ids=["focus_node"],
+        )
+        self.service.store.company_positions["pos_other_scope"] = CompanyPosition(
+            position_id="pos_other_scope",
+            issuer_id="issuer_002",
+            security_id="sec_002",
+            chain_id="chain_scope",
+            node_ids=["other_node"],
+        )
+
+        graph = self.service.query_graph({"issuer_id": "issuer_001", "security_id": "sec_001"})
+
+        self.assertEqual({item["position_id"] for item in graph["company_positions"]}, {"pos_focus_scope"})
+        self.assertNotIn("pos_other_scope", {edge.get("from") for edge in graph["edges"]} | {edge.get("to") for edge in graph["edges"]})
+
+    def test_full_knowledge_graph_universe_excludes_out_of_scope_and_reports_hk_gap(self) -> None:
+        self.service.register_issuer({"issuer_id": "issuer_old", "legal_name": "Old Co", "market": ["A"]}, actor="test")
+        self.service.register_security(
+            {
+                "security_id": "sec_old",
+                "issuer_id": "issuer_old",
+                "ticker": "OLD",
+                "market": "A",
+                "status": "active",
+                "company_universe_scope": "out_of_scope",
+            },
+            actor="test",
+        )
+        result = self.service.backfill_full_knowledge_graph({"market": "A,HK", "limit": 10, "batch_size": 10, "audit_only": True}, actor="test")
+
+        self.assertEqual(result["status"], "audit_only")
+        self.assertEqual(result["universe_count"], 1)
+        self.assertTrue(result["universe"]["hk_universe_missing"])
+        self.assertEqual(result["items"][0]["issuer_id"], "issuer_001")
+
+    def test_full_knowledge_graph_script_writes_artifacts(self) -> None:
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        output = Path(temp_dir.name) / "run.json"
+        state = Path(temp_dir.name) / "state.json"
+        previous_db = os.environ.get("AI_QUANT_DB")
+        previous_pg = os.environ.get("AI_QUANT_POSTGRES_DSN")
+        previous_db_url = os.environ.get("AI_QUANT_DATABASE_URL")
+        db_path = Path(temp_dir.name) / "graph.sqlite"
+        os.environ["AI_QUANT_POSTGRES_DSN"] = ""
+        os.environ["AI_QUANT_DATABASE_URL"] = ""
+        os.environ["AI_QUANT_DB"] = str(db_path)
+        try:
+            exit_code = backfill_full_knowledge_graph_script.main([
+                "--audit-only",
+                "--market",
+                "A,U",
+                "--limit",
+                "0",
+                "--batch-size",
+                "2",
+                "--output",
+                str(output),
+                "--resume-state",
+                str(state),
+            ])
+        finally:
+            if previous_db is None:
+                os.environ.pop("AI_QUANT_DB", None)
+            else:
+                os.environ["AI_QUANT_DB"] = previous_db
+            if previous_pg is not None:
+                os.environ["AI_QUANT_POSTGRES_DSN"] = previous_pg
+            else:
+                os.environ.pop("AI_QUANT_POSTGRES_DSN", None)
+            if previous_db_url is not None:
+                os.environ["AI_QUANT_DATABASE_URL"] = previous_db_url
+            else:
+                os.environ.pop("AI_QUANT_DATABASE_URL", None)
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(output.exists())
+        self.assertTrue(state.exists())
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(payload["status"], "audit_only")
+        self.assertIn("state_summary", payload)
 
 
 if __name__ == "__main__":

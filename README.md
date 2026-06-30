@@ -436,7 +436,31 @@ python3 scripts/backfill_knowledge_network_evidence_links.py http://127.0.0.1:80
   --issuer-id issuer_aapl \
   --execute \
   --output artifacts/knowledge-network-evidence-link-backfill-aapl.json
+
+# 宿主机直连本机 Compose PostgreSQL 时，用 127.0.0.1:15432 覆盖容器内 DSN。
+AI_QUANT_POSTGRES_DSN=postgresql://ai_quant:ai_quant_dev_password@127.0.0.1:15432/ai_quant \
+python3 scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 \
+  --audit-only \
+  --market A,U \
+  --limit 50
+
+AI_QUANT_POSTGRES_DSN=postgresql://ai_quant:ai_quant_dev_password@127.0.0.1:15432/ai_quant \
+python3 scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 \
+  --dry-run \
+  --market A,U \
+  --limit 100 \
+  --batch-size 20
+
+AI_QUANT_POSTGRES_DSN=postgresql://ai_quant:ai_quant_dev_password@127.0.0.1:15432/ai_quant \
+python3 scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 \
+  --execute \
+  --market A,U \
+  --limit 20 \
+  --batch-size 5 \
+  --resume
 ```
+
+`backfill_full_knowledge_graph.py` 默认只生产基础关系图谱层和缺口状态，不逐股票跑完整图查询式证据链回填；需要补历史事件/关系/观点的 evidence links 时，再显式追加 `--include-evidence-links` 单独分批运行。
 
 ## 愿景上线闸门
 

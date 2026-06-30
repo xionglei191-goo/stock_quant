@@ -117,6 +117,7 @@ from .service_modules import company_quality
 from .service_modules import company_intelligence as company_intelligence_module
 from .service_modules import graph_intelligence
 from .service_modules import graph_seed
+from .service_modules import knowledge_graph_bulk
 from .service_modules import knowledge_network_backfill
 from .service_modules import market_data as market_data_module
 from .service_modules import personal_research_loop
@@ -18569,6 +18570,9 @@ class SystemService:
     def backfill_knowledge_network_evidence_links(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         return knowledge_network_backfill.backfill_knowledge_network_evidence_links(self, payload or {}, actor=actor)
 
+    def backfill_full_knowledge_graph(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        return knowledge_graph_bulk.backfill_full_knowledge_graph(self, payload or {}, actor=actor)
+
     def _decisions_for_issuer(self, issuer_id: str) -> list[DecisionPack]:
         if not issuer_id:
             return list(self.store.decisions.values())
@@ -29049,7 +29053,11 @@ class SystemService:
             return not security_filter_ids or candidate_security_id in security_filter_ids
 
         def position_in_scope(position: CompanyPosition) -> bool:
-            return not security_filter_ids or position.security_id in security_filter_ids
+            if issuer_id and position.issuer_id != issuer_id:
+                return False
+            if security_filter_ids and position.security_id and position.security_id not in security_filter_ids:
+                return False
+            return True
 
         def relationship_matches_holder_filter(relationship: CompanyRelationship) -> bool:
             if not ownership_holder_key_filter:
@@ -29335,24 +29343,24 @@ class SystemService:
                     related_node_ids = {str(item).strip() for item in related_position.node_ids if str(item).strip()}
                     if not related_node_ids:
                         continue
-                    related_issuer = self.store.issuers.get(related_position.issuer_id)
-                    if related_issuer is not None:
-                        add_node("issuers", related_issuer.issuer_id, related_issuer)
-                    if related_position.security_id:
-                        security = self.store.securities.get(related_position.security_id)
-                        if security is not None:
-                            add_node("securities", security.security_id, security)
-                            add_edge("ISSUES", security.issuer_id, security.security_id, market=security.market, ticker=security.ticker)
-                    add_node("company_positions", related_position.position_id, related_position)
-                    add_edge("POSITIONED_AS", related_position.issuer_id, related_position.position_id, role=related_position.role, data_quality=related_position.data_quality)
-                    for related_node_id in related_node_ids:
-                        add_edge("POSITION_IN_CHAIN_NODE", related_position.position_id, f"{chain.chain_id}:{related_node_id}", role=related_position.role, confidence=0.8)
                     if related_position.issuer_id == issuer.issuer_id:
                         continue
                     shared_nodes = focus_node_ids & related_node_ids
                     if chain_node_id and relationship_type_filter == "industry_peer":
                         shared_nodes &= {chain_node_id}
                     if shared_nodes and (not relationship_type_filter or relationship_type_filter == "industry_peer"):
+                        related_issuer = self.store.issuers.get(related_position.issuer_id)
+                        if related_issuer is not None:
+                            add_node("issuers", related_issuer.issuer_id, related_issuer)
+                        if related_position.security_id:
+                            security = self.store.securities.get(related_position.security_id)
+                            if security is not None:
+                                add_node("securities", security.security_id, security)
+                                add_edge("ISSUES", security.issuer_id, security.security_id, market=security.market, ticker=security.ticker)
+                        add_node("company_positions", related_position.position_id, related_position)
+                        add_edge("POSITIONED_AS", related_position.issuer_id, related_position.position_id, role=related_position.role, data_quality=related_position.data_quality)
+                        for related_node_id in related_node_ids:
+                            add_edge("POSITION_IN_CHAIN_NODE", related_position.position_id, f"{chain.chain_id}:{related_node_id}", role=related_position.role, confidence=0.8)
                         add_edge(
                             "INDUSTRY_PEER",
                             issuer.issuer_id,
@@ -29369,6 +29377,18 @@ class SystemService:
                     if chain_node_id and relationship_type_filter == "upstream_of":
                         upstream_nodes &= {chain_node_id}
                     if upstream_nodes and (not relationship_type_filter or relationship_type_filter == "upstream_of"):
+                        related_issuer = self.store.issuers.get(related_position.issuer_id)
+                        if related_issuer is not None:
+                            add_node("issuers", related_issuer.issuer_id, related_issuer)
+                        if related_position.security_id:
+                            security = self.store.securities.get(related_position.security_id)
+                            if security is not None:
+                                add_node("securities", security.security_id, security)
+                                add_edge("ISSUES", security.issuer_id, security.security_id, market=security.market, ticker=security.ticker)
+                        add_node("company_positions", related_position.position_id, related_position)
+                        add_edge("POSITIONED_AS", related_position.issuer_id, related_position.position_id, role=related_position.role, data_quality=related_position.data_quality)
+                        for related_node_id in related_node_ids:
+                            add_edge("POSITION_IN_CHAIN_NODE", related_position.position_id, f"{chain.chain_id}:{related_node_id}", role=related_position.role, confidence=0.8)
                         add_edge(
                             "INDUSTRY_UPSTREAM_OF",
                             related_position.issuer_id,
@@ -29385,6 +29405,18 @@ class SystemService:
                     if chain_node_id and relationship_type_filter == "downstream_of":
                         downstream_nodes &= {chain_node_id}
                     if downstream_nodes and (not relationship_type_filter or relationship_type_filter == "downstream_of"):
+                        related_issuer = self.store.issuers.get(related_position.issuer_id)
+                        if related_issuer is not None:
+                            add_node("issuers", related_issuer.issuer_id, related_issuer)
+                        if related_position.security_id:
+                            security = self.store.securities.get(related_position.security_id)
+                            if security is not None:
+                                add_node("securities", security.security_id, security)
+                                add_edge("ISSUES", security.issuer_id, security.security_id, market=security.market, ticker=security.ticker)
+                        add_node("company_positions", related_position.position_id, related_position)
+                        add_edge("POSITIONED_AS", related_position.issuer_id, related_position.position_id, role=related_position.role, data_quality=related_position.data_quality)
+                        for related_node_id in related_node_ids:
+                            add_edge("POSITION_IN_CHAIN_NODE", related_position.position_id, f"{chain.chain_id}:{related_node_id}", role=related_position.role, confidence=0.8)
                         add_edge(
                             "INDUSTRY_DOWNSTREAM_OF",
                             issuer.issuer_id,
