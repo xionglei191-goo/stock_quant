@@ -711,9 +711,11 @@ def run_graph_layout_acceptance(
             failures.append({"check": "node_expansion_state", "expected": "clicked node enters expandedIds", "actual": expansion})
         elif expansion.get("focus_after") != expansion.get("node_id"):
             failures.append({"check": "node_click_focus_switch", "expected": expansion.get("node_id"), "actual": expansion})
-        elif int(expansion.get("visible_neighbors_after", 0)) < min_visible_neighbors_after_click:
+        elif int(expansion.get("hidden_neighbors_before", 0)) <= 0 and int(expansion.get("visible_neighbors_after", 0)) < 1:
+            failures.append({"check": "node_click_visible_neighbor", "expected": ">=1 existing visible neighbor for leaf/sparse node", "actual": expansion})
+        elif int(expansion.get("hidden_neighbors_before", 0)) > 0 and int(expansion.get("visible_neighbors_after", 0)) < min_visible_neighbors_after_click:
             failures.append({"check": "node_expansion_visible_neighbors", "expected": f">={min_visible_neighbors_after_click}", "actual": expansion})
-        elif (
+        elif int(expansion.get("hidden_neighbors_before", 0)) > 0 and (
             int(expansion.get("neighbor_delta", 0)) < min_expansion_neighbor_delta
             and int(expansion.get("node_delta", 0)) < 1
             and int(expansion.get("link_delta", 0)) < 2
