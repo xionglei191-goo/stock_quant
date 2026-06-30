@@ -83,6 +83,7 @@ def graph_enrichment_runner(service: Any, payload: Mapping[str, Any] | None = No
     started_at = utcnow().isoformat()
     universe = knowledge_graph_bulk.select_full_graph_universe(service.store, {**payload, "limit": limit})
     targets = [knowledge_graph_bulk.BulkGraphTarget(**item) for item in universe["targets"]]
+    skip_issuer_ids = {str(item).strip() for item in payload.get("skip_issuer_ids", []) if str(item).strip()}
     items: list[dict[str, Any]] = []
     skipped_items: list[dict[str, Any]] = []
     failed_items: list[dict[str, Any]] = []
@@ -91,6 +92,17 @@ def graph_enrichment_runner(service: Any, payload: Mapping[str, Any] | None = No
     missing_counter = Counter()
     selected = 0
     for target in targets:
+        if target.issuer_id in skip_issuer_ids:
+            skipped_items.append(
+                {
+                    "issuer_id": target.issuer_id,
+                    "security_id": target.security_id,
+                    "symbol": target.symbol,
+                    "market": target.market,
+                    "reason": "resume_completed",
+                }
+            )
+            continue
         quality_before = service.graph_quality_center(
             {
                 **payload,
@@ -197,6 +209,7 @@ def graph_enrichment_runner(service: Any, payload: Mapping[str, Any] | None = No
         "universe_count": universe.get("target_count", 0),
         "processed_count": len(items),
         "skipped_count": len(skipped_items),
+        "resume_skipped_count": sum(1 for item in skipped_items if item.get("reason") == "resume_completed"),
         "failed_count": len(failed_items),
         "batch_size": batch_size,
         "priority_layers": sorted(priority_layers),

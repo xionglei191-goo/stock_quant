@@ -22504,6 +22504,25 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(detailed_events)
         self.assertEqual(detailed_events[0].review_status, "needs_review")
 
+    def test_graph_enrichment_runner_respects_skip_issuer_ids(self) -> None:
+        self._add_graph_enrichment_fixture()
+
+        result = self.service.graph_enrichment_runner(
+            {
+                "market": "A",
+                "limit": 1,
+                "batch_size": 1,
+                "skip_issuer_ids": ["issuer_001"],
+            },
+            actor="test",
+        )
+
+        self.assertEqual(result["processed_count"], 0)
+        self.assertEqual(result["resume_skipped_count"], 1)
+        self.assertEqual(result["skipped_items"][0]["reason"], "resume_completed")
+        self.assertFalse(self.service.store.company_events)
+        self.assertFalse(self.service.store.company_relationships)
+
     def test_graph_enrichment_runner_script_writes_artifact_and_state(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(handler_self):  # noqa: N802

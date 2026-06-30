@@ -630,7 +630,7 @@
   - **已完成（本轮）**：`execute` 只写入本地事件/关系候选，关系候选默认 `review_status=needs_review`、`relationship_status=unknown`，结构化披露事件默认 `review_status=needs_review`；后续仍需审核队列提升为可信事实边。
   - **已完成（本轮）**：`knowledge_graph_bulk.select_full_graph_universe` 支持 `issuer_ids`、`security_ids` 和 `symbols` 精确过滤，便于质量中心和增厚 runner 对单 issuer 复验。
   - 当前边界：不连接外部收费数据，不把研报观点当事实，不自动审核候选，不接券商，不做真实交易。
-  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_writes_artifact_and_state`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_respects_skip_issuer_ids tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_writes_artifact_and_state`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
 
 - `DONE` T-486 公开行情 K 线板块
   - 对应：E7-US1, E8-US2；愿景扩展/生产化增强

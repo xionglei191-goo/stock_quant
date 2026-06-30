@@ -53,6 +53,7 @@ Graph quality gaps were visible but not operationalized into a recoverable batch
 - Company relationship candidates remain `review_status=needs_review` and `relationship_status=unknown`.
 - Structured disclosure events remain `review_status=needs_review`.
 - The CLI writes both a report artifact and a resumable state file.
+- Resume behavior now passes completed issuer IDs to the service, and the service honors `skip_issuer_ids` with `resume_skipped_count`.
 
 ### SystemService Growth Freeze Review
 
@@ -112,11 +113,23 @@ git diff --check
 - `app/service_modules/graph_enrichment_runner.py`: batch enrichment module.
 - `scripts/graph_enrichment_runner.py`: CLI runner.
 - `tests/test_system.py`: focused regressions.
+- `app/service_modules/knowledge_graph_bulk.py`: precise `issuer_ids`/`security_ids`/`symbols` universe filters.
 - Focused unit validation passed:
 
 ```bash
 python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_writes_artifact_and_state
 ```
+
+- Resume regression passed:
+
+```bash
+python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_respects_skip_issuer_ids tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_writes_artifact_and_state tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates
+```
+
+- Current-code isolated service smoke passed on port `55610`:
+  - `python3 scripts/graph_quality_center.py http://127.0.0.1:55610 --market A,U --limit 1 --output artifacts/graph-quality-center/current-code-smoke.json --timeout 20`
+  - `python3 scripts/graph_enrichment_runner.py http://127.0.0.1:55610 --market A,U --limit 1 --batch-size 1 --output artifacts/graph-enrichment-runner/current-code-smoke.json --resume-state artifacts/graph-enrichment-runner/current-code-smoke-state.json --timeout 20`
+  - Both returned valid schema/status. The isolated SQLite smoke had no universe rows, so `processed_count=0` is expected.
 
 ## Next Recommended Action
 
