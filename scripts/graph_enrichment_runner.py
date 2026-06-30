@@ -38,19 +38,23 @@ def _load_state(path: Path) -> dict[str, Any]:
 def _write_state(path: Path, report: dict[str, Any], previous: dict[str, Any]) -> None:
     completed = set(str(item) for item in previous.get("completed_issuer_ids", []) if str(item))
     failed = set(str(item) for item in previous.get("failed_issuer_ids", []) if str(item))
+    report_status = str(report.get("status", "") or "")
+    executed_run = bool(report.get("execute")) and report_status == "executed"
     for row in report.get("items", []) or []:
         issuer_id = str(row.get("issuer_id", "") or "")
         if not issuer_id:
             continue
         if row.get("status") == "failed_with_reason":
             failed.add(issuer_id)
-        else:
+        elif executed_run and row.get("status") == "executed":
             completed.add(issuer_id)
             failed.discard(issuer_id)
     state = {
         "schema_id": "graph-enrichment-runner-state-v1",
         "last_status": report.get("status"),
         "last_completed_at": report.get("completed_at"),
+        "last_execute": bool(report.get("execute")),
+        "dry_run_items_not_completed": 0 if executed_run else len(report.get("items", []) or []),
         "completed_issuer_ids": sorted(completed),
         "failed_issuer_ids": sorted(failed),
         "completed_count": len(completed),

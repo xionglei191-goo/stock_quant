@@ -22538,7 +22538,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(result["processed_count"], 0)
         self.assertEqual(result["global_failures"][0]["check"], "target_universe")
 
-    def test_graph_enrichment_runner_script_writes_artifact_and_state(self) -> None:
+    def test_graph_enrichment_runner_script_dry_run_does_not_mark_completed_state(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(handler_self):  # noqa: N802
                 length = int(handler_self.headers.get("Content-Length", "0"))
@@ -22588,7 +22588,61 @@ class SystemServiceTests(unittest.TestCase):
         self.assertTrue(output.exists())
         self.assertTrue(state.exists())
         state_payload = json.loads(state.read_text(encoding="utf-8"))
+        self.assertEqual(state_payload["completed_issuer_ids"], [])
+        self.assertEqual(state_payload["dry_run_items_not_completed"], 1)
+
+    def test_graph_enrichment_runner_script_execute_marks_completed_state(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(handler_self):  # noqa: N802
+                length = int(handler_self.headers.get("Content-Length", "0"))
+                json.loads(handler_self.rfile.read(length).decode("utf-8"))
+                payload = {
+                    "success": True,
+                    "trace_id": "trace_graph_enrichment_execute",
+                    "data": {
+                        "schema_id": "graph-enrichment-runner-v1",
+                        "status": "executed",
+                        "execute": True,
+                        "processed_count": 1,
+                        "failed_count": 0,
+                        "items": [{"issuer_id": "issuer_001", "status": "executed"}],
+                    },
+                }
+                body = json.dumps(payload).encode("utf-8")
+                handler_self.send_response(200)
+                handler_self.send_header("Content-Type", "application/json")
+                handler_self.send_header("Content-Length", str(len(body)))
+                handler_self.end_headers()
+                handler_self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A003
+                return
+
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        output = Path(temp_dir.name) / "enrichment-execute.json"
+        state = Path(temp_dir.name) / "state.json"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+
+        result = graph_enrichment_runner_script.run_graph_enrichment_runner(
+            f"http://127.0.0.1:{server.server_port}",
+            output=output,
+            markets="A",
+            limit=1,
+            batch_size=1,
+            resume_state=state,
+            execute=True,
+            timeout=5,
+        )
+
+        self.assertEqual(result["schema_id"], "graph-enrichment-runner-v1")
+        state_payload = json.loads(state.read_text(encoding="utf-8"))
         self.assertEqual(state_payload["completed_issuer_ids"], ["issuer_001"])
+        self.assertEqual(state_payload["dry_run_items_not_completed"], 0)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,7 @@ Graph quality gaps were visible but not operationalized into a recoverable batch
 - Company relationship candidates remain `review_status=needs_review` and `relationship_status=unknown`.
 - Structured disclosure events remain `review_status=needs_review`.
 - The CLI writes both a report artifact and a resumable state file.
+- Dry-run CLI state does not mark issuer IDs as completed; only successful execute rows are added to `completed_issuer_ids`.
 - Resume behavior now passes completed issuer IDs to the service, and the service honors `skip_issuer_ids` with `resume_skipped_count`.
 - Empty target universes now return `status=no_targets` and a `target_universe` global failure; the CLI exits non-zero for that state.
 
@@ -75,7 +76,7 @@ Graph quality gaps were visible but not operationalized into a recoverable batch
 ## Validation Plan
 
 ```bash
-python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_writes_artifact_and_state
+python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_dry_run_does_not_mark_completed_state tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_execute_marks_completed_state
 python3 -m py_compile app/*.py tests/*.py scripts/*.py
 python3 scripts/ui_static_check.py
 python3 scripts/check_handoffs.py
@@ -118,13 +119,13 @@ git diff --check
 - Focused unit validation passed:
 
 ```bash
-python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_writes_artifact_and_state
+python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_dry_run_does_not_mark_completed_state tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_execute_marks_completed_state
 ```
 
 - Resume regression passed:
 
 ```bash
-python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_respects_skip_issuer_ids tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_writes_artifact_and_state tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates
+python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_respects_skip_issuer_ids tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_dry_run_does_not_mark_completed_state tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_execute_marks_completed_state tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates
 ```
 
 - Current-code isolated service smoke passed on port `55610`:

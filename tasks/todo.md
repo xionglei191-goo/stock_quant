@@ -628,11 +628,12 @@
   - **已完成（本轮）**：新增 `app/service_modules/graph_enrichment_runner.py`，按 production universe 和 priority layers 选择需要增厚的股票，调用质量中心生成 before/after 缺口摘要。
   - **已完成（本轮）**：新增 `GET|POST /api/graph/enrichment-runner`，复用现有 `build_company_events` 和 `build_company_relationships`，不新增事实抽取器，不新增 schema。
   - **已完成（本轮）**：新增 `scripts/graph_enrichment_runner.py`，支持 `--audit-only`、`--execute`、`--market`、`--limit`、`--batch-size`、`--priority-layers`、`--resume` 和 `--resume-state`，默认输出 `artifacts/graph-enrichment-runner/latest.json` 与 state。
+  - **已完成（技术债修正）**：dry-run state 不会把 issuer 标记为 completed，只有成功 execute 的行才进入 `completed_issuer_ids`，避免后续 `--execute --resume` 跳过只预览过的公司。
   - **已完成（本轮）**：`execute` 只写入本地事件/关系候选，关系候选默认 `review_status=needs_review`、`relationship_status=unknown`，结构化披露事件默认 `review_status=needs_review`；后续仍需审核队列提升为可信事实边。
   - **已完成（本轮）**：`knowledge_graph_bulk.select_full_graph_universe` 支持 `issuer_ids`、`security_ids` 和 `symbols` 精确过滤，便于质量中心和增厚 runner 对单 issuer 复验。
   - 当前边界：不连接外部收费数据，不把研报观点当事实，不自动审核候选，不接券商，不做真实交易。
   - **已完成（质量门修正）**：空目标 universe 返回 `status=no_targets` 并非零退出，避免增厚 runner 在无数据环境中误报完成。
-  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_respects_skip_issuer_ids tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_writes_artifact_and_state`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_respects_skip_issuer_ids tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_dry_run_does_not_mark_completed_state tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_execute_marks_completed_state`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
 
 - `DONE` T-486 公开行情 K 线板块
   - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
