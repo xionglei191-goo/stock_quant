@@ -54,7 +54,13 @@ def _write_state(path: Path, report: dict[str, Any], previous: dict[str, Any]) -
         "last_status": report.get("status"),
         "last_completed_at": report.get("completed_at"),
         "last_execute": bool(report.get("execute")),
-        "dry_run_items_not_completed": 0 if executed_run else len(report.get("items", []) or []),
+        "dry_run_items_not_completed": len(
+            [
+                row
+                for row in report.get("items", []) or []
+                if not executed_run or row.get("status") != "executed"
+            ]
+        ),
         "completed_issuer_ids": sorted(completed),
         "failed_issuer_ids": sorted(failed),
         "completed_count": len(completed),

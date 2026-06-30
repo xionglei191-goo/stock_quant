@@ -494,9 +494,9 @@ python3 scripts/graph_enrichment_runner.py http://127.0.0.1:8000 \
 
 `backfill_full_knowledge_graph.py` 默认只生产基础关系图谱层和缺口状态，不逐股票跑完整图查询式证据链回填；需要补历史事件/关系/观点的 evidence links 时，再显式追加 `--include-evidence-links` 单独分批运行。
 
-`graph_quality_center.py` 是 T-568 的统一验收入口：默认只读输出每只样本的图谱缺口、质量门、重复/底层标签泄漏、跨层链接和下一步增强动作；`--run-enrichment` 会调用已有公司事件和关系 builder，默认仍是 dry-run，只有同时传 `--execute` 才写入本地事件/关系候选；`--browser-matrix` 会复用浏览器级图谱验收，确认 UI 不空图、可点击展开和布局质量。
+`graph_quality_center.py` 是 T-568 的统一验收入口：默认只读输出每只样本的图谱缺口、质量门、重复/底层标签泄漏、跨层链接和下一步增强动作；质量门会按前端语义标签清洗口径评估 issuer/security/market_data 等内部 ID，避免已清洗展示的行情节点被误判为 raw label 泄漏；`--run-enrichment` 会调用已有公司事件和关系 builder，默认仍是 dry-run，只有同时传 `--execute` 才写入本地事件/关系候选；`--browser-matrix` 会复用浏览器级图谱验收，确认 UI 不空图、可点击展开和布局质量。
 
-`graph_enrichment_runner.py` 是 T-569 的批量增厚入口：按质量中心缺口优先筛选股票，分批调用现有公司事件和关系 builder，输出候选事件/关系数量、执行状态和可恢复 state。默认 dry-run；`--execute` 只写入本地 `needs_review` 候选事件/关系，仍需审核后才可提升为可信事实边。
+`graph_enrichment_runner.py` 是 T-569 的批量增厚入口：按质量中心缺口优先筛选股票，分批调用现有公司事件和关系 builder，输出候选事件/关系数量、执行状态和可恢复 state。默认 dry-run；`--execute` 只写入本地 `needs_review` 候选事件/关系，仍需审核后才可提升为可信事实边。若某只股票没有任何 planned/created/review-candidate 活动，行状态会是 `no_candidate_sources`，不会写入 `completed_issuer_ids`，方便后续补入公告、研报、股东表或行情后继续 `--resume`。
 
 ## 愿景上线闸门
 

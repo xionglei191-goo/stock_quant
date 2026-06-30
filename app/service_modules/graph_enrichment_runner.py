@@ -65,6 +65,18 @@ def _action_summary(item: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _row_candidate_activity(row: Mapping[str, Any]) -> dict[str, int]:
+    event_result = row.get("event_result", {}) or {}
+    relationship_result = row.get("relationship_result", {}) or {}
+    return {
+        "events_planned": int(event_result.get("events_planned", 0) or 0),
+        "events_created": int(event_result.get("events_created", 0) or 0),
+        "relationships_planned": int(relationship_result.get("relationships_planned", 0) or 0),
+        "relationships_created": int(relationship_result.get("relationships_created", 0) or 0),
+        "relationship_review_candidates": int(relationship_result.get("relationship_review_candidate_count", 0) or 0),
+    }
+
+
 def graph_enrichment_runner(service: Any, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
     payload = payload or {}
     execute = _truthy(payload.get("execute", False))
@@ -191,6 +203,11 @@ def graph_enrichment_runner(service: Any, payload: Mapping[str, Any] | None = No
             )
             after_item = (quality_after.get("items") or [{}])[0]
             row["after"] = _action_summary(after_item)
+            activity = _row_candidate_activity(row)
+            row["candidate_activity"] = activity
+            if not audit_only and not any(activity.values()):
+                row["status"] = "no_candidate_sources"
+                row["next_action"] = "补充公告、研报、股东表或行情来源后再重跑增厚；本次不应写入完成恢复集。"
         except Exception as exc:  # noqa: BLE001 - batch runner should report and continue
             row["status"] = "failed_with_reason"
             row["errors"].append(str(exc))

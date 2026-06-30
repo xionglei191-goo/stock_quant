@@ -619,6 +619,8 @@
   - **已完成（本轮）**：修正 T-566 roadmap 重复状态，旧 DOING 口径统一为 DONE；T-568 作为后续质量闭环主任务。
   - 当前边界：质量中心不是新的事实抽取器；它只做编排、审计和调用已有 builder。不新增数据库 schema，不改变 `/api/graph/query` schema，不连接券商，不做真实交易。
   - **已完成（质量门修正）**：空目标 universe 不再返回 `passed`，而是 `status=no_targets`、`global_failures.target_universe`，CLI 非零退出，避免空图被误判为最佳展示。
+  - **已完成（展示质量修正）**：质量中心 raw label gate 与前端语义标签清洗对齐，`market_data` 节点不再以 `md_public_eod...` 内部 ID 展示/验收，真实 PostgreSQL A/U 小样本 raw label 泄漏从 21 降为 0。
+  - **已完成（浏览器验收修正）**：浏览器性能门槛改为结合 rAF FPS 与平均帧耗时判断，避免 headless 调度抖动误判；当前代码 PostgreSQL 服务对 `000001/AAPL` 多股票图谱验收通过，均为 42 节点/110 边、0 贴边、保存恢复通过。
   - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_center_reports_gaps_and_actions tests.test_system.SystemServiceTests.test_graph_quality_center_enrichment_dry_run_does_not_write tests.test_system.SystemServiceTests.test_graph_quality_center_script_writes_artifact`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
 
 - `DONE` T-569 图谱真实事件与关系批量增厚
@@ -633,6 +635,7 @@
   - **已完成（本轮）**：`knowledge_graph_bulk.select_full_graph_universe` 支持 `issuer_ids`、`security_ids` 和 `symbols` 精确过滤，便于质量中心和增厚 runner 对单 issuer 复验。
   - 当前边界：不连接外部收费数据，不把研报观点当事实，不自动审核候选，不接券商，不做真实交易。
   - **已完成（质量门修正）**：空目标 universe 返回 `status=no_targets` 并非零退出，避免增厚 runner 在无数据环境中误报完成。
+  - **已完成（恢复语义修正）**：增厚 runner 现在输出 `candidate_activity`，若事件/关系 builder 没有任何 planned/created/review candidate，则行状态为 `no_candidate_sources`；即使 execute 报告返回，此类 issuer 也不会进入 CLI `completed_issuer_ids`，避免后续有新材料时被 `--resume` 跳过。
   - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_respects_skip_issuer_ids tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_dry_run_does_not_mark_completed_state tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_execute_marks_completed_state`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
 
 - `DONE` T-486 公开行情 K 线板块

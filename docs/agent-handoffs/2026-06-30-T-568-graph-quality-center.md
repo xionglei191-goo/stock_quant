@@ -54,6 +54,8 @@ Without a single quality center, graph work splits across separate readiness che
 - Writes require `run_enrichment=true` and `execute=true`.
 - Candidate event/relationship records remain review-gated and local-only.
 - Optional `--browser-matrix` delegates to `scripts/ui_graph_multi_symbol_acceptance.py`.
+- The quality gate now applies the same readable label cleanup used by the UI for issuer/security/market-data identifiers.
+- `market_data` graph nodes are treated as first-class display nodes in the SVG explorer and render as `行情 <security> <date>` instead of raw `md_public_eod...` IDs.
 
 ### SystemService Growth Freeze Review
 
@@ -126,6 +128,14 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_cent
 - `git diff --check`: passed.
 - `python3 scripts/check_handoffs.py`: rerun required after this template correction.
 - Current-code isolated service no-target smoke passed on port `55611`: `scripts/graph_quality_center.py` returned `status=no_targets` and exited with code `1`, which prevents empty graphs from being treated as quality-passed.
+- Current-code PostgreSQL sample smoke passed on port `55612`:
+  - Existing long-running `http://127.0.0.1:8000` returned `404` for the new graph endpoints because it was an older process, so validation used a restarted current-code service on `55612` pointed at the same PostgreSQL DSN.
+  - `python3 scripts/graph_quality_center.py http://127.0.0.1:55612 --market A,U --limit 5 --output artifacts/graph-quality-center/postgres-current-code-sample-after-labels.json --timeout 60`
+  - Result: `status=needs_attention`, `processed_count=5`, `raw_label_leaks=0` for sampled items. Remaining failures are data-layer gaps such as `layer_count`, not raw display labels.
+- Browser graph acceptance passed against the same current-code PostgreSQL service:
+  - `python3 scripts/ui_graph_multi_symbol_acceptance.py http://127.0.0.1:55612 --symbols 000001,AAPL --output artifacts/ui-graph-multi-symbol-label-cleanup-acceptance-pass.json --timeout 60`
+  - Result: `status=passed`, `case_count=2`, both symbols had `42` nodes, `110` links, `near_edge_nodes=0`, and saved subgraph restore count `3`.
+  - `scripts/ui_graph_layout_acceptance.py` now treats rAF FPS as a scheduling signal and pairs it with average frame time; low FPS only fails when frame work is also high, while `graph_avg_frame_ms` remains a hard gate.
 
 ## Next Recommended Action
 

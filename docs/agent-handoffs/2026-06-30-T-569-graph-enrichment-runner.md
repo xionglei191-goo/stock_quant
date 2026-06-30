@@ -56,6 +56,8 @@ Graph quality gaps were visible but not operationalized into a recoverable batch
 - Dry-run CLI state does not mark issuer IDs as completed; only successful execute rows are added to `completed_issuer_ids`.
 - Resume behavior now passes completed issuer IDs to the service, and the service honors `skip_issuer_ids` with `resume_skipped_count`.
 - Empty target universes now return `status=no_targets` and a `target_universe` global failure; the CLI exits non-zero for that state.
+- Each processed row now includes `candidate_activity` for planned/created event and relationship candidates.
+- If a row has no planned, created, or review-candidate activity, its status is `no_candidate_sources`; CLI state does not add that issuer to `completed_issuer_ids` even in an execute report, so future runs can pick it up after new local materials arrive.
 
 ### SystemService Growth Freeze Review
 
@@ -133,6 +135,10 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_r
   - `python3 scripts/graph_enrichment_runner.py http://127.0.0.1:55610 --market A,U --limit 1 --batch-size 1 --output artifacts/graph-enrichment-runner/current-code-smoke.json --resume-state artifacts/graph-enrichment-runner/current-code-smoke-state.json --timeout 20`
   - Both returned valid schema/status. The isolated SQLite smoke had no universe rows, so `processed_count=0` is expected.
 - Current-code no-target smoke passed on port `55611`: `scripts/graph_enrichment_runner.py` returned `status=no_targets` and exited with code `1`.
+- Current-code PostgreSQL sample smoke passed on port `55612`:
+  - Existing long-running `http://127.0.0.1:8000` returned `404` for the new graph endpoints because it was an older process, so validation used a restarted current-code service on `55612` pointed at the same PostgreSQL DSN.
+  - `python3 scripts/graph_enrichment_runner.py http://127.0.0.1:55612 --market A,U --limit 5 --batch-size 2 --output artifacts/graph-enrichment-runner/postgres-current-code-sample-after-labels.json --resume-state artifacts/graph-enrichment-runner/postgres-current-code-sample-after-labels-state.json --timeout 60`
+  - Result: `status=dry_run`, `processed_count=2`, `failed_count=0`, event planned `6`, relationship planned `5`, review candidates `3`, and state `completed_issuer_ids=[]`, `dry_run_items_not_completed=2`.
 
 ## Next Recommended Action
 

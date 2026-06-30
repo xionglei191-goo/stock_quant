@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import re
 from typing import Any, Mapping
 
 from app.utils import to_plain, utcnow
@@ -9,7 +10,37 @@ from . import knowledge_graph_bulk
 from .graph_intelligence import graph_node_identity
 
 
-RAW_LABEL_MARKERS = ("obsidian", "relationship", "pos_", "doc_", "hold_", "issuer_", "security_", "sec_")
+RAW_LABEL_MARKERS = ("obsidian", "relationship", "pos_", "doc_", "hold_", "issuer_", "security_", "sec_", "md_")
+
+
+def _status_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text.replace("_", " ").replace("-", " ").strip().title()
+
+
+def _readable_id_label(value: Any, row: Mapping[str, Any] | None = None) -> str:
+    row = row or {}
+    identifier = str(value or "").strip()
+    lower = identifier.lower()
+    if not identifier:
+        return ""
+    if lower.startswith("issuer_"):
+        return str(identifier[len("issuer_") :]).upper()
+    if lower.startswith("security_"):
+        return str(identifier[len("security_") :].replace("_", " ")).upper()
+    if lower.startswith("sec_"):
+        return str(identifier[len("sec_") :]).upper()
+    market_match = re.match(r"^md_.+?_(sec_[a-z0-9_]+|security_[a-z0-9_]+)_([0-9]{4}-[0-9]{2}-[0-9]{2})_(eod|delayed)$", lower)
+    if market_match:
+        security_label = _readable_id_label(row.get("security_id") or market_match.group(1))
+        return f"行情 {security_label} {market_match.group(2)}"
+    if lower.startswith("md_"):
+        date = str(row.get("as_of_date", "") or "").strip()
+        security_label = _readable_id_label(row.get("security_id", ""))
+        return f"行情 {security_label} {date}".strip()
+    return ""
 
 
 def _truthy(value: Any) -> bool:
@@ -29,6 +60,19 @@ def _symbols_payload(symbol: str, payload: Mapping[str, Any], *, execute: bool) 
 
 
 def _node_label(collection: str, row: Mapping[str, Any]) -> str:
+    if collection == "market_data":
+        readable = _readable_id_label(row.get("data_id") or graph_node_identity(collection, row), row)
+        if readable:
+            return readable
+    if collection == "issuers":
+        ticker = str(row.get("ticker") or row.get("symbol") or "").strip()
+        if ticker:
+            return f"{ticker.upper()} · 公司"
+    if collection == "securities":
+        ticker = str(row.get("ticker") or row.get("symbol") or "").strip()
+        if ticker:
+            market = str(row.get("market") or row.get("exchange") or "证券").strip()
+            return f"{ticker.upper()} · {market}"
     for key in [
         "label",
         "name",
@@ -44,14 +88,16 @@ def _node_label(collection: str, row: Mapping[str, Any]) -> str:
     ]:
         value = str(row.get(key, "") or "").strip()
         if value:
-            return value
+            readable = _readable_id_label(value, row)
+            return readable or value
     metadata = row.get("metadata")
     if isinstance(metadata, Mapping):
         for key in ["entity_name", "display_name", "label"]:
             value = str(metadata.get(key, "") or "").strip()
             if value:
                 return value
-    return graph_node_identity(collection, row)
+    identity = graph_node_identity(collection, row)
+    return _readable_id_label(identity, row) or _status_label(identity)
 
 
 def _graph_quality_snapshot(graph: Mapping[str, Any], readiness: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:

@@ -22351,6 +22351,32 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(result["needs_attention_count"], 1)
         self.assertEqual(result["global_failures"][0]["check"], "target_universe")
 
+    def test_graph_quality_center_does_not_flag_market_data_ids_as_raw_labels(self) -> None:
+        self.service.register_market_data_point(
+            {
+                "data_id": "md_public_eod_market_data_sec_001_2026-06-29_eod",
+                "security_id": "sec_001",
+                "source_id": "public_eod_market_data",
+                "market": "A",
+                "as_of_date": "2026-06-29",
+                "data_type": "eod",
+                "open": 10.0,
+                "high": 10.5,
+                "low": 9.8,
+                "close": 10.2,
+                "volume": 1000,
+            },
+            actor="test",
+        )
+
+        result = self.service.graph_quality_center(
+            {"market": "A", "limit": 1, "min_edges": 1, "min_communities": 1, "min_layers": 1, "max_raw_label_leaks": 0},
+            actor="test",
+        )
+
+        leaks = result["items"][0]["quality_gate"]["raw_label_leaks"]
+        self.assertNotIn("md_public_eod_market_data_sec_001_2026-06-29_eod", leaks)
+
     def test_graph_quality_center_enrichment_dry_run_does_not_write(self) -> None:
         self.service.store.evidence["ev_graph_quality"] = Evidence(
             evidence_id="ev_graph_quality",
@@ -22538,6 +22564,28 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(result["processed_count"], 0)
         self.assertEqual(result["global_failures"][0]["check"], "target_universe")
 
+    def test_graph_enrichment_runner_marks_no_candidate_sources(self) -> None:
+        result = self.service.graph_enrichment_runner(
+            {
+                "market": "A",
+                "limit": 1,
+                "batch_size": 1,
+                "priority_layers": "company_event",
+                "include_relationships": False,
+                "include_market_data": False,
+                "include_research_coverage": False,
+                "include_disclosures": False,
+            },
+            actor="test",
+        )
+
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["processed_count"], 1)
+        row = result["items"][0]
+        self.assertEqual(row["status"], "no_candidate_sources")
+        self.assertEqual(row["candidate_activity"]["events_planned"], 0)
+        self.assertIn("补充公告", row["next_action"])
+
     def test_graph_enrichment_runner_script_dry_run_does_not_mark_completed_state(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(handler_self):  # noqa: N802
@@ -22643,6 +22691,59 @@ class SystemServiceTests(unittest.TestCase):
         state_payload = json.loads(state.read_text(encoding="utf-8"))
         self.assertEqual(state_payload["completed_issuer_ids"], ["issuer_001"])
         self.assertEqual(state_payload["dry_run_items_not_completed"], 0)
+
+    def test_graph_enrichment_runner_script_execute_does_not_complete_no_candidate_sources(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(handler_self):  # noqa: N802
+                length = int(handler_self.headers.get("Content-Length", "0"))
+                json.loads(handler_self.rfile.read(length).decode("utf-8"))
+                payload = {
+                    "success": True,
+                    "trace_id": "trace_graph_enrichment_no_sources",
+                    "data": {
+                        "schema_id": "graph-enrichment-runner-v1",
+                        "status": "executed",
+                        "execute": True,
+                        "processed_count": 1,
+                        "failed_count": 0,
+                        "items": [{"issuer_id": "issuer_001", "status": "no_candidate_sources"}],
+                    },
+                }
+                body = json.dumps(payload).encode("utf-8")
+                handler_self.send_response(200)
+                handler_self.send_header("Content-Type", "application/json")
+                handler_self.send_header("Content-Length", str(len(body)))
+                handler_self.end_headers()
+                handler_self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A003
+                return
+
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        output = Path(temp_dir.name) / "enrichment-no-sources.json"
+        state = Path(temp_dir.name) / "state.json"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+
+        result = graph_enrichment_runner_script.run_graph_enrichment_runner(
+            f"http://127.0.0.1:{server.server_port}",
+            output=output,
+            markets="A",
+            limit=1,
+            batch_size=1,
+            resume_state=state,
+            execute=True,
+            timeout=5,
+        )
+
+        self.assertEqual(result["schema_id"], "graph-enrichment-runner-v1")
+        state_payload = json.loads(state.read_text(encoding="utf-8"))
+        self.assertEqual(state_payload["completed_issuer_ids"], [])
+        self.assertEqual(state_payload["dry_run_items_not_completed"], 1)
 
 
 if __name__ == "__main__":

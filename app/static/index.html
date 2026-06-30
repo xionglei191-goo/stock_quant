@@ -5479,6 +5479,16 @@
         return String(id.slice("security_".length).replace(/_/g, " ")).toUpperCase();
       }
       if (lower.startsWith("sec_")) return String(id.slice("sec_".length)).toUpperCase();
+      const marketMatch = lower.match(/^md_.+?_(sec_[a-z0-9_]+|security_[a-z0-9_]+)_([0-9]{4}-[0-9]{2}-[0-9]{2})_(eod|delayed)$/);
+      if (marketMatch) {
+        const securityLabel = graphReadableIdLabel(meta.security_id || marketMatch[1]);
+        return `行情 ${securityLabel} ${marketMatch[2]}`;
+      }
+      if (lower.startsWith("md_")) {
+        const securityLabel = graphReadableIdLabel(meta.security_id || "");
+        const date = meta.as_of_date || "";
+        return `行情${securityLabel ? ` ${securityLabel}` : ""}${date ? ` ${date}` : ""}`;
+      }
       const suffix = lower.includes(":") ? lower.split(":").at(-1) : "";
       const parts = lower.split(/[_:]+/).filter(Boolean);
       const company = parts.map(graphTokenLabel).find((item) => /^[A-Z0-9]{2,}$/.test(item || ""));
@@ -5554,8 +5564,9 @@
         const venue = meta.exchange || meta.market || meta.currency || "证券";
         return `${value} · ${venue}`;
       }
-      const readable = graphReadableIdLabel(meta.node_id || meta.document_id || meta.holding_id || meta.position_id || meta.event_id || meta.viewpoint_id || meta.research_report_id || label, type, meta);
+      const readable = graphReadableIdLabel(meta.node_id || meta.data_id || meta.document_id || meta.holding_id || meta.position_id || meta.event_id || meta.viewpoint_id || meta.research_report_id || label, type, meta);
       if (type === "industry" || type === "chain_node") return meta.name || readable || graphHumanText(label);
+      if (type === "market_data") return readable || `行情 ${meta.as_of_date || ""}`.trim();
       if (type === "event") return readable || meta.title || graphEventLabel(meta.event_type || label);
       if (type === "evidence") return readable || meta.statement || meta.quote || meta.title || meta.source_uri || graphHumanText(label, "证据");
       if (type === "research") return readable || meta.viewpoint || meta.topic || meta.title || meta.hypothesis || "研究观点";
@@ -5613,13 +5624,14 @@
     }
 
     function graphTypeRank(type) {
-      return { issuer: 0, security: 1, industry: 2, chain_node: 3, research: 4, event: 5, evidence: 6, decision: 7, portfolio: 8, risk: 9 }[type] ?? 10;
+      return { issuer: 0, security: 1, industry: 2, chain_node: 3, market_data: 4, research: 5, event: 6, evidence: 7, decision: 8, portfolio: 9, risk: 10 }[type] ?? 11;
     }
 
     function graphCommunityForType(type = "") {
       return {
         issuer: "company",
         security: "company",
+        market_data: "company",
         industry: "industry",
         chain_node: "industry",
         research: "research",
@@ -5805,6 +5817,7 @@
       const text = String(id || "").toLowerCase();
       if (text.startsWith("issuer_")) return "issuer";
       if (text.startsWith("security_") || text.startsWith("sec_")) return "security";
+      if (text.startsWith("md_")) return "market_data";
       if (text.startsWith("chain_")) return "industry";
       if (text.startsWith("node_")) return "chain_node";
       if (text.startsWith("vp_") || text.startsWith("rr_") || text.startsWith("thesis_") || text.startsWith("signal_")) return "research";
@@ -5873,6 +5886,10 @@
       (data.securities || []).forEach((item) => {
         addNode(item.security_id, "security", item.ticker || item.security_id, item);
         addLink(item.issuer_id, item.security_id, "HAS_SECURITY", "证券", { market: item.market });
+      });
+      (data.market_data || []).forEach((item) => {
+        addNode(item.data_id, "market_data", item.as_of_date || item.data_id, item);
+        addLink(item.security_id, item.data_id, "HAS_MARKET_DATA", "行情", item);
       });
       (data.industry_chains || []).forEach((item) => addNode(item.chain_id, "industry", item.name || item.chain_id, item));
       (data.chain_nodes || []).forEach((item) => {
