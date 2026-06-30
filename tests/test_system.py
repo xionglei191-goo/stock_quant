@@ -35,6 +35,13 @@ from scripts.capacity_baseline import run_capacity_baseline
 from scripts.download_tdx_vipdoc import download_tdx_vipdoc_archive
 from scripts.full_run_acceptance import run_full_acceptance
 from scripts.fetch_benchmark_samples import fetch_benchmark_samples
+from scripts.graph_acceptance_fixture import (
+    COMPANY_POSITIONS as GRAPH_ACCEPTANCE_COMPANY_POSITIONS,
+    COMPANIES as GRAPH_ACCEPTANCE_COMPANIES,
+    INDUSTRY_CHAIN as GRAPH_ACCEPTANCE_INDUSTRY_CHAIN,
+    INSTITUTION_RELATIONSHIPS as GRAPH_ACCEPTANCE_INSTITUTION_RELATIONSHIPS,
+    LISTING_RELATIONSHIPS as GRAPH_ACCEPTANCE_LISTING_RELATIONSHIPS,
+)
 from scripts.local_data_unblock_audit import audit_local_data_unblock
 import scripts.backfill_market_data as backfill_market_data_script
 import scripts.daily_data_update_pipeline as daily_data_update_pipeline_script
@@ -1194,9 +1201,54 @@ class SystemServiceTests(unittest.TestCase):
         edge_types = {item["type"] for item in graph.data["edges"]}
         self.assertIn("HAS_COMPANY_EVENT", edge_types)
         self.assertIn("POSITION_IN_CHAIN_NODE", edge_types)
+        self.assertIn("INDUSTRY_PEER", edge_types)
+        self.assertIn("INDUSTRY_UPSTREAM_OF", edge_types)
+        self.assertIn("INDUSTRY_DOWNSTREAM_OF", edge_types)
         self.assertIn("SAME_HOLDER_RELATED_COMPANY", edge_types)
         self.assertIn("REPORT_HAS_VIEWPOINT", edge_types)
         self.assertIn("FEEDBACK_FOR_CONCLUSION", edge_types)
+
+        peer_graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_001", "relationship_type": "industry_peer"}, role="analyst")
+        self.assertTrue(peer_graph.success, peer_graph.error)
+        self.assertIn("issuer_peer", {item["issuer_id"] for item in peer_graph.data["issuers"]})
+        self.assertEqual(
+            {item["relationship_type"] for item in peer_graph.data["edges"] if item["type"] == "INDUSTRY_PEER"},
+            {"industry_peer"},
+        )
+        peer_security_graph = self.router.dispatch(
+            "GET",
+            "/api/graph/query",
+            {"issuer_id": "issuer_001", "security_id": "sec_001", "relationship_type": "industry_peer"},
+            role="analyst",
+        )
+        self.assertTrue(peer_security_graph.success, peer_security_graph.error)
+        self.assertIn("issuer_peer", {item["issuer_id"] for item in peer_security_graph.data["issuers"]})
+        self.assertTrue(any(item.get("relationship_type") == "industry_peer" for item in peer_security_graph.data["edges"]))
+
+        upstream_graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_001", "relationship_type": "upstream_of"}, role="analyst")
+        self.assertTrue(upstream_graph.success, upstream_graph.error)
+        self.assertIn("issuer_upstream", {item["issuer_id"] for item in upstream_graph.data["issuers"]})
+        self.assertEqual(
+            {item["relationship_type"] for item in upstream_graph.data["edges"] if item["type"] == "INDUSTRY_UPSTREAM_OF"},
+            {"upstream_of"},
+        )
+        upstream_node_graph = self.router.dispatch(
+            "GET",
+            "/api/graph/query",
+            {"issuer_id": "issuer_001", "relationship_type": "upstream_of", "chain_id": "chain_components", "chain_node_id": "materials"},
+            role="analyst",
+        )
+        self.assertTrue(upstream_node_graph.success, upstream_node_graph.error)
+        self.assertIn("issuer_upstream", {item["issuer_id"] for item in upstream_node_graph.data["issuers"]})
+        self.assertTrue(any(item.get("relationship_type") == "upstream_of" for item in upstream_node_graph.data["edges"]))
+
+        downstream_graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_001", "relationship_type": "downstream_of"}, role="analyst")
+        self.assertTrue(downstream_graph.success, downstream_graph.error)
+        self.assertIn("issuer_downstream", {item["issuer_id"] for item in downstream_graph.data["issuers"]})
+        self.assertEqual(
+            {item["relationship_type"] for item in downstream_graph.data["edges"] if item["type"] == "INDUSTRY_DOWNSTREAM_OF"},
+            {"downstream_of"},
+        )
 
         relationship_graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_001", "relationship_type": "customer"}, role="analyst")
         self.assertTrue(relationship_graph.success, relationship_graph.error)
@@ -1288,6 +1340,252 @@ class SystemServiceTests(unittest.TestCase):
         enhancement_actions_by_layer = {item["layer"]: item for item in relationship_context["enhancement_actions"]}
         self.assertEqual(enhancement_actions_by_layer["shareholder_network"]["target"]["endpoint"], "/api/company-database/relationships/build")
         self.assertEqual(enhancement_actions_by_layer["approved_shareholder_network"]["target"]["ui_action"], "ownership_import_guidance")
+
+    def test_graph_acceptance_fixture_supports_industry_relationship_filters(self) -> None:
+        for company in GRAPH_ACCEPTANCE_COMPANIES:
+            issuer_id = str(company["issuer_id"])
+            security_id = str(company["security_id"])
+            if issuer_id not in self.service.store.issuers:
+                self.service.register_issuer(
+                    {
+                        "issuer_id": issuer_id,
+                        "legal_name": company["legal_name"],
+                        "aliases": [company["ticker"]],
+                        "market": [str(company.get("market", "U"))],
+                        "country": str(company.get("country", "US")),
+                        "status": "active",
+                    },
+                    actor="test",
+                )
+            if security_id not in self.service.store.securities:
+                self.service.register_security(
+                    {
+                        "security_id": security_id,
+                        "issuer_id": issuer_id,
+                        "ticker": company["ticker"],
+                        "exchange": str(company.get("exchange", "NASDAQ")),
+                        "currency": str(company.get("currency", "USD")),
+                        "market": str(company.get("market", "U")),
+                        "status": "active",
+                    },
+                    actor="test",
+                )
+        self.service.register_industry_chain(GRAPH_ACCEPTANCE_INDUSTRY_CHAIN, actor="test")
+        for position in GRAPH_ACCEPTANCE_COMPANY_POSITIONS:
+            self.service.register_company_position(GRAPH_ACCEPTANCE_INDUSTRY_CHAIN["chain_id"], position, actor="test")
+        for relationship_id, issuer_id, security_id in GRAPH_ACCEPTANCE_LISTING_RELATIONSHIPS:
+            self.service.register_company_relationship(
+                {
+                    "relationship_id": relationship_id,
+                    "issuer_id": issuer_id,
+                    "security_id": security_id,
+                    "subject_type": "company",
+                    "subject_id": issuer_id,
+                    "object_type": "security",
+                    "object_id": security_id,
+                    "relationship_type": "listed_security",
+                    "relationship_status": "active",
+                    "review_status": "auto_generated",
+                    "confidence": 0.95,
+                },
+                actor="test",
+            )
+        for symbol, issuer_id, security_id, count in GRAPH_ACCEPTANCE_INSTITUTION_RELATIONSHIPS:
+            for index in range(1, count + 1):
+                self.service.register_company_relationship(
+                    {
+                        "relationship_id": f"rel_graph_acceptance_{symbol.lower()}_coverage_{index}",
+                        "issuer_id": issuer_id,
+                        "security_id": security_id,
+                        "subject_type": "institution",
+                        "subject_id": f"institution_graph_acceptance_{symbol.lower()}_{index}",
+                        "object_type": "company",
+                        "object_id": issuer_id,
+                        "relationship_type": "institution_coverage",
+                        "relationship_status": "active",
+                        "review_status": "needs_review",
+                        "confidence": 0.72,
+                    },
+                    actor="test",
+                )
+
+        for relationship_type, expected_edge_type in [
+            ("industry_peer", "INDUSTRY_PEER"),
+            ("upstream_of", "INDUSTRY_UPSTREAM_OF"),
+            ("downstream_of", "INDUSTRY_DOWNSTREAM_OF"),
+        ]:
+            graph = self.router.dispatch(
+                "GET",
+                "/api/graph/query",
+                {"issuer_id": "issuer_aapl", "security_id": "security_aapl_us", "relationship_type": relationship_type},
+                role="analyst",
+            )
+            self.assertTrue(graph.success, graph.error)
+            self.assertIn(expected_edge_type, {item["type"] for item in graph.data["edges"]})
+            self.assertEqual(
+                {item["relationship_type"] for item in graph.data["edges"] if item["type"] == expected_edge_type},
+                {relationship_type},
+            )
+
+    def test_obsidian_knowledge_graph_seed_creates_multi_dimension_network(self) -> None:
+        seeded = self.router.dispatch("POST", "/api/graph/seed/obsidian", {}, role="data_engineer", actor="test")
+        self.assertTrue(seeded.success, seeded.error)
+        self.assertEqual(seeded.data["status"], "seeded")
+        self.assertIn("industry_peer", seeded.data["relationship_dimensions"])
+        self.assertIn("institutional_same_holder", seeded.data["relationship_dimensions"])
+        self.assertIn("document_event_viewpoint", seeded.data["relationship_dimensions"])
+
+        rerun = self.router.dispatch("POST", "/api/graph/seed/obsidian", {}, role="data_engineer", actor="test")
+        self.assertTrue(rerun.success, rerun.error)
+        self.assertGreater(rerun.data["already_exists_count"], 0)
+
+        full_graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_aapl", "security_id": "security_aapl_us"}, role="analyst")
+        self.assertTrue(full_graph.success, full_graph.error)
+        edge_types = {item["type"] for item in full_graph.data["edges"]}
+        self.assertIn("INDUSTRY_PEER", edge_types)
+        self.assertIn("INDUSTRY_UPSTREAM_OF", edge_types)
+        self.assertIn("INDUSTRY_DOWNSTREAM_OF", edge_types)
+        self.assertIn("SAME_HOLDER_RELATED_COMPANY", edge_types)
+        self.assertTrue(any(item["document_id"] == "doc_obsidian_aapl_ai_device_note" for item in full_graph.data["documents"]))
+        self.assertTrue(any(item["event_id"] == "event_obsidian_aapl_on_device_ai" for item in full_graph.data["company_events"]))
+        self.assertTrue(any(item["research_report_id"] == "srr_obsidian_aapl_ai_device" for item in full_graph.data["structured_research_reports"]))
+        self.assertTrue(any(item["viewpoint_id"] == "vp_obsidian_aapl_device_cloud" for item in full_graph.data["report_viewpoints"]))
+        self.assertIn("HAS_COMPANY_EVENT", edge_types)
+        self.assertIn("COVERED_BY_REPORT", edge_types)
+        self.assertIn("REPORT_HAS_VIEWPOINT", edge_types)
+        self.assertIn("VIEWPOINT_ON_COMPANY", edge_types)
+
+        for relationship_type, expected_edge_type in [
+            ("industry_peer", "INDUSTRY_PEER"),
+            ("upstream_of", "INDUSTRY_UPSTREAM_OF"),
+            ("downstream_of", "INDUSTRY_DOWNSTREAM_OF"),
+        ]:
+            graph = self.router.dispatch(
+                "GET",
+                "/api/graph/query",
+                {"issuer_id": "issuer_aapl", "security_id": "security_aapl_us", "relationship_type": relationship_type},
+                role="analyst",
+            )
+            self.assertTrue(graph.success, graph.error)
+            self.assertIn(expected_edge_type, {item["type"] for item in graph.data["edges"]})
+
+        holder_graph = self.router.dispatch(
+            "GET",
+            "/api/graph/query",
+            {"issuer_id": "issuer_aapl", "institutional_holder_key": "0000102909"},
+            role="analyst",
+        )
+        self.assertTrue(holder_graph.success, holder_graph.error)
+        holder_edges = [item for item in holder_graph.data["edges"] if item["type"] == "SAME_HOLDER_RELATED_COMPANY"]
+        self.assertTrue(holder_edges)
+        holder_issuers = {item["issuer_id"] for item in holder_graph.data["issuers"]}
+        self.assertIn("issuer_nvda", holder_issuers)
+        self.assertIn("issuer_msft", holder_issuers)
+
+    def test_graph_knowledge_network_readiness_flags_real_data_gaps_and_seed_dependency(self) -> None:
+        self.service.store.issuers["issuer_sparse"] = Issuer(issuer_id="issuer_sparse", legal_name="Sparse Co")
+        self.service.store.securities["sec_sparse"] = Security(security_id="sec_sparse", issuer_id="issuer_sparse", ticker="SPRS")
+        sparse = self.router.dispatch(
+            "GET",
+            "/api/graph/knowledge-network/readiness",
+            {"issuer_id": "issuer_sparse", "min_edges": 2, "min_communities": 3},
+            role="analyst",
+        )
+        self.assertTrue(sparse.success, sparse.error)
+        self.assertEqual(sparse.data["schema_id"], "knowledge-network-readiness-v1")
+        self.assertFalse(sparse.data["ready_for_obsidian_exploration"])
+        self.assertEqual(sparse.data["status"], "needs_data")
+        self.assertIn("industry_position", sparse.data["missing_layers"])
+        self.assertIn("document", sparse.data["missing_layers"])
+        self.assertIn("viewpoint", sparse.data["missing_layers"])
+        self.assertTrue(any(item["layer"] == "document" for item in sparse.data["next_actions"]))
+        self.assertFalse(sparse.data["live_execution_allowed"])
+
+        seeded = self.router.dispatch("POST", "/api/graph/seed/obsidian", {}, role="data_engineer", actor="test")
+        self.assertTrue(seeded.success, seeded.error)
+        report = self.router.dispatch(
+            "POST",
+            "/api/graph/knowledge-network/readiness",
+            {"issuer_id": "issuer_aapl", "min_edges": 20, "min_communities": 4},
+            role="analyst",
+            actor="test",
+        )
+        self.assertTrue(report.success, report.error)
+        self.assertGreaterEqual(len(report.data["present_layers"]), 7)
+        self.assertIn("industry_position", report.data["present_layers"])
+        self.assertIn("shareholder_holding", report.data["present_layers"])
+        self.assertIn("company_event", report.data["present_layers"])
+        self.assertIn("research_report", report.data["present_layers"])
+        self.assertIn("viewpoint", report.data["present_layers"])
+        self.assertIn("evidence", report.data["missing_layers"])
+        self.assertGreaterEqual(report.data["graph_summary"]["edges"], 20)
+        self.assertGreaterEqual(report.data["graph_summary"]["communities"], 4)
+        self.assertTrue(report.data["seed_dependency"]["seed_dependent"])
+        self.assertFalse(report.data["ready_for_obsidian_exploration"])
+        self.assertTrue(any(item["layer"] == "seed_dependency" for item in report.data["next_actions"]))
+
+        for document_id in ["doc_obsidian_aapl_ai_device_note", "doc_obsidian_aapl_supply_chain_note"]:
+            extracted = self.router.dispatch(
+                "POST",
+                "/api/evidence/extract",
+                {"document_id": document_id, "parser_version": "knowledge-network-test-v1", "model_version": "rule-knowledge-network-test-v1"},
+                role="analyst",
+                actor="test",
+            )
+            self.assertTrue(extracted.success, extracted.error)
+            self.assertGreaterEqual(len(extracted.data["evidence"]), 1)
+        evidence_ready = self.router.dispatch(
+            "POST",
+            "/api/graph/knowledge-network/readiness",
+            {"issuer_id": "issuer_aapl", "min_edges": 20, "min_communities": 4},
+            role="analyst",
+            actor="test",
+        )
+        self.assertTrue(evidence_ready.success, evidence_ready.error)
+        self.assertIn("evidence", evidence_ready.data["present_layers"])
+        self.assertNotIn("evidence", evidence_ready.data["missing_layers"])
+        self.assertGreaterEqual(evidence_ready.data["cross_links"]["document_evidence_links"], 2)
+        self.assertTrue(evidence_ready.data["seed_dependency"]["seed_dependent"])
+        link_plan = self.router.dispatch(
+            "POST",
+            "/api/graph/knowledge-network/evidence-links/backfill",
+            {"issuer_id": "issuer_aapl", "limit": 10},
+            role="analyst",
+            actor="test",
+        )
+        self.assertTrue(link_plan.success, link_plan.error)
+        self.assertEqual(link_plan.data["status"], "dry_run")
+        self.assertIn("company_event", link_plan.data["planned_by_type"])
+        self.assertIn("report_viewpoint", link_plan.data["planned_by_type"])
+
+        linked = self.router.dispatch(
+            "POST",
+            "/api/graph/knowledge-network/evidence-links/backfill",
+            {"issuer_id": "issuer_aapl", "limit": 10, "execute": True},
+            role="analyst",
+            actor="test",
+        )
+        self.assertTrue(linked.success, linked.error)
+        self.assertEqual(linked.data["status"], "executed")
+        self.assertGreaterEqual(linked.data["updated_count"], 2)
+        self.assertTrue(self.service.store.company_events["event_obsidian_aapl_on_device_ai"].evidence_ids)
+        self.assertTrue(self.service.store.report_viewpoints["vp_obsidian_aapl_device_cloud"].evidence_ids)
+
+        linked_ready = self.router.dispatch(
+            "POST",
+            "/api/graph/knowledge-network/readiness",
+            {"issuer_id": "issuer_aapl", "min_edges": 20, "min_communities": 4},
+            role="analyst",
+            actor="test",
+        )
+        self.assertTrue(linked_ready.success, linked_ready.error)
+        self.assertGreaterEqual(linked_ready.data["cross_links"]["event_evidence_links"], 1)
+        self.assertGreaterEqual(linked_ready.data["cross_links"]["viewpoint_evidence_links"], 1)
+        linked_graph = self.router.dispatch("GET", "/api/graph/query", {"issuer_id": "issuer_aapl"}, role="analyst")
+        self.assertTrue(linked_graph.success, linked_graph.error)
+        linked_edge_types = {item["type"] for item in linked_graph.data["edges"]}
+        self.assertIn("EVENT_EVIDENCE", linked_edge_types)
+        self.assertIn("VIEWPOINT_EVIDENCE", linked_edge_types)
 
     def test_golden_api_behavior_baseline_for_backend_domain_refactor(self) -> None:
         seeded = self.router.dispatch("POST", "/api/ingestion/sources/seed", {}, role="data_engineer")
@@ -19211,6 +19509,22 @@ class SystemServiceTests(unittest.TestCase):
                 dotenv_path.unlink(missing_ok=True)
             else:
                 dotenv_path.write_text(original_content, encoding="utf-8")
+
+    def test_server_port_reads_environment_and_validates_range(self) -> None:
+        import app.server as server_module
+
+        self.assertEqual(server_module._server_port(), 8000)
+        os.environ["AI_QUANT_PORT"] = "55537"
+        self.assertEqual(server_module._server_port(), 55537)
+        os.environ["AI_QUANT_PORT"] = "0"
+        with self.assertRaises(RuntimeError):
+            server_module._server_port()
+        os.environ["AI_QUANT_PORT"] = "70000"
+        with self.assertRaises(RuntimeError):
+            server_module._server_port()
+        os.environ["AI_QUANT_PORT"] = "not-a-port"
+        with self.assertRaises(RuntimeError):
+            server_module._server_port()
 
     def test_non_local_deployment_mode_rejects_header_only_auth(self) -> None:
         import app.server as server_module

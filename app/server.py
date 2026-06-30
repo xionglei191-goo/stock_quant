@@ -43,6 +43,17 @@ def _validate_startup_security_mode() -> None:
         )
 
 
+def _server_port(default: int = 8000) -> int:
+    raw_port = str(env_text("AI_QUANT_PORT", str(default)) or str(default)).strip()
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise RuntimeError("AI_QUANT_PORT must be an integer") from exc
+    if port < 1 or port > 65535:
+        raise RuntimeError("AI_QUANT_PORT must be between 1 and 65535")
+    return port
+
+
 def _create_router() -> ApiRouter:
     _validate_startup_security_mode()
     postgres_dsn = env_text("AI_QUANT_POSTGRES_DSN") or env_text("AI_QUANT_DATABASE_URL")
@@ -155,4 +166,4 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
 if __name__ == "__main__":
     _load_dotenv()
     get_router()
-    serve(host=str(env_text("AI_QUANT_HOST", "127.0.0.1") or "127.0.0.1"))
+    serve(host=str(env_text("AI_QUANT_HOST", "127.0.0.1") or "127.0.0.1"), port=_server_port())

@@ -116,6 +116,8 @@ from .service_modules import safe_identifier
 from .service_modules import company_quality
 from .service_modules import company_intelligence as company_intelligence_module
 from .service_modules import graph_intelligence
+from .service_modules import graph_seed
+from .service_modules import knowledge_network_backfill
 from .service_modules import market_data as market_data_module
 from .service_modules import personal_research_loop
 from .service_modules import research_reports as research_report_module
@@ -16084,6 +16086,9 @@ class SystemService:
             "dashboard": self.dashboard(),
         }
 
+    def seed_obsidian_knowledge_graph(self, *, actor: str = "system") -> dict[str, Any]:
+        return graph_seed.seed_obsidian_knowledge_graph(self, actor=actor)
+
     def register_scorecard(self, payload: Mapping[str, Any], *, actor: str = "system") -> ScorecardProfile:
         profile = ScorecardProfile(
             profile_id=str(payload.get("profile_id", new_id("score"))),
@@ -18518,6 +18523,51 @@ class SystemService:
             "missing_counts": missing_counts,
             "issues": issues[:limit],
         }
+
+    def graph_knowledge_network_readiness(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        filters = filters or {}
+        issuer_id = str(filters.get("issuer_id", "") or "").strip()
+        graph_filters: dict[str, Any] = {}
+        for key in ["issuer_id", "security_id", "relationship_type", "ownership_holder_key", "institutional_holder_key", "chain_id", "chain_node_id"]:
+            value = str(filters.get(key, "") or "").strip()
+            if value:
+                graph_filters[key] = value
+        min_layers = int(filters.get("min_layers", 7) or 7)
+        min_edges = int(filters.get("min_edges", 20) or 20)
+        min_communities = int(filters.get("min_communities", 4) or 4)
+        graph = self.query_graph(graph_filters) if graph_filters else self.query_graph({})
+        report = graph_intelligence.knowledge_network_readiness_report(
+            issuers=[to_plain(item) for item in self.store.issuers.values()],
+            securities=[to_plain(item) for item in self.store.securities.values()],
+            company_profiles=[to_plain(item) for item in self.store.company_profiles.values()],
+            company_positions=[to_plain(item) for item in self.store.company_positions.values()],
+            industry_chains=[to_plain(item) for item in self.store.industry_chains.values()],
+            company_relationships=[to_plain(item) for item in self.store.company_relationships.values()],
+            institutional_holdings=[to_plain(item) for item in self.store.institutional_holdings.values()],
+            documents=[to_plain(item) for item in self.store.documents.values()],
+            evidence=[to_plain(item) for item in self.store.evidence.values()],
+            company_events=[to_plain(item) for item in self.store.company_events.values()],
+            structured_research_reports=[to_plain(item) for item in self.store.structured_research_reports.values()],
+            report_viewpoints=[to_plain(item) for item in self.store.report_viewpoints.values()],
+            graph=graph,
+            issuer_id=issuer_id,
+            min_layers=min_layers,
+            min_edges=min_edges,
+            min_communities=min_communities,
+        )
+        if self._truthy(filters.get("record_readiness", False)):
+            self._audit(
+                actor,
+                "graph_knowledge_network_readiness",
+                "graph",
+                issuer_id or "all",
+                source="graph_intelligence",
+                approval_state=report.get("status", "needs_data"),
+            )
+        return report
+
+    def backfill_knowledge_network_evidence_links(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        return knowledge_network_backfill.backfill_knowledge_network_evidence_links(self, payload or {}, actor=actor)
 
     def _decisions_for_issuer(self, issuer_id: str) -> list[DecisionPack]:
         if not issuer_id:
@@ -29252,6 +29302,102 @@ class SystemService:
                     continue
                 add_research_task_graph(task)
 
+        def add_industry_relationship_network(issuer: Issuer) -> None:
+            if relationship_type_filter and relationship_type_filter not in {"industry_peer", "upstream_of", "downstream_of"}:
+                return
+            focus_positions = [
+                position
+                for position in self.store.company_positions.values()
+                if position.issuer_id == issuer.issuer_id and position.chain_id and position.node_ids and position_in_scope(position)
+            ]
+            for focus_position in focus_positions:
+                chain = self.store.industry_chains.get(focus_position.chain_id)
+                if chain is None:
+                    continue
+                focus_node_ids = {str(item).strip() for item in focus_position.node_ids if str(item).strip()}
+                if chain_id and focus_position.chain_id != chain_id:
+                    continue
+                if not focus_node_ids:
+                    continue
+                add_chain_graph(chain)
+                upstream_node_ids: set[str] = set()
+                downstream_node_ids: set[str] = set()
+                for edge in chain.edges:
+                    source_node_id = str(edge.get("source_node_id", "") or "").strip()
+                    target_node_id = str(edge.get("target_node_id", "") or "").strip()
+                    if target_node_id in focus_node_ids and source_node_id:
+                        upstream_node_ids.add(source_node_id)
+                    if source_node_id in focus_node_ids and target_node_id:
+                        downstream_node_ids.add(target_node_id)
+                for related_position in self.store.company_positions.values():
+                    if related_position.chain_id != focus_position.chain_id or related_position.position_id == focus_position.position_id:
+                        continue
+                    related_node_ids = {str(item).strip() for item in related_position.node_ids if str(item).strip()}
+                    if not related_node_ids:
+                        continue
+                    related_issuer = self.store.issuers.get(related_position.issuer_id)
+                    if related_issuer is not None:
+                        add_node("issuers", related_issuer.issuer_id, related_issuer)
+                    if related_position.security_id:
+                        security = self.store.securities.get(related_position.security_id)
+                        if security is not None:
+                            add_node("securities", security.security_id, security)
+                            add_edge("ISSUES", security.issuer_id, security.security_id, market=security.market, ticker=security.ticker)
+                    add_node("company_positions", related_position.position_id, related_position)
+                    add_edge("POSITIONED_AS", related_position.issuer_id, related_position.position_id, role=related_position.role, data_quality=related_position.data_quality)
+                    for related_node_id in related_node_ids:
+                        add_edge("POSITION_IN_CHAIN_NODE", related_position.position_id, f"{chain.chain_id}:{related_node_id}", role=related_position.role, confidence=0.8)
+                    if related_position.issuer_id == issuer.issuer_id:
+                        continue
+                    shared_nodes = focus_node_ids & related_node_ids
+                    if chain_node_id and relationship_type_filter == "industry_peer":
+                        shared_nodes &= {chain_node_id}
+                    if shared_nodes and (not relationship_type_filter or relationship_type_filter == "industry_peer"):
+                        add_edge(
+                            "INDUSTRY_PEER",
+                            issuer.issuer_id,
+                            related_position.issuer_id,
+                            relationship_type="industry_peer",
+                            chain_id=chain.chain_id,
+                            node_ids=sorted(shared_nodes),
+                            focus_position_id=focus_position.position_id,
+                            related_position_id=related_position.position_id,
+                            source="industry_chain_position_graph",
+                            confidence=0.75,
+                        )
+                    upstream_nodes = related_node_ids & upstream_node_ids
+                    if chain_node_id and relationship_type_filter == "upstream_of":
+                        upstream_nodes &= {chain_node_id}
+                    if upstream_nodes and (not relationship_type_filter or relationship_type_filter == "upstream_of"):
+                        add_edge(
+                            "INDUSTRY_UPSTREAM_OF",
+                            related_position.issuer_id,
+                            issuer.issuer_id,
+                            relationship_type="upstream_of",
+                            chain_id=chain.chain_id,
+                            node_ids=sorted(upstream_nodes),
+                            focus_position_id=focus_position.position_id,
+                            related_position_id=related_position.position_id,
+                            source="industry_chain_position_graph",
+                            confidence=0.72,
+                        )
+                    downstream_nodes = related_node_ids & downstream_node_ids
+                    if chain_node_id and relationship_type_filter == "downstream_of":
+                        downstream_nodes &= {chain_node_id}
+                    if downstream_nodes and (not relationship_type_filter or relationship_type_filter == "downstream_of"):
+                        add_edge(
+                            "INDUSTRY_DOWNSTREAM_OF",
+                            issuer.issuer_id,
+                            related_position.issuer_id,
+                            relationship_type="downstream_of",
+                            chain_id=chain.chain_id,
+                            node_ids=sorted(downstream_nodes),
+                            focus_position_id=focus_position.position_id,
+                            related_position_id=related_position.position_id,
+                            source="industry_chain_position_graph",
+                            confidence=0.72,
+                        )
+
         def add_issuer_graph(issuer: Issuer) -> None:
             add_node("issuers", issuer.issuer_id, issuer)
             for mapping in self.store.entity_mappings.values():
@@ -29495,6 +29641,7 @@ class SystemService:
                     chain = self.store.industry_chains.get(position.chain_id)
                     if chain is not None:
                         add_chain_graph(chain)
+            add_industry_relationship_network(issuer)
             for task in self.store.research_tasks.values():
                 if task.issuer_id == issuer.issuer_id:
                     if not task_in_scope(task):

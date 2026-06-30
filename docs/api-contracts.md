@@ -3317,6 +3317,35 @@ python3 scripts/import_company_ownership_tables.py --root-path /path/to/ownershi
 
 返回字段包含 `issuers`、`securities`、`market_data`、`corporate_actions`、`documents`、`evidence`、`manual_reviews`、`theses`、`signals`、`decisions`、`execution_intents`、`reviews`、`strategy_replays`、`exceptions`、`entity_mappings`、`research_cards`、`macro_themes`、`industry_chains`、`chain_nodes`、`company_positions`、`research_tasks`、`crowding`、`institutional_holdings`、`disclosure_events`、`challengers`、`portfolio_proposals`、`portfolio_positions` 和 `edges`。产业链研究任务通过 `CHAIN_HAS_RESEARCH_TASK`、`TASK_FOR_CHAIN_NODE`、`TASK_FOR_COMPANY_POSITION`、`ISSUER_HAS_RESEARCH_TASK` 与主题、链路、节点、公司定位和主体连接。每条 edge 默认包含 `source`、`timestamp`、`version`、`confidence` 元数据。其中 `portfolio_positions` 来自模拟/回测 ledger 或纸面执行意图，`portfolio_proposals` 是纸面组合候选方案，二者都不代表自动交易。
 
+#### `GET|POST /api/graph/knowledge-network/readiness`
+
+只读评估本地公司知识网络是否具备 Obsidian 式可探索图谱的数据密度。该接口不会导入数据、不会连接外部图数据库、不会触发交易。它复用现有 `Issuer`、`Security`、`CompanyProfile`、`CompanyPosition`、`IndustryChain`、`CompanyRelationship`、`InstitutionalHolding`、`Document`、`Evidence`、`CompanyEvent`、`ResearchReport`、`ReportViewpoint` 和 `/api/graph/query` 输出，按主体统计图谱层覆盖、社区来源、跨层链接、edge 数量以及 seed 依赖度。
+
+请求字段：
+
+- `issuer_id`：可选；按单一公司主体评估。
+- `security_id`：可选；传给 `/api/graph/query` 作为图谱过滤。
+- `relationship_type`、`ownership_holder_key`、`institutional_holder_key`、`chain_id`、`chain_node_id`：可选；用于评估特定关系子图。
+- `min_layers`：默认 `7`，要求至少覆盖多少个知识层。
+- `min_edges`：默认 `20`，要求图谱至少多少条边。
+- `min_communities`：默认 `4`，要求至少多少个社区来源。
+- `record_readiness`：默认 `false`，为 `true` 时记录审计事件。
+
+返回字段包括 `ready_for_obsidian_exploration`、`status`、`layer_counts`、`layer_status`、`present_layers`、`missing_layers`、`thin_layers`、`community_sources`、`visible_communities`、`graph_summary`、`cross_links`、`seed_dependency` 和 `next_actions`。`seed_dependency.seed_dependent=true` 表示当前图谱主要由 Obsidian seed/fixture 记录支撑，不能当作真实生产数据已经足够丰富的证据。固定 `automation_allowed=false`、`live_execution_allowed=false`，保持本地研究和 paper-only 边界。
+
+#### `POST /api/graph/knowledge-network/evidence-links/backfill`
+
+本地回填知识网络跨层 evidence 链接。接口会在当前 `/api/graph/query` 子图内查找已具备 `Document -> Evidence` 的证据切片，并把同一文档的 evidence ids 回填到 `CompanyEvent.evidence_ids`、`CompanyRelationship.evidence_ids` 和 `ReportViewpoint.evidence_ids`。默认 `execute=false`，只返回计划；显式 `execute=true` 才写入本地记录并产生 `EVENT_EVIDENCE`、`RELATIONSHIP_EVIDENCE`、`VIEWPOINT_EVIDENCE` 等图谱边。该接口不抽取新事实、不批准事件/关系、不把研报观点提升为事实、不触发交易。
+
+请求字段：
+
+- `issuer_id`：必填建议项；限定公司知识网络。
+- `security_id`、`relationship_type`、`ownership_holder_key`、`institutional_holder_key`、`chain_id`、`chain_node_id`：可选；传给 `/api/graph/query` 限定子图。
+- `limit`：默认 `100`，最多 `500`。
+- `execute`：默认 `false`；为 `true` 时才更新本地 provenance 链接。
+
+返回字段包括 `planned_count`、`updated_count`、`planned_by_type`、`plans`、`updated`、`automation_allowed=false`、`live_execution_allowed=false` 和 `usage_boundary`。从 seed 文档抽取来的 evidence 仍应在 readiness 中计入 seed dependency，不能作为真实生产级图谱完成证据。
+
 #### `GET /api/graph/traceability-report`
 
 返回观点、决策和研究问答到 evidence/document 的回溯率报告，用于检查结论是否能沿图谱回到原始证据。可用 `issuer_id`、`include_details`、`limit` 过滤。报告会标记缺失 evidence、缺失 document、decision signal 断链和 research answer 英文原文缺失等问题。

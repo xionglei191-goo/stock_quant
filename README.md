@@ -126,6 +126,18 @@ python3 -m app.server
 - `http://127.0.0.1:8000/`
 - `http://127.0.0.1:8000/ui`
 
+可用 `AI_QUANT_HOST` 和 `AI_QUANT_PORT` 覆盖监听地址。比如 8000 端口已有旧服务时，可以启动当前代码到临时端口做验收：
+
+```bash
+AI_QUANT_PORT=55537 python3 -m app.server
+```
+
+需要给本地图谱准备一组可探索的多社区样本时，可以运行 Obsidian 式知识网络 seed。该 seed 只写入本地公司、证券、产业位置、上市证券关系和 13F 持有人样本，不连接券商、不触发交易：
+
+```bash
+python3 scripts/seed_obsidian_knowledge_graph.py http://127.0.0.1:8000 --output artifacts/obsidian-knowledge-graph-seed.json
+```
+
 默认使用内存存储。需要重启后保留数据时，设置 `AI_QUANT_DB` 使用 SQLite 状态库：
 
 ```bash
@@ -408,7 +420,23 @@ curl -sS -X POST http://127.0.0.1:8000/api/connectors/astock/verify \
 
 ## 图谱与语义检索
 
-`/api/graph/query` 保留证据、观点、决策和复盘的关系回查；`/api/search/semantic` 提供本地轻量语义检索 adapter，当前用 term-frequency cosine 固定接口和权限边界，后续可替换为 Qdrant/embedding/reranker。
+`/api/graph/query` 保留证据、观点、决策和复盘的关系回查；`/api/graph/knowledge-network/readiness` 只读检查公司图谱是否具备 Obsidian 式可探索网络所需的数据密度，输出缺失层、薄弱层、社区来源、跨层链接和 seed 依赖度；`/api/search/semantic` 提供本地轻量语义检索 adapter，当前用 term-frequency cosine 固定接口和权限边界，后续可替换为 Qdrant/embedding/reranker。
+
+```bash
+python3 scripts/graph_knowledge_network_readiness.py http://127.0.0.1:8000 \
+  --issuer-id issuer_aapl \
+  --output artifacts/graph-knowledge-network-readiness-aapl.json
+
+python3 scripts/backfill_knowledge_network_evidence.py http://127.0.0.1:8000 \
+  --issuer-id issuer_aapl \
+  --execute \
+  --output artifacts/knowledge-network-evidence-backfill-aapl.json
+
+python3 scripts/backfill_knowledge_network_evidence_links.py http://127.0.0.1:8000 \
+  --issuer-id issuer_aapl \
+  --execute \
+  --output artifacts/knowledge-network-evidence-link-backfill-aapl.json
+```
 
 ## 愿景上线闸门
 

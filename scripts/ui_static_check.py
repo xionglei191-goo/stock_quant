@@ -57,7 +57,7 @@ REQUIRED_TEXT_SNIPPETS = [
     "relationshipType",
     "relationshipTypeDisplayLabel",
     "item.relationship_type ? relationshipTypeDisplayLabel",
-    "const edgeLabel = link.label || graphEdgeLabel",
+    "const edgeLabel = graphEdgeLabel(link.type, link.label)",
     "relationshipTypeDisplayLabel(item.default_kind",
     'shareholder: "事实股东"',
     "股权表追溯",

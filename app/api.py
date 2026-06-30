@@ -542,6 +542,9 @@ class ApiRouter:
     def _seed_demo_full_flow(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.seed_demo_full_flow(actor=actor)
 
+    def _seed_obsidian_knowledge_graph(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.seed_obsidian_knowledge_graph(actor=actor)
+
     def _health(self, _path: str, _body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.health()
 
@@ -1786,6 +1789,12 @@ class ApiRouter:
 
     def _graph_edge_quality_report(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.graph_edge_quality_report(body)
+
+    def _graph_knowledge_network_readiness(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.graph_knowledge_network_readiness(body, actor=actor)
+
+    def _backfill_knowledge_network_evidence_links(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.backfill_knowledge_network_evidence_links(body, actor=actor)
 
     def _graph_neo4j_export(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.graph_neo4j_export(body, actor=actor)

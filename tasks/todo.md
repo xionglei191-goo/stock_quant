@@ -539,6 +539,60 @@
   - **已完成（本轮）**：调整为分类聚类、碰撞避让、软边界和更大安全边距，AAPL 验证结果为 29 节点、85 关系、0 重叠、0 贴边。
   - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；浏览器 AAPL 图谱布局量化检查。
 
+- `DONE` T-566 Obsidian 标准可探索知识网络升级
+  - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
+  - 背景：T-483/T-484/T-485 已有动态关系图谱，但用户反馈仍不像 Obsidian Graph View：AAPL 等中心公司仍容易呈放射状，默认裁剪和布局更像“公司中心视图”，不是可继续探索的知识网络。
+  - 目标：把知识图谱从中心化可视化升级为 Obsidian 式可探索网络，支持社区化布局、边权驱动收敛、点击节点按需展开隐藏邻居、标签避让、隐藏邻居提示和更自然的全局/局部探索体验。
+  - **进行中（本轮）**：前端图谱模型新增 `community`、`weight`、`hiddenNeighborCount` 和 `expandedIds`；默认视图改为高价值摘要，点击节点可展开其邻居，节点有隐藏邻居外圈提示。
+  - **进行中（本轮）**：布局从固定类型扇区推进为社区中心 + 边权距离 + 稳定散列初始位置 + 强碰撞避让 + 标签避让；图谱画布高度提升到 640px。
+  - **进行中（本轮）**：新增局部图/全局图模式，默认局部图优先可读性，全局图保留更多节点；新增 `scripts/ui_graph_layout_acceptance.py` 对 AAPL 图谱做可重复浏览器量化验收。
+  - **进行中（本轮）**：新增社区簇标签/摘要层，显示公司/证券、事件/证据等关系簇数量；验收脚本支持 `--scope local|global`，分别校验局部图可读性和全局图概览密度。
+  - **进行中（本轮）**：新增本地持久化手动布局，拖拽/固定节点后按焦点、模式、深度和过滤组合写入 `localStorage`；新增“清除布局”入口；验收脚本支持 `--check-persistence`。
+  - **进行中（本轮）**：社区簇标签新增质量摘要，显示密度、关系强度和强边占比；验收脚本校验 `community_quality_labels`。
+  - **进行中（本轮）**：新增路径探索面板，可把当前节点设为起点/终点，计算并高亮当前可见图中的最短路径；验收脚本支持 `--check-path`。
+  - **进行中（本轮）**：路径步骤新增 next-hop 邻居按钮，点击可从路径节点继续漫游，同时保持新的可见路径高亮；验收脚本校验 `path_next_hops` 和 next-hop 后路径高亮。
+  - **进行中（本轮）**：新增显式视图控制：缩小、放大、适配全部可见节点、居中当前焦点节点；状态栏显示当前缩放比例；验收脚本默认校验 `view_controls`。
+  - **进行中（本轮）**：路径面板新增“固定当前”“保存路径”“清除轨迹”和探索轨迹列表，固定节点写入 `fixedIds`，路径节点可沉淀为可点击轨迹；验收脚本默认校验 `trail`。
+  - **进行中（本轮）**：新增图谱性能采样，状态栏显示 `FPS` 和平均帧耗时；验收脚本新增 `--min-fps` / `--max-frame-ms`，默认要求 FPS >= 20、平均帧耗时 <= 35ms。
+  - **进行中（本轮）**：新增“保存子图/恢复子图”，使用 `ai_quant_graph_subgraph:{focus}` 保存当前轨迹、固定节点、展开节点、路径起终点、模式、深度和视图变换；验收脚本默认校验 `saved_subgraph`。
+  - **进行中（本轮）**：新增 `scripts/ui_graph_multi_symbol_acceptance.py` 多主体矩阵验收，覆盖 AAPL 局部、NVDA 局部、600519 局部和 AAPL 全局；同时把单体验收中的 AAPL 硬编码改为使用当前 `focusId`。
+  - **进行中（本轮）**：新增 `scripts/ui_graph_relationship_filter_acceptance.py` 关系过滤矩阵，真实浏览器校验 AAPL/NVDA/600519 的 `listed_security` 和 `institution_coverage` 过滤 chip、raw relationship type、渲染节点边、轨迹/保存子图和性能状态。
+  - **进行中（本轮）**：`/api/graph/query` 新增基于现有 `CompanyPosition + IndustryChain.edges` 的派生产业链语义边，不改数据库 schema，不新增事实关系；有产业链位置数据时会返回 `INDUSTRY_PEER` / `INDUSTRY_UPSTREAM_OF` / `INDUSTRY_DOWNSTREAM_OF`，并保留 raw `relationship_type=industry_peer/upstream_of/downstream_of`、`chain_id`、`node_ids` 和 position 追溯。
+  - **进行中（本轮）**：单测补齐同类、上游、下游图谱查询回归，确认 `relationship_type=industry_peer/upstream_of/downstream_of` 过滤可以返回对应发行人和语义边；方向级 `chain_node_id` 过滤按关系方向节点匹配，避免推荐入口误伤。
+  - **进行中（本轮）**：`scripts/ui_graph_layout_acceptance.py` 的关系过滤统计从只看 `company_relationships` 扩展为同时识别 `edges[].relationship_type`，为后续浏览器验收产业链派生边做准备。
+  - **进行中（本轮）**：`scripts/ui_graph_relationship_filter_acceptance.py` 新增受控产业链 fixture，通过公开 API 在当前服务内准备 AAPL/NVDA/600519 基础主体、上市证券/机构覆盖关系，以及 AAPL 同类/上游/下游 `CompanyPosition + IndustryChain`；关系过滤矩阵扩展到 9 个 case，覆盖 AAPL 的 `industry_peer` / `upstream_of` / `downstream_of` 浏览器端可见 chip、raw edge relationship type、节点/边渲染和性能状态。
+  - **进行中（本轮）**：修正 `/api/graph/query` 产业链派生边在带 `security_id` 过滤时误删相关公司 position 的问题；焦点公司仍受证券过滤，peer/upstream/downstream 相关公司不再被要求拥有同一 `security_id`。
+  - **进行中（本轮）**：新增 `scripts/graph_acceptance_fixture.py`，把图谱验收数据准备从浏览器矩阵脚本中抽离为可单独运行的公开 API fixture 准备脚本；`scripts/ui_graph_relationship_filter_acceptance.py` 改为复用该脚本，避免产业链样本长期藏在验收内部。
+  - **进行中（本轮）**：`python3 -m app.server` 新增 `AI_QUANT_PORT` 支持和端口范围校验，便于在 8000 被旧服务占用时直接启动当前代码做图谱验收。
+  - **进行中（本轮）**：新增 `app/service_modules/graph_seed.py`、`POST /api/graph/seed/obsidian` 和 `scripts/seed_obsidian_knowledge_graph.py`，用现有注册 API/模型准备本地 Obsidian 式知识网络样本，覆盖 AAPL/NVDA/MSFT/TSM/ASML/AVGO/600519/600809 的产业位置、同类/上下游派生边、上市证券关系和 13F 同持有人网络。
+  - **进行中（本轮）**：图谱浏览器验收新增 `institutional_holder_key=0000102909` case，强校验 `SAME_HOLDER_RELATED_COMPANY` 原始边和“13F持有人”过滤 chip，补上“看到某公司时，该股东还持有哪些公司”的可见图谱链路。
+  - **已完成（本轮修正）**：默认局部裁剪改为“焦点 + 展开节点邻居 + 社区骨架 + 跨社区桥接 + 关键知识节点”保留；提高 `event` / `evidence` / `research` / `portfolio` 权重，降低 issuer/security 对首屏的挤占。
+  - **已完成（本轮修正）**：布局去掉 issuer 强中心吸附，改为社区环形重心 + 展开节点局部锚点；点击节点后其邻居围绕该节点形成小团簇，减少 AAPL 星状放射线。
+  - **已完成（本轮修正）**：单击节点只负责选中并展开，不再二次点击收起；双击或“设为焦点”才切换焦点；标签策略放宽到知识节点和度数节点，图本身承担主要探索入口。
+  - **已完成（本轮修正）**：`scripts/ui_graph_layout_acceptance.py` 新增点击后可见邻居增长验收，要求被点击节点进入 `expandedIds` 且可见邻居/节点/边真实增加，避免“看似选中但没有自然展开”回归。
+  - **已完成（本轮修正 2）**：单击节点现在直接切换当前图谱焦点并展开，焦点历史仍保留回退能力；布局改为焦点居中、邻居环绕、二跳外圈的径向网络，不再按社区把节点推到矩形边缘。
+  - **已完成（本轮修正 2）**：重心切换时清理非固定旧布局坐标，避免 localStorage/旧坐标把新主节点拖回旧位置；验收脚本新增 `node_click_focus_switch`，点击后焦点必须等于被点击节点。
+  - **已完成（本轮修正 3）**：修复真实鼠标点击被 `pointerdown` 拖拽逻辑吞掉的问题；现在 `pointerdown` 只记录候选节点并高亮，只有移动超过阈值才进入拖拽/固定并抑制 click，普通按下松开会正常触发焦点切换。
+  - **已完成（本轮修正 3）**：浏览器验收从直接派发 `MouseEvent('click')` 改为真实 `PointerEvent('pointerdown')` + `PointerEvent('pointerup')` + `click` 链路，覆盖“按住点亮、松开复原”的真实交互回归。
+  - **已完成（本轮修正 4）**：社区簇标签也成为可探索入口；点击“产业链”等社区摘要会选择该社区代表节点并切换焦点。修复社区标签文字 `pointer-events:none` 导致真实点击穿透到 SVG 背景、焦点回到 AAPL 的问题。
+  - **已完成（本轮修正 4）**：新增浏览器原生输入层验收，用 Chrome DevTools `Input.dispatchMouseEvent` 点击社区标签坐标，确认“AI 端侧设备与算力产业链”可切焦点；`scripts/ui_graph_layout_acceptance.py` 也新增 `community_click` 断言。
+  - **已完成（本轮修正 5）**：修复普通节点真实点击仍可能不切焦点的问题：节点 `pointerdown` 会把 pointer capture 交给 SVG，导致节点自身 `pointerup` 不稳定；现在 SVG 级 `pointerup` 会根据 `pendingNodePointer` / `elementFromPoint` 兜底切换焦点。
+  - **已完成（本轮修正 5）**：焦点切换统一走 `switchKnowledgeGraphFocusNode()`，同步更新 `focusId` 和 `selectedId`，避免社区标签切焦点后右侧详情仍显示 AAPL。
+  - **已完成（本轮修正 6）**：同名节点标签去歧义：发行主体显示为 `AAPL · 公司`，证券节点显示为 `AAPL · NASDAQ` / 交易场所，避免公司节点和上市证券节点都显示裸 `AAPL`。
+  - **已完成（本轮修正 7）**：补齐图谱默认展示标签清洗层，`doc_/hold_/pos_/srr_/vp_/event_/rel_...obsidian` 种子 ID、`RELATIONSHIP_*` / `VIEWPOINT_ON_COMPANY` / `HOLDS_SECURITY` 等 raw 关系类型不再直接进入画布、inspector 和关系表默认文本；折叠追溯仍保留 raw provenance。
+  - **已完成（本轮修正 7）**：`graphRef()` / `userEntityLabel()` / `relationshipTypeDisplayLabel()` / inspector 相邻关系统一走图谱语义标签，产业链派生节点按冒号后的环节显示为 `产业节点 · 半导体设备/晶圆代工/...`，避免相同内部前缀被误判为同一个“端侧 AI”节点。
+  - 当前验证：AAPL 局部图验收通过，`节点 39/132`、`关系 60/320`，实际 DOM 节点 36、关系 60、社区标签 2、质量标签 2、重叠 2 对、贴边 0、点击非焦点节点后 `expanded=3`，布局持久化恢复误差 `dx=0, dy≈0.04`，路径高亮 2 节点/1 边，路径 next-hop 6 个，点击 next-hop 后仍高亮 2 节点/1 边，视图控件 4 个且缩放/适配/居中通过，探索轨迹 2 节点且点击轨迹可回到节点，保存/清空/恢复子图后恢复 2 个轨迹节点，性能约 `60 FPS / 1.8ms`；AAPL 全局图验收通过，`节点 88/132`、`关系 182/320`、社区标签 2、质量标签 2、贴边 0、重叠 66 对（全局概览阈值内），路径 next-hop 6 个，点击 next-hop 后仍高亮 2 节点/1 边，视图控件、探索轨迹和保存子图通过，性能约 `60 FPS / 4.2ms`；多主体矩阵通过：AAPL local 36 节点/60 边、NVDA local 36 节点/73 边、600519 local 33 节点/88 边、AAPL global 88 节点/182 边；关系过滤矩阵通过：AAPL/NVDA/600519 的上市证券和机构覆盖过滤均只返回目标 relationship type，过滤 chip 可见且性能在阈值内。
+  - 当前验证（继续推进）：当前代码 55539 临时服务运行 `scripts/seed_obsidian_knowledge_graph.py` 创建 38 条本地知识网络 seed；API 探针确认 AAPL `industry_peer` / `upstream_of` / `downstream_of` 均返回对应语义边，`institutional_holder_key=0000102909` 返回同持有人相关公司边；`scripts/ui_graph_layout_acceptance.py ... --institutional-holder-key 0000102909` 通过，18 节点/43 边、3 个社区标签、0 重叠、`SAME_HOLDER_RELATED_COMPANY` 可见；完整 `scripts/ui_graph_relationship_filter_acceptance.py` 矩阵扩展到 10/10 通过，新增 AAPL Vanguard holder case 28 节点/65 边。
+  - 当前验证（自然展开修正）：当前代码 55551 临时服务 + Obsidian seed 通过 AAPL 局部图验收，`节点 36/49`、`关系 88/131`、实际 DOM 节点 35、关系 88、4 个可见社区、12 个产业节点、可见 `event/research/evidence` 类型、重叠 5 对、贴边 0、性能约 `60 FPS / 1.1ms`；点击非焦点节点 `pos_obsidian_asml_equipment` 后可见邻居从 1 增到 3、节点 +1、边 +1，确认点击后发生真实可见展开而不是只改变选中状态。
+  - 当前验证（点击切主节点修正）：当前代码 55552 临时服务 + Obsidian seed 通过 AAPL 局部图验收，点击 `pos_obsidian_asml_equipment` 后焦点从 `issuer_aapl` 切换到 `pos_obsidian_asml_equipment`，可见邻居从 1 增到 3、节点 +1、边 +1；布局结果贴边节点 0、重叠 0、性能约 `60 FPS / 1.3ms`。当前 8000 端口仍是另一套长期运行 Postgres/S3 服务，不代表这次 55552 当前代码验证结果。
+  - 当前验证（真实 pointer 修正）：当前代码 55552 已重启为最新交互代码，真实 pointer 链路验收通过；点击 `pos_obsidian_asml_equipment` 后 `focus_after=pos_obsidian_asml_equipment`、`focus_before=issuer_aapl`、可见邻居 1 -> 3、节点 +1、边 +1、贴边 0、重叠 0、性能约 `60 FPS / 1.5ms`。
+  - 当前验证（社区标签真实点击）：当前代码 55552 重启后，用 CDP 原生 `Input.dispatchMouseEvent` 点击 `industry` 社区标签中心，焦点从 `issuer_aapl` 切到 `chain_obsidian_ai_device_network`，节点详情标题为 `AI 端侧设备与算力产业链`；脚本验收 `community_click` 通过，后续点击产业链社区代表节点 `chain_obsidian_ai_device_network:accelerator` 后焦点也能切换。
+  - 当前验证（SVG pointerup 兜底）：当前代码 55552 重启后，用 CDP 原生鼠标事件先点击普通节点 `event_obsidian_aapl_on_device_ai`，焦点从 `issuer_aapl` 切到该事件节点；随后重新读取当前 `industry` 社区标签坐标并点击，焦点切到 `chain_obsidian_ai_device_network:edge_device`，且 `selectedId` 与 `focusId` 同步。
+  - 当前验证（标签去歧义）：当前代码 55552 重启后，浏览器探针确认 `issuer_aapl` 标签为 `AAPL · 公司`，`security_aapl_us` 标签为 `AAPL · NASDAQ`。
+  - 当前验证（默认展示标签清洗）：当前代码 55552 重启并重新 seed 49 条 Obsidian 本地记录后，headless Chromium 探针确认默认可见节点、边、社区、inspector 和关系表文本中没有 `doc/hold/pos/srr/vp/event/rel ... obsidian`、`RELATIONSHIP`、`VIEWPOINT_ON_COMPANY`、`product strategy` 等残留；AAPL 局部图 layout acceptance 继续通过，35 DOM 节点、88 边、4 个可见社区、12 个产业节点、0 重叠、0 贴边、点击 `pos_obsidian_asml_equipment` 后焦点切换且可见邻居 1 -> 3，社区标签点击切到 `chain_obsidian_ai_device_network:foundry`。
+  - 当前限制：产业链三类关系和机构持有人网络已经通过受控浏览器 fixture + Obsidian seed 验证，并可通过 `scripts/graph_acceptance_fixture.py` / `scripts/seed_obsidian_knowledge_graph.py` 单独准备；当前 8000 端口上运行的旧 root 服务仍可能不是当前代码。下一步应把 seed 从“样本网络”继续推进到真实本地生产数据导入/增量更新。
+  - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/check_handoffs.py`；`git diff --check`；headless Chromium 默认可见文本探针；`python3 scripts/ui_graph_layout_acceptance.py http://127.0.0.1:55552 --symbol AAPL --scope local --min-nodes 26 --min-links 60 --min-community-labels 3 --min-visible-communities 3 --min-industry-nodes 5 --min-raw-knowledge-nodes 5 --min-visible-knowledge-types 2 --max-overlap-pairs 12 --max-near-edge-nodes 2 --forbid-filter-chip "证券:" --check-focus-switch --output artifacts/ui-graph-layout-acceptance-label-cleanup.json --timeout 45`；`python3 scripts/ui_graph_relationship_filter_acceptance.py http://127.0.0.1:55550 --output artifacts/ui-graph-relationship-filter-acceptance-smoke-2.json --timeout 60`。
+
 - `DONE` T-486 公开行情 K 线板块
   - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
   - 背景：公司情报和知识图谱已经能展示关系与证据，但个人用户还需要直接查看证券价格走势，避免在研究时离开系统另找行情图。
@@ -1199,6 +1253,32 @@
   - **已完成（本轮）**：`docs/artifact-governance.md` 与 `docs/pr-checklist.md` 已加入文档链接检查说明；历史底稿链接断链已修正。
   - **已完成（本轮）**：`docs/logic-map.md` 已记录完整 `make local-ci` 证据：Python 编译、全量单测、UI 静态契约、安全检查、Markdown 链接检查和 handoff 校验全部通过。
   - 验收：`make local-ci` 通过；`python3 scripts/check_markdown_links.py` 通过，检查 195 个 Markdown 文件；`python3 scripts/check_handoffs.py` 通过；`git diff --check` 通过。
+
+- `DOING` T-566 Obsidian 式可探索知识网络
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
+  - Owner：Product and UI, Research and AI Workflows, Data and Evidence
+  - 目标：把现有公司中心关系图谱升级为更接近 Obsidian Graph View 的可探索知识网络，支持多社区、动态展开、产业链/股东/证据/观点多维关系和可复验浏览器质量门。
+  - 现状判断：不需要推倒重建数据库，但需要持续补“图谱语义层 + 数据密度 + 前端探索体验”。当前差距的主要原因不是单个样式问题，而是默认查询仍偏公司中心、候选图谱数据量偏薄、SVG 本地图需要裁剪、图谱交互还没有达到 Obsidian 的全局/局部网络探索成熟度。
+  - **已完成（本轮）**：`/api/graph/query` 可从 `CompanyPosition + IndustryChain` 派生产业链同类、上游、下游语义边；13F/持有人网络和事实股东网络可通过 holder key 展开跨公司图谱。
+  - **已完成（本轮）**：新增 Obsidian 图谱 seed API/CLI/领域模块，能用 AAPL/NVDA/MSFT/TSM/ASML/AVGO/600519/600809、AI 端侧设备产业链和 Vanguard/Berkshire 持有人关系构造本地多社区验收图谱。
+  - **已完成（本轮）**：前端图谱默认深度调整为三跳，局部首屏加入社区优先裁剪和默认跨社区展开，弱化单 issuer 居中星状布局，社区力导向改为多簇分布。
+  - **已完成（本轮验收）**：当前代码在 `AI_QUANT_PORT=55541` seed 后，AAPL 局部首屏浏览器验收通过：22 节点、54 边、3 个可见社区、5 个产业节点、0 重叠、0 贴边、约 60 FPS，并保留视图控制、探索 trail 和 saved subgraph 检查。
+  - **已完成（继续推进）**：普通 symbol 搜索默认改为 issuer-level 公司知识网络，不再自动带 primary `security_id`；只有从证券行、公司产业定位行或精确关系入口点击时才启用证券级过滤，避免首屏被收窄成单证券关系图。
+  - **已完成（继续推进验收）**：当前代码在 `AI_QUANT_PORT=55542` seed 后，AAPL 默认公司级首屏浏览器验收通过：37 节点、88 边、3 个可见社区、13 个产业节点、2 个重叠、0 贴边、约 60 FPS，filter chip 仅显示 `主体: issuer_aapl`，明确不含 `证券:`。
+  - **已完成（继续推进）**：Obsidian seed 增加本地 seed source、公司 note 文档、公司事件、结构化研报和观点节点，把图谱从“产业链/持有人关系网络”推进到包含文档、事件、观点的知识网络；全部仍标记为本地 seed/观点层，不作为生产证据或交易信号。
+  - **已完成（继续推进验收）**：当前代码在 `AI_QUANT_PORT=55544` seed 后，AAPL 默认首屏浏览器验收通过：40 节点、88 边、4 个可见社区、13 个产业节点、5 个 raw 知识节点，首屏可见 `event/research/evidence` 三类知识节点，filter chip 仍不含 `证券:`。
+  - **已完成（继续推进）**：节点详情面板新增“设为焦点”，可把当前选中事件/观点/证据等知识节点切换成新的局部图中心，同时写入探索轨迹、展开该节点并重绘邻域；这使图谱具备类似 Obsidian 的逐节点漫游能力。
+  - **已完成（继续推进验收）**：当前代码在 `AI_QUANT_PORT=55545` seed 后，浏览器验收点击可见知识节点并触发“设为焦点”，确认 `focusId` 从 `issuer_aapl` 切到 `event_obsidian_aapl_on_device_ai`，该节点进入 expanded/trail，保存子图 storage key 也切到事件焦点。
+  - **已完成（继续推进）**：新增焦点历史和“返回焦点”入口，用户从公司切到事件/观点/证据节点后可以一键回到上一个焦点，并在路径面板保留焦点历史按钮，避免探索链路变成一次性跳转。
+  - **已完成（继续推进验收）**：当前代码在 `AI_QUANT_PORT=55546` seed 后，浏览器验收确认 AAPL 默认图为 40 节点、78 边、4 个可见社区、13 个产业节点、5 个 raw 知识节点，`event/research/evidence` 可见；点击知识节点后 `focusId` 从 `issuer_aapl` 切到 `event_obsidian_aapl_on_device_ai`，焦点历史为 2 个节点，再点击“返回焦点”回到 `issuer_aapl`。
+  - **已完成（继续推进）**：新增 `/api/graph/knowledge-network/readiness` 和 `scripts/graph_knowledge_network_readiness.py`，用现有真实/本地记录审计 Obsidian 式知识网络的数据密度，输出公司画像、产业定位、公司关系、股东持仓、文档、证据、事件、研报和观点层覆盖，社区来源、跨层链接、edge 数量、seed 依赖度和下一步 backfill 动作。
+  - **已完成（继续推进验收）**：当前代码在 `AI_QUANT_PORT=55547` seed 后，readiness CLI 对 `issuer_aapl` 输出 `status=needs_data`：图谱有 90 条边、7 个社区、8 个已覆盖数据层，但 `evidence` 层缺失且 `seed_dependency.seed_dependent=true`，因此不会把 seed/fixture 图谱误判为真实生产级 Obsidian 知识网络。
+  - **已完成（继续推进）**：新增 `scripts/backfill_knowledge_network_evidence.py`，按 issuer 图谱读取缺 evidence 的 Document，默认 dry-run，显式 `--execute` 时通过 `/api/evidence/extract` 生成 Evidence 切片，并在结果里记录 readiness 前后对比；来自 seed 文档的 evidence 仍计入 seed dependency，避免误判。
+  - **已完成（继续推进验收）**：当前代码在 `AI_QUANT_PORT=55548` seed 后执行 knowledge-network evidence backfill，AAPL 2 个文档生成 3 条 evidence，readiness 中 `evidence` 层从 missing 变为 sufficient，边数从 90 增到 93，`HAS_EVIDENCE` 可见，`seed_dependency.seed_dependent=true` 保持；浏览器验收通过，41 可见节点、82 边、4 个可见社区、8 个 raw knowledge 节点，焦点切换/返回仍通过。
+  - **已完成（继续推进）**：新增 `/api/graph/knowledge-network/evidence-links/backfill` 和 `scripts/backfill_knowledge_network_evidence_links.py`，把已存在的 Document->Evidence 切片回填到 CompanyEvent、CompanyRelationship、ReportViewpoint 的 `evidence_ids`，默认 dry-run，显式 `execute=true` 才写入本地 provenance 链接。
+  - **已完成（继续推进验收）**：当前代码在 `AI_QUANT_PORT=55549` seed + evidence backfill 后执行 evidence-link backfill，AAPL 1 个事件和 1 个观点挂上 evidence；readiness 显示 `event_evidence_links=1`、`viewpoint_evidence_links=1`、边数 98，仍为 `needs_data` 且 `seed_dependency.seed_dependent=true`；浏览器验收通过，42 可见节点、88 边、raw edge types 包含 `EVENT_EVIDENCE` 和 `VIEWPOINT_EVIDENCE`。
+  - **仍未完成**：要达到 Obsidian 标准，还需要把长期本地真实数据导入到同一图谱语义层，继续增加文档/事件/观点/证据之间的真实交叉链接，并评估 Canvas/WebGL 或虚拟化以支撑更大图谱；当前 seed/fixture 证明能力成立，但不等于真实生产数据已经足够丰富。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_obsidian_knowledge_graph_seed_creates_multi_dimension_network tests.test_system.SystemServiceTests.test_graph_knowledge_network_readiness_flags_real_data_gaps_and_seed_dependency`、`python3 scripts/backfill_knowledge_network_evidence_links.py http://127.0.0.1:55549 --issuer-id issuer_aapl --limit 10 --execute --output artifacts/knowledge-network-evidence-link-backfill-executed.json --timeout 10`、`python3 scripts/ui_graph_layout_acceptance.py http://127.0.0.1:55549 --symbol AAPL --scope local --min-nodes 28 --min-links 64 --min-community-labels 3 --min-visible-communities 4 --min-industry-nodes 5 --min-raw-knowledge-nodes 8 --min-visible-knowledge-types 2 --max-overlap-pairs 14 --max-near-edge-nodes 2 --forbid-filter-chip "证券:" --check-focus-switch --output artifacts/ui-graph-layout-acceptance-evidence-links.json --timeout 45`、`python3 scripts/ui_static_check.py`、`python3 scripts/check_handoffs.py`、`git diff --check`。
 
 ## 运维/非本机发布附录 / 当前工程治理待办
 

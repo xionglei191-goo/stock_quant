@@ -621,6 +621,20 @@
       min-width: 180px;
       max-width: 280px;
     }
+    .graph-view-actions {
+      display: inline-flex;
+      gap: 4px;
+      align-items: center;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .graph-view-actions button {
+      min-width: 34px;
+      min-height: 30px;
+      padding: 4px 8px;
+    }
     .graph-filter-row {
       display: flex;
       align-items: center;
@@ -657,7 +671,7 @@
     }
     .graph-stage {
       position: relative;
-      min-height: 560px;
+      min-height: 640px;
       border: 1px solid var(--line);
       border-radius: 8px;
       overflow: hidden;
@@ -669,7 +683,7 @@
       display: block;
       width: 100%;
       height: 100%;
-      min-height: 560px;
+      min-height: 640px;
       cursor: grab;
     }
     .graph-stage svg:active {
@@ -687,6 +701,11 @@
     }
     .graph-node-svg {
       cursor: pointer;
+    }
+    .graph-node-svg.is-hidden,
+    .graph-link-svg.is-hidden,
+    .graph-link-label.is-hidden {
+      display: none;
     }
     .graph-node-svg circle {
       stroke: #fff;
@@ -718,6 +737,14 @@
       stroke: #111827;
       stroke-width: 3;
     }
+    .graph-node-svg.is-path-node circle {
+      stroke: #0f172a;
+      stroke-width: 3;
+    }
+    .graph-node-svg.is-expanded circle {
+      stroke: #f59e0b;
+      stroke-width: 3;
+    }
     .graph-link-svg {
       stroke: #9aa6b5;
       stroke-width: 1.4;
@@ -727,6 +754,11 @@
       stroke: var(--blue);
       stroke-width: 2.2;
       opacity: 0.95;
+    }
+    .graph-link-svg.is-path-link {
+      stroke: #0f172a;
+      stroke-width: 3;
+      opacity: 1;
     }
     .graph-link-label {
       fill: #5b6676;
@@ -741,6 +773,31 @@
     }
     .graph-link-label.is-highlighted {
       opacity: 1;
+    }
+    .graph-community-label text {
+      fill: #334155;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.92);
+      stroke-width: 5px;
+      stroke-linejoin: round;
+      pointer-events: auto;
+      cursor: pointer;
+    }
+    .graph-community-label .graph-community-quality {
+      fill: #64748b;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .graph-community-label circle {
+      fill: rgba(255, 255, 255, 0.68);
+      stroke: rgba(148, 163, 184, 0.32);
+      stroke-width: 1;
+    }
+    .graph-community-label {
+      cursor: pointer;
     }
     .graph-legend {
       display: flex;
@@ -800,6 +857,53 @@
       display: block;
       font-size: 12px;
       margin-bottom: 2px;
+    }
+    .graph-path-panel {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .graph-path-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 8px 0;
+    }
+    .graph-path-steps {
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .graph-path-step {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .graph-path-next-hops {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+    .graph-next-hop {
+      min-height: 24px;
+      padding: 3px 7px;
+      font-size: 11px;
+    }
+    .graph-trail-list {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      min-height: 26px;
+    }
+    .graph-trail-node {
+      min-height: 24px;
+      padding: 3px 7px;
+      font-size: 11px;
+      border-color: rgba(37, 99, 235, 0.32);
+      background: #eff6ff;
+      color: #1e40af;
     }
     .graph-stats {
       display: flex;
@@ -2022,14 +2126,28 @@
                   <label for="graphDepth">关系深度</label>
                   <select id="graphDepth" aria-label="关系深度">
                     <option value="1">一跳</option>
-                    <option value="2" selected>二跳</option>
-                    <option value="3">三跳</option>
+                    <option value="2">二跳</option>
+                    <option value="3" selected>三跳</option>
                     <option value="0">全部</option>
                   </select>
                 </div>
+                <div class="field compact">
+                  <label for="graphScope">图谱模式</label>
+                  <select id="graphScope" aria-label="图谱模式">
+                    <option value="local" selected>局部图</option>
+                    <option value="global">全局图</option>
+                  </select>
+                </div>
                 <button id="graphResetView">重置视图</button>
+                <div class="graph-view-actions" aria-label="图谱视图控制">
+                  <button id="graphZoomOut" title="缩小图谱" aria-label="缩小图谱">-</button>
+                  <button id="graphZoomIn" title="放大图谱" aria-label="放大图谱">+</button>
+                  <button id="graphFitView" title="适配全部可见节点" aria-label="适配全部可见节点">适配</button>
+                  <button id="graphCenterFocus" title="居中当前焦点节点" aria-label="居中当前焦点节点">居中</button>
+                </div>
                 <button id="graphToggleDynamic" class="primary">暂停动态</button>
                 <button id="graphReleaseNodes">释放节点</button>
+                <button id="graphClearLayout">清除布局</button>
               </div>
               <div class="graph-filter-row" aria-label="图谱关系过滤">
                 <label class="graph-toggle"><input id="graphFilterIndustry" type="checkbox" checked>产业</label>
@@ -2039,6 +2157,7 @@
                 <label class="graph-toggle"><input id="graphFilterRisk" type="checkbox" checked>风险</label>
               </div>
               <div id="knowledgeGraphFilterChips" class="graph-filter-chips" aria-label="当前图谱过滤"><span class="badge">全部关系</span></div>
+              <div id="knowledgeGraphReadiness" class="graph-filter-chips" aria-label="知识网络数据密度"><span class="badge">数据密度待检查</span></div>
             </div>
             <div class="graph-explorer">
               <div>
@@ -2063,6 +2182,26 @@
                 <div>
                   <div class="small-note">相邻关系</div>
                   <div id="knowledgeGraphNeighborRows" class="graph-neighbor-list"></div>
+                  <div class="graph-path-panel">
+                    <div class="small-note">路径探索</div>
+                    <div class="graph-path-actions">
+                      <button id="graphFocusSelected">设为焦点</button>
+                      <button id="graphBackFocus">返回焦点</button>
+                      <button id="graphSetPathStart">设为起点</button>
+                      <button id="graphSetPathEnd">设为终点</button>
+                      <button id="graphClearPath">清除路径</button>
+                      <button id="graphPinSelected">固定当前</button>
+                      <button id="graphSavePathTrail">保存路径</button>
+                      <button id="graphClearTrail">清除轨迹</button>
+                      <button id="graphSaveSubgraph">保存子图</button>
+                      <button id="graphRestoreSubgraph">恢复子图</button>
+                    </div>
+                    <div id="knowledgeGraphPathSummary" class="small-note">选择两个节点后高亮最短路径</div>
+                    <div id="knowledgeGraphPathSteps" class="graph-path-steps"></div>
+                    <div id="knowledgeGraphSubgraphStatus" class="small-note">尚未保存探索子图</div>
+                    <div id="knowledgeGraphFocusHistoryList" class="graph-trail-list" aria-label="焦点历史"></div>
+                    <div id="knowledgeGraphTrailList" class="graph-trail-list" aria-label="探索轨迹"></div>
+                  </div>
                 </div>
               </aside>
             </div>
@@ -3265,19 +3404,35 @@
       selectedId: "",
       focusId: "",
       search: "",
-      depth: 2,
+      depth: 3,
+      scope: "local",
       transform: { x: 0, y: 0, scale: 1 },
       dynamic: true,
       alpha: 0.9,
       tick: 0,
       frameId: 0,
+      perf: { frames: 0, lastAt: 0, fps: 0, avgFrameMs: 0, worstFrameMs: 0, sampleStartedAt: 0 },
       positions: {},
       fixedIds: new Set(),
+      expandedIds: new Set(),
+      trailIds: [],
+      focusHistoryIds: [],
+      layoutKey: "",
+      subgraphStatusOverride: "",
+      pathStartId: "",
+      pathEndId: "",
+      pathNodeIds: new Set(),
+      pathLinkIds: new Set(),
       pointer: null,
       draggingNodeId: "",
+      pendingNodePointer: null,
+      pendingCommunityPointer: null,
+      suppressNextNodeClick: false,
       pendingFilters: {},
       activeFilters: {},
+      readiness: null,
     };
+    window.knowledgeGraphState = knowledgeGraphState;
     const chokepointPlaybooks = {
       generic: {
         scores: [80, 78, 82, 76, 84],
@@ -3745,6 +3900,10 @@
         return value.display_name || value.legal_name || value.issuer_name || value.name || value.title || value.ticker || value.symbol || value.file_name || value.label || fallback;
       }
       const text = String(value).trim();
+      if (typeof graphReadableIdLabel === "function") {
+        const graphLabel = graphReadableIdLabel(text);
+        if (graphLabel) return graphLabel.length > 34 ? `${graphLabel.slice(0, 32)}...` : graphLabel;
+      }
       const cleaned = text
         .replace(/^issuer[_ -]/i, "")
         .replace(/^security[_ -]/i, "")
@@ -5091,7 +5250,8 @@
     }
 
     function graphRef(value, fallback = "-") {
-      return compactId(value, fallback);
+      const readable = graphReadableIdLabel(value);
+      return readable || compactId(value, fallback);
     }
 
     function graphList(values) {
@@ -5191,8 +5351,26 @@
         partner_candidate: "合作候选",
         institution_coverage: "机构覆盖",
         listed_security: "上市证券",
+        relationship: "关系",
+        relationship_subject: "关系主体",
+        relationship_object: "关系对象",
+        same_holder_related_company: "同持有人",
+        has_13f_holding: "13F 持仓",
+        holds_security: "持有证券",
+        issues: "发行证券",
+        positioned_as: "产业定位",
+        has_company_position: "产业定位",
+        security_for_position: "定位证券",
+        position_in_chain_node: "产业定位",
+        event_from_document: "事件资料",
+        event_on_security: "事件证券",
+        covered_by_report: "研报覆盖",
+        analyst_covers: "分析师覆盖",
+        report_has_viewpoint: "研报观点",
+        viewpoint_on_company: "观点覆盖",
       };
-      return labels[value] || value;
+      const key = String(value || "").toLowerCase();
+      return labels[key] || graphEdgeLabel(value, value);
     }
 
     function graphFilterDisplayValue(key, filters = {}) {
@@ -5232,11 +5410,127 @@
         : `<span class="badge">全部关系</span>`;
     }
 
+    function renderKnowledgeGraphReadiness(data = null) {
+      const element = $("knowledgeGraphReadiness");
+      if (!element) return;
+      const item = data || knowledgeGraphState.readiness;
+      if (!item) {
+        element.innerHTML = `<span class="badge">数据密度待检查</span>`;
+        return;
+      }
+      const layerCount = Array.isArray(item.present_layers) ? item.present_layers.length : 0;
+      const missing = Array.isArray(item.missing_layers) ? item.missing_layers : [];
+      const crossLinks = item.cross_links || {};
+      const seed = item.seed_dependency || {};
+      const status = item.ready_for_obsidian_exploration ? "可探索" : "需补数据";
+      const statusClass = item.ready_for_obsidian_exploration ? "ok" : "warn";
+      const seedRatio = Math.round(Number(seed.seed_ratio || 0) * 100);
+      const seedText = seed.seed_dependent ? `seed依赖 ${seedRatio}%` : "真实数据优先";
+      const missingText = missing.length ? `缺 ${missing.slice(0, 3).join("/")}` : "层完整";
+      const eventLinks = Number(crossLinks.event_evidence_links || 0);
+      const viewpointLinks = Number(crossLinks.viewpoint_evidence_links || 0);
+      element.innerHTML = [
+        `<span class="badge ${statusClass}" data-readiness-status="${escapeHtml(item.status || "")}">${escapeHtml(status)}</span>`,
+        `<span class="badge" data-readiness-layers="${layerCount}">层 ${layerCount}/9</span>`,
+        `<span class="badge" data-readiness-missing="${escapeHtml(missing.join(","))}">${escapeHtml(missingText)}</span>`,
+        `<span class="badge" data-readiness-cross-links="${eventLinks + viewpointLinks}">证据链 E${eventLinks} V${viewpointLinks}</span>`,
+        `<span class="badge ${seed.seed_dependent ? "warn" : "ok"}" data-readiness-seed-dependent="${seed.seed_dependent ? "true" : "false"}">${escapeHtml(seedText)}</span>`,
+      ].join("");
+    }
+
+    function graphTokenLabel(token = "") {
+      const normalized = String(token || "").toLowerCase();
+      const labels = {
+        aapl: "AAPL",
+        nvda: "NVDA",
+        msft: "MSFT",
+        tsm: "TSM",
+        asml: "ASML",
+        avgo: "AVGO",
+        "600519": "600519",
+        "600809": "600809",
+        vanguard: "Vanguard",
+        berkshire: "Berkshire",
+        edge_device: "端侧设备",
+        ai_device: "端侧 AI",
+        device_cloud: "端侧与云服务",
+        supply_chain: "供应链",
+        accelerator: "AI 加速器",
+        accelerator_demand: "AI 加速器需求",
+        foundry_cloud: "晶圆代工与云服务",
+        cloud: "云服务",
+        cloud_service: "云与应用服务",
+        foundry: "晶圆代工",
+        equipment: "半导体设备",
+        connectivity: "连接芯片",
+        baijiu: "白酒",
+        baijiu_peer: "白酒同类",
+        on_device_ai: "端侧 AI 策略",
+      };
+      return labels[normalized] || "";
+    }
+
+    function graphReadableIdLabel(value = "", type = "", meta = {}) {
+      const id = String(value || "").trim();
+      const lower = id.toLowerCase();
+      if (!id) return "";
+      if (lower.startsWith("issuer_")) return String(id.slice("issuer_".length)).toUpperCase();
+      if (lower.startsWith("security_")) {
+        return String(id.slice("security_".length).replace(/_/g, " ")).toUpperCase();
+      }
+      if (lower.startsWith("sec_")) return String(id.slice("sec_".length)).toUpperCase();
+      const suffix = lower.includes(":") ? lower.split(":").at(-1) : "";
+      const parts = lower.split(/[_:]+/).filter(Boolean);
+      const company = parts.map(graphTokenLabel).find((item) => /^[A-Z0-9]{2,}$/.test(item || ""));
+      const explicitTopic = (() => {
+        const keys = [
+          ["on_device_ai", "端侧 AI 策略"],
+          ["device_cloud", "端侧与云服务"],
+          ["accelerator_demand", "AI 加速器需求"],
+          ["foundry_cloud", "晶圆代工与云服务"],
+          ["ai_device", "端侧 AI"],
+          ["edge_device", "端侧设备"],
+          ["supply_chain", "供应链"],
+          ["cloud_service", "云与应用服务"],
+          ["accelerator", "AI 加速器"],
+          ["connectivity", "连接芯片"],
+          ["equipment", "半导体设备"],
+          ["foundry", "晶圆代工"],
+          ["baijiu_peer", "白酒同类"],
+          ["baijiu", "白酒"],
+          ["cloud", "云服务"],
+        ];
+        return keys.find(([key]) => lower.includes(key))?.[1] || "";
+      })();
+      if (lower === "chain_obsidian_ai_device_network") return "AI 端侧设备与算力产业链";
+      if (lower.startsWith("chain_obsidian_ai_device_network:")) return `产业节点 · ${graphTokenLabel(suffix) || explicitTopic || graphTokenLabel(parts.at(-1)) || "产业环节"}`;
+      if (lower.startsWith("doc_obsidian_")) return `${company ? `${company} ` : ""}主题资料${explicitTopic ? ` · ${explicitTopic}` : ""}`;
+      if (lower.startsWith("hold_obsidian_")) {
+        const holder = lower.includes("berkshire") ? "Berkshire" : lower.includes("vanguard") ? "Vanguard" : meta.filer_name || "机构";
+        return `13F 持仓 · ${holder}${company ? ` / ${company}` : ""}`;
+      }
+      if (lower.startsWith("pos_obsidian_")) return `${company ? `${company} ` : ""}产业定位${explicitTopic ? ` · ${explicitTopic}` : ""}`;
+      if (lower.startsWith("event_obsidian_")) return `${company ? `${company} ` : ""}公司事件${explicitTopic ? ` · ${explicitTopic}` : ""}`;
+      if (lower.startsWith("srr_obsidian_") || lower.startsWith("rr_obsidian_")) return `${company ? `${company} ` : ""}研报主题${explicitTopic ? ` · ${explicitTopic}` : ""}`;
+      if (lower.startsWith("vp_obsidian_")) return `${company ? `${company} ` : ""}研究观点${explicitTopic ? ` · ${explicitTopic}` : ""}`;
+      if (lower.startsWith("rel_obsidian_")) return `${company ? `${company} ` : ""}知识关系${explicitTopic ? ` · ${explicitTopic}` : ""}`;
+      if (lower.startsWith("analyst_obsidian_")) return "本地研究员";
+      return "";
+    }
+
     function graphHumanText(value, fallback = "-") {
-      return String(value || fallback || "-")
+      const source = String(value || fallback || "-");
+      const readable = graphReadableIdLabel(source);
+      if (readable) return readable;
+      return source
         .replace(/^issuer_/i, "")
         .replace(/^security_/i, "")
         .replace(/^sec_/i, "")
+        .replace(/^doc_/i, "资料 ")
+        .replace(/^hold_/i, "持仓 ")
+        .replace(/^pos_/i, "产业定位 ")
+        .replace(/^srr_/i, "研报 ")
+        .replace(/^event_/i, "事件 ")
         .replace(/^vp_rr_[a-z0-9]+_/i, "观点 ")
         .replace(/^rr_/i, "研报 ")
         .replace(/^ce_/i, "事件 ")
@@ -5251,32 +5545,69 @@
     }
 
     function graphSemanticLabel(type, label, meta = {}) {
-      if (type === "issuer") return String(meta.ticker || meta.symbol || meta.name || meta.issuer_name || graphHumanText(label)).toUpperCase();
-      if (type === "security") return String(meta.ticker || meta.symbol || graphHumanText(label)).toUpperCase();
-      if (type === "industry" || type === "chain_node") return meta.name || graphHumanText(label);
-      if (type === "event") return statusLabel(meta.event_type || meta.title || label || "事件");
-      if (type === "evidence") return meta.title || meta.statement || meta.document_type || "证据";
-      if (type === "research") return meta.viewpoint || meta.topic || meta.title || meta.hypothesis || "研究观点";
+      if (type === "issuer") {
+        const value = String(meta.ticker || meta.symbol || meta.name || meta.issuer_name || graphHumanText(label)).toUpperCase();
+        return `${value} · 公司`;
+      }
+      if (type === "security") {
+        const value = String(meta.ticker || meta.symbol || graphHumanText(label)).toUpperCase();
+        const venue = meta.exchange || meta.market || meta.currency || "证券";
+        return `${value} · ${venue}`;
+      }
+      const readable = graphReadableIdLabel(meta.node_id || meta.document_id || meta.holding_id || meta.position_id || meta.event_id || meta.viewpoint_id || meta.research_report_id || label, type, meta);
+      if (type === "industry" || type === "chain_node") return meta.name || readable || graphHumanText(label);
+      if (type === "event") return readable || meta.title || graphEventLabel(meta.event_type || label);
+      if (type === "evidence") return readable || meta.statement || meta.quote || meta.title || meta.source_uri || graphHumanText(label, "证据");
+      if (type === "research") return readable || meta.viewpoint || meta.topic || meta.title || meta.hypothesis || "研究观点";
       if (type === "decision") return meta.verdict || meta.approval_state || meta.status || "分析结论";
-      if (type === "portfolio") return meta.feedback_type || meta.action || meta.status || "模拟反馈";
+      if (type === "portfolio") return readable || meta.feedback_type || meta.action || meta.filer_name || meta.status || "模拟反馈";
       if (type === "risk") return meta.task_type || meta.severity || meta.status || "风险/复盘";
-      return label || meta.name || "-";
+      return readable || label || meta.name || "-";
+    }
+
+    function graphEventLabel(value = "") {
+      const normalized = String(value || "").toLowerCase();
+      const labels = {
+        product_strategy: "产品策略",
+        supply_chain_watch: "供应链跟踪",
+        accelerator_demand_watch: "AI 加速器需求",
+        demand_watch: "需求观察",
+      };
+      return labels[normalized] || statusLabel(value || "事件");
     }
 
     function graphEdgeLabel(type = "", fallback = "") {
       const normalized = String(type || fallback || "").toUpperCase();
+      if (normalized.includes("SAME_HOLDER_RELATED_COMPANY")) return "同持有人";
+      if (normalized.includes("HAS_13F_HOLDING") || normalized.includes("INSTITUTIONAL_HOLDING")) return "13F 持仓";
+      if (normalized.includes("HOLDS_SECURITY")) return "持有证券";
+      if (normalized === "ISSUES" || normalized.includes("HAS_SECURITY")) return "发行证券";
+      if (normalized.includes("SECURITY_FOR_POSITION")) return "定位证券";
       if (normalized.includes("SECURITY")) return "证券";
       if (normalized.includes("COMPANY_EVENT")) return "公司事件";
+      if (normalized.includes("EVENT_FROM_DOCUMENT")) return "事件资料";
+      if (normalized.includes("EVENT_ON_SECURITY")) return "事件证券";
       if (normalized.includes("DISCLOSURE")) return "披露";
       if (normalized.includes("DOCUMENT")) return "资料";
       if (normalized.includes("EVIDENCE")) return "证据";
+      if (normalized.includes("REPORT_HAS_VIEWPOINT")) return "研报观点";
+      if (normalized.includes("VIEWPOINT_ON_COMPANY")) return "观点覆盖";
       if (normalized.includes("VIEWPOINT")) return "观点";
+      if (normalized.includes("COVERED_BY_REPORT") || normalized.includes("ANALYST_COVERS")) return "研报覆盖";
       if (normalized.includes("RESEARCH") || normalized.includes("REPORT")) return "研报";
       if (normalized.includes("CONCLUSION")) return "结论";
       if (normalized.includes("OBSERVATION") || normalized.includes("TASK")) return "观察";
       if (normalized.includes("PORTFOLIO") || normalized.includes("FEEDBACK") || normalized.includes("INTENT")) return "模拟反馈";
+      if (normalized.includes("UPSTREAM_OF")) return "上游";
+      if (normalized.includes("DOWNSTREAM_OF")) return "下游";
+      if (normalized.includes("INDUSTRY_PEER") || normalized.includes("PEER")) return "同类";
+      if (normalized.includes("HAS_COMPANY_POSITION") || normalized.includes("POSITION_IN_CHAIN") || normalized.includes("POSITIONED_AS")) return "产业定位";
+      if (normalized.includes("CHAIN_HAS_NODE") || normalized.includes("HAS_CHAIN_NODE")) return "产业节点";
       if (normalized.includes("CHAIN") || normalized.includes("POSITION")) return "产业定位";
       if (normalized.includes("REVIEW") || normalized.includes("RISK") || normalized.includes("EXCEPTION")) return "复盘/风险";
+      if (normalized.includes("RELATIONSHIP_SUBJECT")) return "关系主体";
+      if (normalized.includes("RELATIONSHIP_OBJECT")) return "关系对象";
+      if (normalized === "RELATIONSHIP" || normalized.includes("RELATIONSHIP")) return "关系";
       if (normalized.includes("COMPANY")) return "公司关系";
       return statusLabel(fallback || type || "关系").slice(0, 12);
     }
@@ -5284,6 +5615,191 @@
     function graphTypeRank(type) {
       return { issuer: 0, security: 1, industry: 2, chain_node: 3, research: 4, event: 5, evidence: 6, decision: 7, portfolio: 8, risk: 9 }[type] ?? 10;
     }
+
+    function graphCommunityForType(type = "") {
+      return {
+        issuer: "company",
+        security: "company",
+        industry: "industry",
+        chain_node: "industry",
+        research: "research",
+        decision: "research",
+        event: "evidence",
+        evidence: "evidence",
+        portfolio: "portfolio",
+        risk: "risk",
+      }[type] || "evidence";
+    }
+
+    function graphCommunityLabel(community = "") {
+      return {
+        company: "公司/证券",
+        industry: "产业链",
+        research: "观点/结论",
+        evidence: "事件/证据",
+        portfolio: "组合",
+        risk: "风险/观察",
+      }[community] || statusLabel(community || "关系簇");
+    }
+
+    function graphCommunityMinimums(isGlobalScope = false) {
+      return isGlobalScope
+        ? { company: 10, industry: 12, research: 12, evidence: 10, portfolio: 8, risk: 6 }
+        : { company: 5, industry: 7, research: 6, evidence: 5, portfolio: 4, risk: 3 };
+    }
+
+    function graphNodePriority(node, { focusId = "", expandedNeighborIds = new Set() } = {}) {
+      const degree = Number(node.degree || 0);
+      const typeBonus = {
+        issuer: 62,
+        security: 50,
+        industry: 76,
+        chain_node: 74,
+        research: 82,
+        decision: 72,
+        portfolio: 68,
+        risk: 46,
+        event: 84,
+        evidence: 80,
+      }[node.type] || 32;
+      const focusBonus = node.id === focusId ? 1000 : 0;
+      const expandedBonus = knowledgeGraphState.expandedIds.has(node.id) ? 500 : 0;
+      const neighborBonus = expandedNeighborIds.has(node.id) ? 360 : 0;
+      const hiddenBonus = Math.min(60, Number(node.hiddenNeighborCount || 0) * 8);
+      const knowledgeBonus = ["event", "evidence", "research", "decision", "portfolio"].includes(node.type) ? 120 : 0;
+      return focusBonus + expandedBonus + neighborBonus + hiddenBonus + knowledgeBonus + typeBonus + degree * 9;
+    }
+
+    function graphKnowledgeNode(node) {
+      return Boolean(node && (["event", "evidence", "research", "decision"].includes(node.type) || ["research", "evidence"].includes(node.community)));
+    }
+
+    function seedKnowledgeGraphDefaultExpansions(model, focusId = "") {
+      if (knowledgeGraphState.scope === "global" || !focusId || knowledgeGraphState.search) return;
+      if (knowledgeGraphState.expandedIds.size > 1) return;
+      const nodeById = new Map((model.nodes || []).map((node) => [node.id, node]));
+      const adjacency = new Map();
+      (model.links || []).forEach((link) => {
+        if (!adjacency.has(link.source)) adjacency.set(link.source, new Set());
+        if (!adjacency.has(link.target)) adjacency.set(link.target, new Set());
+        adjacency.get(link.source).add(link.target);
+        adjacency.get(link.target).add(link.source);
+      });
+      const candidates = [];
+      const visited = new Set([focusId]);
+      let frontier = [focusId];
+      for (let distance = 1; distance <= 2; distance += 1) {
+        const next = [];
+        frontier.forEach((id) => {
+          (adjacency.get(id) || []).forEach((neighborId) => {
+            if (visited.has(neighborId)) return;
+            visited.add(neighborId);
+            next.push(neighborId);
+            const node = nodeById.get(neighborId);
+            if (!node || node.community === "company") return;
+            candidates.push({ node, distance });
+          });
+        });
+        frontier = next;
+      }
+      const selectedCommunities = new Set();
+      candidates
+        .sort((a, b) => graphNodePriority(b.node, { focusId }) - graphNodePriority(a.node, { focusId }) || a.distance - b.distance)
+        .forEach(({ node }) => {
+          if (selectedCommunities.has(node.community)) return;
+          if (selectedCommunities.size >= 3) return;
+          knowledgeGraphState.expandedIds.add(node.id);
+          selectedCommunities.add(node.community);
+        });
+    }
+
+    function graphLinkWeight(type = "", group = "") {
+      const text = `${type} ${group}`.toLowerCase();
+      if (text.includes("security") || text.includes("position") || text.includes("chain_node")) return 1.55;
+      if (text.includes("company_relationship") || text.includes("shareholder") || text.includes("supplier") || text.includes("customer")) return 1.45;
+      if (text.includes("viewpoint") || text.includes("conclusion") || text.includes("research")) return 1.22;
+      if (text.includes("evidence") || text.includes("document")) return 0.86;
+      if (text.includes("market")) return 0.56;
+      return 1.0;
+    }
+
+    function graphStableNumber(value = "") {
+      let hash = 2166136261;
+      String(value || "").split("").forEach((char) => {
+        hash ^= char.charCodeAt(0);
+        hash = Math.imul(hash, 16777619);
+      });
+      return (hash >>> 0) / 4294967295;
+    }
+
+    function graphLayoutStorageKey() {
+      const filters = graphFilterSettings();
+      const enabledGroups = Object.entries(filters).filter(([, enabled]) => enabled !== false).map(([key]) => key).sort().join(".");
+      const focus = knowledgeGraphState.focusId || "none";
+      return `ai_quant_graph_layout:${focus}:${knowledgeGraphState.scope}:${knowledgeGraphState.depth}:${enabledGroups}`;
+    }
+
+    function graphSubgraphStorageKey() {
+      const focus = knowledgeGraphState.focusId || "none";
+      return `ai_quant_graph_subgraph:${focus}`;
+    }
+
+    function loadKnowledgeGraphLayout() {
+      const key = graphLayoutStorageKey();
+      knowledgeGraphState.layoutKey = key;
+      try {
+        const raw = window.localStorage?.getItem(key);
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        const positions = data.positions && typeof data.positions === "object" ? data.positions : {};
+        knowledgeGraphState.positions = {};
+        Object.entries(positions).forEach(([nodeId, value]) => {
+          const x = Number(value?.x);
+          const y = Number(value?.y);
+          if (Number.isFinite(x) && Number.isFinite(y)) knowledgeGraphState.positions[nodeId] = { x, y, vx: 0, vy: 0 };
+        });
+        knowledgeGraphState.fixedIds = new Set(Array.isArray(data.fixedIds) ? data.fixedIds.map(String) : []);
+      } catch (_error) {
+        knowledgeGraphState.positions = {};
+        knowledgeGraphState.fixedIds = new Set();
+      }
+    }
+
+    function saveKnowledgeGraphLayout() {
+      const key = knowledgeGraphState.layoutKey || graphLayoutStorageKey();
+      try {
+        const fixedPositions = {};
+        knowledgeGraphState.fixedIds.forEach((nodeId) => {
+          const position = knowledgeGraphState.positions[nodeId];
+          if (!position) return;
+          fixedPositions[nodeId] = { x: Math.round(position.x * 10) / 10, y: Math.round(position.y * 10) / 10 };
+        });
+        window.localStorage?.setItem(key, JSON.stringify({
+          savedAt: new Date().toISOString(),
+          focusId: knowledgeGraphState.focusId,
+          scope: knowledgeGraphState.scope,
+          depth: knowledgeGraphState.depth,
+          fixedIds: [...knowledgeGraphState.fixedIds],
+          positions: fixedPositions,
+        }));
+      } catch (_error) {
+        // Local storage can be disabled; graph exploration still works without persistence.
+      }
+    }
+
+    function clearKnowledgeGraphLayout() {
+      const key = knowledgeGraphState.layoutKey || graphLayoutStorageKey();
+      try {
+        window.localStorage?.removeItem(key);
+      } catch (_error) {
+        // Ignore storage errors and clear in-memory layout.
+      }
+      knowledgeGraphState.positions = {};
+      knowledgeGraphState.fixedIds.clear();
+      knowledgeGraphState.alpha = 0.95;
+      rerenderKnowledgeGraphExplorer();
+    }
+    window.saveKnowledgeGraphLayout = saveKnowledgeGraphLayout;
 
     function inferGraphNodeType(id, fallback = "evidence") {
       const text = String(id || "").toLowerCase();
@@ -5310,15 +5826,20 @@
           nodeMap.set(normalizedId, {
             id: normalizedId,
             type,
+            community: graphCommunityForType(type),
             label: shortGraphLabel(semanticLabel, normalizedId),
             fullLabel: graphHumanText(semanticLabel, normalizedId),
             meta,
             degree: 0,
+            hiddenNeighborCount: 0,
           });
         } else {
           const existing = nodeMap.get(normalizedId);
           const shouldUpgrade = graphTypeRank(type) < graphTypeRank(existing.type) || existing.type === "evidence";
-          if (shouldUpgrade) existing.type = type;
+          if (shouldUpgrade) {
+            existing.type = type;
+            existing.community = graphCommunityForType(type);
+          }
           existing.meta = { ...existing.meta, ...meta };
           if (shouldUpgrade || (label && existing.fullLabel === graphHumanText(normalizedId))) {
             existing.label = shortGraphLabel(semanticLabel);
@@ -5335,13 +5856,15 @@
         const targetNode = nodeMap.get(String(target));
         if (sourceNode) sourceNode.degree += 1;
         if (targetNode) targetNode.degree += 1;
+        const group = graphEdgeGroup(type);
         links.push({
           id: `${source}->${target}:${type}:${links.length}`,
           source: String(source),
           target: String(target),
           type: String(type || "RELATED"),
           label: label || graphEdgeLabel(type, type),
-          group: graphEdgeGroup(type),
+          group,
+          weight: graphLinkWeight(type, group),
           meta,
         });
       };
@@ -5463,12 +5986,25 @@
       });
 
       const liveLinks = links.filter((item) => nodeMap.has(item.source) && nodeMap.has(item.target));
+      liveLinks.forEach((link) => {
+        const source = nodeMap.get(link.source);
+        const target = nodeMap.get(link.target);
+        if (source && target && source.community === target.community) link.weight = Math.max(link.weight || 1, 1.28);
+      });
       return { nodes: [...nodeMap.values()], links: liveLinks };
     }
 
     function filteredGraphModel(model) {
       const filters = graphFilterSettings();
       const allowedLinks = model.links.filter((link) => filters[link.group] !== false);
+      const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
+      const adjacency = new Map();
+      allowedLinks.forEach((link) => {
+        if (!adjacency.has(link.source)) adjacency.set(link.source, []);
+        if (!adjacency.has(link.target)) adjacency.set(link.target, []);
+        adjacency.get(link.source).push({ nodeId: link.target, link });
+        adjacency.get(link.target).push({ nodeId: link.source, link });
+      });
       const linkedIds = new Set();
       allowedLinks.forEach((link) => {
         linkedIds.add(link.source);
@@ -5480,22 +6016,16 @@
       if (search) {
         const match = nodes.find((node) => `${node.label} ${node.fullLabel} ${node.id}`.toLowerCase().includes(search));
         focusId = match?.id || focusId;
+        if (match) knowledgeGraphState.expandedIds.add(match.id);
       }
       const depth = Number(knowledgeGraphState.depth || 0);
       if (focusId && depth > 0) {
-        const adjacency = new Map();
-        allowedLinks.forEach((link) => {
-          if (!adjacency.has(link.source)) adjacency.set(link.source, new Set());
-          if (!adjacency.has(link.target)) adjacency.set(link.target, new Set());
-          adjacency.get(link.source).add(link.target);
-          adjacency.get(link.target).add(link.source);
-        });
         const visible = new Set([focusId]);
         let frontier = [focusId];
         for (let step = 0; step < depth; step += 1) {
           const next = [];
           frontier.forEach((id) => {
-            (adjacency.get(id) || []).forEach((neighbor) => {
+            (adjacency.get(id) || []).forEach(({ nodeId: neighbor }) => {
               if (!visible.has(neighbor)) {
                 visible.add(neighbor);
                 next.push(neighbor);
@@ -5514,21 +6044,97 @@
         const text = `${node.id} ${node.label} ${node.fullLabel}`.toLowerCase();
         return text.includes(focusToken) || (node.degree || 0) >= 4;
       });
+      const expandedNeighborIds = new Set();
+      knowledgeGraphState.expandedIds.forEach((expandedId) => {
+        (adjacency.get(expandedId) || []).forEach(({ nodeId }) => expandedNeighborIds.add(nodeId));
+      });
       const rankedNodes = relevantNodes
         .slice()
-        .sort((a, b) => (a.id === focusId ? -1 : b.id === focusId ? 1 : 0) || graphTypeRank(a.type) - graphTypeRank(b.type) || (b.degree || 0) - (a.degree || 0));
-      const typeLimits = { issuer: 8, security: 2, industry: 6, chain_node: 8, research: 10, event: 10, evidence: 6, decision: 6, portfolio: 6, risk: 6 };
+        .sort((a, b) => graphNodePriority(b, { focusId, expandedNeighborIds }) - graphNodePriority(a, { focusId, expandedNeighborIds }) || graphTypeRank(a.type) - graphTypeRank(b.type) || String(a.id).localeCompare(String(b.id)));
+      const isGlobalScope = knowledgeGraphState.scope === "global";
+      const typeLimits = isGlobalScope
+        ? { issuer: 12, security: 4, industry: 8, chain_node: 12, research: 16, event: 14, evidence: 12, decision: 10, portfolio: 10, risk: 8 }
+        : { issuer: 5, security: 2, industry: 5, chain_node: 7, research: 7, event: 5, evidence: 5, decision: 4, portfolio: 4, risk: 3 };
+      const nodeLimit = isGlobalScope ? 96 : 54;
+      const localExpanded = knowledgeGraphState.expandedIds.size > 1;
+      const localNodeLimit = localExpanded ? 50 : 42;
+      const edgeLimit = isGlobalScope ? 240 : (localExpanded ? 110 : 88);
       const typeCounts = {};
       const limitedIds = new Set();
+      const communityCounts = {};
+      const communityMinimums = graphCommunityMinimums(isGlobalScope);
+      const addLimitedNode = (node) => {
+        if (!node || limitedIds.has(node.id)) return false;
+        const maxSize = isGlobalScope ? nodeLimit : localNodeLimit;
+        if (limitedIds.size >= maxSize) return false;
+        limitedIds.add(node.id);
+        typeCounts[node.type] = (typeCounts[node.type] || 0) + 1;
+        communityCounts[node.community] = (communityCounts[node.community] || 0) + 1;
+        return true;
+      };
+      rankedNodes.forEach((node) => {
+        const pinned = node.id === focusId || knowledgeGraphState.expandedIds.has(node.id);
+        if (pinned) addLimitedNode(node);
+      });
+      const expandedSeeds = [...knowledgeGraphState.expandedIds].filter((id) => nodeById.has(id));
+      expandedSeeds.forEach((expandedId) => {
+        const rankedNeighbors = (adjacency.get(expandedId) || [])
+          .map(({ nodeId, link }) => ({ node: nodeById.get(nodeId), link }))
+          .filter((item) => item.node && relevantNodes.some((node) => node.id === item.node.id))
+          .sort((a, b) => graphNodePriority(b.node, { focusId, expandedNeighborIds }) - graphNodePriority(a.node, { focusId, expandedNeighborIds }) || (b.link.weight || 1) - (a.link.weight || 1));
+        const perSeedLimit = isGlobalScope ? 18 : (expandedId === focusId ? 12 : 10);
+        rankedNeighbors.slice(0, perSeedLimit).forEach(({ node }) => addLimitedNode(node));
+      });
+      Object.entries(communityMinimums).forEach(([community, minimum]) => {
+        rankedNodes
+          .filter((node) => node.community === community)
+          .forEach((node) => {
+            if ((communityCounts[community] || 0) >= minimum) return;
+            addLimitedNode(node);
+          });
+      });
+      const bridgeScores = new Map();
+      links.forEach((link) => {
+        const source = nodeById.get(link.source);
+        const target = nodeById.get(link.target);
+        if (!source || !target || source.community === target.community) return;
+        bridgeScores.set(source.id, (bridgeScores.get(source.id) || 0) + 1);
+        bridgeScores.set(target.id, (bridgeScores.get(target.id) || 0) + 1);
+      });
+      rankedNodes
+        .filter((node) => bridgeScores.has(node.id))
+        .sort((a, b) => (bridgeScores.get(b.id) || 0) - (bridgeScores.get(a.id) || 0) || graphNodePriority(b, { focusId, expandedNeighborIds }) - graphNodePriority(a, { focusId, expandedNeighborIds }))
+        .slice(0, isGlobalScope ? 18 : 10)
+        .forEach((node) => addLimitedNode(node));
+      rankedNodes
+        .filter((node) => graphKnowledgeNode(node))
+        .slice(0, isGlobalScope ? 28 : 16)
+        .forEach((node) => addLimitedNode(node));
       rankedNodes.forEach((node) => {
         const limit = typeLimits[node.type] ?? 8;
         typeCounts[node.type] = typeCounts[node.type] || 0;
-        if (limitedIds.size < 64 && (node.id === focusId || typeCounts[node.type] < limit)) {
-          limitedIds.add(node.id);
-          typeCounts[node.type] += 1;
-        }
+        if (typeCounts[node.type] < limit) addLimitedNode(node);
       });
-      return { nodes: rankedNodes.filter((node) => limitedIds.has(node.id)), links: links.filter((link) => limitedIds.has(link.source) && limitedIds.has(link.target)).slice(0, 140), focusId };
+      const limitedNodes = rankedNodes.filter((node) => limitedIds.has(node.id)).map((node) => ({ ...node, hiddenNeighborCount: 0 }));
+      const expandedLinkIds = new Set();
+      expandedSeeds.forEach((expandedId) => {
+        (adjacency.get(expandedId) || []).forEach(({ nodeId, link }) => {
+          if (limitedIds.has(expandedId) && limitedIds.has(nodeId)) expandedLinkIds.add(link.id);
+        });
+      });
+      const limitedLinks = links
+        .filter((link) => limitedIds.has(link.source) && limitedIds.has(link.target))
+        .sort((a, b) => Number(expandedLinkIds.has(b.id)) - Number(expandedLinkIds.has(a.id)) || (b.weight || 1) - (a.weight || 1))
+        .slice(0, edgeLimit);
+      const visibleLinkIds = new Set(limitedLinks.flatMap((link) => [link.source, link.target]));
+      const limitedNodeMap = new Map(limitedNodes.map((node) => [node.id, node]));
+      allowedLinks.forEach((link) => {
+        const sourceVisible = limitedIds.has(link.source);
+        const targetVisible = limitedIds.has(link.target);
+        if (sourceVisible && !targetVisible && limitedNodeMap.has(link.source)) limitedNodeMap.get(link.source).hiddenNeighborCount += 1;
+        if (targetVisible && !sourceVisible && limitedNodeMap.has(link.target)) limitedNodeMap.get(link.target).hiddenNeighborCount += 1;
+      });
+      return { nodes: limitedNodes.filter((node) => visibleLinkIds.has(node.id) || node.id === focusId || knowledgeGraphState.expandedIds.has(node.id)), links: limitedLinks, focusId };
     }
 
     function stopKnowledgeGraphAnimation() {
@@ -5541,45 +6147,97 @@
     function graphClusterCenter(type, width, height) {
       const cx = width / 2;
       const cy = height / 2;
-      const rx = width * 0.2;
-      const ry = height * 0.18;
-      const angleByType = {
-        issuer: 0,
-        security: 0.25,
-        industry: -2.5,
-        chain_node: -2.05,
-        research: -1.25,
-        event: 1.9,
-        evidence: 2.45,
-        decision: -0.55,
-        portfolio: 0.75,
-        risk: 1.25,
+      const rx = width * 0.22;
+      const ry = height * 0.20;
+      const angleByCommunity = {
+        company: -2.9,
+        industry: -2.1,
+        research: -0.65,
+        evidence: 1.12,
+        portfolio: 2.35,
+        risk: 3.02,
       };
-      if (type === "issuer") return { x: cx, y: cy };
-      const angle = angleByType[type] ?? 0;
+      const community = graphCommunityForType(type);
+      const angle = angleByCommunity[community] ?? 0;
       return { x: cx + Math.cos(angle) * rx, y: cy + Math.sin(angle) * ry };
     }
 
     function seedGraphLayout(nodes, links, width, height) {
+      const focusId = knowledgeGraphState.focusId;
+      const linkAdjacency = new Map();
+      links.forEach((link) => {
+        if (!linkAdjacency.has(link.source)) linkAdjacency.set(link.source, []);
+        if (!linkAdjacency.has(link.target)) linkAdjacency.set(link.target, []);
+        linkAdjacency.get(link.source).push(link.target);
+        linkAdjacency.get(link.target).push(link.source);
+      });
+      const focusDistance = new Map();
+      if (focusId) {
+        focusDistance.set(focusId, 0);
+        const queue = [focusId];
+        while (queue.length) {
+          const current = queue.shift();
+          const nextDistance = (focusDistance.get(current) || 0) + 1;
+          (linkAdjacency.get(current) || []).forEach((neighbor) => {
+            if (focusDistance.has(neighbor)) return;
+            focusDistance.set(neighbor, nextDistance);
+            queue.push(neighbor);
+          });
+        }
+      }
+      const focusAnchor = { x: width / 2, y: height / 2 };
+      const radialCenterForNode = (node) => {
+        const distance = Math.min(3, Number(focusDistance.get(node.id) ?? 3));
+        if (distance === 0) return focusAnchor;
+        const communityOffset = {
+          company: -0.45,
+          industry: -1.3,
+          research: 0.05,
+          evidence: 1.05,
+          portfolio: 2.05,
+          risk: 2.65,
+        }[node.community] || 0;
+        const angle = communityOffset + graphStableNumber(`${focusId}:${node.id}:radial`) * 1.35 - 0.675;
+        const ring = distance === 1 ? Math.min(width, height) * 0.22 : (distance === 2 ? Math.min(width, height) * 0.34 : Math.min(width, height) * 0.43);
+        return { x: focusAnchor.x + Math.cos(angle) * ring, y: focusAnchor.y + Math.sin(angle) * ring * 0.82 };
+      };
+      const expandedAnchors = nodes.filter((node) => knowledgeGraphState.expandedIds.has(node.id));
+      const expandedCenters = new Map(expandedAnchors.map((node, index) => {
+        const base = radialCenterForNode(node);
+        const angle = graphStableNumber(`${node.id}:expanded-center`) * Math.PI * 2;
+        const ring = node.id === focusId ? 0 : 34 + index * 4;
+        return [node.id, { x: base.x + Math.cos(angle) * ring, y: base.y + Math.sin(angle) * ring }];
+      }));
+      const neighborAnchorById = new Map();
+      links.forEach((link) => {
+        const sourceExpanded = expandedCenters.has(link.source);
+        const targetExpanded = expandedCenters.has(link.target);
+        if (sourceExpanded && !expandedCenters.has(link.target)) neighborAnchorById.set(link.target, link.source);
+        if (targetExpanded && !expandedCenters.has(link.source)) neighborAnchorById.set(link.source, link.target);
+      });
       const nodeById = Object.fromEntries(nodes.map((node, index) => {
-        const cluster = graphClusterCenter(node.type, width, height);
-        const angle = (Math.PI * 2 * index) / Math.max(1, nodes.length);
+        const localAnchorId = neighborAnchorById.get(node.id);
+        const anchor = localAnchorId ? expandedCenters.get(localAnchorId) : expandedCenters.get(node.id);
+        const cluster = anchor || radialCenterForNode(node);
+        const angle = graphStableNumber(`${node.id}:angle`) * Math.PI * 2;
+        const spread = anchor ? 36 + graphStableNumber(`${node.id}:spread`) * 56 : 46 + graphStableNumber(`${node.id}:spread`) * 82;
         const previous = knowledgeGraphState.positions[node.id] || {};
         return [node.id, {
           ...node,
-          x: previous.x ?? (cluster.x + Math.cos(angle) * 54),
-          y: previous.y ?? (cluster.y + Math.sin(angle) * 44),
+          x: previous.x ?? (cluster.x + Math.cos(angle) * spread),
+          y: previous.y ?? (cluster.y + Math.sin(angle) * spread * 0.88),
           vx: previous.vx || 0,
           vy: previous.vy || 0,
           fixed: knowledgeGraphState.fixedIds.has(node.id),
-          radius: Math.max(node.type === "issuer" ? 18 : 8, Math.min(node.type === "issuer" ? 24 : 15, 8 + Math.sqrt(node.degree || 1) * 1.8)),
+          radius: Math.max(node.type === "issuer" ? 17 : 7, Math.min(node.type === "issuer" ? 24 : 14, 7 + Math.sqrt(node.degree || 1) * 1.5)),
+          localAnchorId,
         }];
       }));
       const liveNodes = Object.values(nodeById);
       const focus = liveNodes.find((node) => node.id === knowledgeGraphState.focusId);
       if (focus && !knowledgeGraphState.fixedIds.has(focus.id)) {
-        focus.x = width / 2;
-        focus.y = height / 2;
+        focus.x = (focus.x * 0.28) + (focusAnchor.x * 0.72);
+        focus.y = (focus.y * 0.28) + (focusAnchor.y * 0.72);
         focus.vx = 0;
         focus.vy = 0;
       }
@@ -5601,9 +6259,11 @@
           const dx = a.x - b.x || 0.01;
           const dy = a.y - b.y || 0.01;
           const distance = Math.max(1, Math.hypot(dx, dy));
-          const minDistance = a.radius + b.radius + 22;
-          const dist2 = Math.max(900, distance * distance);
-          const force = (120 * alpha) / dist2;
+          const sameCommunity = a.community && b.community && a.community === b.community;
+          const sameLocalAnchor = a.localAnchorId && a.localAnchorId === b.localAnchorId;
+          const minDistance = a.radius + b.radius + (sameLocalAnchor ? 44 : (sameCommunity ? 62 : 78));
+          const dist2 = Math.max(1100, distance * distance);
+          const force = ((sameLocalAnchor ? 250 : (sameCommunity ? 410 : 560)) * alpha) / dist2;
           const fx = dx * force;
           const fy = dy * force;
           if (!a.fixed) {
@@ -5615,7 +6275,7 @@
             b.vy -= fy;
           }
           if (distance < minDistance) {
-            const push = (minDistance - distance) * 0.055 * alpha;
+            const push = (minDistance - distance) * 0.16 * alpha;
             const cx = (dx / distance) * push;
             const cy = (dy / distance) * push;
             if (!a.fixed) {
@@ -5636,8 +6296,12 @@
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distance = Math.max(1, Math.hypot(dx, dy));
-        const target = link.group === "industry" ? 112 : link.group === "portfolio" ? 98 : 88;
-        const force = (distance - target) * 0.006 * alpha;
+        const weight = Math.max(0.4, Math.min(2.2, link.weight || 1));
+        const sameCommunity = a.community && b.community && a.community === b.community;
+        const expandedEdge = knowledgeGraphState.expandedIds.has(a.id) || knowledgeGraphState.expandedIds.has(b.id);
+        const localEdge = a.localAnchorId === b.id || b.localAnchorId === a.id || (a.localAnchorId && a.localAnchorId === b.localAnchorId);
+        const target = localEdge ? 92 / Math.sqrt(weight) : (sameCommunity ? 142 / Math.sqrt(weight) : 218 / Math.sqrt(weight));
+        const force = (distance - target) * ((expandedEdge ? 0.0038 : 0.0031) + weight * 0.00125) * alpha;
         const fx = (dx / distance) * force;
         const fy = (dy / distance) * force;
         if (!a.fixed) {
@@ -5651,23 +6315,34 @@
       });
       liveNodes.forEach((node, index) => {
         if (!node.fixed) {
-          const cluster = graphClusterCenter(node.type, width, height);
-          const centerStrength = node.id === knowledgeGraphState.focusId || node.type === "issuer" ? 0.055 : 0.026;
+          const anchor = node.localAnchorId ? nodeById[node.localAnchorId] : null;
+          const focus = nodeById[knowledgeGraphState.focusId];
+          const target = anchor ? { x: anchor.x, y: anchor.y } : (node.id === knowledgeGraphState.focusId ? { x: centerX, y: centerY } : (focus ? { x: (focus.x + centerX) / 2, y: (focus.y + centerY) / 2 } : graphClusterCenter(node.type, width, height)));
+          const centerStrength = node.id === knowledgeGraphState.focusId ? 0.032 : (node.localAnchorId ? 0.026 : (knowledgeGraphState.expandedIds.has(node.id) ? 0.006 : 0.0035));
           if (knowledgeGraphState.dynamic) {
-            node.vx += Math.sin((knowledgeGraphState.tick + index * 13) * 0.035) * 0.025;
-            node.vy += Math.cos((knowledgeGraphState.tick + index * 17) * 0.031) * 0.025;
+            node.vx += Math.sin((knowledgeGraphState.tick + index * 13) * 0.035) * 0.018;
+            node.vy += Math.cos((knowledgeGraphState.tick + index * 17) * 0.031) * 0.018;
           }
-          node.vx += (cluster.x - node.x) * centerStrength * alpha;
-          node.vy += (cluster.y - node.y) * centerStrength * alpha;
-          node.vx += (centerX - node.x) * 0.002 * alpha;
-          node.vy += (centerY - node.y) * 0.002 * alpha;
-          const padding = 126;
-          if (node.x < padding) node.vx += (padding - node.x) * 0.035;
-          if (node.x > width - padding) node.vx -= (node.x - (width - padding)) * 0.035;
-          if (node.y < padding) node.vy += (padding - node.y) * 0.035;
-          if (node.y > height - padding) node.vy -= (node.y - (height - padding)) * 0.035;
-          node.vx *= 0.7;
-          node.vy *= 0.7;
+          node.vx += (target.x - node.x) * centerStrength * alpha;
+          node.vy += (target.y - node.y) * centerStrength * alpha;
+          node.vx += (centerX - node.x) * 0.0012 * alpha;
+          node.vy += (centerY - node.y) * 0.0012 * alpha;
+          const padding = 86;
+          const ellipseRx = Math.max(260, width * 0.42);
+          const ellipseRy = Math.max(210, height * 0.40);
+          const ex = (node.x - centerX) / ellipseRx;
+          const ey = (node.y - centerY) / ellipseRy;
+          const ellipseDistance = Math.hypot(ex, ey);
+          if (ellipseDistance > 1) {
+            node.vx += (centerX + ((node.x - centerX) / ellipseDistance) - node.x) * 0.09;
+            node.vy += (centerY + ((node.y - centerY) / ellipseDistance) - node.y) * 0.09;
+          }
+          if (node.x < padding) node.vx += (padding - node.x) * 0.08;
+          if (node.x > width - padding) node.vx -= (node.x - (width - padding)) * 0.08;
+          if (node.y < padding) node.vy += (padding - node.y) * 0.08;
+          if (node.y > height - padding) node.vy -= (node.y - (height - padding)) * 0.08;
+          node.vx *= 0.64;
+          node.vy *= 0.64;
           node.x = Math.max(padding, Math.min(width - padding, node.x + node.vx));
           node.y = Math.max(padding, Math.min(height - padding, node.y + node.vy));
         }
@@ -5698,15 +6373,109 @@
         const node = nodeById[element.getAttribute("data-node-id")];
         if (node) element.setAttribute("transform", `translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})`);
       });
+      updateKnowledgeGraphCommunityLabels();
+    }
+
+    function graphCommunitySummaries(nodes = [], links = []) {
+      const byCommunity = new Map();
+      const nodeById = new Map(nodes.map((node) => [node.id, node]));
+      nodes.forEach((node) => {
+        const key = node.community || graphCommunityForType(node.type);
+        const row = byCommunity.get(key) || { key, count: 0, x: 0, y: 0, weight: 0, internalLinks: 0, edgeWeight: 0, confidence: 0, confidenceCount: 0, highValueLinks: 0 };
+        const weight = Math.max(1, Math.sqrt(node.degree || 1));
+        row.count += 1;
+        row.x += node.x * weight;
+        row.y += node.y * weight;
+        row.weight += weight;
+        byCommunity.set(key, row);
+      });
+      links.forEach((link) => {
+        const source = nodeById.get(link.source);
+        const target = nodeById.get(link.target);
+        if (!source || !target) return;
+        const sourceCommunity = source.community || graphCommunityForType(source.type);
+        const targetCommunity = target.community || graphCommunityForType(target.type);
+        if (sourceCommunity !== targetCommunity) return;
+        const row = byCommunity.get(sourceCommunity);
+        if (!row) return;
+        const edgeWeight = Number(link.weight || 1);
+        row.internalLinks += 1;
+        row.edgeWeight += edgeWeight;
+        if (edgeWeight >= 1.2) row.highValueLinks += 1;
+        const confidence = Number(link.meta?.confidence ?? link.meta?.score);
+        if (Number.isFinite(confidence)) {
+          row.confidence += Math.max(0, Math.min(1, confidence));
+          row.confidenceCount += 1;
+        }
+      });
+      return [...byCommunity.values()]
+        .filter((row) => row.count >= 2)
+        .map((row) => ({
+          ...row,
+          x: row.x / Math.max(1, row.weight),
+          y: row.y / Math.max(1, row.weight),
+          label: `${graphCommunityLabel(row.key)} ${row.count}`,
+          density: row.count > 1 ? row.internalLinks / ((row.count * (row.count - 1)) / 2) : 0,
+          quality: row.internalLinks ? row.edgeWeight / row.internalLinks : 0,
+          confidenceAvg: row.confidenceCount ? row.confidence / row.confidenceCount : 0,
+          highValueRatio: row.internalLinks ? row.highValueLinks / row.internalLinks : 0,
+        }));
+    }
+
+    function communityRepresentativeNodeId(community = "") {
+      const summaries = graphCommunitySummaries(knowledgeGraphState.nodes, knowledgeGraphState.links);
+      const summary = summaries.find((item) => item.key === community);
+      const candidates = knowledgeGraphState.nodes.filter((node) => (node.community || graphCommunityForType(node.type)) === community);
+      if (!candidates.length) return "";
+      return candidates
+        .slice()
+        .sort((a, b) => {
+          const distanceA = summary ? Math.hypot(a.x - summary.x, a.y - summary.y) : 0;
+          const distanceB = summary ? Math.hypot(b.x - summary.x, b.y - summary.y) : 0;
+          const priorityA = graphNodePriority(a, { focusId: knowledgeGraphState.focusId });
+          const priorityB = graphNodePriority(b, { focusId: knowledgeGraphState.focusId });
+          return distanceA - distanceB || priorityB - priorityA || String(a.id).localeCompare(String(b.id));
+        })[0]?.id || "";
+    }
+
+    function updateKnowledgeGraphCommunityLabels() {
+      const summaries = graphCommunitySummaries(knowledgeGraphState.nodes, knowledgeGraphState.links);
+      document.querySelectorAll(".graph-community-label").forEach((element) => {
+        const community = element.getAttribute("data-community");
+        const summary = summaries.find((item) => item.key === community);
+        if (!summary) return;
+        element.setAttribute("transform", `translate(${summary.x.toFixed(1)} ${(summary.y - 34).toFixed(1)})`);
+      });
+    }
+
+    function graphCommunityQualityText(summary) {
+      const density = Math.round(Math.max(0, Math.min(1, summary.density || 0)) * 100);
+      const quality = Math.round(Math.max(0, Math.min(2, summary.quality || 0)) * 50);
+      const highValue = Math.round(Math.max(0, Math.min(1, summary.highValueRatio || 0)) * 100);
+      return `密度${density}% · 强度${quality} · 强边${highValue}%`;
     }
 
     function startKnowledgeGraphAnimation(width, height) {
       stopKnowledgeGraphAnimation();
-      const animate = () => {
+      knowledgeGraphState.perf = { frames: 0, lastAt: 0, fps: 0, avgFrameMs: 0, worstFrameMs: 0, sampleStartedAt: performance.now() };
+      const animate = (timestamp = performance.now()) => {
+        const frameStartedAt = performance.now();
+        const lastAt = knowledgeGraphState.perf.lastAt || timestamp;
+        const deltaMs = Math.max(1, timestamp - lastAt);
+        knowledgeGraphState.perf.lastAt = timestamp;
+        knowledgeGraphState.perf.frames += 1;
         tickKnowledgeGraphLayout(width, height);
         updateKnowledgeGraphSvgPositions();
         updateKnowledgeGraphHighlight();
-        setText("knowledgeGraphMotionStatus", knowledgeGraphState.dynamic ? `动态运行 · α ${knowledgeGraphState.alpha.toFixed(2)}` : "已暂停");
+        const frameMs = performance.now() - frameStartedAt;
+        knowledgeGraphState.perf.avgFrameMs = knowledgeGraphState.perf.avgFrameMs
+          ? knowledgeGraphState.perf.avgFrameMs * 0.88 + frameMs * 0.12
+          : frameMs;
+        knowledgeGraphState.perf.worstFrameMs = Math.max(knowledgeGraphState.perf.worstFrameMs || 0, frameMs);
+        knowledgeGraphState.perf.fps = knowledgeGraphState.perf.fps
+          ? knowledgeGraphState.perf.fps * 0.82 + (1000 / deltaMs) * 0.18
+          : 1000 / deltaMs;
+        updateKnowledgeGraphViewStatus();
         if (knowledgeGraphState.dynamic || knowledgeGraphState.alpha > 0.02) {
           knowledgeGraphState.frameId = requestAnimationFrame(animate);
         } else {
@@ -5716,10 +6485,313 @@
       knowledgeGraphState.frameId = requestAnimationFrame(animate);
     }
 
+    function switchKnowledgeGraphFocusNode(nodeId) {
+      if (nodeId) {
+        const previousFocusId = knowledgeGraphState.focusId;
+        if (previousFocusId && previousFocusId !== nodeId) {
+          addKnowledgeGraphFocusHistory(previousFocusId);
+          addKnowledgeGraphFocusHistory(nodeId);
+          Object.keys(knowledgeGraphState.positions || {}).forEach((id) => {
+            if (!knowledgeGraphState.fixedIds.has(id)) delete knowledgeGraphState.positions[id];
+          });
+        }
+        knowledgeGraphState.focusId = nodeId;
+        knowledgeGraphState.selectedId = nodeId;
+        knowledgeGraphState.expandedIds.add(nodeId);
+        addKnowledgeGraphTrailNode(nodeId);
+        knowledgeGraphState.pathStartId = nodeId;
+        knowledgeGraphState.pathEndId = "";
+        knowledgeGraphState.pathNodeIds.clear();
+        knowledgeGraphState.pathLinkIds.clear();
+        knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.86);
+        rerenderKnowledgeGraphExplorer();
+        return;
+      }
+    }
+
     function selectKnowledgeGraphNode(nodeId) {
       knowledgeGraphState.selectedId = nodeId || "";
+      if (nodeId) {
+        switchKnowledgeGraphFocusNode(nodeId);
+        knowledgeGraphState.suppressNextNodeClick = false;
+        return;
+      }
+      if (knowledgeGraphState.suppressNextNodeClick) {
+        knowledgeGraphState.suppressNextNodeClick = false;
+      }
       renderKnowledgeGraphInspector();
       updateKnowledgeGraphHighlight();
+    }
+
+    function computeKnowledgeGraphPath(startId, endId) {
+      if (!startId || !endId || startId === endId) return { nodes: [], links: [] };
+      const adjacency = new Map();
+      knowledgeGraphState.links.forEach((link) => {
+        if (!adjacency.has(link.source)) adjacency.set(link.source, []);
+        if (!adjacency.has(link.target)) adjacency.set(link.target, []);
+        adjacency.get(link.source).push({ next: link.target, link });
+        adjacency.get(link.target).push({ next: link.source, link });
+      });
+      const queue = [startId];
+      const previous = new Map([[startId, { node: "", link: null }]]);
+      while (queue.length) {
+        const current = queue.shift();
+        if (current === endId) break;
+        (adjacency.get(current) || []).forEach(({ next, link }) => {
+          if (previous.has(next)) return;
+          previous.set(next, { node: current, link });
+          queue.push(next);
+        });
+      }
+      if (!previous.has(endId)) return { nodes: [], links: [] };
+      const nodes = [];
+      const links = [];
+      let cursor = endId;
+      while (cursor) {
+        nodes.unshift(cursor);
+        const prev = previous.get(cursor);
+        if (prev?.link) links.unshift(prev.link);
+        cursor = prev?.node || "";
+      }
+      return { nodes, links };
+    }
+
+    function refreshKnowledgeGraphPath() {
+      const result = computeKnowledgeGraphPath(knowledgeGraphState.pathStartId, knowledgeGraphState.pathEndId);
+      knowledgeGraphState.pathNodeIds = new Set(result.nodes);
+      knowledgeGraphState.pathLinkIds = new Set(result.links.map((link) => link.id));
+      renderKnowledgeGraphPathPanel(result);
+      updateKnowledgeGraphHighlight();
+    }
+    window.refreshKnowledgeGraphPath = refreshKnowledgeGraphPath;
+
+    function graphNodeById(nodeId) {
+      return knowledgeGraphState.nodes.find((item) => item.id === nodeId) || { id: nodeId, label: graphRef(nodeId), fullLabel: graphRef(nodeId), type: "evidence" };
+    }
+
+    function addKnowledgeGraphTrailNode(nodeId) {
+      if (!nodeId) return;
+      knowledgeGraphState.trailIds = [nodeId, ...knowledgeGraphState.trailIds.filter((id) => id !== nodeId)].slice(0, 12);
+    }
+
+    function addKnowledgeGraphFocusHistory(nodeId) {
+      if (!nodeId) return;
+      knowledgeGraphState.focusHistoryIds = [nodeId, ...knowledgeGraphState.focusHistoryIds.filter((id) => id !== nodeId)].slice(0, 10);
+    }
+
+    function toggleKnowledgeGraphPinnedNode(nodeId = "") {
+      const targetId = nodeId || knowledgeGraphState.selectedId || knowledgeGraphState.focusId;
+      if (!targetId) return;
+      const node = knowledgeGraphState.nodes.find((item) => item.id === targetId);
+      if (knowledgeGraphState.fixedIds.has(targetId)) {
+        knowledgeGraphState.fixedIds.delete(targetId);
+        if (node) node.fixed = false;
+      } else {
+        knowledgeGraphState.fixedIds.add(targetId);
+        if (node) {
+          node.fixed = true;
+          knowledgeGraphState.positions[targetId] = { x: node.x, y: node.y, vx: 0, vy: 0 };
+        }
+        addKnowledgeGraphTrailNode(targetId);
+      }
+      saveKnowledgeGraphLayout();
+      renderKnowledgeGraphTrail();
+      updateKnowledgeGraphHighlight();
+    }
+
+    function focusKnowledgeGraphNode(nodeId = "") {
+      const targetId = nodeId || knowledgeGraphState.selectedId || knowledgeGraphState.focusId;
+      if (!targetId) return;
+      const previousFocusId = knowledgeGraphState.focusId;
+      if (previousFocusId && previousFocusId !== targetId) addKnowledgeGraphFocusHistory(previousFocusId);
+      addKnowledgeGraphFocusHistory(targetId);
+      knowledgeGraphState.focusId = targetId;
+      knowledgeGraphState.selectedId = targetId;
+      knowledgeGraphState.expandedIds.add(targetId);
+      Object.keys(knowledgeGraphState.positions || {}).forEach((id) => {
+        if (!knowledgeGraphState.fixedIds.has(id)) delete knowledgeGraphState.positions[id];
+      });
+      addKnowledgeGraphTrailNode(targetId);
+      knowledgeGraphState.pathStartId = targetId;
+      knowledgeGraphState.pathEndId = "";
+      knowledgeGraphState.pathNodeIds.clear();
+      knowledgeGraphState.pathLinkIds.clear();
+      knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.82);
+      rerenderKnowledgeGraphExplorer();
+    }
+    window.focusKnowledgeGraphNode = focusKnowledgeGraphNode;
+
+    function backKnowledgeGraphFocus() {
+      const currentId = knowledgeGraphState.focusId;
+      const previousId = knowledgeGraphState.focusHistoryIds.find((id) => id && id !== currentId);
+      if (!previousId) return;
+      knowledgeGraphState.focusHistoryIds = [previousId, currentId, ...knowledgeGraphState.focusHistoryIds.filter((id) => id !== previousId && id !== currentId)].slice(0, 10);
+      knowledgeGraphState.focusId = previousId;
+      knowledgeGraphState.selectedId = previousId;
+      knowledgeGraphState.expandedIds.add(previousId);
+      knowledgeGraphState.pathStartId = previousId;
+      knowledgeGraphState.pathEndId = "";
+      knowledgeGraphState.pathNodeIds.clear();
+      knowledgeGraphState.pathLinkIds.clear();
+      knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.82);
+      rerenderKnowledgeGraphExplorer();
+    }
+    window.backKnowledgeGraphFocus = backKnowledgeGraphFocus;
+
+    function saveKnowledgeGraphPathToTrail() {
+      const ids = [...knowledgeGraphState.pathNodeIds];
+      if (!ids.length) addKnowledgeGraphTrailNode(knowledgeGraphState.selectedId || knowledgeGraphState.focusId);
+      ids.reverse().forEach((nodeId) => addKnowledgeGraphTrailNode(nodeId));
+      renderKnowledgeGraphTrail();
+    }
+
+    function renderKnowledgeGraphTrail() {
+      const element = $("knowledgeGraphTrailList");
+      if (!element) return;
+      const ids = [...new Set(knowledgeGraphState.trailIds)].filter((id) => knowledgeGraphState.nodes.some((node) => node.id === id));
+      knowledgeGraphState.trailIds = ids;
+      if (!ids.length) {
+        element.innerHTML = `<span class="small-note">固定节点或保存路径后形成探索轨迹</span>`;
+        return;
+      }
+      element.innerHTML = ids.map((nodeId) => {
+        const node = graphNodeById(nodeId);
+        const pinned = knowledgeGraphState.fixedIds.has(nodeId) ? "已固定" : "轨迹";
+        return `<button class="graph-trail-node" data-node-id="${escapeHtml(nodeId)}" title="${escapeHtml(pinned)}">${escapeHtml(node.label)}</button>`;
+      }).join("");
+    }
+
+    function renderKnowledgeGraphFocusHistory() {
+      const element = $("knowledgeGraphFocusHistoryList");
+      if (!element) return;
+      const ids = [...new Set(knowledgeGraphState.focusHistoryIds)].filter((id) => knowledgeGraphState.nodes.some((node) => node.id === id));
+      knowledgeGraphState.focusHistoryIds = ids;
+      if (!ids.length) {
+        element.innerHTML = `<span class="small-note">设为焦点后形成焦点历史</span>`;
+        return;
+      }
+      element.innerHTML = ids.map((nodeId) => {
+        const node = graphNodeById(nodeId);
+        const label = nodeId === knowledgeGraphState.focusId ? "当前焦点" : "切回焦点";
+        return `<button class="graph-focus-history-node" data-node-id="${escapeHtml(nodeId)}" title="${escapeHtml(label)}">${escapeHtml(node.label)}</button>`;
+      }).join("");
+    }
+
+    function savedKnowledgeGraphSubgraphSummary(data = null) {
+      const item = data || {};
+      const count = Array.isArray(item.trailIds) ? item.trailIds.length : 0;
+      const scope = item.scope === "global" ? "全局图" : "局部图";
+      return count ? `已保存 ${count} 个节点 · ${scope}` : "尚未保存探索子图";
+    }
+
+    function saveKnowledgeGraphSubgraph() {
+      const key = graphSubgraphStorageKey();
+      const payload = {
+        savedAt: new Date().toISOString(),
+        focusId: knowledgeGraphState.focusId,
+        selectedId: knowledgeGraphState.selectedId,
+        scope: knowledgeGraphState.scope,
+        depth: knowledgeGraphState.depth,
+        trailIds: [...new Set(knowledgeGraphState.trailIds)],
+        focusHistoryIds: [...new Set(knowledgeGraphState.focusHistoryIds)],
+        fixedIds: [...knowledgeGraphState.fixedIds],
+        expandedIds: [...knowledgeGraphState.expandedIds],
+        pathStartId: knowledgeGraphState.pathStartId,
+        pathEndId: knowledgeGraphState.pathEndId,
+        transform: knowledgeGraphState.transform,
+      };
+      try {
+        window.localStorage?.setItem(key, JSON.stringify(payload));
+        setText("knowledgeGraphSubgraphStatus", `${savedKnowledgeGraphSubgraphSummary(payload)} · 已保存`);
+      } catch (_error) {
+        setText("knowledgeGraphSubgraphStatus", "保存子图失败：本地存储不可用");
+      }
+    }
+
+    function restoreKnowledgeGraphSubgraph() {
+      const key = graphSubgraphStorageKey();
+      try {
+        const raw = window.localStorage?.getItem(key);
+        if (!raw) {
+          setText("knowledgeGraphSubgraphStatus", "没有可恢复的探索子图");
+          return;
+        }
+        const data = JSON.parse(raw);
+        knowledgeGraphState.scope = data.scope === "global" ? "global" : "local";
+        knowledgeGraphState.depth = Number(data.depth || knowledgeGraphState.depth || 2);
+        knowledgeGraphState.selectedId = String(data.selectedId || knowledgeGraphState.selectedId || "");
+        knowledgeGraphState.trailIds = Array.isArray(data.trailIds) ? data.trailIds.map(String) : [];
+        knowledgeGraphState.focusHistoryIds = Array.isArray(data.focusHistoryIds) ? data.focusHistoryIds.map(String) : [...knowledgeGraphState.focusHistoryIds];
+        knowledgeGraphState.fixedIds = new Set(Array.isArray(data.fixedIds) ? data.fixedIds.map(String) : [...knowledgeGraphState.fixedIds]);
+        knowledgeGraphState.expandedIds = new Set(Array.isArray(data.expandedIds) ? data.expandedIds.map(String) : [...knowledgeGraphState.expandedIds]);
+        knowledgeGraphState.pathStartId = String(data.pathStartId || "");
+        knowledgeGraphState.pathEndId = String(data.pathEndId || "");
+        if (data.transform && Number.isFinite(Number(data.transform.scale))) {
+          knowledgeGraphState.transform = {
+            x: Number(data.transform.x || 0),
+            y: Number(data.transform.y || 0),
+            scale: Math.max(0.35, Math.min(3.2, Number(data.transform.scale || 1))),
+          };
+        }
+        if ($("graphScope")) $("graphScope").value = knowledgeGraphState.scope;
+        if ($("graphDepth")) $("graphDepth").value = String(knowledgeGraphState.depth);
+        knowledgeGraphState.subgraphStatusOverride = `${savedKnowledgeGraphSubgraphSummary(data)} · 已恢复`;
+        rerenderKnowledgeGraphExplorer();
+      } catch (_error) {
+        setText("knowledgeGraphSubgraphStatus", "恢复子图失败：保存内容不可读");
+      }
+    }
+
+    function renderKnowledgeGraphPathPanel(path = null) {
+      const start = knowledgeGraphState.pathStartId ? graphNodeById(knowledgeGraphState.pathStartId) : null;
+      const end = knowledgeGraphState.pathEndId ? graphNodeById(knowledgeGraphState.pathEndId) : null;
+      const result = path || computeKnowledgeGraphPath(knowledgeGraphState.pathStartId, knowledgeGraphState.pathEndId);
+      if (knowledgeGraphState.subgraphStatusOverride) {
+        setText("knowledgeGraphSubgraphStatus", knowledgeGraphState.subgraphStatusOverride);
+        knowledgeGraphState.subgraphStatusOverride = "";
+      } else {
+        try {
+          const raw = window.localStorage?.getItem(graphSubgraphStorageKey());
+          setText("knowledgeGraphSubgraphStatus", raw ? savedKnowledgeGraphSubgraphSummary(JSON.parse(raw)) : "尚未保存探索子图");
+        } catch (_error) {
+          // Ignore unreadable saved subgraph status.
+        }
+      }
+      if (!start || !end) {
+        setText("knowledgeGraphPathSummary", start ? `起点 ${start.label} · 请选择终点` : "选择两个节点后高亮最短路径");
+        $("knowledgeGraphPathSteps").innerHTML = "";
+        renderKnowledgeGraphFocusHistory();
+        renderKnowledgeGraphTrail();
+        return;
+      }
+      if (!result.nodes.length) {
+        setText("knowledgeGraphPathSummary", `${start.label} 与 ${end.label} 暂无可见路径`);
+        $("knowledgeGraphPathSteps").innerHTML = "";
+        renderKnowledgeGraphFocusHistory();
+        renderKnowledgeGraphTrail();
+        return;
+      }
+      setText("knowledgeGraphPathSummary", `${start.label} -> ${end.label} · ${Math.max(0, result.nodes.length - 1)} 跳`);
+      $("knowledgeGraphPathSteps").innerHTML = result.nodes.map((nodeId, index) => {
+        const node = graphNodeById(nodeId);
+        const link = result.links[index - 1];
+        const prefix = index === 0 ? "起点" : graphEdgeLabel(link?.type || "", link?.label || "关系");
+        const nextHops = knowledgeGraphState.links
+          .filter((item) => item.source === nodeId || item.target === nodeId)
+          .map((item) => ({
+            link: item,
+            nodeId: item.source === nodeId ? item.target : item.source,
+          }))
+          .filter((item) => !knowledgeGraphState.pathNodeIds.has(item.nodeId))
+          .slice(0, 3)
+          .map((item) => {
+            const nextNode = graphNodeById(item.nodeId);
+            return `<button class="subtle graph-next-hop" data-node-id="${item.nodeId}" title="${escapeHtml(graphEdgeLabel(item.link.type, item.link.label))}">${escapeHtml(nextNode.label)}</button>`;
+          }).join("");
+        return `<div class="graph-path-step"><strong>${prefix}</strong> · ${node.label} <span class="small-note">${graphNodeTypeLabel(node.type)}</span>${nextHops ? `<div class="graph-path-next-hops">${nextHops}</div>` : ""}</div>`;
+      }).join("");
+      renderKnowledgeGraphFocusHistory();
+      renderKnowledgeGraphTrail();
     }
 
     function renderKnowledgeGraphInspector() {
@@ -5729,6 +6801,7 @@
         setText("knowledgeGraphNodeType", "点击图谱节点查看摘要和相邻关系");
         $("knowledgeGraphNodeMeta").innerHTML = "";
         $("knowledgeGraphNeighborRows").innerHTML = `<div class="small-note">暂无相邻关系</div>`;
+        renderKnowledgeGraphFocusHistory();
         return;
       }
       knowledgeGraphState.selectedId = node.id;
@@ -5748,10 +6821,36 @@
         .map((link) => {
           const neighborId = link.source === node.id ? link.target : link.source;
           const neighbor = knowledgeGraphState.nodes.find((item) => item.id === neighborId) || { id: neighborId, label: graphRef(neighborId), type: "evidence" };
-          const edgeLabel = link.label || graphEdgeLabel(link.type, link.label);
+          const edgeLabel = graphEdgeLabel(link.type, link.label);
           return `<div class="graph-neighbor" data-action="focus-graph-node" data-node-id="${neighbor.id}"><strong>${neighbor.label}</strong><span class="small-note">${edgeLabel} · ${graphNodeTypeLabel(neighbor.type)}</span></div>`;
         });
       $("knowledgeGraphNeighborRows").innerHTML = neighbors.join("") || `<div class="small-note">暂无相邻关系</div>`;
+      renderKnowledgeGraphPathPanel();
+    }
+
+    function updateKnowledgeGraphLabels() {
+      const selected = knowledgeGraphState.selectedId;
+      const neighborIds = new Set([selected]);
+      knowledgeGraphState.links.forEach((link) => {
+        if (link.source === selected) neighborIds.add(link.target);
+        if (link.target === selected) neighborIds.add(link.source);
+      });
+      const labelBoxes = [];
+      document.querySelectorAll(".graph-node-svg").forEach((element) => {
+        const id = element.getAttribute("data-node-id");
+        const node = knowledgeGraphState.nodes.find((item) => item.id === id);
+        const text = element.querySelector("text");
+        if (!node || !text) return;
+        const priority = id === selected || id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(id) || neighborIds.has(id) || node.hiddenNeighborCount > 0 || graphKnowledgeNode(node) || (node.degree || 0) >= 6;
+        let hiddenByOverlap = false;
+        if (priority) {
+          const width = Math.max(38, Math.min(128, String(node.label || "").length * 6.2));
+          const box = { x1: node.x - width / 2, x2: node.x + width / 2, y1: node.y + node.radius + 5, y2: node.y + node.radius + 21 };
+          hiddenByOverlap = labelBoxes.some((item) => !(box.x2 < item.x1 || box.x1 > item.x2 || box.y2 < item.y1 || box.y1 > item.y2));
+          if (!hiddenByOverlap) labelBoxes.push(box);
+        }
+        element.classList.toggle("has-label", priority && !hiddenByOverlap);
+      });
     }
 
     function updateKnowledgeGraphHighlight() {
@@ -5764,15 +6863,21 @@
       document.querySelectorAll(".graph-node-svg").forEach((element) => {
         const id = element.getAttribute("data-node-id");
         element.classList.toggle("is-selected", id === selected);
-        element.classList.toggle("is-dimmed", Boolean(selected) && !neighborIds.has(id));
+        element.classList.toggle("is-expanded", knowledgeGraphState.expandedIds.has(id));
+        element.classList.toggle("is-path-node", knowledgeGraphState.pathNodeIds.has(id));
+        const hasPath = knowledgeGraphState.pathNodeIds.size > 0;
+        element.classList.toggle("is-dimmed", (Boolean(selected) && !neighborIds.has(id)) || (hasPath && !knowledgeGraphState.pathNodeIds.has(id)));
       });
       document.querySelectorAll(".graph-link-svg, .graph-link-label").forEach((element) => {
         const source = element.getAttribute("data-source");
         const target = element.getAttribute("data-target");
         const highlighted = selected && (source === selected || target === selected);
+        const pathHighlighted = knowledgeGraphState.pathLinkIds.has(element.getAttribute("data-link-id"));
         element.classList.toggle("is-highlighted", highlighted);
-        element.classList.toggle("is-dimmed", Boolean(selected) && !highlighted);
+        element.classList.toggle("is-path-link", pathHighlighted);
+        element.classList.toggle("is-dimmed", (Boolean(selected) && !highlighted) || (knowledgeGraphState.pathLinkIds.size > 0 && !pathHighlighted));
       });
+      updateKnowledgeGraphLabels();
     }
 
     function renderKnowledgeGraphExplorer(data) {
@@ -5786,15 +6891,25 @@
       if (!knowledgeGraphState.focusId || !model.nodes.some((node) => node.id === knowledgeGraphState.focusId)) {
         knowledgeGraphState.focusId = issuer?.id || model.nodes[0]?.id || "";
       }
+      if (knowledgeGraphState.focusId) knowledgeGraphState.expandedIds.add(knowledgeGraphState.focusId);
+      if (knowledgeGraphState.focusId && !knowledgeGraphState.focusHistoryIds.length) addKnowledgeGraphFocusHistory(knowledgeGraphState.focusId);
+      seedKnowledgeGraphDefaultExpansions(model, knowledgeGraphState.focusId);
+      loadKnowledgeGraphLayout();
       const filtered = filteredGraphModel(model);
       const rect = svg.getBoundingClientRect();
       const width = Math.max(720, Math.round(rect.width || 900));
-      const height = Math.max(560, Math.round(rect.height || 560));
+      const height = Math.max(640, Math.round(rect.height || 640));
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
       stopKnowledgeGraphAnimation();
       const layout = seedGraphLayout(filtered.nodes, filtered.links, width, height);
       knowledgeGraphState.nodes = layout.nodes;
       knowledgeGraphState.links = layout.links;
+      const visibleNodeIds = new Set(layout.nodes.map((node) => node.id));
+      if (knowledgeGraphState.pathStartId && !visibleNodeIds.has(knowledgeGraphState.pathStartId)) knowledgeGraphState.pathStartId = "";
+      if (knowledgeGraphState.pathEndId && !visibleNodeIds.has(knowledgeGraphState.pathEndId)) knowledgeGraphState.pathEndId = "";
+      const path = computeKnowledgeGraphPath(knowledgeGraphState.pathStartId, knowledgeGraphState.pathEndId);
+      knowledgeGraphState.pathNodeIds = new Set(path.nodes);
+      knowledgeGraphState.pathLinkIds = new Set(path.links.map((link) => link.id));
       knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.88);
       knowledgeGraphState.focusId = filtered.focusId || knowledgeGraphState.focusId;
       if (!layout.nodes.some((node) => node.id === knowledgeGraphState.selectedId)) {
@@ -5803,7 +6918,7 @@
       $("knowledgeGraphEmpty").style.display = layout.nodes.length ? "none" : "grid";
       setText("knowledgeGraphNodeCount", `节点 ${layout.nodes.length}/${model.nodes.length}`);
       setText("knowledgeGraphLinkCount", `关系 ${layout.links.length}/${model.links.length}`);
-      setText("knowledgeGraphFocusLabel", `焦点 ${graphRef(knowledgeGraphState.focusId, "-")}`);
+      setText("knowledgeGraphFocusLabel", `${knowledgeGraphState.scope === "global" ? "全局图" : "局部图"} · 焦点 ${graphRef(knowledgeGraphState.focusId, "-")}`);
       const legendTypes = [...new Set(layout.nodes.map((node) => node.type))];
       $("knowledgeGraphLegend").innerHTML = legendTypes.map((type) => `<span><i style="background:${graphNodeColor(type)}"></i>${graphNodeTypeLabel(type)}</span>`).join("");
       renderKnowledgeGraphFilterChips();
@@ -5814,18 +6929,50 @@
         if (!source || !target) return "";
         const mx = (source.x + target.x) / 2;
         const my = (source.y + target.y) / 2;
-        return `<line class="graph-link-svg" data-source="${source.id}" data-target="${target.id}" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"></line><text class="graph-link-label" data-source="${source.id}" data-target="${target.id}" x="${mx.toFixed(1)}" y="${my.toFixed(1)}">${graphEdgeLabel(link.type, link.label)}</text>`;
+        return `<line class="graph-link-svg" data-link-id="${link.id}" data-source="${source.id}" data-target="${target.id}" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"></line><text class="graph-link-label" data-link-id="${link.id}" data-source="${source.id}" data-target="${target.id}" x="${mx.toFixed(1)}" y="${my.toFixed(1)}">${graphEdgeLabel(link.type, link.label)}</text>`;
       }).join("");
       const nodeMarkup = layout.nodes.map((node) => {
-        const noisyType = ["evidence", "event", "research"].includes(node.type);
-        const visibleLabel = node.type === "issuer" || node.type === "security" || node.type === "industry" || node.id === knowledgeGraphState.focusId || (!noisyType && (node.degree || 0) >= 8);
-        return `<g class="graph-node-svg ${visibleLabel ? "has-label" : ""}" data-node-id="${node.id}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})"><circle r="${node.radius}" fill="${graphNodeColor(node.type)}"></circle><text text-anchor="middle" y="${node.radius + 15}">${node.label}</text></g>`;
+        const visibleLabel = node.type === "issuer" || node.type === "security" || node.type === "industry" || node.id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(node.id) || graphKnowledgeNode(node) || (node.degree || 0) >= 6;
+        const halo = node.hiddenNeighborCount > 0 ? `<circle r="${node.radius + Math.min(8, 3 + node.hiddenNeighborCount * 0.35)}" fill="none" stroke="${graphNodeColor(node.type)}" stroke-width="1.2" opacity="0.24"></circle>` : "";
+        return `<g class="graph-node-svg ${visibleLabel ? "has-label" : ""}" data-node-id="${node.id}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">${halo}<circle r="${node.radius}" fill="${graphNodeColor(node.type)}"></circle><text text-anchor="middle" y="${node.radius + 15}">${node.label}</text></g>`;
       }).join("");
-      svg.innerHTML = `<g id="knowledgeGraphViewport" transform="translate(${transform.x} ${transform.y}) scale(${transform.scale})"><g>${edgeMarkup}</g><g>${nodeMarkup}</g></g>`;
+      const communityMarkup = graphCommunitySummaries(layout.nodes, layout.links).map((summary) => {
+        const qualityText = graphCommunityQualityText(summary);
+        const title = `${summary.label} · ${qualityText}`;
+        return `<g class="graph-community-label" data-community="${summary.key}" data-quality="${escapeHtml(qualityText)}" transform="translate(${summary.x.toFixed(1)} ${(summary.y - 34).toFixed(1)})"><title>${escapeHtml(title)}</title><circle r="${Math.max(30, Math.min(52, 22 + summary.count * 1.8)).toFixed(1)}"></circle><text text-anchor="middle" y="-2">${summary.label}</text><text class="graph-community-quality" text-anchor="middle" y="13">${qualityText}</text></g>`;
+      }).join("");
+      svg.innerHTML = `<g id="knowledgeGraphViewport" transform="translate(${transform.x} ${transform.y}) scale(${transform.scale})"><g>${edgeMarkup}</g><g>${communityMarkup}</g><g>${nodeMarkup}</g></g>`;
+      svg.querySelectorAll(".graph-community-label").forEach((element) => {
+        element.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const community = element.getAttribute("data-community") || "";
+          knowledgeGraphState.pendingCommunityPointer = { community, x: event.clientX, y: event.clientY };
+        });
+        element.addEventListener("pointerup", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const pending = knowledgeGraphState.pendingCommunityPointer;
+          knowledgeGraphState.pendingCommunityPointer = null;
+          if (!pending || Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > 6) return;
+          const nodeId = communityRepresentativeNodeId(pending.community);
+          if (nodeId) switchKnowledgeGraphFocusNode(nodeId);
+        });
+        element.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const nodeId = communityRepresentativeNodeId(element.getAttribute("data-community") || "");
+          if (nodeId && knowledgeGraphState.focusId !== nodeId) switchKnowledgeGraphFocusNode(nodeId);
+        });
+      });
       svg.querySelectorAll(".graph-node-svg").forEach((element) => {
         element.addEventListener("click", (event) => {
           event.stopPropagation();
           selectKnowledgeGraphNode(element.getAttribute("data-node-id"));
+        });
+        element.addEventListener("dblclick", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          focusKnowledgeGraphNode(element.getAttribute("data-node-id"));
         });
         element.addEventListener("pointerdown", (event) => {
           event.preventDefault();
@@ -5833,23 +6980,126 @@
           const nodeId = element.getAttribute("data-node-id");
           const node = knowledgeGraphState.nodes.find((item) => item.id === nodeId);
           if (!node) return;
-          knowledgeGraphState.draggingNodeId = nodeId;
-          node.fixed = true;
-          knowledgeGraphState.fixedIds.add(nodeId);
-          selectKnowledgeGraphNode(nodeId);
+          knowledgeGraphState.pendingNodePointer = { nodeId, x: event.clientX, y: event.clientY };
+          knowledgeGraphState.selectedId = nodeId;
+          renderKnowledgeGraphInspector();
+          updateKnowledgeGraphHighlight();
           svg.setPointerCapture(event.pointerId);
         });
+        element.addEventListener("pointerup", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const pending = knowledgeGraphState.pendingNodePointer;
+          if (!pending || pending.nodeId !== element.getAttribute("data-node-id")) return;
+          if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > 6) return;
+          knowledgeGraphState.pendingNodePointer = null;
+          knowledgeGraphState.suppressNextNodeClick = true;
+          switchKnowledgeGraphFocusNode(pending.nodeId);
+        });
       });
-      svg.onclick = () => selectKnowledgeGraphNode("");
+      svg.onclick = () => {
+        knowledgeGraphState.suppressNextNodeClick = false;
+        selectKnowledgeGraphNode("");
+      };
       installKnowledgeGraphInteractions(svg);
       renderKnowledgeGraphInspector();
       updateKnowledgeGraphHighlight();
+      updateKnowledgeGraphCommunityLabels();
       startKnowledgeGraphAnimation(width, height);
     }
 
     function rerenderKnowledgeGraphExplorer() {
       if (knowledgeGraphState.raw) renderKnowledgeGraphExplorer(knowledgeGraphState.raw);
     }
+    window.rerenderKnowledgeGraphExplorer = rerenderKnowledgeGraphExplorer;
+
+    function knowledgeGraphScaleLabel() {
+      return `${Math.round((knowledgeGraphState.transform.scale || 1) * 100)}%`;
+    }
+
+    function updateKnowledgeGraphViewStatus() {
+      const motion = knowledgeGraphState.dynamic ? `动态运行 · α ${knowledgeGraphState.alpha.toFixed(2)}` : "已暂停";
+      const perf = knowledgeGraphState.perf || {};
+      const fps = Number(perf.fps || 0);
+      const frameMs = Number(perf.avgFrameMs || 0);
+      const perfText = fps ? ` · FPS ${Math.round(Math.min(99, fps))} · 帧 ${frameMs.toFixed(1)}ms` : "";
+      setText("knowledgeGraphMotionStatus", `${motion} · 缩放 ${knowledgeGraphScaleLabel()}${perfText}`);
+    }
+
+    function applyKnowledgeGraphTransform({ rerender = false } = {}) {
+      const viewport = $("knowledgeGraphViewport");
+      if (viewport) {
+        viewport.setAttribute("transform", `translate(${knowledgeGraphState.transform.x} ${knowledgeGraphState.transform.y}) scale(${knowledgeGraphState.transform.scale})`);
+      }
+      updateKnowledgeGraphViewStatus();
+      if (rerender) rerenderKnowledgeGraphExplorer();
+    }
+
+    function zoomKnowledgeGraph(factor = 1, anchor = null) {
+      const svg = $("knowledgeGraphCanvas");
+      const rect = svg?.getBoundingClientRect();
+      const viewBox = svg?.viewBox?.baseVal;
+      const width = viewBox?.width || rect?.width || 900;
+      const height = viewBox?.height || rect?.height || 640;
+      const previousScale = knowledgeGraphState.transform.scale || 1;
+      const nextScale = Math.max(0.35, Math.min(3.2, previousScale * factor));
+      const anchorPoint = anchor || { x: width / 2, y: height / 2 };
+      const worldX = (anchorPoint.x - knowledgeGraphState.transform.x) / previousScale;
+      const worldY = (anchorPoint.y - knowledgeGraphState.transform.y) / previousScale;
+      knowledgeGraphState.transform.scale = nextScale;
+      knowledgeGraphState.transform.x = anchorPoint.x - worldX * nextScale;
+      knowledgeGraphState.transform.y = anchorPoint.y - worldY * nextScale;
+      applyKnowledgeGraphTransform();
+    }
+
+    function fitKnowledgeGraphView({ padding = 76 } = {}) {
+      const svg = $("knowledgeGraphCanvas");
+      const rect = svg?.getBoundingClientRect();
+      const viewBox = svg?.viewBox?.baseVal;
+      const width = viewBox?.width || rect?.width || 900;
+      const height = viewBox?.height || rect?.height || 640;
+      const nodes = knowledgeGraphState.nodes || [];
+      if (!nodes.length) {
+        knowledgeGraphState.transform = { x: 0, y: 0, scale: 1 };
+        applyKnowledgeGraphTransform();
+        return;
+      }
+      const minX = Math.min(...nodes.map((node) => node.x - (node.radius || 12)));
+      const maxX = Math.max(...nodes.map((node) => node.x + (node.radius || 12)));
+      const minY = Math.min(...nodes.map((node) => node.y - (node.radius || 12)));
+      const maxY = Math.max(...nodes.map((node) => node.y + (node.radius || 12)));
+      const graphWidth = Math.max(1, maxX - minX);
+      const graphHeight = Math.max(1, maxY - minY);
+      const scale = Math.max(0.35, Math.min(2.4, Math.min((width - padding * 2) / graphWidth, (height - padding * 2) / graphHeight)));
+      knowledgeGraphState.transform = {
+        scale,
+        x: width / 2 - ((minX + maxX) / 2) * scale,
+        y: height / 2 - ((minY + maxY) / 2) * scale,
+      };
+      applyKnowledgeGraphTransform();
+    }
+
+    function centerKnowledgeGraphNode(nodeId = "") {
+      const svg = $("knowledgeGraphCanvas");
+      const rect = svg?.getBoundingClientRect();
+      const viewBox = svg?.viewBox?.baseVal;
+      const width = viewBox?.width || rect?.width || 900;
+      const height = viewBox?.height || rect?.height || 640;
+      const targetId = nodeId || knowledgeGraphState.selectedId || knowledgeGraphState.focusId;
+      const node = knowledgeGraphState.nodes.find((item) => item.id === targetId);
+      if (!node) return;
+      const scale = Math.max(0.85, Math.min(2.4, knowledgeGraphState.transform.scale || 1));
+      knowledgeGraphState.transform = {
+        scale,
+        x: width / 2 - node.x * scale,
+        y: height / 2 - node.y * scale,
+      };
+      applyKnowledgeGraphTransform();
+    }
+
+    window.fitKnowledgeGraphView = fitKnowledgeGraphView;
+    window.centerKnowledgeGraphNode = centerKnowledgeGraphNode;
+    window.zoomKnowledgeGraph = zoomKnowledgeGraph;
 
     function graphPointerPoint(svg, event) {
       const rect = svg.getBoundingClientRect();
@@ -5869,9 +7119,15 @@
       svg.dataset.graphInteractions = "ready";
       svg.addEventListener("wheel", (event) => {
         event.preventDefault();
-        const delta = event.deltaY > 0 ? 0.9 : 1.1;
-        knowledgeGraphState.transform.scale = Math.max(0.45, Math.min(2.4, knowledgeGraphState.transform.scale * delta));
-        rerenderKnowledgeGraphExplorer();
+        const rect = svg.getBoundingClientRect();
+        const viewBox = svg.viewBox?.baseVal;
+        const width = viewBox?.width || rect.width || 900;
+        const height = viewBox?.height || rect.height || 640;
+        const anchor = {
+          x: ((event.clientX - rect.left) / Math.max(1, rect.width)) * width,
+          y: ((event.clientY - rect.top) / Math.max(1, rect.height)) * height,
+        };
+        zoomKnowledgeGraph(event.deltaY > 0 ? 0.9 : 1.1, anchor);
       }, { passive: false });
       svg.addEventListener("pointerdown", (event) => {
         if (event.target.closest(".graph-node-svg")) return;
@@ -5879,6 +7135,16 @@
         svg.setPointerCapture(event.pointerId);
       });
       svg.addEventListener("pointermove", (event) => {
+        if (knowledgeGraphState.pendingNodePointer && !knowledgeGraphState.draggingNodeId) {
+          const pending = knowledgeGraphState.pendingNodePointer;
+          if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) < 4) return;
+          const node = knowledgeGraphState.nodes.find((item) => item.id === pending.nodeId);
+          if (!node) return;
+          knowledgeGraphState.draggingNodeId = pending.nodeId;
+          knowledgeGraphState.suppressNextNodeClick = true;
+          node.fixed = true;
+          knowledgeGraphState.fixedIds.add(pending.nodeId);
+        }
         if (knowledgeGraphState.draggingNodeId) {
           const node = knowledgeGraphState.nodes.find((item) => item.id === knowledgeGraphState.draggingNodeId);
           if (!node) return;
@@ -5888,6 +7154,7 @@
           node.vx = 0;
           node.vy = 0;
           knowledgeGraphState.positions[node.id] = { x: node.x, y: node.y, vx: 0, vy: 0 };
+          saveKnowledgeGraphLayout();
           knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.55);
           updateKnowledgeGraphSvgPositions();
           updateKnowledgeGraphHighlight();
@@ -5896,26 +7163,55 @@
         if (!knowledgeGraphState.pointer) return;
         knowledgeGraphState.transform.x = knowledgeGraphState.pointer.startX + event.clientX - knowledgeGraphState.pointer.x;
         knowledgeGraphState.transform.y = knowledgeGraphState.pointer.startY + event.clientY - knowledgeGraphState.pointer.y;
-        const viewport = $("knowledgeGraphViewport");
-        if (viewport) viewport.setAttribute("transform", `translate(${knowledgeGraphState.transform.x} ${knowledgeGraphState.transform.y}) scale(${knowledgeGraphState.transform.scale})`);
+        applyKnowledgeGraphTransform();
       });
-      svg.addEventListener("pointerup", () => {
+      svg.addEventListener("pointerup", (event) => {
         knowledgeGraphState.pointer = null;
+        if (knowledgeGraphState.pendingNodePointer && !knowledgeGraphState.draggingNodeId) {
+          const pending = knowledgeGraphState.pendingNodePointer;
+          if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) <= 6) {
+            knowledgeGraphState.suppressNextNodeClick = true;
+            switchKnowledgeGraphFocusNode(pending.nodeId);
+          }
+        } else if (!knowledgeGraphState.draggingNodeId) {
+          const target = document.elementFromPoint(event.clientX, event.clientY);
+          const nodeElement = target?.closest?.(".graph-node-svg");
+          const communityElement = target?.closest?.(".graph-community-label");
+          const nodeId = nodeElement?.getAttribute("data-node-id")
+            || communityRepresentativeNodeId(communityElement?.getAttribute("data-community") || "");
+          if (nodeId) {
+            knowledgeGraphState.suppressNextNodeClick = true;
+            switchKnowledgeGraphFocusNode(nodeId);
+          }
+        }
+        if (knowledgeGraphState.draggingNodeId) saveKnowledgeGraphLayout();
+        knowledgeGraphState.pendingNodePointer = null;
         knowledgeGraphState.draggingNodeId = "";
       });
       svg.addEventListener("pointercancel", () => {
         knowledgeGraphState.pointer = null;
+        if (knowledgeGraphState.draggingNodeId) saveKnowledgeGraphLayout();
+        knowledgeGraphState.pendingNodePointer = null;
+        knowledgeGraphState.pendingCommunityPointer = null;
         knowledgeGraphState.draggingNodeId = "";
       });
     }
 
     function setupKnowledgeGraphControls() {
-      ["graphFilterIndustry", "graphFilterEvidence", "graphFilterResearch", "graphFilterPortfolio", "graphFilterRisk", "graphDepth"].forEach((id) => {
+      ["graphFilterIndustry", "graphFilterEvidence", "graphFilterResearch", "graphFilterPortfolio", "graphFilterRisk", "graphDepth", "graphScope"].forEach((id) => {
         const element = $(id);
         if (element && !element.dataset.graphControlReady) {
           element.dataset.graphControlReady = "ready";
           element.addEventListener("change", () => {
-            knowledgeGraphState.depth = Number($("graphDepth")?.value || 2);
+            knowledgeGraphState.depth = Number($("graphDepth")?.value || 3);
+            knowledgeGraphState.scope = $("graphScope")?.value || "local";
+            if (knowledgeGraphState.scope === "local") {
+              const keep = new Set([knowledgeGraphState.focusId, knowledgeGraphState.selectedId].filter(Boolean));
+              knowledgeGraphState.expandedIds.forEach((id) => {
+                if (keep.has(id)) return;
+                knowledgeGraphState.expandedIds.delete(id);
+              });
+            }
             rerenderKnowledgeGraphExplorer();
           });
         }
@@ -5937,10 +7233,41 @@
           knowledgeGraphState.selectedId = "";
           knowledgeGraphState.positions = {};
           knowledgeGraphState.fixedIds.clear();
+          knowledgeGraphState.expandedIds.clear();
+          knowledgeGraphState.trailIds = [];
+          knowledgeGraphState.focusHistoryIds = [];
+          knowledgeGraphState.pathStartId = "";
+          knowledgeGraphState.pathEndId = "";
+          knowledgeGraphState.pathNodeIds.clear();
+          knowledgeGraphState.pathLinkIds.clear();
+          knowledgeGraphState.scope = "local";
+          knowledgeGraphState.depth = 3;
           knowledgeGraphState.alpha = 0.95;
           if ($("graphSearch")) $("graphSearch").value = "";
+          if ($("graphScope")) $("graphScope").value = "local";
+          if ($("graphDepth")) $("graphDepth").value = "3";
           rerenderKnowledgeGraphExplorer();
         });
+      }
+      const zoomOut = $("graphZoomOut");
+      if (zoomOut && !zoomOut.dataset.graphControlReady) {
+        zoomOut.dataset.graphControlReady = "ready";
+        zoomOut.addEventListener("click", () => zoomKnowledgeGraph(0.82));
+      }
+      const zoomIn = $("graphZoomIn");
+      if (zoomIn && !zoomIn.dataset.graphControlReady) {
+        zoomIn.dataset.graphControlReady = "ready";
+        zoomIn.addEventListener("click", () => zoomKnowledgeGraph(1.18));
+      }
+      const fitView = $("graphFitView");
+      if (fitView && !fitView.dataset.graphControlReady) {
+        fitView.dataset.graphControlReady = "ready";
+        fitView.addEventListener("click", () => fitKnowledgeGraphView());
+      }
+      const centerFocus = $("graphCenterFocus");
+      if (centerFocus && !centerFocus.dataset.graphControlReady) {
+        centerFocus.dataset.graphControlReady = "ready";
+        centerFocus.addEventListener("click", () => centerKnowledgeGraphNode());
       }
       const dynamic = $("graphToggleDynamic");
       if (dynamic && !dynamic.dataset.graphControlReady) {
@@ -5952,7 +7279,7 @@
           knowledgeGraphState.alpha = knowledgeGraphState.dynamic ? Math.max(knowledgeGraphState.alpha, 0.6) : 0;
           if (knowledgeGraphState.dynamic && !knowledgeGraphState.frameId && knowledgeGraphState.raw) rerenderKnowledgeGraphExplorer();
           if (!knowledgeGraphState.dynamic) stopKnowledgeGraphAnimation();
-          setText("knowledgeGraphMotionStatus", knowledgeGraphState.dynamic ? "动态运行" : "已暂停");
+          updateKnowledgeGraphViewStatus();
         });
       }
       const release = $("graphReleaseNodes");
@@ -5964,7 +7291,123 @@
             node.fixed = false;
           });
           knowledgeGraphState.alpha = 0.9;
+          saveKnowledgeGraphLayout();
+          renderKnowledgeGraphTrail();
           rerenderKnowledgeGraphExplorer();
+        });
+      }
+      const clearLayout = $("graphClearLayout");
+      if (clearLayout && !clearLayout.dataset.graphControlReady) {
+        clearLayout.dataset.graphControlReady = "ready";
+        clearLayout.addEventListener("click", clearKnowledgeGraphLayout);
+      }
+      const setPathStart = $("graphSetPathStart");
+      if (setPathStart && !setPathStart.dataset.graphControlReady) {
+        setPathStart.dataset.graphControlReady = "ready";
+        setPathStart.addEventListener("click", () => {
+          knowledgeGraphState.pathStartId = knowledgeGraphState.selectedId || knowledgeGraphState.focusId || "";
+          refreshKnowledgeGraphPath();
+        });
+      }
+      const setPathEnd = $("graphSetPathEnd");
+      if (setPathEnd && !setPathEnd.dataset.graphControlReady) {
+        setPathEnd.dataset.graphControlReady = "ready";
+        setPathEnd.addEventListener("click", () => {
+          knowledgeGraphState.pathEndId = knowledgeGraphState.selectedId || "";
+          refreshKnowledgeGraphPath();
+        });
+      }
+      const clearPath = $("graphClearPath");
+      if (clearPath && !clearPath.dataset.graphControlReady) {
+        clearPath.dataset.graphControlReady = "ready";
+        clearPath.addEventListener("click", () => {
+          knowledgeGraphState.pathStartId = "";
+          knowledgeGraphState.pathEndId = "";
+          knowledgeGraphState.pathNodeIds.clear();
+          knowledgeGraphState.pathLinkIds.clear();
+          renderKnowledgeGraphPathPanel();
+          updateKnowledgeGraphHighlight();
+        });
+      }
+      const pinSelected = $("graphPinSelected");
+      if (pinSelected && !pinSelected.dataset.graphControlReady) {
+        pinSelected.dataset.graphControlReady = "ready";
+        pinSelected.addEventListener("click", () => toggleKnowledgeGraphPinnedNode());
+      }
+      const focusSelected = $("graphFocusSelected");
+      if (focusSelected && !focusSelected.dataset.graphControlReady) {
+        focusSelected.dataset.graphControlReady = "ready";
+        focusSelected.addEventListener("click", () => focusKnowledgeGraphNode());
+      }
+      const backFocus = $("graphBackFocus");
+      if (backFocus && !backFocus.dataset.graphControlReady) {
+        backFocus.dataset.graphControlReady = "ready";
+        backFocus.addEventListener("click", backKnowledgeGraphFocus);
+      }
+      const savePathTrail = $("graphSavePathTrail");
+      if (savePathTrail && !savePathTrail.dataset.graphControlReady) {
+        savePathTrail.dataset.graphControlReady = "ready";
+        savePathTrail.addEventListener("click", saveKnowledgeGraphPathToTrail);
+      }
+      const clearTrail = $("graphClearTrail");
+      if (clearTrail && !clearTrail.dataset.graphControlReady) {
+        clearTrail.dataset.graphControlReady = "ready";
+        clearTrail.addEventListener("click", () => {
+          knowledgeGraphState.trailIds = [];
+          knowledgeGraphState.focusHistoryIds = [];
+          renderKnowledgeGraphFocusHistory();
+          renderKnowledgeGraphTrail();
+        });
+      }
+      const saveSubgraph = $("graphSaveSubgraph");
+      if (saveSubgraph && !saveSubgraph.dataset.graphControlReady) {
+        saveSubgraph.dataset.graphControlReady = "ready";
+        saveSubgraph.addEventListener("click", saveKnowledgeGraphSubgraph);
+      }
+      const restoreSubgraph = $("graphRestoreSubgraph");
+      if (restoreSubgraph && !restoreSubgraph.dataset.graphControlReady) {
+        restoreSubgraph.dataset.graphControlReady = "ready";
+        restoreSubgraph.addEventListener("click", restoreKnowledgeGraphSubgraph);
+      }
+      const pathSteps = $("knowledgeGraphPathSteps");
+      if (pathSteps && !pathSteps.dataset.graphControlReady) {
+        pathSteps.dataset.graphControlReady = "ready";
+        pathSteps.addEventListener("click", (event) => {
+          const target = event.target.closest(".graph-next-hop");
+          if (!target) return;
+          const nodeId = target.dataset.nodeId || "";
+          if (!nodeId) return;
+          knowledgeGraphState.expandedIds.add(nodeId);
+          knowledgeGraphState.selectedId = nodeId;
+          knowledgeGraphState.pathEndId = nodeId;
+          knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.72);
+          rerenderKnowledgeGraphExplorer();
+        });
+      }
+      const focusHistoryList = $("knowledgeGraphFocusHistoryList");
+      if (focusHistoryList && !focusHistoryList.dataset.graphControlReady) {
+        focusHistoryList.dataset.graphControlReady = "ready";
+        focusHistoryList.addEventListener("click", (event) => {
+          const target = event.target.closest(".graph-focus-history-node");
+          if (!target) return;
+          const nodeId = target.dataset.nodeId || "";
+          if (!nodeId) return;
+          focusKnowledgeGraphNode(nodeId);
+        });
+      }
+      const trailList = $("knowledgeGraphTrailList");
+      if (trailList && !trailList.dataset.graphControlReady) {
+        trailList.dataset.graphControlReady = "ready";
+        trailList.addEventListener("click", (event) => {
+          const target = event.target.closest(".graph-trail-node");
+          if (!target) return;
+          const nodeId = target.dataset.nodeId || "";
+          if (!nodeId) return;
+          knowledgeGraphState.selectedId = nodeId;
+          knowledgeGraphState.expandedIds.add(nodeId);
+          centerKnowledgeGraphNode(nodeId);
+          renderKnowledgeGraphInspector();
+          updateKnowledgeGraphHighlight();
         });
       }
     }
@@ -6099,7 +7542,7 @@
       renderInsightTable("graphDecisionRows", decisionRows.map((item) => ({ topic: item.type, subject: item.object, finding: item.note, status: item.status, action: "进入复盘或模拟反馈", trace: item })), "暂无分析结论、模拟反馈或复盘数据");
       renderInsightTable("graphEdgeRows", edges.map((item) => {
         const label = item.relationship_type ? relationshipTypeDisplayLabel(item.relationship_type) : graphEdgeLabel(item.type);
-        return { topic: label, subject: `${userEntityLabel(item.from)} -> ${userEntityLabel(item.to)}`, finding: `${label} 连接了两个研究对象`, status: formatScore(item.confidence), action: sourceLabel(item.source_id || item.source), trace: item };
+        return { topic: label, subject: `${graphRef(item.from)} -> ${graphRef(item.to)}`, finding: `${label} 连接了两个研究对象`, status: formatScore(item.confidence), action: sourceLabel(item.source_id || item.source), trace: item };
       }), "暂无图谱关系");
       renderKnowledgeGraphExplorer(data);
     }
@@ -6556,6 +7999,10 @@
       setValue("issuerId", issuerId || "issuer_demo");
       activeEntityIssuerId = issuerId || "issuer_demo";
       activeEntitySecurityId = securityId || "";
+      knowledgeGraphState.pendingFilters = {
+        ...(knowledgeGraphState.pendingFilters || {}),
+        useSecurityScope: Boolean(securityId),
+      };
       if (securityId) setValue("searchIssuer", issuerId || "");
       openTab("entity");
       renderAdvancedPre("issuerBox", {
@@ -6577,12 +8024,11 @@
       const ownershipHolderLabel = options.ownershipHolderLabel || "";
       const institutionalHolderKey = options.institutionalHolderKey || "";
       const institutionalHolderLabel = options.institutionalHolderLabel || "";
-      const crossCompanyFilter = ownershipHolderKey || institutionalHolderKey;
-      const securityId = options.securityId || (crossCompanyFilter ? "" : activeEntitySecurityId) || "";
+      const securityId = options.securityId || "";
       setValue("issuerId", issuerId || chainId || "issuer_demo");
       activeEntityIssuerId = issuerId || activeEntityIssuerId;
       activeEntitySecurityId = securityId;
-      knowledgeGraphState.pendingFilters = { relationshipType, chainId, chainNodeId, industryDirection, ownershipHolderKey, ownershipHolderLabel, institutionalHolderKey, institutionalHolderLabel };
+      knowledgeGraphState.pendingFilters = { relationshipType, chainId, chainNodeId, industryDirection, ownershipHolderKey, ownershipHolderLabel, institutionalHolderKey, institutionalHolderLabel, useSecurityScope: Boolean(securityId) };
       openTab("entity");
       await loadEntity();
       setStatus(`已打开关系图谱 · ${statusLabel(relationshipType || ownershipHolderKey || institutionalHolderKey || industryDirection || chainNodeId || chainId || "全部关系")}`);
@@ -7028,6 +8474,8 @@
         strategy_replays: [],
         exceptions: [],
       });
+      knowledgeGraphState.readiness = null;
+      renderKnowledgeGraphReadiness();
       renderEntityMappings({ mappings: [], total: 0 });
       $("entityMappingIssueRows").innerHTML = rows([], "暂无映射问题", () => "");
       renderAdvancedPre("issuerBox", { title: "未找到主体", status: "not_found", summary: message, next_action: "先在公司情报页执行本地建档" }, { summary: message, traceLabel: "主体查找追溯" });
@@ -7044,10 +8492,10 @@
         const issuerId = lookup.issuerId || "";
         const params = new URLSearchParams();
         if (issuerId) params.set("issuer_id", issuerId);
-        const scopedSecurityId = activeEntityIssuerId === issuerId ? activeEntitySecurityId : "";
-        const securityId = lookup.securityId || scopedSecurityId;
-        if (securityId) params.set("security_id", securityId);
         const graphFilters = knowledgeGraphState.pendingFilters || {};
+        const scopedSecurityId = activeEntityIssuerId === issuerId ? activeEntitySecurityId : "";
+        const securityId = lookup.source === "security_id" ? lookup.securityId : (graphFilters.useSecurityScope ? (lookup.securityId || scopedSecurityId) : "");
+        if (securityId) params.set("security_id", securityId);
         if (graphFilters.relationshipType) params.set("relationship_type", graphFilters.relationshipType);
         if (graphFilters.chainId) params.set("chain_id", graphFilters.chainId);
         if (graphFilters.chainNodeId) params.set("chain_node_id", graphFilters.chainNodeId);
@@ -7068,6 +8516,16 @@
         });
         params.set("market_data_limit", "20");
         const { data, trace_id } = await api(`/api/graph/query?${params.toString()}`);
+        knowledgeGraphState.readiness = null;
+        renderKnowledgeGraphReadiness();
+        const readinessParams = new URLSearchParams(params);
+        readinessParams.delete("market_data_limit");
+        try {
+          const readiness = await api(`/api/graph/knowledge-network/readiness?${readinessParams.toString()}`);
+          knowledgeGraphState.readiness = readiness.data || null;
+        } catch (readinessError) {
+          knowledgeGraphState.readiness = { status: "unavailable", present_layers: [], missing_layers: ["readiness"], cross_links: {}, seed_dependency: {}, ready_for_obsidian_exploration: false };
+        }
         if (lookup.source === "symbol" && issuerId) {
           setValue("issuerId", issuerId);
           activeEntityIssuerId = issuerId;
@@ -7078,6 +8536,7 @@
         $("researchRows").innerHTML = rows([...(data.theses || []), ...(data.research_cards || []), ...(data.challengers || [])], "暂无研究记录", (item) => `<tr><td>${item.hypothesis || item.title || "研究记录"}${renderAdvancedTrace("研究追溯", item)}</td><td>${statusLabel(item.status || item.verdict || item.template_type || "")}</td></tr>`);
         $("documentRows").innerHTML = rows(data.documents, "暂无文档", (item) => `<tr><td>${item.title || userEntityLabel(item.document_id, "资料")}${renderAdvancedTrace("资料追溯", item)}</td><td>${documentTypeLabel(item.document_type)}</td><td>${item.source_uri || "本地资料"}</td></tr>`);
         renderKnowledgeGraph(data);
+        renderKnowledgeGraphReadiness();
         renderEntityMappings({ mappings: data.entity_mappings || [], total: (data.entity_mappings || []).length });
         await loadEntityMappingQuality();
         setStatus(`主体已载入 · ${lookup.label}${lookup.source === "symbol" ? ` -> ${issuerId || securityId}` : ""} · ${trace_id}`);
