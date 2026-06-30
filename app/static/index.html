@@ -5566,7 +5566,7 @@
       }
       const readable = graphReadableIdLabel(meta.node_id || meta.data_id || meta.document_id || meta.holding_id || meta.position_id || meta.event_id || meta.viewpoint_id || meta.research_report_id || label, type, meta);
       if (type === "industry" || type === "chain_node") return meta.name || readable || graphHumanText(label);
-      if (type === "market_data") return readable || `行情 ${meta.as_of_date || ""}`.trim();
+      if (type === "market_data") return readable || meta.label || `行情 ${meta.as_of_date || ""}`.trim();
       if (type === "event") return readable || meta.title || graphEventLabel(meta.event_type || label);
       if (type === "evidence") return readable || meta.statement || meta.quote || meta.title || meta.source_uri || graphHumanText(label, "证据");
       if (type === "research") return readable || meta.viewpoint || meta.topic || meta.title || meta.hypothesis || "研究观点";
@@ -5817,7 +5817,7 @@
       const text = String(id || "").toLowerCase();
       if (text.startsWith("issuer_")) return "issuer";
       if (text.startsWith("security_") || text.startsWith("sec_")) return "security";
-      if (text.startsWith("md_")) return "market_data";
+      if (text.startsWith("md_") || text.startsWith("market_data_summary:")) return "market_data";
       if (text.startsWith("chain_")) return "industry";
       if (text.startsWith("node_")) return "chain_node";
       if (text.startsWith("vp_") || text.startsWith("rr_") || text.startsWith("thesis_") || text.startsWith("signal_")) return "research";
@@ -5831,6 +5831,7 @@
     function makeGraphModel(data) {
       const nodeMap = new Map();
       const links = [];
+      const linkKeys = new Set();
       const addNode = (id, type, label, meta = {}) => {
         if (!id) return null;
         const normalizedId = String(id);
@@ -5861,8 +5862,15 @@
         }
         return nodeMap.get(normalizedId);
       };
+      const marketDataNodeByRawId = new Map();
+      const resolveGraphNodeId = (id) => marketDataNodeByRawId.get(String(id || "")) || id;
       const addLink = (source, target, type, label = "", meta = {}) => {
+        source = resolveGraphNodeId(source);
+        target = resolveGraphNodeId(target);
         if (!source || !target || source === target) return;
+        const linkKey = `${source}->${target}:${String(type || "RELATED")}:${String(label || "")}`;
+        if (linkKeys.has(linkKey)) return;
+        linkKeys.add(linkKey);
         addNode(source, inferGraphNodeType(source), source);
         addNode(target, inferGraphNodeType(target), target);
         const sourceNode = nodeMap.get(String(source));
@@ -5887,9 +5895,31 @@
         addNode(item.security_id, "security", item.ticker || item.security_id, item);
         addLink(item.issuer_id, item.security_id, "HAS_SECURITY", "证券", { market: item.market });
       });
+      const marketDataBySecurity = new Map();
       (data.market_data || []).forEach((item) => {
-        addNode(item.data_id, "market_data", item.as_of_date || item.data_id, item);
-        addLink(item.security_id, item.data_id, "HAS_MARKET_DATA", "行情", item);
+        if (!item.security_id) return;
+        const key = String(item.security_id);
+        if (!marketDataBySecurity.has(key)) {
+          marketDataBySecurity.set(key, { security_id: key, points: [], raw_ids: [] });
+        }
+        const summary = marketDataBySecurity.get(key);
+        summary.points.push(item);
+        if (item.data_id) summary.raw_ids.push(String(item.data_id));
+      });
+      marketDataBySecurity.forEach((summary) => {
+        summary.points.sort((a, b) => String(b.as_of_date || "").localeCompare(String(a.as_of_date || "")) || String(b.data_id || "").localeCompare(String(a.data_id || "")));
+        const latest = summary.points[0] || {};
+        const nodeId = `market_data_summary:${summary.security_id}`;
+        summary.raw_ids.forEach((rawId) => marketDataNodeByRawId.set(rawId, nodeId));
+        const meta = {
+          ...latest,
+          data_id: nodeId,
+          source_data_ids: summary.raw_ids.slice(0, 20),
+          point_count: summary.points.length,
+          label: `行情走势 ${graphReadableIdLabel(summary.security_id)}${latest.as_of_date ? ` · ${latest.as_of_date}` : ""}`,
+        };
+        addNode(nodeId, "market_data", meta.label, meta);
+        addLink(summary.security_id, nodeId, "HAS_MARKET_DATA", "行情走势", meta);
       });
       (data.industry_chains || []).forEach((item) => addNode(item.chain_id, "industry", item.name || item.chain_id, item));
       (data.chain_nodes || []).forEach((item) => {

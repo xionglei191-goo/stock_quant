@@ -56,6 +56,7 @@ Without a single quality center, graph work splits across separate readiness che
 - Optional `--browser-matrix` delegates to `scripts/ui_graph_multi_symbol_acceptance.py`.
 - The quality gate now applies the same readable label cleanup used by the UI for issuer/security/market-data identifiers.
 - `market_data` graph nodes are treated as first-class display nodes in the SVG explorer and render as `行情 <security> <date>` instead of raw `md_public_eod...` IDs.
+- The SVG explorer now aggregates per-day `market_data` rows into one `行情走势` node per security and deduplicates repeated edges after node redirection. This keeps detailed K-line/table data intact outside the graph while reducing graph clutter.
 
 ### SystemService Growth Freeze Review
 
@@ -136,6 +137,9 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_cent
   - `python3 scripts/ui_graph_multi_symbol_acceptance.py http://127.0.0.1:55612 --symbols 000001,AAPL --output artifacts/ui-graph-multi-symbol-label-cleanup-acceptance-pass.json --timeout 60`
   - Result: `status=passed`, `case_count=2`, both symbols had `42` nodes, `110` links, `near_edge_nodes=0`, and saved subgraph restore count `3`.
   - `scripts/ui_graph_layout_acceptance.py` now treats rAF FPS as a scheduling signal and pairs it with average frame time; low FPS only fails when frame work is also high, while `graph_avg_frame_ms` remains a hard gate.
+- Browser graph acceptance after market-data aggregation passed:
+  - `python3 scripts/ui_graph_multi_symbol_acceptance.py http://127.0.0.1:55612 --symbols 000001,AAPL --output artifacts/ui-graph-multi-symbol-market-summary-dedup-acceptance.json --timeout 60`
+  - Result: `status=passed`, `000001` measured `35` nodes, `97` links, `overlap_pairs=1`, `near_edge_nodes=0`; `AAPL` measured `35` nodes, `98` links, `overlap_pairs=0`, `near_edge_nodes=0`.
 
 ## Next Recommended Action
 

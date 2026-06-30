@@ -621,6 +621,7 @@
   - **已完成（质量门修正）**：空目标 universe 不再返回 `passed`，而是 `status=no_targets`、`global_failures.target_universe`，CLI 非零退出，避免空图被误判为最佳展示。
   - **已完成（展示质量修正）**：质量中心 raw label gate 与前端语义标签清洗对齐，`market_data` 节点不再以 `md_public_eod...` 内部 ID 展示/验收，真实 PostgreSQL A/U 小样本 raw label 泄漏从 21 降为 0。
   - **已完成（浏览器验收修正）**：浏览器性能门槛改为结合 rAF FPS 与平均帧耗时判断，避免 headless 调度抖动误判；当前代码 PostgreSQL 服务对 `000001/AAPL` 多股票图谱验收通过，均为 42 节点/110 边、0 贴边、保存恢复通过。
+  - **已完成（图谱降噪修正）**：SVG graph 将多日 `market_data` 明细聚合为每个证券一个“行情走势”节点，并对重定向后的重复边去重；K 线/行情表仍保留明细。真实 PostgreSQL 浏览器验收中 `000001/AAPL` 从 42 节点降至 35 节点、边降至 97/98、重叠降至 1/0、贴边 0。
   - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_center_reports_gaps_and_actions tests.test_system.SystemServiceTests.test_graph_quality_center_enrichment_dry_run_does_not_write tests.test_system.SystemServiceTests.test_graph_quality_center_script_writes_artifact`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
 
 - `DONE` T-569 图谱真实事件与关系批量增厚
