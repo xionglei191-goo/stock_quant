@@ -341,7 +341,54 @@ def run_graph_layout_acceptance(
                 worst_frame_ms: Number(window.knowledgeGraphState?.perf?.worstFrameMs || 0),
                 status: document.querySelector('#knowledgeGraphMotionStatus')?.textContent || ''
               }};
+              const visibleTextTargets = [
+                '#knowledgeGraphCanvas text',
+                '#knowledgeGraphNodeTitle',
+                '#knowledgeGraphNodeType',
+                '#knowledgeGraphNodeMeta',
+                '#knowledgeGraphNeighborRows',
+                '#knowledgeGraphPathSteps',
+                '#knowledgeGraphTrailList',
+                '#knowledgeGraphFocusHistoryList',
+                '#knowledgeGraphFocusLabel',
+                '#knowledgeGraphMotionStatus'
+              ];
+              const visibleTextsForRawCheck = () => visibleTextTargets.flatMap((selector) =>
+                [...document.querySelectorAll(selector)].map((el) => (el.textContent || '').trim()).filter(Boolean)
+              );
+              const rawTextPattern = /\\b(md_|market_data_summary:|doc_obsidian|hold_obsidian|pos_obsidian|srr_obsidian|rr_obsidian|vp_obsidian|event_obsidian|rel_obsidian|VIEWPOINT_ON_COMPANY|RELATIONSHIP|[a-f0-9]{{12,}}\\s+main)\\b/i;
               const focusId = window.knowledgeGraphState?.focusId || nodes.find((n) => n.id)?.id || '';
+              let rawTextProbe = {{ checked: false }};
+              const marketProbeNode = nodes.find((node) => node.type === 'market_data');
+              if (marketProbeNode?.id && window.CSS?.escape) {{
+                const targetNode = document.querySelector(`.graph-node-svg[data-node-id="${{CSS.escape(marketProbeNode.id)}}"]`);
+                if (targetNode) {{
+                  const box = targetNode.getBoundingClientRect();
+                  const cx = box.left + box.width / 2;
+                  const cy = box.top + box.height / 2;
+                  targetNode.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true, pointerId: 9881, clientX: cx, clientY: cy, pointerType: 'mouse', isPrimary: true }}));
+                  targetNode.dispatchEvent(new PointerEvent('pointerup', {{ bubbles: true, pointerId: 9881, clientX: cx, clientY: cy, pointerType: 'mouse', isPrimary: true }}));
+                  targetNode.dispatchEvent(new MouseEvent('click', {{ bubbles: true, clientX: cx, clientY: cy }}));
+                  await wait(400);
+                  const probeTexts = visibleTextsForRawCheck();
+                  rawTextProbe = {{
+                    checked: true,
+                    node_id: marketProbeNode.id,
+                    selected_id: window.knowledgeGraphState?.selectedId || '',
+                    raw_label_text_leaks: [...new Set(probeTexts.filter((text) => rawTextPattern.test(text)))].slice(0, 20)
+                  }};
+                  const focusNode = document.querySelector(`.graph-node-svg[data-node-id="${{CSS.escape(focusId)}}"]`);
+                  if (focusNode) {{
+                    const focusBox = focusNode.getBoundingClientRect();
+                    const fx = focusBox.left + focusBox.width / 2;
+                    const fy = focusBox.top + focusBox.height / 2;
+                    focusNode.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true, pointerId: 9882, clientX: fx, clientY: fy, pointerType: 'mouse', isPrimary: true }}));
+                    focusNode.dispatchEvent(new PointerEvent('pointerup', {{ bubbles: true, pointerId: 9882, clientX: fx, clientY: fy, pointerType: 'mouse', isPrimary: true }}));
+                    focusNode.dispatchEvent(new MouseEvent('click', {{ bubbles: true, clientX: fx, clientY: fy }}));
+                    await wait(400);
+                  }}
+                }}
+              }}
               const firstExpandableNode = nodes
                 .filter((n) => n.id && n.id !== focusId && !n.expanded)
                 .sort((a, b) =>
@@ -606,22 +653,7 @@ def run_graph_layout_acceptance(
                 }};
                 if (storedRaw) window.localStorage?.removeItem(storageKey);
               }}
-              const visibleTextTargets = [
-                '#knowledgeGraphCanvas text',
-                '#knowledgeGraphNodeTitle',
-                '#knowledgeGraphNodeType',
-                '#knowledgeGraphNodeMeta',
-                '#knowledgeGraphNeighborRows',
-                '#knowledgeGraphPathSteps',
-                '#knowledgeGraphTrailList',
-                '#knowledgeGraphFocusHistoryList',
-                '#knowledgeGraphFocusLabel',
-                '#knowledgeGraphMotionStatus'
-              ];
-              const visibleTexts = visibleTextTargets.flatMap((selector) =>
-                [...document.querySelectorAll(selector)].map((el) => (el.textContent || '').trim()).filter(Boolean)
-              );
-              const rawTextPattern = /\\b(md_|market_data_summary:|doc_obsidian|hold_obsidian|pos_obsidian|srr_obsidian|rr_obsidian|vp_obsidian|event_obsidian|rel_obsidian|VIEWPOINT_ON_COMPANY|RELATIONSHIP|[a-f0-9]{{12,}}\\s+main)\\b/i;
+              const visibleTexts = visibleTextsForRawCheck();
               return {{
                 status: 'measured',
                 rect: {{ width: rect.width, height: rect.height }},
@@ -655,6 +687,7 @@ def run_graph_layout_acceptance(
                 raw_edge_relationships: (window.knowledgeGraphState?.raw?.edges || []).filter((item) => item.relationship_type).length,
                 raw_edge_relationship_types: [...new Set((window.knowledgeGraphState?.raw?.edges || []).map((item) => item.relationship_type).filter(Boolean))],
                 raw_edge_types: [...new Set((window.knowledgeGraphState?.raw?.edges || []).map((item) => item.type).filter(Boolean))],
+                raw_text_probe: rawTextProbe,
                 focus_switch: focusSwitch,
                 community_click: communityClick,
                 view_controls: viewControls,
@@ -747,6 +780,9 @@ def run_graph_layout_acceptance(
             failures.append({"check": "graph_performance_status", "expected": "status includes FPS and frame time", "actual": perf})
         if result.get("raw_label_text_leaks"):
             failures.append({"check": "raw_label_text_leaks", "expected": "no raw graph ids in visible graph text", "actual": result.get("raw_label_text_leaks")})
+        raw_text_probe = result.get("raw_text_probe") if isinstance(result.get("raw_text_probe"), dict) else {}
+        if raw_text_probe.get("raw_label_text_leaks"):
+            failures.append({"check": "raw_label_text_probe_leaks", "expected": "no raw graph ids after probing market node text", "actual": raw_text_probe})
         if expect_filter_chip and expect_filter_chip not in str(result.get("filter_chips", "")):
             failures.append({"check": "expected_filter_chip", "expected": expect_filter_chip, "actual": result.get("filter_chips", "")})
         if forbid_filter_chip and forbid_filter_chip in str(result.get("filter_chips", "")):

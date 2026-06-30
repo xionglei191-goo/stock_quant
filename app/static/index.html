@@ -6623,6 +6623,34 @@
       return knowledgeGraphState.nodes.find((item) => item.id === nodeId) || { id: nodeId, label: graphRef(nodeId), fullLabel: graphRef(nodeId), type: "evidence" };
     }
 
+    function sanitizeGraphTraceValue(value, key = "") {
+      if (Array.isArray(value)) {
+        if (key === "source_data_ids") return `行情明细 ${value.length} 条`;
+        return value.map((item) => sanitizeGraphTraceValue(item)).slice(0, 8);
+      }
+      if (value && typeof value === "object") {
+        return Object.fromEntries(
+          Object.entries(value)
+            .filter(([entryKey]) => !["source_data_ids", "raw_ids"].includes(entryKey))
+            .map(([entryKey, entryValue]) => [entryKey, sanitizeGraphTraceValue(entryValue, entryKey)])
+        );
+      }
+      if (typeof value === "string") {
+        if (key.endsWith("_id") || key === "id" || /^(md_|market_data_summary:|vp_rr_|rr_|srr_|doc_obsidian|hold_obsidian|pos_obsidian|event_obsidian|rel_obsidian)/i.test(value)) {
+          return graphReadableIdLabel(value) || graphNodeDisplayLabel(value, graphRef(value));
+        }
+      }
+      return value;
+    }
+
+    function graphNodeTrace(node) {
+      return {
+        label: node.fullLabel || node.label || graphRef(node.id),
+        type: graphNodeTypeLabel(node.type),
+        meta: sanitizeGraphTraceValue(node.meta || {}),
+      };
+    }
+
     function addKnowledgeGraphTrailNode(nodeId) {
       if (!nodeId) return;
       knowledgeGraphState.trailIds = [nodeId, ...knowledgeGraphState.trailIds.filter((id) => id !== nodeId)].slice(0, 12);
@@ -6867,7 +6895,7 @@
         meta.status ? `<span class="badge ${meta.status === "open" ? "warn" : ""}">${statusLabel(meta.status)}</span>` : "",
         meta.market ? `<span class="badge ok">${meta.market}</span>` : "",
         meta.confidence != null ? `<span class="badge">置信 ${formatScore(meta.confidence)}</span>` : "",
-        renderAdvancedTrace("节点追溯", { id: node.id, meta }),
+        renderAdvancedTrace("节点追溯", graphNodeTrace(node)),
       ].filter(Boolean).join("");
       const neighbors = knowledgeGraphState.links
         .filter((link) => link.source === node.id || link.target === node.id)

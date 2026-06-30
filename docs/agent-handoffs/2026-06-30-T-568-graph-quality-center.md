@@ -59,6 +59,7 @@ Without a single quality center, graph work splits across separate readiness che
 - The SVG explorer now aggregates per-day `market_data` rows into one `行情走势` node per security and deduplicates repeated edges after node redirection. This keeps detailed K-line/table data intact outside the graph while reducing graph clutter.
 - Focus status now uses the visible node semantic label instead of `graphRef(focusId)`, and generic `vp_rr_*` / `rr_*` IDs are normalized to `研究观点` / `研报主题`.
 - Browser layout acceptance now checks visible graph text from SVG labels, inspector, path/trail panels, focus label, and motion status for raw identifiers such as `md_`, `market_data_summary:`, Obsidian seed IDs, and long hash-based viewpoint IDs.
+- Graph inspector node traces now sanitize graph node metadata before rendering, so market-data summary nodes do not expose `market_data_summary:*` or raw `md_*` source point IDs in the default details text.
 - Click-expansion acceptance distinguishes true expansion targets from sparse/leaf nodes: nodes with hidden neighbors must reveal growth, while nodes without hidden neighbors are accepted when click focus, selection, and at least one existing visible neighbor remain stable.
 
 ### SystemService Growth Freeze Review
@@ -149,6 +150,9 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_cent
 - Browser sparse-node click acceptance passed:
   - `python3 scripts/ui_graph_layout_acceptance.py http://127.0.0.1:55612 --symbol AAPL --min-nodes 8 --min-links 6 --max-overlap-pairs 8 --max-near-edge-nodes 2 --min-community-labels 1 --min-visible-neighbors-after-click 1 --output artifacts/ui-graph-click-semantics-seeded-layout-pass.json --timeout 60`
   - Result: `status=passed`; clicked research node had `hidden_neighbors_before=0`, `focus_after` matched the clicked node, `visible_neighbors_after=1`, and `raw_label_text_leaks=[]`.
+- Browser market-node raw-trace probe passed:
+  - `python3 scripts/ui_graph_layout_acceptance.py http://127.0.0.1:55612 --symbol AAPL --min-nodes 8 --min-links 6 --max-overlap-pairs 8 --max-near-edge-nodes 2 --min-community-labels 1 --min-visible-neighbors-after-click 1 --output artifacts/ui-graph-market-node-raw-trace-pass.json --timeout 60`
+  - Result: `raw_text_probe.checked=true`, probed `market_data_summary:security_aapl_us`, and both `raw_text_probe.raw_label_text_leaks=[]` and `raw_label_text_leaks=[]`.
 
 ## Next Recommended Action
 
