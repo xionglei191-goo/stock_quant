@@ -608,6 +608,18 @@
   - 当前边界：不新增数据库 schema，不改变 `/api/graph/query` schema；不物化 peer/upstream/downstream 派生边；不伪造事件、证据、研报或持仓，缺失层只记录 backfill action/readiness 缺口。
   - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_full_knowledge_graph_bulk_dry_run_does_not_write tests.test_system.SystemServiceTests.test_full_knowledge_graph_bulk_execute_is_idempotent tests.test_system.SystemServiceTests.test_query_graph_scopes_company_positions_to_focus_issuer tests.test_system.SystemServiceTests.test_full_knowledge_graph_universe_excludes_out_of_scope_and_reports_hk_gap tests.test_system.SystemServiceTests.test_full_knowledge_graph_script_writes_artifacts`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`；`.venv/bin/python scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 --audit-only --market A,U --limit 50`；`.venv/bin/python scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 --dry-run --market A,U --limit 100 --batch-size 20`；`.venv/bin/python scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 --execute --market A,U --limit 20 --batch-size 5`；`.venv/bin/python scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 --execute --market A,U --batch-size 500 --resume`；A/U 样本图谱查询确认非空、上市关系和公司定位存在。
 
+- `DONE` T-568 图谱质量验收、缺口看板与真实关系增强入口
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；T-566/T-567 生产质量闭环
+  - 背景：T-567 已让 A/U 全量股票具备基础图谱骨架，但用户下一步需要知道每只股票图谱为什么浅、UI 是否仍可探索，以及如何把真实事件/关系补进图谱。
+  - 目标：把“图谱数据质量闭环”“真实关系和事件增强”“图谱产品化验收”合并为一个可复验质量中心，输出缺口、质量门和可执行增强动作。
+  - **已完成（本轮）**：新增 `app/service_modules/graph_quality_center.py`，按生产 universe 抽样调用 `query_graph` 与 `/api/graph/knowledge-network/readiness`，汇总每只股票的 layer gaps、cross-links、seed dependency、重复标签、raw label 泄漏、边密度和社区数。
+  - **已完成（本轮）**：新增 `GET|POST /api/graph/quality-center`，`SystemService` 仅保留 facade，业务逻辑在领域模块内；接口固定 `automation_allowed=false`、`live_execution_allowed=false`。
+  - **已完成（本轮）**：新增 `scripts/graph_quality_center.py`，默认输出 `artifacts/graph-quality-center/latest.json`；支持 `--run-enrichment` 调用已有事件/关系 builder，默认 dry-run；显式 `--execute` 才写入本地事件/关系候选；支持 `--browser-matrix` 复用多股票浏览器验收。
+  - **已完成（本轮）**：真实事件/关系增强入口复用 `/api/company-database/events/build` 与 `/api/company-database/relationships/build`，只从本地行情、披露、研报覆盖、证据和股权表候选生成数据；候选默认 `needs_review`，不把研报观点提升为事实，不接外部收费源。
+  - **已完成（本轮）**：修正 T-566 roadmap 重复状态，旧 DOING 口径统一为 DONE；T-568 作为后续质量闭环主任务。
+  - 当前边界：质量中心不是新的事实抽取器；它只做编排、审计和调用已有 builder。不新增数据库 schema，不改变 `/api/graph/query` schema，不连接券商，不做真实交易。
+  - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_center_reports_gaps_and_actions tests.test_system.SystemServiceTests.test_graph_quality_center_enrichment_dry_run_does_not_write tests.test_system.SystemServiceTests.test_graph_quality_center_script_writes_artifact`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
+
 - `DONE` T-486 公开行情 K 线板块
   - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
   - 背景：公司情报和知识图谱已经能展示关系与证据，但个人用户还需要直接查看证券价格走势，避免在研究时离开系统另找行情图。
@@ -1269,7 +1281,7 @@
   - **已完成（本轮）**：`docs/logic-map.md` 已记录完整 `make local-ci` 证据：Python 编译、全量单测、UI 静态契约、安全检查、Markdown 链接检查和 handoff 校验全部通过。
   - 验收：`make local-ci` 通过；`python3 scripts/check_markdown_links.py` 通过，检查 195 个 Markdown 文件；`python3 scripts/check_handoffs.py` 通过；`git diff --check` 通过。
 
-- `DOING` T-566 Obsidian 式可探索知识网络
+- `DONE` T-566 Obsidian 式可探索知识网络
   - 对应：E3-US1, E5-US1, E7-US1, E8-US2；关系图谱/多维数据完整性增强
   - Owner：Product and UI, Research and AI Workflows, Data and Evidence
   - 目标：把现有公司中心关系图谱升级为更接近 Obsidian Graph View 的可探索知识网络，支持多社区、动态展开、产业链/股东/证据/观点多维关系和可复验浏览器质量门。

@@ -411,6 +411,8 @@ def build_route_table(owner: Any) -> list[tuple[str, str, Callable[..., Any]]]:
             ("POST", r"^/api/graph/edge-quality-report$", owner._graph_edge_quality_report),
             ("GET", r"^/api/graph/knowledge-network/readiness$", owner._graph_knowledge_network_readiness),
             ("POST", r"^/api/graph/knowledge-network/readiness$", owner._graph_knowledge_network_readiness),
+            ("GET", r"^/api/graph/quality-center$", owner._graph_quality_center),
+            ("POST", r"^/api/graph/quality-center$", owner._graph_quality_center),
             ("POST", r"^/api/graph/knowledge-network/evidence-links/backfill$", owner._backfill_knowledge_network_evidence_links),
             ("GET", r"^/api/graph/neo4j/export$", owner._graph_neo4j_export),
             ("POST", r"^/api/graph/neo4j/export$", owner._graph_neo4j_export),

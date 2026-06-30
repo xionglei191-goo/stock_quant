@@ -458,9 +458,28 @@ python3 scripts/backfill_full_knowledge_graph.py http://127.0.0.1:8000 \
   --limit 20 \
   --batch-size 5 \
   --resume
+
+python3 scripts/graph_quality_center.py http://127.0.0.1:8000 \
+  --market A,U \
+  --limit 50 \
+  --output artifacts/graph-quality-center/latest.json
+
+python3 scripts/graph_quality_center.py http://127.0.0.1:8000 \
+  --market A,U \
+  --limit 10 \
+  --run-enrichment \
+  --output artifacts/graph-quality-center/enrichment-dry-run.json
+
+python3 scripts/graph_quality_center.py http://127.0.0.1:8000 \
+  --market A,U \
+  --limit 5 \
+  --browser-matrix \
+  --output artifacts/graph-quality-center/browser-quality.json
 ```
 
 `backfill_full_knowledge_graph.py` 默认只生产基础关系图谱层和缺口状态，不逐股票跑完整图查询式证据链回填；需要补历史事件/关系/观点的 evidence links 时，再显式追加 `--include-evidence-links` 单独分批运行。
+
+`graph_quality_center.py` 是 T-568 的统一验收入口：默认只读输出每只样本的图谱缺口、质量门、重复/底层标签泄漏、跨层链接和下一步增强动作；`--run-enrichment` 会调用已有公司事件和关系 builder，默认仍是 dry-run，只有同时传 `--execute` 才写入本地事件/关系候选；`--browser-matrix` 会复用浏览器级图谱验收，确认 UI 不空图、可点击展开和布局质量。
 
 ## 愿景上线闸门
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib
 from pathlib import Path
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from tempfile import TemporaryDirectory
 import hashlib
 import json
@@ -45,6 +45,7 @@ from scripts.graph_acceptance_fixture import (
 from scripts.local_data_unblock_audit import audit_local_data_unblock
 import scripts.backfill_market_data as backfill_market_data_script
 import scripts.backfill_full_knowledge_graph as backfill_full_knowledge_graph_script
+import scripts.graph_quality_center as graph_quality_center_script
 import scripts.daily_data_update_pipeline as daily_data_update_pipeline_script
 import scripts.audit_daily_update_schedule as audit_daily_update_schedule_script
 import scripts.daily_market_insight as daily_market_insight_script
@@ -22319,6 +22320,112 @@ class SystemServiceTests(unittest.TestCase):
         payload = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(payload["status"], "audit_only")
         self.assertIn("state_summary", payload)
+
+    def test_graph_quality_center_reports_gaps_and_actions(self) -> None:
+        result = self.router.dispatch(
+            "POST",
+            "/api/graph/quality-center",
+            {"market": "A", "limit": 1, "min_edges": 1, "min_communities": 1, "min_layers": 1},
+            actor="analyst",
+            role="analyst",
+        )
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.data["schema_id"], "graph-quality-center-v1")
+        self.assertEqual(result.data["processed_count"], 1)
+        row = result.data["items"][0]
+        self.assertEqual(row["symbol"], "DEMO")
+        self.assertIn("document", row["readiness"]["missing_layers"])
+        self.assertIn("quality_gate", row)
+        action_names = {item["action"] for item in row["enhancement_actions"]}
+        self.assertIn("build_company_events", action_names)
+        self.assertIn("build_company_relationships", action_names)
+        self.assertFalse(result.data["live_execution_allowed"])
+
+    def test_graph_quality_center_enrichment_dry_run_does_not_write(self) -> None:
+        self.service.store.evidence["ev_graph_quality"] = Evidence(
+            evidence_id="ev_graph_quality",
+            document_id="doc_graph_quality",
+            section="official_disclosure",
+            page_no=1,
+            bbox="p1",
+            span_text="The company reported customer Mega Cloud and supplier Wafer Co.",
+            canonical_text="customer Mega Cloud supplier Wafer Co",
+            confidence=0.9,
+            issuer_id="issuer_001",
+            security_id="sec_001",
+        )
+        self.service.store.disclosure_events["de_graph_quality"] = DisclosureEvent(
+            event_id="de_graph_quality",
+            document_id="doc_graph_quality",
+            issuer_id="issuer_001",
+            security_id="sec_001",
+            event_type="annual_report",
+            item_code="10-K",
+            item_title="Annual report relationship disclosure",
+            severity="medium",
+            summary="The company reported customer Mega Cloud and supplier Wafer Co.",
+            evidence_ids=["ev_graph_quality"],
+            source_id="src_sec",
+        )
+
+        result = self.service.graph_quality_center(
+            {"market": "A", "limit": 1, "run_enrichment": True, "execute": False},
+            actor="test",
+        )
+
+        self.assertTrue(result["run_enrichment"])
+        self.assertTrue(result["enrichment_runs"])
+        self.assertTrue(all(item["status"] == "dry_run" for item in result["enrichment_runs"]))
+        self.assertFalse(self.service.store.company_events)
+        self.assertFalse(self.service.store.company_relationships)
+
+    def test_graph_quality_center_script_writes_artifact(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(handler_self):  # noqa: N802
+                length = int(handler_self.headers.get("Content-Length", "0"))
+                json.loads(handler_self.rfile.read(length).decode("utf-8"))
+                payload = {
+                    "success": True,
+                    "trace_id": "trace_graph_quality",
+                    "data": {
+                        "schema_id": "graph-quality-center-v1",
+                        "status": "passed",
+                        "processed_count": 1,
+                        "items": [{"symbol": "DEMO"}],
+                        "live_execution_allowed": False,
+                    },
+                }
+                body = json.dumps(payload).encode("utf-8")
+                handler_self.send_response(200)
+                handler_self.send_header("Content-Type", "application/json")
+                handler_self.send_header("Content-Length", str(len(body)))
+                handler_self.end_headers()
+                handler_self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A003
+                return
+
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        output = Path(temp_dir.name) / "quality.json"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+
+        result = graph_quality_center_script.run_graph_quality_center(
+            f"http://127.0.0.1:{server.server_port}",
+            output=output,
+            markets="A",
+            limit=1,
+            timeout=5,
+        )
+
+        self.assertEqual(result["schema_id"], "graph-quality-center-v1")
+        self.assertTrue(output.exists())
+        self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["processed_count"], 1)
 
 
 if __name__ == "__main__":
