@@ -7219,29 +7219,54 @@
       knowledgeGraphState.renderStats.labelBudget = labelBudget;
     }
 
-    function updateKnowledgeGraphHighlight() {
+    function knowledgeGraphHighlightContext() {
       const selected = knowledgeGraphState.selectedId;
       const neighborIds = new Set([selected]);
       knowledgeGraphState.links.forEach((link) => {
         if (link.source === selected) neighborIds.add(link.target);
         if (link.target === selected) neighborIds.add(link.source);
       });
+      return {
+        selected,
+        neighborIds,
+        hasPath: knowledgeGraphState.pathNodeIds.size > 0,
+      };
+    }
+
+    function knowledgeGraphNodeHighlightState(id, context = knowledgeGraphHighlightContext()) {
+      const isSelected = id === context.selected;
+      const isExpanded = knowledgeGraphState.expandedIds.has(id);
+      const isPathNode = knowledgeGraphState.pathNodeIds.has(id);
+      const selectedDimmed = Boolean(context.selected) && !context.neighborIds.has(id) && !isPathNode;
+      const pathDimmed = context.hasPath && !isPathNode && !isSelected;
+      return { isSelected, isExpanded, isPathNode, isDimmed: selectedDimmed || pathDimmed };
+    }
+
+    function knowledgeGraphLinkHighlightState(element, context = knowledgeGraphHighlightContext()) {
+      const source = element.getAttribute("data-source");
+      const target = element.getAttribute("data-target");
+      const highlighted = Boolean(context.selected) && (source === context.selected || target === context.selected);
+      const pathHighlighted = knowledgeGraphState.pathLinkIds.has(element.getAttribute("data-link-id"));
+      const selectedDimmed = Boolean(context.selected) && !highlighted && !pathHighlighted;
+      const pathDimmed = knowledgeGraphState.pathLinkIds.size > 0 && !pathHighlighted && !highlighted;
+      return { highlighted, pathHighlighted, isDimmed: selectedDimmed || pathDimmed };
+    }
+
+    function updateKnowledgeGraphHighlight() {
+      const context = knowledgeGraphHighlightContext();
       document.querySelectorAll(".graph-node-svg").forEach((element) => {
         const id = element.getAttribute("data-node-id");
-        element.classList.toggle("is-selected", id === selected);
-        element.classList.toggle("is-expanded", knowledgeGraphState.expandedIds.has(id));
-        element.classList.toggle("is-path-node", knowledgeGraphState.pathNodeIds.has(id));
-        const hasPath = knowledgeGraphState.pathNodeIds.size > 0;
-        element.classList.toggle("is-dimmed", (Boolean(selected) && !neighborIds.has(id)) || (hasPath && !knowledgeGraphState.pathNodeIds.has(id)));
+        const state = knowledgeGraphNodeHighlightState(id, context);
+        element.classList.toggle("is-selected", state.isSelected);
+        element.classList.toggle("is-expanded", state.isExpanded);
+        element.classList.toggle("is-path-node", state.isPathNode);
+        element.classList.toggle("is-dimmed", state.isDimmed);
       });
       document.querySelectorAll(".graph-link-svg, .graph-link-label").forEach((element) => {
-        const source = element.getAttribute("data-source");
-        const target = element.getAttribute("data-target");
-        const highlighted = selected && (source === selected || target === selected);
-        const pathHighlighted = knowledgeGraphState.pathLinkIds.has(element.getAttribute("data-link-id"));
-        element.classList.toggle("is-highlighted", highlighted);
-        element.classList.toggle("is-path-link", pathHighlighted);
-        element.classList.toggle("is-dimmed", (Boolean(selected) && !highlighted) || (knowledgeGraphState.pathLinkIds.size > 0 && !pathHighlighted));
+        const state = knowledgeGraphLinkHighlightState(element, context);
+        element.classList.toggle("is-highlighted", state.highlighted);
+        element.classList.toggle("is-path-link", state.pathHighlighted);
+        element.classList.toggle("is-dimmed", state.isDimmed);
       });
       updateKnowledgeGraphLabels();
     }
