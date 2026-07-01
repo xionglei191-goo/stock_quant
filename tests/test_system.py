@@ -19773,9 +19773,14 @@ class SystemServiceTests(unittest.TestCase):
         ]:
             self.assertIn(fragment, script)
         for fragment in [
-            "const layoutNodeById = new Map(layout.nodes.map((node) => [node.id, node]))",
+            "nodeById: new Map()",
+            "knowledgeGraphState.nodeById = new Map(layout.nodes.map((node) => [node.id, node]))",
+            "const layoutNodeById = knowledgeGraphState.nodeById",
             "layoutNodeById.get(link.source)",
             "layoutNodeById.get(link.target)",
+            "knowledgeGraphState.nodeById.get(nodeId)",
+            "knowledgeGraphState.nodeById.has(id)",
+            "knowledgeGraphState.nodeById.get(knowledgeGraphState.selectedId)",
             'knowledgeGraphState.performanceMode !== "large"',
             "focusRelated || pathRelated",
             "labelMarkup",

@@ -3447,6 +3447,7 @@
       fullLinks: [],
       nodes: [],
       links: [],
+      nodeById: new Map(),
       selectedId: "",
       focusId: "",
       search: "",
@@ -6630,10 +6631,10 @@
     }
 
     function updateKnowledgeGraphSvgPositions() {
-      const nodeById = Object.fromEntries(knowledgeGraphState.nodes.map((node) => [node.id, node]));
+      const nodeById = knowledgeGraphState.nodeById;
       document.querySelectorAll(".graph-link-svg").forEach((element) => {
-        const source = nodeById[element.getAttribute("data-source")];
-        const target = nodeById[element.getAttribute("data-target")];
+        const source = nodeById.get(element.getAttribute("data-source"));
+        const target = nodeById.get(element.getAttribute("data-target"));
         if (!source || !target) return;
         element.setAttribute("x1", source.x.toFixed(1));
         element.setAttribute("y1", source.y.toFixed(1));
@@ -6641,8 +6642,8 @@
         element.setAttribute("y2", target.y.toFixed(1));
       });
       document.querySelectorAll(".graph-link-label").forEach((element) => {
-        const source = nodeById[element.getAttribute("data-source")];
-        const target = nodeById[element.getAttribute("data-target")];
+        const source = nodeById.get(element.getAttribute("data-source"));
+        const target = nodeById.get(element.getAttribute("data-target"));
         if (!source || !target) return;
         element.setAttribute("x", ((source.x + target.x) / 2).toFixed(1));
         element.setAttribute("y", ((source.y + target.y) / 2).toFixed(1));
@@ -6848,7 +6849,7 @@
     window.refreshKnowledgeGraphPath = refreshKnowledgeGraphPath;
 
     function graphNodeById(nodeId) {
-      return knowledgeGraphState.nodes.find((item) => item.id === nodeId) || { id: nodeId, label: graphRef(nodeId), fullLabel: graphRef(nodeId), type: "evidence" };
+      return knowledgeGraphState.nodeById.get(nodeId) || { id: nodeId, label: graphRef(nodeId), fullLabel: graphRef(nodeId), type: "evidence" };
     }
 
     function sanitizeGraphTraceValue(value, key = "") {
@@ -6892,7 +6893,7 @@
     function toggleKnowledgeGraphPinnedNode(nodeId = "") {
       const targetId = nodeId || knowledgeGraphState.selectedId || knowledgeGraphState.focusId;
       if (!targetId) return;
-      const node = knowledgeGraphState.nodes.find((item) => item.id === targetId);
+      const node = knowledgeGraphState.nodeById.get(targetId);
       if (knowledgeGraphState.fixedIds.has(targetId)) {
         knowledgeGraphState.fixedIds.delete(targetId);
         if (node) node.fixed = false;
@@ -6958,7 +6959,7 @@
     function renderKnowledgeGraphTrail() {
       const element = $("knowledgeGraphTrailList");
       if (!element) return;
-      const ids = [...new Set(knowledgeGraphState.trailIds)].filter((id) => knowledgeGraphState.nodes.some((node) => node.id === id));
+      const ids = [...new Set(knowledgeGraphState.trailIds)].filter((id) => knowledgeGraphState.nodeById.has(id));
       knowledgeGraphState.trailIds = ids;
       if (!ids.length) {
         element.innerHTML = `<span class="small-note">固定节点或保存路径后形成探索轨迹</span>`;
@@ -6974,7 +6975,7 @@
     function renderKnowledgeGraphFocusHistory() {
       const element = $("knowledgeGraphFocusHistoryList");
       if (!element) return;
-      const ids = [...new Set(knowledgeGraphState.focusHistoryIds)].filter((id) => knowledgeGraphState.nodes.some((node) => node.id === id));
+      const ids = [...new Set(knowledgeGraphState.focusHistoryIds)].filter((id) => knowledgeGraphState.nodeById.has(id));
       knowledgeGraphState.focusHistoryIds = ids;
       if (!ids.length) {
         element.innerHTML = `<span class="small-note">设为焦点后形成焦点历史</span>`;
@@ -7105,7 +7106,7 @@
     }
 
     function renderKnowledgeGraphInspector() {
-      const node = knowledgeGraphState.nodes.find((item) => item.id === knowledgeGraphState.selectedId) || knowledgeGraphState.nodes.find((item) => item.id === knowledgeGraphState.focusId) || knowledgeGraphState.nodes[0];
+      const node = knowledgeGraphState.nodeById.get(knowledgeGraphState.selectedId) || knowledgeGraphState.nodeById.get(knowledgeGraphState.focusId) || knowledgeGraphState.nodes[0];
       if (!node) {
         setText("knowledgeGraphNodeTitle", "未选择节点");
         setText("knowledgeGraphNodeType", "点击图谱节点查看摘要和相邻关系");
@@ -7130,7 +7131,7 @@
         .slice(0, 24)
         .map((link) => {
           const neighborId = link.source === node.id ? link.target : link.source;
-          const neighbor = knowledgeGraphState.nodes.find((item) => item.id === neighborId) || { id: neighborId, label: graphRef(neighborId), type: "evidence" };
+          const neighbor = knowledgeGraphState.nodeById.get(neighborId) || { id: neighborId, label: graphRef(neighborId), type: "evidence" };
           const edgeLabel = graphEdgeLabel(link.type, link.label);
           return `<div class="graph-neighbor" data-action="focus-graph-node" data-node-id="${neighbor.id}"><strong>${neighbor.label}</strong><span class="small-note">${edgeLabel} · ${graphNodeTypeLabel(neighbor.type)}</span></div>`;
         });
@@ -7153,7 +7154,7 @@
       let visibleLabels = 0;
       document.querySelectorAll(".graph-node-svg").forEach((element) => {
         const id = element.getAttribute("data-node-id");
-        const node = knowledgeGraphState.nodes.find((item) => item.id === id);
+        const node = knowledgeGraphState.nodeById.get(id);
         const text = element.querySelector("text");
         if (!node || !text) return;
         const basePriority = id === selected || id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(id) || neighborIds.has(id);
@@ -7227,6 +7228,7 @@
       const layout = seedGraphLayout(filtered.nodes, filtered.links, width, height);
       knowledgeGraphState.nodes = layout.nodes;
       knowledgeGraphState.links = layout.links;
+      knowledgeGraphState.nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
       const largeGraph = model.nodes.length > 72 || model.links.length > 150 || layout.nodes.length > 48 || layout.links.length > 96;
       knowledgeGraphState.performanceMode = largeGraph ? "large" : "standard";
       knowledgeGraphState.renderStats = {
@@ -7237,7 +7239,7 @@
         labelBudget: 0,
         linkLabelDomCount: 0,
       };
-      const visibleNodeIds = new Set(layout.nodes.map((node) => node.id));
+      const visibleNodeIds = new Set(knowledgeGraphState.nodeById.keys());
       if (knowledgeGraphState.pathStartId && !visibleNodeIds.has(knowledgeGraphState.pathStartId)) knowledgeGraphState.pathStartId = "";
       if (knowledgeGraphState.pathEndId && !visibleNodeIds.has(knowledgeGraphState.pathEndId)) knowledgeGraphState.pathEndId = "";
       const path = computeKnowledgeGraphPath(knowledgeGraphState.pathStartId, knowledgeGraphState.pathEndId);
@@ -7245,7 +7247,7 @@
       knowledgeGraphState.pathLinkIds = new Set(path.links.map((link) => link.id));
       knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.88);
       knowledgeGraphState.focusId = filtered.focusId || knowledgeGraphState.focusId;
-      if (!layout.nodes.some((node) => node.id === knowledgeGraphState.selectedId)) {
+      if (!knowledgeGraphState.nodeById.has(knowledgeGraphState.selectedId)) {
         knowledgeGraphState.selectedId = knowledgeGraphState.focusId || layout.nodes[0]?.id || "";
       }
       $("knowledgeGraphEmpty").style.display = layout.nodes.length ? "none" : "grid";
@@ -7258,7 +7260,7 @@
       const transform = knowledgeGraphState.transform;
       const graphStage = svg.closest(".graph-stage");
       if (graphStage) graphStage.classList.toggle("is-performance-mode", knowledgeGraphState.performanceMode === "large");
-      const layoutNodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+      const layoutNodeById = knowledgeGraphState.nodeById;
       const edgeMarkup = layout.links.map((link) => {
         const source = layoutNodeById.get(link.source);
         const target = layoutNodeById.get(link.target);
@@ -7319,7 +7321,7 @@
           event.preventDefault();
           event.stopPropagation();
           const nodeId = element.getAttribute("data-node-id");
-          const node = knowledgeGraphState.nodes.find((item) => item.id === nodeId);
+          const node = knowledgeGraphState.nodeById.get(nodeId);
           if (!node) return;
           knowledgeGraphState.pendingNodePointer = { nodeId, x: event.clientX, y: event.clientY };
           knowledgeGraphState.selectedId = nodeId;
@@ -7430,7 +7432,7 @@
       const width = viewBox?.width || rect?.width || 900;
       const height = viewBox?.height || rect?.height || 640;
       const targetId = nodeId || knowledgeGraphState.selectedId || knowledgeGraphState.focusId;
-      const node = knowledgeGraphState.nodes.find((item) => item.id === targetId);
+      const node = knowledgeGraphState.nodeById.get(targetId);
       if (!node) return;
       const scale = Math.max(0.85, Math.min(2.4, knowledgeGraphState.transform.scale || 1));
       knowledgeGraphState.transform = {
@@ -7482,7 +7484,7 @@
         if (knowledgeGraphState.pendingNodePointer && !knowledgeGraphState.draggingNodeId) {
           const pending = knowledgeGraphState.pendingNodePointer;
           if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) < 4) return;
-          const node = knowledgeGraphState.nodes.find((item) => item.id === pending.nodeId);
+          const node = knowledgeGraphState.nodeById.get(pending.nodeId);
           if (!node) return;
           knowledgeGraphState.draggingNodeId = pending.nodeId;
           knowledgeGraphState.suppressNextNodeClick = true;
@@ -7490,7 +7492,7 @@
           knowledgeGraphState.fixedIds.add(pending.nodeId);
         }
         if (knowledgeGraphState.draggingNodeId) {
-          const node = knowledgeGraphState.nodes.find((item) => item.id === knowledgeGraphState.draggingNodeId);
+          const node = knowledgeGraphState.nodeById.get(knowledgeGraphState.draggingNodeId);
           if (!node) return;
           const point = graphPointerPoint(svg, event);
           node.x = point.x;
