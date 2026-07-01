@@ -217,6 +217,7 @@ def run_graph_layout_acceptance(
     min_links: int = 60,
     max_visible_nodes: int = 0,
     max_visible_links: int = 0,
+    max_link_label_dom_count: int = 0,
     min_fps: float = 20.0,
     max_frame_ms: float = 35.0,
     min_community_labels: int = 2,
@@ -845,6 +846,8 @@ def run_graph_layout_acceptance(
             failures.append({"check": "max_visible_nodes", "expected": f"<={max_visible_nodes}", "actual": result.get("nodes"), "render_stats": result.get("render_stats")})
         if max_visible_links and int(result.get("links", 0)) > max_visible_links:
             failures.append({"check": "max_visible_links", "expected": f"<={max_visible_links}", "actual": result.get("links"), "render_stats": result.get("render_stats")})
+        if max_link_label_dom_count and int(result.get("link_label_dom_count", 0)) > max_link_label_dom_count:
+            failures.append({"check": "max_link_label_dom_count", "expected": f"<={max_link_label_dom_count}", "actual": result.get("link_label_dom_count"), "render_stats": result.get("render_stats")})
         if int(result.get("overlap_pairs", 0)) > max_overlap_pairs:
             failures.append({"check": "max_overlap_pairs", "expected": max_overlap_pairs, "actual": result.get("overlap_pairs")})
         if int(result.get("near_edge_nodes", 0)) > max_near_edge_nodes:
@@ -1066,6 +1069,7 @@ def run_graph_layout_acceptance(
             "min_links": min_links,
             "max_visible_nodes": max_visible_nodes,
             "max_visible_links": max_visible_links,
+            "max_link_label_dom_count": max_link_label_dom_count,
             "min_fps": min_fps,
             "max_frame_ms": max_frame_ms,
             "min_community_labels": min_community_labels,
@@ -1121,6 +1125,7 @@ def main() -> None:
     parser.add_argument("--min-links", type=int, default=60)
     parser.add_argument("--max-visible-nodes", type=int, default=0)
     parser.add_argument("--max-visible-links", type=int, default=0)
+    parser.add_argument("--max-link-label-dom-count", type=int, default=0)
     parser.add_argument("--min-fps", type=float, default=20.0)
     parser.add_argument("--max-frame-ms", type=float, default=35.0)
     parser.add_argument("--min-community-labels", type=int, default=2)
@@ -1164,6 +1169,7 @@ def main() -> None:
         min_links=args.min_links,
         max_visible_nodes=args.max_visible_nodes,
         max_visible_links=args.max_visible_links,
+        max_link_label_dom_count=args.max_link_label_dom_count,
         min_fps=args.min_fps,
         max_frame_ms=args.max_frame_ms,
         min_community_labels=args.min_community_labels,

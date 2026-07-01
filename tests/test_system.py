@@ -19759,16 +19759,26 @@ class SystemServiceTests(unittest.TestCase):
 
     def test_ui_graph_layout_acceptance_enforces_large_graph_dom_budget(self) -> None:
         script = Path("scripts/ui_graph_layout_acceptance.py").read_text(encoding="utf-8")
+        ui = Path("app/static/index.html").read_text(encoding="utf-8")
 
         for fragment in [
             "max_visible_nodes",
             "max_visible_links",
+            "max_link_label_dom_count",
             "--max-visible-nodes",
             "--max-visible-links",
+            "--max-link-label-dom-count",
             "render_stats",
             "graph_performance_mode",
         ]:
             self.assertIn(fragment, script)
+        for fragment in [
+            'knowledgeGraphState.performanceMode !== "large"',
+            "focusRelated || pathRelated",
+            "labelMarkup",
+            "link_label_dom_count",
+        ]:
+            self.assertIn(fragment, ui if fragment != "link_label_dom_count" else script)
 
     def test_api_route_table_is_registered_outside_router_resolve(self) -> None:
         from app.api_routes import build_route_table

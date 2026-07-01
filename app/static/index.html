@@ -7259,7 +7259,11 @@
         if (!source || !target) return "";
         const mx = (source.x + target.x) / 2;
         const my = (source.y + target.y) / 2;
-        return `<line class="graph-link-svg" data-link-id="${link.id}" data-source="${source.id}" data-target="${target.id}" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"></line><text class="graph-link-label" data-link-id="${link.id}" data-source="${source.id}" data-target="${target.id}" x="${mx.toFixed(1)}" y="${my.toFixed(1)}">${graphEdgeLabel(link.type, link.label)}</text>`;
+        const focusRelated = [source.id, target.id].includes(knowledgeGraphState.focusId) || [source.id, target.id].includes(knowledgeGraphState.selectedId);
+        const pathRelated = knowledgeGraphState.pathLinkIds.has(link.id);
+        const renderLabel = knowledgeGraphState.performanceMode !== "large" || focusRelated || pathRelated;
+        const labelMarkup = renderLabel ? `<text class="graph-link-label" data-link-id="${link.id}" data-source="${source.id}" data-target="${target.id}" x="${mx.toFixed(1)}" y="${my.toFixed(1)}">${graphEdgeLabel(link.type, link.label)}</text>` : "";
+        return `<line class="graph-link-svg" data-link-id="${link.id}" data-source="${source.id}" data-target="${target.id}" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"></line>${labelMarkup}`;
       }).join("");
       const nodeMarkup = layout.nodes.map((node) => {
         const visibleLabel = node.type === "issuer" || node.type === "security" || node.type === "industry" || node.id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(node.id) || graphKnowledgeNode(node) || (node.degree || 0) >= 6;
