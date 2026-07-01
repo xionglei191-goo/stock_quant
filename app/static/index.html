@@ -3478,7 +3478,7 @@
       activeFilters: {},
       readiness: null,
       performanceMode: "standard",
-      renderStats: { fullNodes: 0, fullLinks: 0, visibleNodes: 0, visibleLinks: 0, labelBudget: 0 },
+      renderStats: { fullNodes: 0, fullLinks: 0, visibleNodes: 0, visibleLinks: 0, labelBudget: 0, linkLabelDomCount: 0 },
     };
     window.knowledgeGraphState = knowledgeGraphState;
     const chokepointPlaybooks = {
@@ -7235,6 +7235,7 @@
         visibleNodes: layout.nodes.length,
         visibleLinks: layout.links.length,
         labelBudget: 0,
+        linkLabelDomCount: 0,
       };
       const visibleNodeIds = new Set(layout.nodes.map((node) => node.id));
       if (knowledgeGraphState.pathStartId && !visibleNodeIds.has(knowledgeGraphState.pathStartId)) knowledgeGraphState.pathStartId = "";
@@ -7280,6 +7281,7 @@
         return `<g class="graph-community-label" data-community="${summary.key}" data-quality="${escapeHtml(qualityText)}" transform="translate(${summary.x.toFixed(1)} ${(summary.y - 34).toFixed(1)})"><title>${escapeHtml(title)}</title><circle r="${Math.max(30, Math.min(52, 22 + summary.count * 1.8)).toFixed(1)}"></circle><text text-anchor="middle" y="-2">${summary.label}</text><text class="graph-community-quality" text-anchor="middle" y="13">${qualityText}</text></g>`;
       }).join("");
       svg.innerHTML = `<g id="knowledgeGraphViewport" transform="translate(${transform.x} ${transform.y}) scale(${transform.scale})"><g>${edgeMarkup}</g><g>${communityMarkup}</g><g>${nodeMarkup}</g></g>`;
+      knowledgeGraphState.renderStats.linkLabelDomCount = svg.querySelectorAll(".graph-link-label").length;
       svg.querySelectorAll(".graph-community-label").forEach((element) => {
         element.addEventListener("pointerdown", (event) => {
           event.preventDefault();

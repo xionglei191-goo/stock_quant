@@ -779,7 +779,7 @@ def run_graph_layout_acceptance(
                 performance_mode: window.knowledgeGraphState?.performanceMode || '',
                 render_stats: window.knowledgeGraphState?.renderStats || {{}},
                 graph_stage_performance_mode: Boolean(document.querySelector('.graph-stage.is-performance-mode')),
-                link_label_dom_count: document.querySelectorAll('.graph-link-label').length,
+                link_label_dom_count: Number(window.knowledgeGraphState?.renderStats?.linkLabelDomCount ?? document.querySelectorAll('.graph-link-label').length),
                 filter_chips: document.querySelector('#knowledgeGraphFilterChips')?.textContent || '',
                 raw_knowledge_nodes: (window.knowledgeGraphState?.raw?.documents?.length || 0)
                   + (window.knowledgeGraphState?.raw?.company_events?.length || 0)

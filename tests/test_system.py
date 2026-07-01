@@ -19778,10 +19778,13 @@ class SystemServiceTests(unittest.TestCase):
             "labelMarkup",
             'knowledgeGraphState.performanceMode === "large" && result.links.length',
             "rerenderKnowledgeGraphExplorer();",
+            "linkLabelDomCount",
+            'svg.querySelectorAll(".graph-link-label").length',
         ]:
             self.assertIn(fragment, ui)
         for fragment in [
             "link_label_dom_count",
+            "renderStats?.linkLabelDomCount",
             "path_link_labels",
             "path_next_hop_link_labels",
         ]:
