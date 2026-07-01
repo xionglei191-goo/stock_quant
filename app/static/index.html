@@ -6838,6 +6838,10 @@
       const result = computeKnowledgeGraphPath(knowledgeGraphState.pathStartId, knowledgeGraphState.pathEndId);
       knowledgeGraphState.pathNodeIds = new Set(result.nodes);
       knowledgeGraphState.pathLinkIds = new Set(result.links.map((link) => link.id));
+      if (knowledgeGraphState.performanceMode === "large" && result.links.length) {
+        rerenderKnowledgeGraphExplorer();
+        return;
+      }
       renderKnowledgeGraphPathPanel(result);
       updateKnowledgeGraphHighlight();
     }

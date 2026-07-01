@@ -604,6 +604,7 @@ def run_graph_layout_acceptance(
                     end_id: endId,
                     path_nodes: document.querySelectorAll('.graph-node-svg.is-path-node').length,
                     path_links: document.querySelectorAll('.graph-link-svg.is-path-link').length,
+                    path_link_labels: document.querySelectorAll('.graph-link-label.is-path-link').length,
                     next_hops: document.querySelectorAll('.graph-next-hop').length,
                     summary: document.querySelector('#knowledgeGraphPathSummary')?.textContent || ''
                   }};
@@ -613,6 +614,7 @@ def run_graph_layout_acceptance(
                     await wait(900);
                     pathCheck.after_next_hop_path_nodes = document.querySelectorAll('.graph-node-svg.is-path-node').length;
                     pathCheck.after_next_hop_path_links = document.querySelectorAll('.graph-link-svg.is-path-link').length;
+                    pathCheck.after_next_hop_path_link_labels = document.querySelectorAll('.graph-link-label.is-path-link').length;
                   }}
                 }}
               }}
@@ -1043,10 +1045,14 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "path_highlight", "expected": "checked", "actual": path})
             elif int(path.get("path_nodes", 0)) < 2 or int(path.get("path_links", 0)) < 1:
                 failures.append({"check": "path_highlight", "expected": ">=2 nodes and >=1 link", "actual": path})
+            elif int(path.get("path_link_labels", 0)) < int(path.get("path_links", 0)):
+                failures.append({"check": "path_link_labels", "expected": "path links have visible labels", "actual": path})
             elif int(path.get("next_hops", 0)) < 1:
                 failures.append({"check": "path_next_hops", "expected": ">=1", "actual": path})
             elif int(path.get("after_next_hop_path_nodes", 0)) < 2 or int(path.get("after_next_hop_path_links", 0)) < 1:
                 failures.append({"check": "path_next_hop_highlight", "expected": "path remains highlighted", "actual": path})
+            elif int(path.get("after_next_hop_path_link_labels", 0)) < int(path.get("after_next_hop_path_links", 0)):
+                failures.append({"check": "path_next_hop_link_labels", "expected": "next-hop path links have visible labels", "actual": path})
         if require_non_seed_readiness:
             seed_dependency = readiness.get("seed_dependency") if isinstance(readiness, dict) else {}
             if readiness.get("status") == "probe_failed":

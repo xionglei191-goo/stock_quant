@@ -19776,9 +19776,16 @@ class SystemServiceTests(unittest.TestCase):
             'knowledgeGraphState.performanceMode !== "large"',
             "focusRelated || pathRelated",
             "labelMarkup",
-            "link_label_dom_count",
+            'knowledgeGraphState.performanceMode === "large" && result.links.length',
+            "rerenderKnowledgeGraphExplorer();",
         ]:
-            self.assertIn(fragment, ui if fragment != "link_label_dom_count" else script)
+            self.assertIn(fragment, ui)
+        for fragment in [
+            "link_label_dom_count",
+            "path_link_labels",
+            "path_next_hop_link_labels",
+        ]:
+            self.assertIn(fragment, script)
 
     def test_api_route_table_is_registered_outside_router_resolve(self) -> None:
         from app.api_routes import build_route_table
