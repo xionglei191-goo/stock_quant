@@ -5,14 +5,14 @@
 - Task ID: T-566
 - Owner group: Product and UI
 - Reviewer groups: Research and AI Workflows, Platform and Quality
-- Last updated: 2026-06-30
+- Last updated: 2026-07-01
 - Branch/worktree: main
 
 ## Status
 
 - Status: DONE
 - Owner group: Product and UI
-- Last updated: 2026-06-30
+- Last updated: 2026-07-01
 - Last agent: Codex
 - Branch/worktree: main
 
@@ -111,6 +111,7 @@ The graph currently exposes relationship data, but users need a navigable knowle
   - 2026-06-30 sixth correction: graph labels now disambiguate same-ticker issuer and security nodes. Issuers render as `<ticker> · 公司`; securities render as `<ticker> · <exchange/market>`.
   - 2026-06-30 seventh correction: default graph labels now translate local seed/internal IDs (`doc_/hold_/pos_/srr_/vp_/event_/rel_...obsidian`) and raw relationship enums (`RELATIONSHIP_*`, `VIEWPOINT_ON_COMPANY`, `HOLDS_SECURITY`, `POSITIONED_AS`, etc.) before they reach the canvas, inspector, and graph relationship table. Folded trace JSON still preserves raw provenance.
   - 2026-06-30 seventh correction: `graphRef()`, `userEntityLabel()`, `relationshipTypeDisplayLabel()`, and inspector neighbor rows now share the graph-readable label path; chain node IDs with colon suffixes use the suffix node (`equipment`, `foundry`, etc.) instead of being collapsed into the broader `ai_device` label.
+  - 2026-07-01 community-target correction: `tickKnowledgeGraphLayout()` now delegates node anchoring to `graphLayoutTargetForNode()`. Focus and expanded-neighbor anchors are preserved, but global nodes and knowledge/expanded local nodes use community centers instead of being continuously pulled toward the focus/viewport midpoint; ordinary local nodes blend community center with viewport center. This reduces the company-center bias without losing the readable local focus.
 - In progress:
   - 2026-06-30 AAPL natural-expansion browser acceptance passes on current-code port 55551 with 35 measured DOM nodes before click, 88 links, 4 visible communities, 12 industry nodes, visible event/research/evidence node types, 5 overlap pairs, 0 near-edge nodes, and performance around 60 FPS / 1.1ms average frame time. Clicking `pos_obsidian_asml_equipment` increased visible neighbors from 1 to 3, nodes from 35 to 36, and links from 87 to 88.
   - 2026-06-30 AAPL click-focus browser acceptance passes on current-code port 55552. Clicking `pos_obsidian_asml_equipment` changed `focusId` from `issuer_aapl` to `pos_obsidian_asml_equipment`, increased visible neighbors from 1 to 3, kept near-edge nodes at 0, reduced overlap pairs to 0, and ran around 60 FPS / 1.3ms average frame time.
@@ -123,6 +124,7 @@ The graph currently exposes relationship data, but users need a navigable knowle
   - 2026-06-30 label-cleanup layout acceptance passes on current-code port 55552 after reseeding 49 local Obsidian records. It measured 35 DOM nodes, 88 links, 4 visible communities, 12 industry nodes, 0 overlap pairs, 0 near-edge nodes, click focus/expansion from `issuer_aapl` to `pos_obsidian_asml_equipment`, and community-label focus to `chain_obsidian_ai_device_network:foundry`.
   - 2026-06-30 large-graph performance-mode browser acceptance passes on current-code port 55659 against the PostgreSQL-backed AAPL graph. The raw graph measured `10872` nodes / `10894` links, the visible graph measured 47 nodes / 48 links, `performance_mode=large`, status text included `高性能`, raw visible text leaks were 0, near-edge nodes were 0, and average frame time was 6.5ms.
   - Relationship-filter matrix passes with 10/10 cases across AAPL, NVDA, and 600519, including listed-security, institution-coverage, industry-peer, upstream-of, downstream-of, and Vanguard holder cases.
+  - 2026-07-01 community-target layout acceptance passes on current-code port 55684 after reseeding 49 local Obsidian records. It measured 28 DOM nodes, 83 links, 4 community labels, 4 visible communities, 5 industry nodes, 0 overlap pairs, 0 near-edge nodes, raw visible text leaks 0, focus switch and saved subgraph checks passed, and performance was about 60 FPS / 1.2ms average frame time.
 - Not started:
   - Canvas/WebGL renderer replacement. The SVG explorer now has a measured large-graph fallback; replace the renderer only if large-mode acceptance fails on broader sector-scale graphs.
 - Blocked:
@@ -367,9 +369,9 @@ Browser validation:
 
 ## SystemService Growth Freeze Review
 
-- New `SystemService` business logic added: limited. Earlier scoped graph-query derivation was inside `query_graph`; this continuation moved ownership/holder/industry relationship planning into `app/service_modules/graph_derived_relationships.py` and kept `SystemService` as the node/edge assembly facade. The latest chain-node canonicalization and structured-research display mapping did not add `SystemService` behavior; they touched the UI graph model, quality-center structure metrics, browser acceptance, tests, and API documentation.
+- New `SystemService` business logic added: limited. Earlier scoped graph-query derivation was inside `query_graph`; this continuation moved ownership/holder/industry relationship planning into `app/service_modules/graph_derived_relationships.py` and kept `SystemService` as the node/edge assembly facade. The latest chain-node canonicalization, structured-research display mapping, and community-target layout correction did not add `SystemService` behavior; they touched the UI graph model, quality-center structure metrics, browser acceptance, tests, and API documentation.
 - Domain module decision: reusable relationship context remains in `app/service_modules/company_intelligence.py`; seed orchestration remains in `graph_seed.py`; knowledge-network readiness lives in `graph_intelligence.py`; provenance-link backfill lives in `knowledge_network_backfill.py`; low-confidence bulk relationship planning lives in `graph_derived_relationships.py`; display-quality structure scoring lives in `graph_quality_center.py`. `/api/graph/query` still owns final graph assembly to preserve the public response contract and avoid a partial extraction risk.
-- Focused regression: graph industry-edge and Obsidian seed tests passed, including the `issuer_id + security_id + relationship_type=industry_peer` case, institutional holder graph cases, and the default graph scoping regression that asserts unrelated positions and unrelated chain nodes stay out of the focus issuer graph. Chain-node canonicalization is protected by `test_graph_quality_center_structure_uses_canonical_chain_node_ids` and the browser `chain_node_splits=[]` proof in `artifacts/ui-graph-layout-canonical-chain-nodes-55662.json`; structured report display mapping is protected by `test_ui_graph_model_consumes_structured_research_reports`, `test_graph_quality_center_structure_links_structured_report_viewpoints`, and `artifacts/ui-graph-layout-structured-research-55664.json`.
+- Focused regression: graph industry-edge and Obsidian seed tests passed, including the `issuer_id + security_id + relationship_type=industry_peer` case, institutional holder graph cases, and the default graph scoping regression that asserts unrelated positions and unrelated chain nodes stay out of the focus issuer graph. Chain-node canonicalization is protected by `test_graph_quality_center_structure_uses_canonical_chain_node_ids` and the browser `chain_node_splits=[]` proof in `artifacts/ui-graph-layout-canonical-chain-nodes-55662.json`; structured report display mapping is protected by `test_ui_graph_model_consumes_structured_research_reports`, `test_graph_quality_center_structure_links_structured_report_viewpoints`, and `artifacts/ui-graph-layout-structured-research-55664.json`; community-target layout behavior is protected by `test_ui_graph_layout_targets_communities_not_focus_midpoint` and `artifacts/ui-graph-layout-community-targets-55684.json`.
 - Contract/schema/boundary impact: API response still uses the same schema but default issuer graphs now suppress weak full-graph bulk expansions and crop chain nodes to focus position nodes; explicit relationship/chain filters preserve exploration. UI display identity now canonicalizes chain nodes to `chain_id:node_id` while preserving raw `chain_nodes[].node_id` for API traceability, and the display model now treats existing `structured_research_reports` plus `report_viewpoints.research_report_id` as the report/viewpoint graph join. `POST /api/graph/seed/obsidian`, readiness, and evidence-link endpoints remain local-only; storage schema unchanged; paper-only/no-broker boundary unchanged.
 
 ## Risks and Open Questions
@@ -408,6 +410,8 @@ Browser validation:
 - `artifacts/obsidian-knowledge-graph-seed-evidence-backfill.json`: local-only current-code Obsidian seed result used for evidence-backfill acceptance, not production-grade evidence.
 - `artifacts/knowledge-network-evidence-backfill-dry-run.json`: local-only dry-run candidate list for AAPL document evidence backfill, not production-grade evidence.
 - `artifacts/knowledge-network-evidence-backfill-executed.json`: local-only evidence backfill execution result showing 3 Evidence rows created from 2 AAPL seed documents, not production-grade evidence.
+- `artifacts/obsidian-knowledge-graph-seed-layout-targets-55684.json`: local-only current-code Obsidian seed result used for community-target layout acceptance, not production-grade evidence.
+- `artifacts/ui-graph-layout-community-targets-55684.json`: local-only headless Chrome graph layout acceptance after `graphLayoutTargetForNode()` correction, not production-grade evidence.
 - `artifacts/ui-graph-layout-acceptance-evidence-backfill.json`: local-only browser acceptance after evidence backfill, not production-grade evidence.
 - `artifacts/obsidian-knowledge-graph-seed-evidence-links.json`: local-only current-code Obsidian seed result used for evidence-link acceptance, not production-grade evidence.
 - `artifacts/knowledge-network-evidence-backfill-for-links.json`: local-only evidence extraction prerequisite for evidence-link acceptance, not production-grade evidence.

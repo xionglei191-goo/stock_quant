@@ -6493,6 +6493,20 @@
       return { nodes: liveNodes, links: liveLinks, nodeById };
     }
 
+    function graphLayoutTargetForNode(node, nodeById, width, height) {
+      const center = { x: width / 2, y: height / 2 };
+      const anchor = node.localAnchorId ? nodeById[node.localAnchorId] : null;
+      if (anchor) return { x: anchor.x, y: anchor.y };
+      if (node.id === knowledgeGraphState.focusId) return center;
+      const communityCenter = graphClusterCenter(node.type, width, height);
+      if (knowledgeGraphState.scope === "global") return communityCenter;
+      if (knowledgeGraphState.expandedIds.has(node.id) || graphKnowledgeNode(node)) return communityCenter;
+      return {
+        x: (communityCenter.x * 0.72) + (center.x * 0.28),
+        y: (communityCenter.y * 0.72) + (center.y * 0.28),
+      };
+    }
+
     function tickKnowledgeGraphLayout(width, height) {
       const liveNodes = knowledgeGraphState.nodes;
       const liveLinks = knowledgeGraphState.links;
@@ -6563,9 +6577,7 @@
       });
       liveNodes.forEach((node, index) => {
         if (!node.fixed) {
-          const anchor = node.localAnchorId ? nodeById[node.localAnchorId] : null;
-          const focus = nodeById[knowledgeGraphState.focusId];
-          const target = anchor ? { x: anchor.x, y: anchor.y } : (node.id === knowledgeGraphState.focusId ? { x: centerX, y: centerY } : (focus ? { x: (focus.x + centerX) / 2, y: (focus.y + centerY) / 2 } : graphClusterCenter(node.type, width, height)));
+          const target = graphLayoutTargetForNode(node, nodeById, width, height);
           const centerStrength = node.id === knowledgeGraphState.focusId ? 0.032 : (node.localAnchorId ? 0.026 : (knowledgeGraphState.expandedIds.has(node.id) ? 0.006 : 0.0035));
           if (knowledgeGraphState.dynamic) {
             node.vx += Math.sin((knowledgeGraphState.tick + index * 13) * 0.035) * 0.018;

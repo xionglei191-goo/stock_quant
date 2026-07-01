@@ -19713,6 +19713,19 @@ class SystemServiceTests(unittest.TestCase):
         ]:
             self.assertIn(fragment, ui)
 
+    def test_ui_graph_layout_targets_communities_not_focus_midpoint(self) -> None:
+        ui = Path("app/static/index.html").read_text(encoding="utf-8")
+
+        for fragment in [
+            "function graphLayoutTargetForNode",
+            'knowledgeGraphState.scope === "global"',
+            "const communityCenter = graphClusterCenter(node.type, width, height)",
+            "graphKnowledgeNode(node)) return communityCenter",
+            "communityCenter.x * 0.72",
+            "const target = graphLayoutTargetForNode(node, nodeById, width, height)",
+        ]:
+            self.assertIn(fragment, ui)
+
     def test_api_route_table_is_registered_outside_router_resolve(self) -> None:
         from app.api_routes import build_route_table
 
