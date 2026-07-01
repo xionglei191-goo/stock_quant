@@ -6037,6 +6037,21 @@
       return 1.0;
     }
 
+    function graphLinkConfidence(meta = {}) {
+      const value = Number(meta.confidence ?? meta.confidence_score ?? meta.score ?? meta.weight ?? 0);
+      return Number.isFinite(value) && value > 0 ? Math.max(0.05, Math.min(1, value)) : 0;
+    }
+
+    function graphLinkStrength(link = {}) {
+      const weight = Number(link.weight || 1);
+      const confidence = graphLinkConfidence(link.meta || {});
+      const combined = Math.max(0.5, Math.min(2.4, weight + confidence * 0.55));
+      return {
+        confidence,
+        strokeWidth: Math.round((1.05 + combined * 0.58) * 100) / 100,
+      };
+    }
+
     function graphStableNumber(value = "") {
       let hash = 2166136261;
       String(value || "").split("").forEach((char) => {
@@ -7601,9 +7616,11 @@
         const sourceId = escapeHtml(source.id);
         const targetId = escapeHtml(target.id);
         const edgeLabel = graphEdgeLabel(link.type, link.label);
-        const directionLabel = `${source.label} → ${target.label} · ${edgeLabel}`;
+        const strength = graphLinkStrength(link);
+        const confidenceText = strength.confidence ? ` · 置信 ${Math.round(strength.confidence * 100)}%` : "";
+        const directionLabel = `${source.label} → ${target.label} · ${edgeLabel} · 强度 ${strength.strokeWidth.toFixed(2)}${confidenceText}`;
         const labelMarkup = renderLabel ? `<text class="graph-link-label" data-link-id="${linkId}" data-source="${sourceId}" data-target="${targetId}" x="${mx.toFixed(1)}" y="${my.toFixed(1)}">${escapeHtml(edgeLabel)}</text>` : "";
-        return `<line class="graph-link-svg" data-link-id="${linkId}" data-source="${sourceId}" data-target="${targetId}" data-direction-label="${escapeHtml(directionLabel)}" aria-label="${escapeHtml(directionLabel)}" role="img" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"></line>${labelMarkup}`;
+        return `<line class="graph-link-svg" data-link-id="${linkId}" data-source="${sourceId}" data-target="${targetId}" data-weight="${Number(link.weight || 0).toFixed(2)}" data-confidence="${strength.confidence.toFixed(2)}" data-strength="${strength.strokeWidth.toFixed(2)}" data-direction-label="${escapeHtml(directionLabel)}" aria-label="${escapeHtml(directionLabel)}" role="img" style="stroke-width:${strength.strokeWidth.toFixed(2)}" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"></line>${labelMarkup}`;
       }).join("");
       const nodeMarkup = layout.nodes.map((node) => {
         const visibleLabel = node.type === "issuer" || node.type === "security" || node.type === "industry" || node.id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(node.id) || graphKnowledgeNode(node) || (node.degree || 0) >= 6;

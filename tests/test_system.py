@@ -19906,6 +19906,11 @@ class SystemServiceTests(unittest.TestCase):
             '<marker id="graphArrowMarker"',
             'data-direction-label="${escapeHtml(directionLabel)}"',
             'aria-label="${escapeHtml(directionLabel)}"',
+            "function graphLinkConfidence",
+            "function graphLinkStrength",
+            'data-strength="${strength.strokeWidth.toFixed(2)}"',
+            'style="stroke-width:${strength.strokeWidth.toFixed(2)}"',
+            "强度 ${strength.strokeWidth.toFixed(2)}",
         ]:
             self.assertIn(fragment, ui)
         self.assertNotIn("Object.fromEntries(liveNodes.map((node) => [node.id, node]))", ui)
@@ -19952,6 +19957,12 @@ class SystemServiceTests(unittest.TestCase):
             "directed_link_count",
             "missing_directed_links",
             "directed_edges",
+            "expect_weighted_edges",
+            "--expect-weighted-edges",
+            "weighted_link_count",
+            "edge_strength_buckets",
+            "weighted_edges",
+            "weighted_edge_variance",
         ]:
             self.assertIn(fragment, script)
 

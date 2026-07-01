@@ -218,6 +218,7 @@ def run_graph_layout_acceptance(
     expect_reduced_motion: bool = False,
     expect_redundant_node_encoding: bool = False,
     expect_directed_edges: bool = False,
+    expect_weighted_edges: bool = False,
     max_overlap_pairs: int = 3,
     max_near_edge_nodes: int = 0,
     min_nodes: int = 32,
@@ -454,6 +455,16 @@ def run_graph_layout_acceptance(
                 const label = element.getAttribute('aria-label') || element.getAttribute('data-direction-label') || '';
                 return marker.includes('graphArrowMarker') && source && target && source !== target && label.includes('→');
               }});
+              const weightedLinks = linkElements.map((element) => ({{
+                id: element.getAttribute('data-link-id') || '',
+                strength: Number(element.getAttribute('data-strength') || 0),
+                weight: Number(element.getAttribute('data-weight') || 0),
+                confidence: Number(element.getAttribute('data-confidence') || 0),
+                stroke_width: Number.parseFloat(getComputedStyle(element).strokeWidth || element.style.strokeWidth || '0'),
+                label: element.getAttribute('aria-label') || element.getAttribute('data-direction-label') || ''
+              }}));
+              const validWeightedLinks = weightedLinks.filter((item) => item.strength > 0 && item.stroke_width > 0 && item.label.includes('强度'));
+              const strengthBuckets = [...new Set(validWeightedLinks.map((item) => item.strength.toFixed(2)))];
               const initialGraphSnapshot = {{
                 nodes: nodes.length,
                 links: linkElements.length,
@@ -474,6 +485,9 @@ def run_graph_layout_acceptance(
                   marker: getComputedStyle(element).markerEnd || element.getAttribute('marker-end') || '',
                   label: element.getAttribute('aria-label') || element.getAttribute('data-direction-label') || ''
                 }})).slice(0, 10),
+                weighted_link_count: validWeightedLinks.length,
+                edge_strength_buckets: strengthBuckets,
+                missing_weighted_links: weightedLinks.filter((item) => !(item.strength > 0 && item.stroke_width > 0 && item.label.includes('强度'))).slice(0, 10),
                 near_edge_nodes: nearEdgeNodes,
                 overlap_pairs: overlapPairs,
                 link_label_dom_count: Number(window.knowledgeGraphState?.renderStats?.linkLabelDomCount ?? document.querySelectorAll('.graph-link-label').length),
@@ -1041,6 +1055,9 @@ def run_graph_layout_acceptance(
                 legend_encodings: initialGraphSnapshot.legend_encodings,
                 directed_link_count: initialGraphSnapshot.directed_link_count,
                 missing_directed_links: initialGraphSnapshot.missing_directed_links,
+                weighted_link_count: initialGraphSnapshot.weighted_link_count,
+                edge_strength_buckets: initialGraphSnapshot.edge_strength_buckets,
+                missing_weighted_links: initialGraphSnapshot.missing_weighted_links,
                 missing_node_type_codes: initialGraphSnapshot.missing_node_type_codes,
                 missing_legend_type_codes: initialGraphSnapshot.missing_legend_type_codes,
                 visible_communities: [...new Set(nodes.map((item) => item.community).filter(Boolean))],
@@ -1165,6 +1182,11 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "legend_redundant_type_codes", "expected": "legend repeats each visible node type code", "actual": {"missing": missing_legend_codes, "legend": result.get("legend_encodings")}})
         if expect_directed_edges and int(result.get("directed_link_count", 0)) < int(result.get("links", 0)):
             failures.append({"check": "directed_edges", "expected": "every visible link has arrow marker and direction label", "actual": {"links": result.get("links"), "directed_link_count": result.get("directed_link_count"), "missing": result.get("missing_directed_links")}})
+        if expect_weighted_edges:
+            if int(result.get("weighted_link_count", 0)) < int(result.get("links", 0)):
+                failures.append({"check": "weighted_edges", "expected": "every visible link has stroke-width strength encoding", "actual": {"links": result.get("links"), "weighted_link_count": result.get("weighted_link_count"), "missing": result.get("missing_weighted_links")}})
+            elif int(result.get("links", 0)) >= 4 and len(result.get("edge_strength_buckets") or []) < 2:
+                failures.append({"check": "weighted_edge_variance", "expected": "at least two visible edge strength buckets", "actual": result.get("edge_strength_buckets")})
         if int(result.get("expanded_after_click", 0)) < 2:
             failures.append({"check": "node_expansion", "expected": ">=2", "actual": result.get("expanded_after_click")})
         expansion = result.get("expansion_after_click") if isinstance(result.get("expansion_after_click"), dict) else {}
@@ -1483,6 +1505,7 @@ def run_graph_layout_acceptance(
             "expect_reduced_motion": expect_reduced_motion,
             "expect_redundant_node_encoding": expect_redundant_node_encoding,
             "expect_directed_edges": expect_directed_edges,
+            "expect_weighted_edges": expect_weighted_edges,
             "expect_performance_mode": expect_performance_mode,
             "max_chain_node_splits": max_chain_node_splits,
             "check_readiness": check_readiness,
@@ -1514,6 +1537,7 @@ def main() -> None:
     parser.add_argument("--expect-reduced-motion", action="store_true")
     parser.add_argument("--expect-redundant-node-encoding", action="store_true")
     parser.add_argument("--expect-directed-edges", action="store_true")
+    parser.add_argument("--expect-weighted-edges", action="store_true")
     parser.add_argument("--max-overlap-pairs", type=int, default=3)
     parser.add_argument("--max-near-edge-nodes", type=int, default=0)
     parser.add_argument("--min-nodes", type=int, default=32)
@@ -1566,6 +1590,7 @@ def main() -> None:
         expect_reduced_motion=args.expect_reduced_motion,
         expect_redundant_node_encoding=args.expect_redundant_node_encoding,
         expect_directed_edges=args.expect_directed_edges,
+        expect_weighted_edges=args.expect_weighted_edges,
         max_overlap_pairs=args.max_overlap_pairs,
         max_near_edge_nodes=args.max_near_edge_nodes,
         min_nodes=args.min_nodes,
