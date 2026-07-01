@@ -19782,6 +19782,9 @@ class SystemServiceTests(unittest.TestCase):
             "knowledgeGraphState.nodeById.has(id)",
             "knowledgeGraphState.nodeById.get(knowledgeGraphState.selectedId)",
             'nodeById.get(element.getAttribute("data-node-id"))',
+            "function graphPathNextHops(nodeId, limit = 3)",
+            "knowledgeGraphState.nodeById.get(item.source === nodeId ? item.target : item.source)",
+            "graphNextHopPriority(b.node, b.link) - graphNextHopPriority(a.node, a.link)",
             'knowledgeGraphState.performanceMode !== "large"',
             "focusRelated || pathRelated",
             "labelMarkup",
@@ -19799,6 +19802,7 @@ class SystemServiceTests(unittest.TestCase):
             "graph_performance_label_budget_status",
             "path_link_labels",
             "path_next_hop_link_labels",
+            "next_hop_node_types",
         ]:
             self.assertIn(fragment, script)
 

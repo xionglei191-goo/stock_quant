@@ -606,6 +606,7 @@ def run_graph_layout_acceptance(
                     path_links: document.querySelectorAll('.graph-link-svg.is-path-link').length,
                     path_link_labels: document.querySelectorAll('.graph-link-label.is-path-link').length,
                     next_hops: document.querySelectorAll('.graph-next-hop').length,
+                    next_hop_node_types: Array.from(document.querySelectorAll('.graph-next-hop')).map((item) => window.knowledgeGraphState?.nodeById?.get(item.dataset.nodeId)?.type || ''),
                     summary: document.querySelector('#knowledgeGraphPathSummary')?.textContent || ''
                   }};
                   const nextHop = document.querySelector('.graph-next-hop');

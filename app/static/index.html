@@ -5890,6 +5890,32 @@
       return Boolean(node && (["event", "evidence", "research", "decision"].includes(node.type) || ["research", "evidence"].includes(node.community)));
     }
 
+    function graphNextHopPriority(node, link = null) {
+      if (!node) return 0;
+      const linkWeight = Number(link?.weight || 1) * 24;
+      const knowledgeBonus = graphKnowledgeNode(node) ? 180 : 0;
+      const bridgeBonus = node.community && node.community !== graphCommunityForType(graphNodeById(knowledgeGraphState.focusId).type) ? 34 : 0;
+      return graphNodePriority(node, { focusId: knowledgeGraphState.focusId }) + knowledgeBonus + bridgeBonus + linkWeight;
+    }
+
+    function graphPathNextHops(nodeId, limit = 3) {
+      const seen = new Set();
+      return knowledgeGraphState.links
+        .filter((item) => item.source === nodeId || item.target === nodeId)
+        .map((item) => ({
+          link: item,
+          node: knowledgeGraphState.nodeById.get(item.source === nodeId ? item.target : item.source),
+        }))
+        .filter((item) => item.node && !knowledgeGraphState.pathNodeIds.has(item.node.id))
+        .sort((a, b) => graphNextHopPriority(b.node, b.link) - graphNextHopPriority(a.node, a.link) || String(a.node.id).localeCompare(String(b.node.id)))
+        .filter((item) => {
+          if (seen.has(item.node.id)) return false;
+          seen.add(item.node.id);
+          return true;
+        })
+        .slice(0, limit);
+    }
+
     function seedKnowledgeGraphDefaultExpansions(model, focusId = "") {
       if (knowledgeGraphState.scope === "global" || !focusId || knowledgeGraphState.search) return;
       if (knowledgeGraphState.expandedIds.size > 1) return;
@@ -7087,17 +7113,10 @@
         const node = graphNodeById(nodeId);
         const link = result.links[index - 1];
         const prefix = index === 0 ? "起点" : graphEdgeLabel(link?.type || "", link?.label || "关系");
-        const nextHops = knowledgeGraphState.links
-          .filter((item) => item.source === nodeId || item.target === nodeId)
-          .map((item) => ({
-            link: item,
-            nodeId: item.source === nodeId ? item.target : item.source,
-          }))
-          .filter((item) => !knowledgeGraphState.pathNodeIds.has(item.nodeId))
-          .slice(0, 3)
+        const nextHops = graphPathNextHops(nodeId, 3)
           .map((item) => {
-            const nextNode = graphNodeById(item.nodeId);
-            return `<button class="subtle graph-next-hop" data-node-id="${item.nodeId}" title="${escapeHtml(graphEdgeLabel(item.link.type, item.link.label))}">${escapeHtml(nextNode.label)}</button>`;
+            const nextNode = item.node;
+            return `<button class="subtle graph-next-hop" data-node-id="${escapeHtml(nextNode.id)}" title="${escapeHtml(`${graphEdgeLabel(item.link.type, item.link.label)} · ${graphNodeTypeLabel(nextNode.type)}`)}">${escapeHtml(nextNode.label)}</button>`;
           }).join("");
         return `<div class="graph-path-step"><strong>${prefix}</strong> · ${node.label} <span class="small-note">${graphNodeTypeLabel(node.type)}</span>${nextHops ? `<div class="graph-path-next-hops">${nextHops}</div>` : ""}</div>`;
       }).join("");
