@@ -19852,6 +19852,12 @@ class SystemServiceTests(unittest.TestCase):
             "path_link_labels",
             "path_next_hop_link_labels",
             "next_hop_node_types",
+            "path_after_focus",
+            "path_after_back_focus",
+            "focus_switch_path_context",
+            "focus_switch_path_highlight",
+            "focus_back_path_context",
+            "focus_back_path_highlight",
         ]:
             self.assertIn(fragment, script)
 
