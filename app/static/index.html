@@ -648,6 +648,26 @@
       flex-wrap: wrap;
       min-height: 26px;
     }
+    .graph-readiness-panel {
+      width: 100%;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .graph-readiness-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+    }
+    .graph-readiness-panel table {
+      margin: 0;
+    }
     .graph-toggle {
       display: inline-flex;
       align-items: center;
@@ -2167,6 +2187,14 @@
               </div>
               <div id="knowledgeGraphFilterChips" class="graph-filter-chips" aria-label="当前图谱过滤"><span class="badge">全部关系</span></div>
               <div id="knowledgeGraphReadiness" class="graph-filter-chips" aria-label="知识网络数据密度"><span class="badge">数据密度待检查</span></div>
+              <div id="knowledgeGraphReadinessPanel" class="graph-readiness-panel" aria-label="图谱数据层补齐提示">
+                <div class="graph-readiness-head">
+                  <span id="knowledgeGraphQualitySummary">载入图谱后显示数据层缺口和补齐入口。</span>
+                  <button id="previewKnowledgeGraphSourceQueue">预览来源队列</button>
+                </div>
+                <table><thead><tr><th>缺口层</th><th>影响</th><th>建议动作</th></tr></thead><tbody id="knowledgeGraphReadinessRows"></tbody></table>
+                <table><thead><tr><th>图谱缺口层</th><th>入口</th><th>来源字段</th><th>待补标的</th></tr></thead><tbody id="knowledgeGraphSourceQueueRows"></tbody></table>
+              </div>
             </div>
             <div class="graph-explorer">
               <div>
@@ -5438,6 +5466,9 @@
       const item = data || knowledgeGraphState.readiness;
       if (!item) {
         element.innerHTML = `<span class="badge">数据密度待检查</span>`;
+        setText("knowledgeGraphQualitySummary", "载入图谱后显示数据层缺口和补齐入口。");
+        if ($("knowledgeGraphReadinessRows")) $("knowledgeGraphReadinessRows").innerHTML = rows([], "暂无数据层诊断", () => "");
+        if ($("knowledgeGraphSourceQueueRows")) $("knowledgeGraphSourceQueueRows").innerHTML = rows([], "暂无来源队列预览", () => "");
         return;
       }
       const layerCount = Array.isArray(item.present_layers) ? item.present_layers.length : 0;
@@ -5458,6 +5489,29 @@
         `<span class="badge" data-readiness-cross-links="${eventLinks + viewpointLinks}">证据链 E${eventLinks} V${viewpointLinks}</span>`,
         `<span class="badge ${seed.seed_dependent ? "warn" : "ok"}" data-readiness-seed-dependent="${seed.seed_dependent ? "true" : "false"}">${escapeHtml(seedText)}</span>`,
       ].join("");
+      const missingSummary = missing.length ? `${missing.length} 个来源层仍需补齐` : "来源层已覆盖";
+      const linkSummary = `${eventLinks + viewpointLinks} 条事件/观点证据链`;
+      setText("knowledgeGraphQualitySummary", `${status} · ${missingSummary} · ${linkSummary} · ${seedText}`);
+      if ($("knowledgeGraphReadinessRows")) {
+        $("knowledgeGraphReadinessRows").innerHTML = rows(missing, "当前图谱数据层没有缺口", (layer) => {
+          const action = graphLayerSourceAction(layer);
+          return `<tr data-graph-missing-layer="${escapeHtml(layer)}"><td>${companyIntelSectionLabel(layer)}</td><td>${escapeHtml(action.impact)}</td><td>${escapeHtml(action.next_action)}</td></tr>`;
+        });
+      }
+    }
+
+    function graphLayerSourceAction(layer) {
+      const actions = {
+        document: { impact: "缺少原始资料节点，图谱无法沿公司事实回到材料。", next_action: "登记本地/公开资料到 /api/ingestion/documents" },
+        evidence: { impact: "事件、观点和关系缺少可点击证据链。", next_action: "抽取 evidence 并回填知识网络 evidence links" },
+        shareholder_holding: { impact: "股东/持有人网络不够厚，二跳同持有人探索受限。", next_action: "导入 13F/持仓文件或登记持仓记录" },
+        research_report: { impact: "研报主题节点不足，观点网络无法形成社区。", next_action: "结构化研报并保留来源边界" },
+        viewpoint: { impact: "观点节点不足，事件-证据-观点三角链路不完整。", next_action: "登记或结构化研报观点，避免提升为事实" },
+        company_event: { impact: "事件层偏薄，时间线和图谱缺少事实节点。", next_action: "小批 dry-run/execute 事件候选并人工复核" },
+        company_relationship: { impact: "关系事实偏薄，公司间网络容易退化为中心星状。", next_action: "小批生成关系候选并走复核队列" },
+        industry_position: { impact: "产业链位置不足，社区和上下游路径不可解释。", next_action: "补公司产业定位和链节点归因" },
+      };
+      return actions[layer] || { impact: "该图谱层数据不足，展示质量和可探索性受限。", next_action: "按质量中心和来源队列补齐本地/公开/用户提供材料" };
     }
 
     function graphTokenLabel(token = "") {
@@ -9101,6 +9155,14 @@
       const labels = {
         company_profile: "公司画像",
         market_data: "行情数据",
+        industry_position: "产业定位",
+        company_event: "公司事件",
+        company_relationship: "公司关系",
+        document: "文档",
+        evidence: "证据",
+        shareholder_holding: "股东持仓",
+        research_report: "研报",
+        viewpoint: "观点",
         events: "事件时间线",
         relationships: "关系图谱",
         research_results: "研究结果",
@@ -10159,12 +10221,7 @@
       $("companyIntelGraphSourceQueueLayerCount").textContent = `${queue.layer_count || layers.length || 0}`;
       $("companyIntelGraphSourceQueueTargetCount").textContent = `${queue.target_count || 0}`;
       $("companyIntelGraphSourceQueueUniqueTargetCount").textContent = `${queue.unique_target_count || 0}`;
-      $("companyIntelGraphSourceQueueRows").innerHTML = rows(layers, "暂无图谱来源输入队列。先运行图谱质量中心或增厚 runner。", (item) => {
-        const endpoints = [item.endpoint, item.secondary_endpoint, item.fallback_endpoint].filter(Boolean).join(" / ");
-        const fields = (item.required_source_fields || []).slice(0, 6).join(", ");
-        const targets = (item.targets || []).slice(0, 5).map((target) => target.symbol || target.issuer_id || target.security_id).filter(Boolean).join(", ");
-        return `<tr><td>${companyIntelSectionLabel(item.layer)}${metaLine("动作", statusLabel(item.action || ""))}</td><td>${endpoints || "-"}</td><td>${fields || "-"}</td><td>${item.target_count || 0}${metaLine("样本", targets || "-")}${renderAdvancedTrace("来源队列追溯", item)}</td></tr>`;
-      });
+      $("companyIntelGraphSourceQueueRows").innerHTML = renderGraphSourceInputQueueRows(layers);
       if (showDetails) {
         renderAdvancedPre("companyIntelOperationBox", {
           title: "图谱来源输入队列",
@@ -10181,6 +10238,25 @@
           usage_boundary: queue.usage_boundary || data.usage_boundary
         }, { summary: "图谱来源输入队列", traceLabel: "来源队列追溯" });
       }
+    }
+
+    function renderGraphSourceInputQueueRows(layers = []) {
+      return rows(layers, "暂无图谱来源输入队列。先运行图谱质量中心或增厚 runner。", (item) => {
+        const endpoints = [item.endpoint, item.secondary_endpoint, item.fallback_endpoint].filter(Boolean).join(" / ");
+        const fields = (item.required_source_fields || []).slice(0, 6).join(", ");
+        const targets = (item.targets || []).slice(0, 5).map((target) => target.symbol || target.issuer_id || target.security_id).filter(Boolean).join(", ");
+        return `<tr><td>${companyIntelSectionLabel(item.layer)}${metaLine("动作", statusLabel(item.action || ""))}</td><td>${endpoints || "-"}</td><td>${fields || "-"}</td><td>${item.target_count || 0}${metaLine("样本", targets || "-")}${renderAdvancedTrace("来源队列追溯", item)}</td></tr>`;
+      });
+    }
+
+    function renderKnowledgeGraphSourceInputQueue(data) {
+      const queue = data.source_input_queue || {};
+      const layers = queue.layers || [];
+      if ($("knowledgeGraphSourceQueueRows")) $("knowledgeGraphSourceQueueRows").innerHTML = renderGraphSourceInputQueueRows(layers);
+      const layerCount = queue.layer_count || layers.length || 0;
+      const targetCount = queue.target_count || 0;
+      const uniqueCount = queue.unique_target_count || 0;
+      setText("knowledgeGraphQualitySummary", `${statusLabel(queue.status || data.status || "dry_run")} · 来源队列 ${layerCount} 层 · ${uniqueCount} 个去重标的 · ${targetCount} 个待补动作`);
     }
 
     function graphSourceInputQueuePayload() {
@@ -10203,6 +10279,29 @@
       return payload;
     }
 
+    function knowledgeGraphSourceInputQueuePayload() {
+      const payload = {
+        market: "A,U",
+        limit: 1,
+        batch_size: 1,
+        priority_layers: "document,evidence,shareholder_holding,research_report,viewpoint",
+        quality_mode: "fast",
+        include_events: false,
+        include_relationships: false,
+        execute: false,
+      };
+      const issuerId = knowledgeGraphState.focusId && String(knowledgeGraphState.focusId).startsWith("issuer_")
+        ? knowledgeGraphState.focusId
+        : String($("issuerId")?.value || "").trim();
+      if (issuerId && issuerId.startsWith("issuer_")) {
+        payload.issuer_ids = [issuerId];
+      } else {
+        const symbol = String($("issuerId")?.value || "").trim();
+        if (symbol && !symbol.startsWith("issuer_")) payload.symbols = [symbol];
+      }
+      return payload;
+    }
+
     async function previewGraphSourceInputQueue() {
       try {
         $("companyIntelGraphSourceQueueStatus").textContent = "预览中";
@@ -10215,6 +10314,22 @@
         setStatus(`图谱来源队列预览完成 · ${data.manual_input_required_count || 0} 个标的需来源输入 · ${trace_id}`);
       } catch (error) {
         $("companyIntelGraphSourceQueueStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
+    async function previewKnowledgeGraphSourceInputQueue() {
+      try {
+        setText("knowledgeGraphQualitySummary", "图谱来源队列预览中");
+        const { data, trace_id } = await api("/api/graph/enrichment-runner", {
+          method: "POST",
+          role: "data_engineer",
+          body: knowledgeGraphSourceInputQueuePayload()
+        });
+        renderKnowledgeGraphSourceInputQueue(data);
+        setStatus(`图谱页来源队列预览完成 · ${data.manual_input_required_count || 0} 个标的需来源输入 · ${trace_id}`);
+      } catch (error) {
+        setText("knowledgeGraphQualitySummary", "图谱来源队列预览失败");
         setStatus(error.message, true);
       }
     }
@@ -11967,6 +12082,7 @@
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));
     $("runCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(true));
     $("previewGraphSourceQueue").addEventListener("click", () => previewGraphSourceInputQueue());
+    $("previewKnowledgeGraphSourceQueue").addEventListener("click", () => previewKnowledgeGraphSourceInputQueue());
     $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));
     $("runCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(true));
     $("previewCompanyIntelCycle").addEventListener("click", () => runCompanyIntelligenceCycle(false));

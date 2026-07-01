@@ -5,7 +5,7 @@
 - Status: DONE
 - Owner group: Data and Evidence
 - Reviewer groups: Product and UI, Research and AI Workflows, Platform and Quality
-- Last updated: 2026-06-30
+- Last updated: 2026-07-01
 - Last agent: Codex
 - Branch/worktree: main
 - Related tasks: T-569
@@ -64,13 +64,14 @@ Graph quality gaps were visible but not operationalized into a recoverable batch
 - Rows that only need source inputs are marked `waiting_for_source_inputs`, not `executed` or `no_candidate_sources`; CLI resume state must not treat them as completed.
 - The runner now emits a top-level `source_input_queue` (`graph-source-input-queue-v1`) that groups source-backed work by layer. Each queue layer carries endpoint/fallback/secondary endpoint, `required_source_fields`, `target_count`, and bounded target samples, so operators do not need to scrape every row's `layer_action_plan` to collect missing documents, holdings, evidence, research reports, or viewpoints.
 - The company intelligence maintenance UI now exposes the source input queue through a dry-run-only "预览图谱来源队列" action. It calls `/api/graph/enrichment-runner`, renders queue status/layer count/target counts, and shows endpoint, required source fields, and bounded target samples per graph layer.
+- The knowledge graph page now exposes a graph-local data-layer readiness panel under the graph filter/readiness badges. It translates `missing_layers` into Chinese layer labels, impact, and next action, and provides a dry-run "预览来源队列" action scoped to the current graph issuer.
 
 ### SystemService Growth Freeze Review
 
 - New `SystemService` business logic added: no.
 - Domain module used: yes, `app/service_modules/graph_enrichment_runner.py`.
 - Facade behavior protected by: focused tests for dry-run, execute review-gated writes, and CLI artifact/state writing.
-- API/storage/UI/paper-only impact: one new API endpoint; no storage schema change; company intelligence maintenance UI now previews `source_input_queue`; response contract includes `source_input_queue` for local/public/provided source collection; no broker or live-trading behavior.
+- API/storage/UI/paper-only impact: one new API endpoint; no storage schema change; company intelligence maintenance UI and knowledge graph page now preview `source_input_queue`; response contract includes `source_input_queue` for local/public/provided source collection; no broker or live-trading behavior.
 
 ## Proposed Work Plan
 
@@ -194,6 +195,10 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_r
   - Service: clean local `AI_QUANT_PORT=55680 python3 -m app.server`.
   - Probe: Headless Chrome opened `/ui`, mocked only `/api/graph/enrichment-runner`, clicked `previewGraphSourceQueue`, and asserted dry-run payload, two rendered queue rows, localized `needs_source_inputs` status, source endpoints, required fields, and `graph-source-input-queue-v1` trace output.
   - Artifact: `artifacts/ui-graph-source-queue-smoke.json` is local-only UI evidence and is not production/staging release evidence.
+- Knowledge graph page source-input queue browser smoke:
+  - Service: clean local `AI_QUANT_PORT=55681 python3 -m app.server`.
+  - Probe: Headless Chrome opened `/ui`, mocked only `/api/graph/enrichment-runner`, clicked `previewKnowledgeGraphSourceQueue`, and asserted issuer-scoped dry-run payload, graph page readiness rows with Chinese `文档/证据/观点` labels, two rendered queue rows, source endpoints, required fields, and no execute side effect.
+  - Artifact: `artifacts/ui-knowledge-graph-readiness-source-queue-smoke.json` is local-only UI evidence and is not production/staging release evidence.
 
 ## Next Recommended Action
 
