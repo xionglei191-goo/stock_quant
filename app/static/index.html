@@ -786,6 +786,7 @@
       stroke: #9aa6b5;
       stroke-width: 1.4;
       opacity: 0.72;
+      marker-end: url(#graphArrowMarker);
     }
     .graph-link-svg.is-highlighted {
       stroke: var(--blue);
@@ -7599,8 +7600,10 @@
         const linkId = escapeHtml(link.id);
         const sourceId = escapeHtml(source.id);
         const targetId = escapeHtml(target.id);
-        const labelMarkup = renderLabel ? `<text class="graph-link-label" data-link-id="${linkId}" data-source="${sourceId}" data-target="${targetId}" x="${mx.toFixed(1)}" y="${my.toFixed(1)}">${escapeHtml(graphEdgeLabel(link.type, link.label))}</text>` : "";
-        return `<line class="graph-link-svg" data-link-id="${linkId}" data-source="${sourceId}" data-target="${targetId}" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"></line>${labelMarkup}`;
+        const edgeLabel = graphEdgeLabel(link.type, link.label);
+        const directionLabel = `${source.label} → ${target.label} · ${edgeLabel}`;
+        const labelMarkup = renderLabel ? `<text class="graph-link-label" data-link-id="${linkId}" data-source="${sourceId}" data-target="${targetId}" x="${mx.toFixed(1)}" y="${my.toFixed(1)}">${escapeHtml(edgeLabel)}</text>` : "";
+        return `<line class="graph-link-svg" data-link-id="${linkId}" data-source="${sourceId}" data-target="${targetId}" data-direction-label="${escapeHtml(directionLabel)}" aria-label="${escapeHtml(directionLabel)}" role="img" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"></line>${labelMarkup}`;
       }).join("");
       const nodeMarkup = layout.nodes.map((node) => {
         const visibleLabel = node.type === "issuer" || node.type === "security" || node.type === "industry" || node.id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(node.id) || graphKnowledgeNode(node) || (node.degree || 0) >= 6;
@@ -7613,7 +7616,7 @@
         const title = `${summary.label} · ${qualityText}`;
         return `<g class="graph-community-label" data-community="${escapeHtml(summary.key)}" data-quality="${escapeHtml(qualityText)}" role="button" tabindex="0" focusable="true" aria-label="切换到${escapeHtml(summary.label)}代表节点" transform="translate(${summary.x.toFixed(1)} ${(summary.y - 34).toFixed(1)})"><title>${escapeHtml(title)}</title><circle r="${Math.max(30, Math.min(52, 22 + summary.count * 1.8)).toFixed(1)}"></circle><text text-anchor="middle" y="-2">${escapeHtml(summary.label)}</text><text class="graph-community-quality" text-anchor="middle" y="13">${escapeHtml(qualityText)}</text></g>`;
       }).join("");
-      svg.innerHTML = `<g id="knowledgeGraphViewport" transform="translate(${transform.x} ${transform.y}) scale(${transform.scale})"><g>${edgeMarkup}</g><g>${communityMarkup}</g><g>${nodeMarkup}</g></g>`;
+      svg.innerHTML = `<defs><marker id="graphArrowMarker" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7b8797"></path></marker></defs><g id="knowledgeGraphViewport" transform="translate(${transform.x} ${transform.y}) scale(${transform.scale})"><g>${edgeMarkup}</g><g>${communityMarkup}</g><g>${nodeMarkup}</g></g>`;
       knowledgeGraphState.renderStats.linkLabelDomCount = svg.querySelectorAll(".graph-link-label").length;
       svg.querySelectorAll(".graph-community-label").forEach((element) => {
         element.addEventListener("pointerdown", (event) => {

@@ -217,6 +217,7 @@ def run_graph_layout_acceptance(
     emulate_reduced_motion: bool = False,
     expect_reduced_motion: bool = False,
     expect_redundant_node_encoding: bool = False,
+    expect_directed_edges: bool = False,
     max_overlap_pairs: int = 3,
     max_near_edge_nodes: int = 0,
     min_nodes: int = 32,
@@ -445,9 +446,17 @@ def run_graph_layout_acceptance(
                 label: (el.textContent || '').trim()
               }})).filter((item) => item.type);
               const legendEncodingTypes = [...new Set(legendEncodings.filter((item) => item.code && item.code === item.text).map((item) => item.type))];
+              const linkElements = [...document.querySelectorAll('.graph-link-svg')];
+              const directedLinks = linkElements.filter((element) => {{
+                const marker = getComputedStyle(element).markerEnd || element.getAttribute('marker-end') || '';
+                const source = element.getAttribute('data-source') || '';
+                const target = element.getAttribute('data-target') || '';
+                const label = element.getAttribute('aria-label') || element.getAttribute('data-direction-label') || '';
+                return marker.includes('graphArrowMarker') && source && target && source !== target && label.includes('→');
+              }});
               const initialGraphSnapshot = {{
                 nodes: nodes.length,
-                links: document.querySelectorAll('.graph-link-svg').length,
+                links: linkElements.length,
                 labels: document.querySelectorAll('.graph-node-svg.has-label').length,
                 community_labels: document.querySelectorAll('.graph-community-label').length,
                 community_quality_labels: [...document.querySelectorAll('.graph-community-label')].filter((el) => /密度\\d+% · 强度\\d+ · 强边\\d+%/.test(el.textContent || '')).length,
@@ -457,6 +466,14 @@ def run_graph_layout_acceptance(
                 legend_encodings: legendEncodings,
                 missing_node_type_codes: visibleTypes.filter((type) => !encodedNodeTypes.includes(type)),
                 missing_legend_type_codes: visibleTypes.filter((type) => !legendEncodingTypes.includes(type)),
+                directed_link_count: directedLinks.length,
+                missing_directed_links: linkElements.filter((element) => !directedLinks.includes(element)).map((element) => ({{
+                  id: element.getAttribute('data-link-id') || '',
+                  source: element.getAttribute('data-source') || '',
+                  target: element.getAttribute('data-target') || '',
+                  marker: getComputedStyle(element).markerEnd || element.getAttribute('marker-end') || '',
+                  label: element.getAttribute('aria-label') || element.getAttribute('data-direction-label') || ''
+                }})).slice(0, 10),
                 near_edge_nodes: nearEdgeNodes,
                 overlap_pairs: overlapPairs,
                 link_label_dom_count: Number(window.knowledgeGraphState?.renderStats?.linkLabelDomCount ?? document.querySelectorAll('.graph-link-label').length),
@@ -1022,6 +1039,8 @@ def run_graph_layout_acceptance(
                 encoded_node_types: initialGraphSnapshot.encoded_node_types,
                 legend_encoded_types: initialGraphSnapshot.legend_encoded_types,
                 legend_encodings: initialGraphSnapshot.legend_encodings,
+                directed_link_count: initialGraphSnapshot.directed_link_count,
+                missing_directed_links: initialGraphSnapshot.missing_directed_links,
                 missing_node_type_codes: initialGraphSnapshot.missing_node_type_codes,
                 missing_legend_type_codes: initialGraphSnapshot.missing_legend_type_codes,
                 visible_communities: [...new Set(nodes.map((item) => item.community).filter(Boolean))],
@@ -1144,6 +1163,8 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "node_redundant_type_codes", "expected": "every visible node type has a visible non-color code", "actual": {"missing": missing_node_codes, "node_missing": result.get("missing_node_type_codes")}})
             if missing_legend_codes:
                 failures.append({"check": "legend_redundant_type_codes", "expected": "legend repeats each visible node type code", "actual": {"missing": missing_legend_codes, "legend": result.get("legend_encodings")}})
+        if expect_directed_edges and int(result.get("directed_link_count", 0)) < int(result.get("links", 0)):
+            failures.append({"check": "directed_edges", "expected": "every visible link has arrow marker and direction label", "actual": {"links": result.get("links"), "directed_link_count": result.get("directed_link_count"), "missing": result.get("missing_directed_links")}})
         if int(result.get("expanded_after_click", 0)) < 2:
             failures.append({"check": "node_expansion", "expected": ">=2", "actual": result.get("expanded_after_click")})
         expansion = result.get("expansion_after_click") if isinstance(result.get("expansion_after_click"), dict) else {}
@@ -1461,6 +1482,7 @@ def run_graph_layout_acceptance(
             "emulate_reduced_motion": emulate_reduced_motion,
             "expect_reduced_motion": expect_reduced_motion,
             "expect_redundant_node_encoding": expect_redundant_node_encoding,
+            "expect_directed_edges": expect_directed_edges,
             "expect_performance_mode": expect_performance_mode,
             "max_chain_node_splits": max_chain_node_splits,
             "check_readiness": check_readiness,
@@ -1491,6 +1513,7 @@ def main() -> None:
     parser.add_argument("--emulate-reduced-motion", action="store_true")
     parser.add_argument("--expect-reduced-motion", action="store_true")
     parser.add_argument("--expect-redundant-node-encoding", action="store_true")
+    parser.add_argument("--expect-directed-edges", action="store_true")
     parser.add_argument("--max-overlap-pairs", type=int, default=3)
     parser.add_argument("--max-near-edge-nodes", type=int, default=0)
     parser.add_argument("--min-nodes", type=int, default=32)
@@ -1542,6 +1565,7 @@ def main() -> None:
         emulate_reduced_motion=args.emulate_reduced_motion,
         expect_reduced_motion=args.expect_reduced_motion,
         expect_redundant_node_encoding=args.expect_redundant_node_encoding,
+        expect_directed_edges=args.expect_directed_edges,
         max_overlap_pairs=args.max_overlap_pairs,
         max_near_edge_nodes=args.max_near_edge_nodes,
         min_nodes=args.min_nodes,

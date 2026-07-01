@@ -19821,7 +19821,8 @@ class SystemServiceTests(unittest.TestCase):
             "const linkId = escapeHtml(link.id)",
             "const sourceId = escapeHtml(source.id)",
             "const targetId = escapeHtml(target.id)",
-            "escapeHtml(graphEdgeLabel(link.type, link.label))",
+            "const edgeLabel = graphEdgeLabel(link.type, link.label)",
+            "${escapeHtml(edgeLabel)}",
             ".graph-node-svg:focus-visible",
             ".graph-node-svg:focus-visible circle",
             ".graph-node-svg:focus-visible text",
@@ -19901,6 +19902,10 @@ class SystemServiceTests(unittest.TestCase):
             "function consumeKnowledgeGraphSharedState",
             "graphShareView",
             "已从分享链接恢复视图",
+            "marker-end: url(#graphArrowMarker)",
+            '<marker id="graphArrowMarker"',
+            'data-direction-label="${escapeHtml(directionLabel)}"',
+            'aria-label="${escapeHtml(directionLabel)}"',
         ]:
             self.assertIn(fragment, ui)
         self.assertNotIn("Object.fromEntries(liveNodes.map((node) => [node.id, node]))", ui)
@@ -19942,6 +19947,11 @@ class SystemServiceTests(unittest.TestCase):
             "share_view_hash",
             "share_view_restore_focus",
             "share_view_restore_status",
+            "expect_directed_edges",
+            "--expect-directed-edges",
+            "directed_link_count",
+            "missing_directed_links",
+            "directed_edges",
         ]:
             self.assertIn(fragment, script)
 
