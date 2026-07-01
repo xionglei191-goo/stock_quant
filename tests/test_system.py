@@ -22794,6 +22794,7 @@ class SystemServiceTests(unittest.TestCase):
                 "max_hub_edge_share": "0",
                 "max_leaf_ratio": "0",
                 "min_largest_component_ratio": "0",
+                "max_community_node_share": "0",
             },
             actor="analyst",
             role="analyst",
@@ -22811,6 +22812,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(thresholds["max_hub_edge_share"], 0.0)
         self.assertEqual(thresholds["max_leaf_ratio"], 0.0)
         self.assertEqual(thresholds["min_largest_component_ratio"], 0.0)
+        self.assertEqual(thresholds["max_community_node_share"], 0.0)
 
     def test_graph_quality_center_no_targets_is_not_passed(self) -> None:
         result = self.service.graph_quality_center({"market": "HK", "limit": 1}, actor="test")
@@ -23172,6 +23174,45 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("leaf_ratio", failure_checks)
         self.assertGreater(snapshot["structure"]["hub_edge_share"], 0.7)
 
+    def test_graph_quality_center_flags_community_imbalance(self) -> None:
+        from app.service_modules import graph_quality_center as graph_quality_center_module
+
+        graph = {
+            "issuers": [{"issuer_id": f"issuer_{index}", "ticker": f"C{index}"} for index in range(9)],
+            "chain_nodes": [{"chain_id": "chain_demo", "node_id": "industry", "name": "Industry"}],
+            "structured_research_reports": [{"research_report_id": "srr_demo", "title": "Demo research"}],
+            "company_events": [{"event_id": "event_demo", "title": "Demo event"}],
+            "edges": [{"from": "issuer_0", "to": f"issuer_{index}", "type": "RELATED"} for index in range(1, 9)]
+            + [
+                {"from": "issuer_0", "to": "chain_demo:industry", "type": "POSITION_IN_CHAIN_NODE"},
+                {"from": "issuer_0", "to": "srr_demo", "type": "COVERED_BY_REPORT"},
+                {"from": "issuer_0", "to": "event_demo", "type": "HAS_COMPANY_EVENT"},
+            ],
+        }
+        readiness = {
+            "visible_communities": ["company", "industry", "research", "evidence"],
+            "present_layers": ["company_profile", "industry_position", "company_relationship", "document", "evidence"],
+        }
+
+        snapshot = graph_quality_center_module._graph_quality_snapshot(
+            graph,
+            readiness,
+            {
+                "min_edges": 1,
+                "min_communities": 3,
+                "min_layers": 1,
+                "max_hub_edge_share": 1.0,
+                "max_leaf_ratio": 1.0,
+                "max_community_node_share": 0.7,
+            },
+        )
+
+        failure_checks = {failure["check"] for failure in snapshot["failures"]}
+        self.assertEqual(snapshot["status"], "needs_attention")
+        self.assertIn("community_balance", failure_checks)
+        self.assertGreater(snapshot["structure"]["max_community_node_share"], 0.7)
+        self.assertIn(("company", 9), [tuple(item) for item in snapshot["structure"]["community_counts"]])
+
     def test_graph_quality_center_structure_uses_display_market_data_model(self) -> None:
         from app.service_modules import graph_quality_center as graph_quality_center_module
 
@@ -23327,6 +23368,7 @@ class SystemServiceTests(unittest.TestCase):
             timeout=5,
             max_duplicate_labels=2,
             max_raw_label_leaks=3,
+            max_community_node_share=0.91,
         )
 
         self.assertEqual(result["schema_id"], "graph-quality-center-v1")
@@ -23334,6 +23376,7 @@ class SystemServiceTests(unittest.TestCase):
         self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["processed_count"], 1)
         self.assertEqual(captured_payloads[0]["max_duplicate_labels"], 2)
         self.assertEqual(captured_payloads[0]["max_raw_label_leaks"], 3)
+        self.assertEqual(captured_payloads[0]["max_community_node_share"], 0.91)
 
     def test_graph_quality_center_api_contract_documents_strict_display_gate(self) -> None:
         api_contracts = Path("docs/api-contracts.md").read_text(encoding="utf-8")
@@ -23347,6 +23390,9 @@ class SystemServiceTests(unittest.TestCase):
             "默认 `0`",
             "max_duplicate_edges",
             "默认 `4`",
+            "max_community_node_share",
+            "community_balance",
+            "community_counts",
             "quality_gate",
             "remediation_actions",
             "/api/graph/enrichment-runner",

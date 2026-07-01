@@ -86,13 +86,15 @@ Without a single quality center, graph work splits across separate readiness che
 - Display structure now canonicalizes industry chain nodes to `chain_id:node_id`, matching the UI graph model and backend edge endpoints. This prevents one chain node from being counted as both bare `node_id` and scoped `chain_id:node_id`.
 - Frontend graph display now consumes `structured_research_reports` from `/api/graph/query` and connects `report_viewpoints` through `research_report_id`. This closes the gap where structured report data existed in the API response but could be missing or disconnected in the visible graph.
 - Browser graph layout acceptance now records `raw_structured_reports` and fails when structured reports exist but no visible `research` node type is rendered.
+- Backend quality-center structure now records `community_counts` and `max_community_node_share`, with `max_community_node_share` defaulting to `0.72`. The new `community_balance` failure catches graphs where the nominal community count passes but one community still dominates the display model.
+- `scripts/graph_quality_center.py --browser-matrix` can now pass `--min-browser-visible-communities` and `--min-browser-community-spread-ratio` into the browser layout matrix, so one quality-center run can pair backend community balance with pixel-level community spread acceptance.
 
 ### SystemService Growth Freeze Review
 
-- New `SystemService` business logic added: no; this pass moved existing industry relationship, 13F same-holder, ownership-holder derivation planning, and graph source-layer action definitions into domain modules, and later exposed the existing quality-center facade in the UI without touching `SystemService`.
+- New `SystemService` business logic added: no; this pass moved existing industry relationship, 13F same-holder, ownership-holder derivation planning, graph source-layer action definitions, and quality-center community-balance checks into domain modules, and later exposed the existing quality-center facade in the UI without touching `SystemService`.
 - Domain module used: yes, `app/service_modules/graph_quality_center.py`, `app/service_modules/graph_derived_relationships.py`, and `app/service_modules/graph_source_actions.py`.
-- Facade behavior protected by: focused tests for API gap/action output, enrichment dry-run no-write behavior, CLI artifact writing, shared graph source actions, industry relationship graph-query regressions, chain-node canonical structure metrics, 13F holder-key graph-query regressions, and ownership holder-key browser regression.
-- API/storage/UI/paper-only impact: one new quality-center API endpoint from the original T-568 work; no storage schema change; UI display contract now explicitly includes structured research report/viewpoint linkage from existing `/api/graph/query` fields, a read-only graph display-quality gate, and dry-run remediation routing for failed display gates; no broker or live-trading behavior.
+- Facade behavior protected by: focused tests for API gap/action output, enrichment dry-run no-write behavior, CLI artifact writing, shared graph source actions, industry relationship graph-query regressions, chain-node canonical structure metrics, community-balance structure metrics, 13F holder-key graph-query regressions, and ownership holder-key browser regression.
+- API/storage/UI/paper-only impact: one new quality-center API endpoint from the original T-568 work; no storage schema change; UI display contract now explicitly includes structured research report/viewpoint linkage from existing `/api/graph/query` fields, a read-only graph display-quality gate, dry-run remediation routing for failed display gates, and community-balance structure fields in `quality_gate.structure`; no broker or live-trading behavior.
 
 ## Proposed Work Plan
 
@@ -397,6 +399,14 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_cent
 - Browser matrix after full base correction passed:
   - `.venv/bin/python scripts/ui_graph_multi_symbol_acceptance.py http://127.0.0.1:55630 --symbols 000001,000002,600519,AAPL --output artifacts/ui-graph-multi-symbol-display-quality-full-backfill-acceptance.json --timeout 90`
   - Result: `status=passed`, `case_count=4`; 000001 and 000002 measured `20` nodes / `31` links, 600519 measured `23` nodes / `35` links, AAPL measured `28` nodes / `38` links; all had `overlap_pairs=0`, `near_edge_nodes=0`, and saved subgraph restore passed.
+- Current-code community-balance quality-center acceptance on isolated SQLite service:
+  - Service: `AI_QUANT_POSTGRES_DSN= AI_QUANT_DATABASE_URL= AI_QUANT_DB=/tmp/ai_quant_graph_quality_balance_55686.sqlite AI_QUANT_OBJECT_STORE_BACKEND=local AI_QUANT_OBJECT_STORE=/tmp/ai_quant_graph_quality_balance_objects_55686 AI_QUANT_SEARCH_BACKEND=local AI_QUANT_PORT=55686 python3 -m app.server`
+  - Seed: `python3 scripts/seed_obsidian_knowledge_graph.py http://127.0.0.1:55686 --output artifacts/obsidian-knowledge-graph-seed-community-balance-55686.json --timeout 30`
+  - Result: `created_count=49`, `status=seeded`, local-only Obsidian graph sample.
+  - Quality center + browser matrix: `python3 scripts/graph_quality_center.py http://127.0.0.1:55686 --market A,U --limit 4 --browser-matrix --symbols AAPL,NVDA,MSFT,600519 --min-browser-visible-communities 3 --min-browser-community-spread-ratio 0.12 --output artifacts/graph-quality-center/community-balance-browser-55686.json --timeout 120`
+  - Result: quality-center `status=needs_attention` because non-AAPL sampled rows still fail `layer_count`, but backend community-balance metrics passed. AAPL `quality_gate.status=passed`, `structure.max_community_node_share=0.3784`, and `community_counts=[company 14, evidence 11, industry 5, portfolio 5, research 2]`.
+  - Browser matrix result: `status=passed`, `case_count=4`, `failure_count=0`. AAPL measured `28` nodes / `83` links / `community_spread_ratio=0.5686`; NVDA `27` / `74` / `0.4736`; MSFT `23` / `62` / `0.475`; 600519 `17` / `47` / `0.6597`. All four had `overlap_pairs=0`, `near_edge_nodes=0`, and at least three visible communities.
+  - Service was stopped after validation and port `55686` returned `KeyboardInterrupt`.
 
 ## Next Recommended Action
 

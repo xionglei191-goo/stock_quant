@@ -51,6 +51,9 @@ def run_graph_quality_center(
     chrome_bin: str = "",
     max_duplicate_labels: int | None = None,
     max_raw_label_leaks: int | None = None,
+    max_community_node_share: float | None = None,
+    min_browser_visible_communities: int = 0,
+    min_browser_community_spread_ratio: float = 0.0,
 ) -> dict[str, Any]:
     output_path = Path(output)
     payload = {
@@ -64,6 +67,8 @@ def run_graph_quality_center(
         payload["max_duplicate_labels"] = max_duplicate_labels
     if max_raw_label_leaks is not None:
         payload["max_raw_label_leaks"] = max_raw_label_leaks
+    if max_community_node_share is not None:
+        payload["max_community_node_share"] = max_community_node_share
     report = _post_json(base_url, "/api/graph/quality-center", payload, timeout=timeout)
     browser_report: dict[str, Any] | None = None
     if browser_matrix:
@@ -83,6 +88,8 @@ def run_graph_quality_center(
                     "max_overlap_pairs": 8,
                     "max_near_edge_nodes": 2,
                     "min_community_labels": 1,
+                    "min_visible_communities": min_browser_visible_communities,
+                    "min_community_spread_ratio": min_browser_community_spread_ratio,
                     "check_persistence": False,
                     "check_path": False,
                 }
@@ -118,6 +125,9 @@ def main() -> None:
     parser.add_argument("--chrome-bin", default="")
     parser.add_argument("--max-duplicate-labels", type=int, default=None, help="Explicitly relax duplicate display label tolerance; default is backend strict mode.")
     parser.add_argument("--max-raw-label-leaks", type=int, default=None, help="Explicitly relax raw label leak tolerance; default is backend strict mode.")
+    parser.add_argument("--max-community-node-share", type=float, default=None, help="Override backend community balance threshold; default uses the strict quality-center contract.")
+    parser.add_argument("--min-browser-visible-communities", type=int, default=0, help="When --browser-matrix is set, require at least this many visible communities per case.")
+    parser.add_argument("--min-browser-community-spread-ratio", type=float, default=0.0, help="When --browser-matrix is set, require pixel-level community spread ratio per case.")
     args = parser.parse_args()
     report = run_graph_quality_center(
         args.base_url,
@@ -132,6 +142,9 @@ def main() -> None:
         chrome_bin=args.chrome_bin,
         max_duplicate_labels=args.max_duplicate_labels,
         max_raw_label_leaks=args.max_raw_label_leaks,
+        max_community_node_share=args.max_community_node_share,
+        min_browser_visible_communities=args.min_browser_visible_communities,
+        min_browser_community_spread_ratio=args.min_browser_community_spread_ratio,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     if report.get("status") in {"failed", "no_targets"} or report.get("browser_matrix", {}).get("status") == "failed":

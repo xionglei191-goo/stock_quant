@@ -13,7 +13,7 @@ from .graph_intelligence import graph_node_identity
 
 RAW_LABEL_MARKERS = ("obsidian", "relationship", "pos_", "doc_", "hold_", "issuer_", "security_", "sec_", "md_", "vp_rr_", "rr_", "srr_")
 QUALITY_REMEDIATION_USAGE_BOUNDARY = "graph_quality_remediation_is_dry_run_local_public_or_provided_data_only_no_broker_no_trade_execution"
-SOURCE_QUEUE_QUALITY_CHECKS = {"edge_density", "community_count", "layer_count", "hub_dominance", "leaf_ratio", "graph_fragmentation"}
+SOURCE_QUEUE_QUALITY_CHECKS = {"edge_density", "community_count", "layer_count", "hub_dominance", "leaf_ratio", "graph_fragmentation", "community_balance"}
 QUALITY_RECONCILE_CHECKS = {"duplicate_labels", "display_duplicate_edges", "duplicate_edges"}
 
 RELATIONSHIP_TYPE_LABELS = {
@@ -74,6 +74,7 @@ class GraphQualityThresholds:
     max_hub_edge_share: float = 0.72
     max_leaf_ratio: float = 0.86
     min_largest_component_ratio: float = 0.72
+    max_community_node_share: float = 0.72
 
     def as_dict(self) -> dict[str, int | float]:
         return {
@@ -88,6 +89,7 @@ class GraphQualityThresholds:
             "max_hub_edge_share": self.max_hub_edge_share,
             "max_leaf_ratio": self.max_leaf_ratio,
             "min_largest_component_ratio": self.min_largest_component_ratio,
+            "max_community_node_share": self.max_community_node_share,
         }
 
 
@@ -136,6 +138,7 @@ def _graph_quality_thresholds(payload: Mapping[str, Any]) -> GraphQualityThresho
             "min_largest_component_ratio",
             defaults.min_largest_component_ratio,
         ),
+        max_community_node_share=_threshold_float(payload, "max_community_node_share", defaults.max_community_node_share),
     )
 
 
@@ -296,6 +299,77 @@ def _node_label(collection: str, row: Mapping[str, Any]) -> str:
     return _readable_id_label(identity, row) or _status_label(identity)
 
 
+def _collection_node_type(collection: str) -> str:
+    return {
+        "issuers": "issuer",
+        "securities": "security",
+        "market_data": "market_data",
+        "industry_chains": "industry",
+        "chain_nodes": "chain_node",
+        "company_positions": "industry",
+        "research_reports": "research",
+        "structured_research_reports": "research",
+        "report_viewpoints": "research",
+        "analysis_conclusions": "decision",
+        "documents": "evidence",
+        "evidence": "evidence",
+        "company_events": "event",
+        "disclosure_events": "event",
+        "company_relationships": "evidence",
+        "institutional_holdings": "portfolio",
+        "portfolio_proposals": "portfolio",
+        "simulation_feedback": "portfolio",
+        "observation_items": "risk",
+    }.get(collection, "evidence")
+
+
+def _node_community_for_type(node_type: str) -> str:
+    return {
+        "issuer": "company",
+        "security": "company",
+        "market_data": "company",
+        "industry": "industry",
+        "chain_node": "industry",
+        "research": "research",
+        "decision": "research",
+        "event": "evidence",
+        "evidence": "evidence",
+        "portfolio": "portfolio",
+        "risk": "risk",
+    }.get(node_type, "evidence")
+
+
+def _node_community(collection: str) -> str:
+    return _node_community_for_type(_collection_node_type(collection))
+
+
+def _infer_structure_node_type(node_id: Any) -> str:
+    text = str(node_id or "").lower()
+    if text.startswith("issuer_"):
+        return "issuer"
+    if text.startswith("security_") or text.startswith("sec_"):
+        return "security"
+    if text.startswith("md_") or text.startswith("market_data_summary:"):
+        return "market_data"
+    if text.startswith("chain_"):
+        return "industry"
+    if ":" in text and text.split(":", 1)[0].startswith("chain_"):
+        return "chain_node"
+    if text.startswith("node_"):
+        return "chain_node"
+    if text.startswith("vp_") or text.startswith("rr_") or text.startswith("srr_") or text.startswith("thesis_") or text.startswith("signal_"):
+        return "research"
+    if text.startswith("ce_") or "event" in text:
+        return "event"
+    if text.startswith("decision_") or text.startswith("conclusion_"):
+        return "decision"
+    if text.startswith("sf_") or text.startswith("intent_") or text.startswith("portfolio_") or text.startswith("hold_"):
+        return "portfolio"
+    if text.startswith("task_") or text.startswith("review_") or text.startswith("exception_"):
+        return "risk"
+    return "evidence"
+
+
 def _edge_endpoint(edge: Mapping[str, Any], keys: tuple[str, ...]) -> str:
     for key in keys:
         value = str(edge.get(key, "") or "").strip()
@@ -333,6 +407,7 @@ def _display_relationship_edge(row: Mapping[str, Any]) -> tuple[str, str, str] |
 
 def _graph_structure_metrics(graph: Mapping[str, Any], *, display_model: bool = True) -> dict[str, Any]:
     node_ids: set[str] = set()
+    communities_by_node: dict[str, str] = {}
     redirects: dict[str, str] = {}
     for collection, rows in graph.items():
         if collection == "edges" or not isinstance(rows, list):
@@ -340,6 +415,7 @@ def _graph_structure_metrics(graph: Mapping[str, Any], *, display_model: bool = 
         for row in rows:
             if isinstance(row, Mapping):
                 identity = _chain_node_identity(row) if display_model and collection == "chain_nodes" else graph_node_identity(collection, row)
+                community = _node_community(collection)
                 if display_model and collection == "market_data":
                     security_id = str(row.get("security_id", "") or "").strip()
                     if security_id:
@@ -348,12 +424,15 @@ def _graph_structure_metrics(graph: Mapping[str, Any], *, display_model: bool = 
                     display_edge = _display_relationship_edge(row)
                     if display_edge:
                         redirects[identity] = f"relationship_summary:{display_edge[0]}:{display_edge[1]}:{display_edge[2]}"
-                node_ids.add(redirects.get(identity, identity))
+                display_identity = redirects.get(identity, identity)
+                node_ids.add(display_identity)
+                communities_by_node.setdefault(display_identity, community)
                 if display_model and collection == "company_positions":
                     for node_id in row.get("node_ids", []) or []:
                         scoped_node_id = _position_chain_node_identity(row, node_id)
                         if scoped_node_id:
                             node_ids.add(scoped_node_id)
+                            communities_by_node.setdefault(scoped_node_id, "industry")
 
     degree: Counter[str] = Counter()
     edge_type_counts: Counter[str] = Counter()
@@ -371,6 +450,8 @@ def _graph_structure_metrics(graph: Mapping[str, Any], *, display_model: bool = 
             source, target, edge_type = display_edge
             node_ids.add(source)
             node_ids.add(target)
+            communities_by_node.setdefault(source, _node_community_for_type(_infer_structure_node_type(source)))
+            communities_by_node.setdefault(target, _node_community_for_type(_infer_structure_node_type(target)))
             ordered = (source, target) if source <= target else (target, source)
             edge_key = (ordered[0], ordered[1], edge_type)
             edge_keys[edge_key] += 1
@@ -398,6 +479,8 @@ def _graph_structure_metrics(graph: Mapping[str, Any], *, display_model: bool = 
             continue
         node_ids.add(source)
         node_ids.add(target)
+        communities_by_node.setdefault(source, _node_community_for_type(_infer_structure_node_type(source)))
+        communities_by_node.setdefault(target, _node_community_for_type(_infer_structure_node_type(target)))
         ordered = (source, target) if source <= target else (target, source)
         edge_key = (ordered[0], ordered[1], edge_type)
         if display_model and edge_key in seen_display_edges:
@@ -416,6 +499,8 @@ def _graph_structure_metrics(graph: Mapping[str, Any], *, display_model: bool = 
     leaf_count = sum(1 for node_id in node_ids if degree.get(node_id, 0) == 1)
     max_degree = max(degree.values(), default=0)
     duplicate_edge_count = sum(count - 1 for count in edge_keys.values() if count > 1)
+    community_counts = Counter(communities_by_node.get(node_id, "evidence") for node_id in node_ids)
+    max_community_count = max(community_counts.values(), default=0)
 
     visited: set[str] = set()
     component_sizes: list[int] = []
@@ -447,6 +532,8 @@ def _graph_structure_metrics(graph: Mapping[str, Any], *, display_model: bool = 
         "max_degree": max_degree,
         "hub_edge_share": round(max_degree / valid_edge_count, 4) if valid_edge_count else 0.0,
         "duplicate_edge_count": duplicate_edge_count,
+        "community_counts": community_counts.most_common(),
+        "max_community_node_share": round(max_community_count / node_count, 4) if node_count else 0.0,
         "edge_type_counts": edge_type_counts.most_common(12),
         "display_model": display_model,
     }
@@ -512,6 +599,15 @@ def _graph_quality_snapshot(graph: Mapping[str, Any], readiness: Mapping[str, An
             failures.append({"check": "leaf_ratio", "actual": structure["leaf_ratio"], "expected_max": thresholds.max_leaf_ratio})
         if structure["largest_component_ratio"] < thresholds.min_largest_component_ratio:
             failures.append({"check": "graph_fragmentation", "actual": structure["largest_component_ratio"], "expected_min": thresholds.min_largest_component_ratio})
+        if communities >= thresholds.min_communities and structure["max_community_node_share"] > thresholds.max_community_node_share:
+            failures.append(
+                {
+                    "check": "community_balance",
+                    "actual": structure["max_community_node_share"],
+                    "expected_max": thresholds.max_community_node_share,
+                    "community_counts": structure["community_counts"],
+                }
+            )
     return {
         "status": "passed" if not failures else "needs_attention",
         "node_count": node_count,
