@@ -2422,6 +2422,7 @@
               <button id="loadCompanyProfileAssertionConflicts">查看字段冲突</button>
               <button id="previewCompanyQualityReconcile">预览质量归并</button>
               <button id="runCompanyQualityReconcile" class="primary">执行质量归并</button>
+              <button id="previewGraphSourceQueue">预览图谱来源队列</button>
             </div>
             <div class="row">
               <div class="field">
@@ -2552,6 +2553,10 @@
               <div class="system-box"><strong>关系重复</strong><span id="companyIntelRelationshipDuplicateCount">0</span></div>
               <div class="system-box"><strong>实体候选</strong><span id="companyIntelEntityMergeCandidateCount">0</span></div>
               <div class="system-box"><strong>来源评分</strong><span id="companyIntelSourceQualityCount">0</span></div>
+              <div class="system-box"><strong>图谱来源队列</strong><span id="companyIntelGraphSourceQueueStatus">待预览</span></div>
+              <div class="system-box"><strong>队列层数</strong><span id="companyIntelGraphSourceQueueLayerCount">0</span></div>
+              <div class="system-box"><strong>队列动作</strong><span id="companyIntelGraphSourceQueueTargetCount">0</span></div>
+              <div class="system-box"><strong>去重标的</strong><span id="companyIntelGraphSourceQueueUniqueTargetCount">0</span></div>
             </div>
             <table><thead><tr><th>运行</th><th>目标/批次</th><th>覆盖变化</th><th>汇总</th></tr></thead><tbody id="companyIntelRunRows"></tbody></table>
             <table><thead><tr><th>闭环 run</th><th>公司</th><th>完整度变化</th><th>反馈</th></tr></thead><tbody id="companyIntelCycleRunRows"></tbody></table>
@@ -2566,6 +2571,7 @@
             <table><thead><tr><th>材料</th><th>公司/来源</th><th>状态</th><th>说明</th></tr></thead><tbody id="companyIntelMaterialInboxRows"></tbody></table>
             <table><thead><tr><th>股权表</th><th>解析</th><th>候选关系</th><th>边界</th></tr></thead><tbody id="companyIntelOwnershipImportRows"></tbody></table>
             <table><thead><tr><th>股权 Manifest</th><th>代码</th><th>默认类型</th><th>来源</th></tr></thead><tbody id="companyIntelOwnershipManifestRows"></tbody></table>
+            <table><thead><tr><th>图谱缺口层</th><th>入口</th><th>来源字段</th><th>待补标的</th></tr></thead><tbody id="companyIntelGraphSourceQueueRows"></tbody></table>
             <div class="row">
               <button id="batchApproveCompanyProfileAssertions">批量批准</button>
               <button id="batchRejectCompanyProfileAssertions">批量拒绝</button>
@@ -7762,6 +7768,8 @@
         planned: "预览计划",
         dry_run: "预览",
         executed: "已执行",
+        needs_source_inputs: "需来源输入",
+        waiting_for_source_inputs: "等待来源输入",
         structured: "已结构化",
         skipped_existing: "已存在",
         metadata_only: "仅元数据",
@@ -10144,6 +10152,73 @@
       }
     }
 
+    function renderGraphSourceInputQueue(data, showDetails = true) {
+      const queue = data.source_input_queue || {};
+      const layers = queue.layers || [];
+      $("companyIntelGraphSourceQueueStatus").textContent = statusLabel(queue.status || data.status || "empty");
+      $("companyIntelGraphSourceQueueLayerCount").textContent = `${queue.layer_count || layers.length || 0}`;
+      $("companyIntelGraphSourceQueueTargetCount").textContent = `${queue.target_count || 0}`;
+      $("companyIntelGraphSourceQueueUniqueTargetCount").textContent = `${queue.unique_target_count || 0}`;
+      $("companyIntelGraphSourceQueueRows").innerHTML = rows(layers, "暂无图谱来源输入队列。先运行图谱质量中心或增厚 runner。", (item) => {
+        const endpoints = [item.endpoint, item.secondary_endpoint, item.fallback_endpoint].filter(Boolean).join(" / ");
+        const fields = (item.required_source_fields || []).slice(0, 6).join(", ");
+        const targets = (item.targets || []).slice(0, 5).map((target) => target.symbol || target.issuer_id || target.security_id).filter(Boolean).join(", ");
+        return `<tr><td>${companyIntelSectionLabel(item.layer)}${metaLine("动作", statusLabel(item.action || ""))}</td><td>${endpoints || "-"}</td><td>${fields || "-"}</td><td>${item.target_count || 0}${metaLine("样本", targets || "-")}${renderAdvancedTrace("来源队列追溯", item)}</td></tr>`;
+      });
+      if (showDetails) {
+        renderAdvancedPre("companyIntelOperationBox", {
+          title: "图谱来源输入队列",
+          status: queue.status || data.status || "dry_run",
+          summary: `${queue.layer_count || 0} 层 · ${queue.unique_target_count || 0} 个去重标的 · ${queue.target_count || 0} 个待补动作`,
+          next_action: "按队列补齐本地/公开/用户提供材料后重跑质量中心",
+          schema_id: data.schema_id,
+          expected_source_queue_schema_id: "graph-source-input-queue-v1",
+          source_queue_schema_id: queue.schema_id,
+          processed_count: data.processed_count,
+          manual_input_required_count: data.manual_input_required_count,
+          priority_layers: data.priority_layers,
+          source_input_queue: queue,
+          usage_boundary: queue.usage_boundary || data.usage_boundary
+        }, { summary: "图谱来源输入队列", traceLabel: "来源队列追溯" });
+      }
+    }
+
+    function graphSourceInputQueuePayload() {
+      const limit = Math.max(1, Math.min(200, Number(formValue("companyIntelBuildLimit", "20")) || 20));
+      const batchSize = Math.max(1, Math.min(100, Number(formValue("companyIntelBatchSize", "10")) || 10));
+      const payload = {
+        market: "A,U",
+        limit,
+        batch_size: batchSize,
+        priority_layers: "document,evidence,shareholder_holding,research_report,viewpoint",
+        quality_mode: "fast",
+        include_events: false,
+        include_relationships: false,
+        execute: false,
+      };
+      const issuerId = currentCompanyIntelIssuerId();
+      const symbol = companyIntelCurrentSymbol();
+      if (issuerId) payload.issuer_ids = [issuerId];
+      if (!issuerId && symbol) payload.symbols = [symbol];
+      return payload;
+    }
+
+    async function previewGraphSourceInputQueue() {
+      try {
+        $("companyIntelGraphSourceQueueStatus").textContent = "预览中";
+        const { data, trace_id } = await api("/api/graph/enrichment-runner", {
+          method: "POST",
+          role: "data_engineer",
+          body: graphSourceInputQueuePayload()
+        });
+        renderGraphSourceInputQueue(data, true);
+        setStatus(`图谱来源队列预览完成 · ${data.manual_input_required_count || 0} 个标的需来源输入 · ${trace_id}`);
+      } catch (error) {
+        $("companyIntelGraphSourceQueueStatus").textContent = "错误";
+        setStatus(error.message, true);
+      }
+    }
+
     function renderCompanyCoverageAudit(data) {
       const companies = data.companies || [];
       const first = companies[0] || {};
@@ -11891,6 +11966,7 @@
     $("runCompanyOwnershipManifest").addEventListener("click", () => generateCompanyOwnershipManifest(true));
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));
     $("runCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(true));
+    $("previewGraphSourceQueue").addEventListener("click", () => previewGraphSourceInputQueue());
     $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));
     $("runCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(true));
     $("previewCompanyIntelCycle").addEventListener("click", () => runCompanyIntelligenceCycle(false));

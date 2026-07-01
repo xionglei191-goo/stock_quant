@@ -88,6 +88,12 @@ REQUIRED_TEXT_SNIPPETS = [
     "maintenance-only",
     'data-workspace-mode="personal"',
     'data-workspace-mode="maintenance"',
+    "source_input_queue",
+    "required_source_fields",
+    "previewGraphSourceInputQueue",
+    "图谱来源输入队列",
+    "需来源输入",
+    "等待来源输入",
 ]
 
 REQUIRED_IDS = [
@@ -325,6 +331,11 @@ REQUIRED_IDS = [
     "companyIntelRelationshipDuplicateCount",
     "companyIntelEntityMergeCandidateCount",
     "companyIntelSourceQualityCount",
+    "previewGraphSourceQueue",
+    "companyIntelGraphSourceQueueStatus",
+    "companyIntelGraphSourceQueueLayerCount",
+    "companyIntelGraphSourceQueueTargetCount",
+    "companyIntelGraphSourceQueueUniqueTargetCount",
     "companyIntelRealizationStatus",
     "companyIntelRealizationUpdated",
     "companyIntelCycleStatus",
@@ -343,6 +354,7 @@ REQUIRED_IDS = [
     "companyIntelMaterialInboxRows",
     "companyIntelOwnershipImportRows",
     "companyIntelOwnershipManifestRows",
+    "companyIntelGraphSourceQueueRows",
     "companyIntelProfileAssertionReviewRows",
     "companyIntelQualityReconcileRows",
     "companyIntelOperationBox",

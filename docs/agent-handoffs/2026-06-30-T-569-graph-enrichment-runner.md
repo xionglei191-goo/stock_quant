@@ -63,13 +63,14 @@ Graph quality gaps were visible but not operationalized into a recoverable batch
 - The runner now emits `layer_action_plan` and `manual_input_required_layers` for source-backed layers that cannot be safely fabricated by a builder: `document`, `evidence`, `shareholder_holding`, `research_report`, and `viewpoint`.
 - Rows that only need source inputs are marked `waiting_for_source_inputs`, not `executed` or `no_candidate_sources`; CLI resume state must not treat them as completed.
 - The runner now emits a top-level `source_input_queue` (`graph-source-input-queue-v1`) that groups source-backed work by layer. Each queue layer carries endpoint/fallback/secondary endpoint, `required_source_fields`, `target_count`, and bounded target samples, so operators do not need to scrape every row's `layer_action_plan` to collect missing documents, holdings, evidence, research reports, or viewpoints.
+- The company intelligence maintenance UI now exposes the source input queue through a dry-run-only "预览图谱来源队列" action. It calls `/api/graph/enrichment-runner`, renders queue status/layer count/target counts, and shows endpoint, required source fields, and bounded target samples per graph layer.
 
 ### SystemService Growth Freeze Review
 
 - New `SystemService` business logic added: no.
 - Domain module used: yes, `app/service_modules/graph_enrichment_runner.py`.
 - Facade behavior protected by: focused tests for dry-run, execute review-gated writes, and CLI artifact/state writing.
-- API/storage/UI/paper-only impact: one new API endpoint; no storage schema change; no direct UI change; response contract now includes `source_input_queue` for local/public/provided source collection; no broker or live-trading behavior.
+- API/storage/UI/paper-only impact: one new API endpoint; no storage schema change; company intelligence maintenance UI now previews `source_input_queue`; response contract includes `source_input_queue` for local/public/provided source collection; no broker or live-trading behavior.
 
 ## Proposed Work Plan
 
@@ -186,6 +187,13 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_r
   - Result: `status=dry_run`, `processed_count=8`, `manual_input_required_count=8`, `source_input_queue.status=needs_source_inputs`, `layer_count=5`, `target_count=40`, `unique_target_count=8`.
   - Queue layers: `document` -> `/api/ingestion/documents`; `evidence` -> `/api/evidence/extract` plus `/api/graph/knowledge-network/evidence-links/backfill`; `shareholder_holding` -> `/api/13f/filings/parse` plus `/api/13f/holdings`; `research_report` -> `/api/research-reports/structure`; `viewpoint` -> `/api/research-reports/structure` plus `/api/research-report-viewpoints`.
   - Artifact: `artifacts/graph-enrichment-runner/source-input-queue-55665.json` is local-only queue evidence. It proves queue generation, not that source materials have been collected or ingested.
+- Source-input queue UI contract validation:
+  - `python3 -m unittest tests.test_system.SystemServiceTests.test_ui_exposes_graph_source_input_queue tests.test_system.SystemServiceTests.test_ui_static_contract_matches_target_information_architecture tests.test_system.SystemServiceTests.test_graph_enrichment_runner_plans_manual_input_layers`
+  - Verifies the maintenance UI exposes `previewGraphSourceQueue`, calls `/api/graph/enrichment-runner`, keeps the `graph-source-input-queue-v1` schema visible in trace output, and renders `source_input_queue` / `required_source_fields` into the UI contract.
+- Source-input queue browser smoke:
+  - Service: clean local `AI_QUANT_PORT=55680 python3 -m app.server`.
+  - Probe: Headless Chrome opened `/ui`, mocked only `/api/graph/enrichment-runner`, clicked `previewGraphSourceQueue`, and asserted dry-run payload, two rendered queue rows, localized `needs_source_inputs` status, source endpoints, required fields, and `graph-source-input-queue-v1` trace output.
+  - Artifact: `artifacts/ui-graph-source-queue-smoke.json` is local-only UI evidence and is not production/staging release evidence.
 
 ## Next Recommended Action
 

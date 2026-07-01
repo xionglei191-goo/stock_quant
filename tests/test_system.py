@@ -19666,6 +19666,22 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("REPORT_HAS_VIEWPOINT", ui)
         self.assertIn("raw_structured_reports", Path("scripts/ui_graph_layout_acceptance.py").read_text(encoding="utf-8"))
 
+    def test_ui_exposes_graph_source_input_queue(self) -> None:
+        ui = Path("app/static/index.html").read_text(encoding="utf-8")
+
+        for fragment in [
+            "previewGraphSourceQueue",
+            "previewGraphSourceInputQueue",
+            "/api/graph/enrichment-runner",
+            "source_input_queue",
+            "required_source_fields",
+            "companyIntelGraphSourceQueueRows",
+            "graph-source-input-queue-v1",
+            "needs_source_inputs: \"需来源输入\"",
+            "waiting_for_source_inputs: \"等待来源输入\"",
+        ]:
+            self.assertIn(fragment, ui)
+
     def test_api_route_table_is_registered_outside_router_resolve(self) -> None:
         from app.api_routes import build_route_table
 
