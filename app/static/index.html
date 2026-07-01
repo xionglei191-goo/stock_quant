@@ -6813,6 +6813,13 @@
       knowledgeGraphState.frameId = requestAnimationFrame(animate);
     }
 
+    function updateKnowledgeGraphFocusPathAnchor(targetId = "", previousFocusId = "") {
+      knowledgeGraphState.pathStartId = targetId || "";
+      knowledgeGraphState.pathEndId = previousFocusId && previousFocusId !== targetId ? previousFocusId : "";
+      knowledgeGraphState.pathNodeIds.clear();
+      knowledgeGraphState.pathLinkIds.clear();
+    }
+
     function switchKnowledgeGraphFocusNode(nodeId) {
       if (nodeId) {
         const previousFocusId = knowledgeGraphState.focusId;
@@ -6827,10 +6834,7 @@
         knowledgeGraphState.selectedId = nodeId;
         knowledgeGraphState.expandedIds.add(nodeId);
         addKnowledgeGraphTrailNode(nodeId);
-        knowledgeGraphState.pathStartId = nodeId;
-        knowledgeGraphState.pathEndId = "";
-        knowledgeGraphState.pathNodeIds.clear();
-        knowledgeGraphState.pathLinkIds.clear();
+        updateKnowledgeGraphFocusPathAnchor(nodeId, previousFocusId);
         knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.86);
         rerenderKnowledgeGraphExplorer();
         return;
@@ -6972,10 +6976,7 @@
         if (!knowledgeGraphState.fixedIds.has(id)) delete knowledgeGraphState.positions[id];
       });
       addKnowledgeGraphTrailNode(targetId);
-      knowledgeGraphState.pathStartId = targetId;
-      knowledgeGraphState.pathEndId = "";
-      knowledgeGraphState.pathNodeIds.clear();
-      knowledgeGraphState.pathLinkIds.clear();
+      updateKnowledgeGraphFocusPathAnchor(targetId, previousFocusId);
       knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.82);
       rerenderKnowledgeGraphExplorer();
     }
@@ -7009,10 +7010,7 @@
       knowledgeGraphState.focusId = previousId;
       knowledgeGraphState.selectedId = previousId;
       knowledgeGraphState.expandedIds.add(previousId);
-      knowledgeGraphState.pathStartId = previousId;
-      knowledgeGraphState.pathEndId = "";
-      knowledgeGraphState.pathNodeIds.clear();
-      knowledgeGraphState.pathLinkIds.clear();
+      updateKnowledgeGraphFocusPathAnchor(previousId, currentId);
       knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.82);
       rerenderKnowledgeGraphExplorer();
     }
