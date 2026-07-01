@@ -7379,12 +7379,12 @@
       const nodeMarkup = layout.nodes.map((node) => {
         const visibleLabel = node.type === "issuer" || node.type === "security" || node.type === "industry" || node.id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(node.id) || graphKnowledgeNode(node) || (node.degree || 0) >= 6;
         const halo = node.hiddenNeighborCount > 0 ? `<circle r="${node.radius + Math.min(8, 3 + node.hiddenNeighborCount * 0.35)}" fill="none" stroke="${graphNodeColor(node.type)}" stroke-width="1.2" opacity="0.24"></circle>` : "";
-        return `<g class="graph-node-svg ${visibleLabel ? "has-label" : ""}" data-node-id="${escapeHtml(node.id)}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">${halo}<circle r="${node.radius}" fill="${graphNodeColor(node.type)}"></circle><text text-anchor="middle" y="${node.radius + 15}">${escapeHtml(node.label)}</text></g>`;
+        return `<g class="graph-node-svg ${visibleLabel ? "has-label" : ""}" data-node-id="${escapeHtml(node.id)}" role="button" tabindex="0" aria-label="聚焦图谱节点 ${escapeHtml(node.label)}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">${halo}<circle r="${node.radius}" fill="${graphNodeColor(node.type)}"></circle><text text-anchor="middle" y="${node.radius + 15}">${escapeHtml(node.label)}</text></g>`;
       }).join("");
       const communityMarkup = knowledgeGraphState.communitySummaries.map((summary) => {
         const qualityText = graphCommunityQualityText(summary);
         const title = `${summary.label} · ${qualityText}`;
-        return `<g class="graph-community-label" data-community="${escapeHtml(summary.key)}" data-quality="${escapeHtml(qualityText)}" transform="translate(${summary.x.toFixed(1)} ${(summary.y - 34).toFixed(1)})"><title>${escapeHtml(title)}</title><circle r="${Math.max(30, Math.min(52, 22 + summary.count * 1.8)).toFixed(1)}"></circle><text text-anchor="middle" y="-2">${escapeHtml(summary.label)}</text><text class="graph-community-quality" text-anchor="middle" y="13">${escapeHtml(qualityText)}</text></g>`;
+        return `<g class="graph-community-label" data-community="${escapeHtml(summary.key)}" data-quality="${escapeHtml(qualityText)}" role="button" tabindex="0" aria-label="切换到${escapeHtml(summary.label)}代表节点" transform="translate(${summary.x.toFixed(1)} ${(summary.y - 34).toFixed(1)})"><title>${escapeHtml(title)}</title><circle r="${Math.max(30, Math.min(52, 22 + summary.count * 1.8)).toFixed(1)}"></circle><text text-anchor="middle" y="-2">${escapeHtml(summary.label)}</text><text class="graph-community-quality" text-anchor="middle" y="13">${escapeHtml(qualityText)}</text></g>`;
       }).join("");
       svg.innerHTML = `<g id="knowledgeGraphViewport" transform="translate(${transform.x} ${transform.y}) scale(${transform.scale})"><g>${edgeMarkup}</g><g>${communityMarkup}</g><g>${nodeMarkup}</g></g>`;
       knowledgeGraphState.renderStats.linkLabelDomCount = svg.querySelectorAll(".graph-link-label").length;
@@ -7405,6 +7405,13 @@
           if (nodeId) switchKnowledgeGraphFocusNode(nodeId);
         });
         element.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const nodeId = communityRepresentativeNodeId(element.getAttribute("data-community") || "");
+          if (nodeId && knowledgeGraphState.focusId !== nodeId) switchKnowledgeGraphFocusNode(nodeId);
+        });
+        element.addEventListener("keydown", (event) => {
+          if (!["Enter", " "].includes(event.key)) return;
+          event.preventDefault();
           event.stopPropagation();
           const nodeId = communityRepresentativeNodeId(element.getAttribute("data-community") || "");
           if (nodeId && knowledgeGraphState.focusId !== nodeId) switchKnowledgeGraphFocusNode(nodeId);
@@ -7441,6 +7448,12 @@
           knowledgeGraphState.pendingNodePointer = null;
           knowledgeGraphState.suppressNextNodeClick = true;
           switchKnowledgeGraphFocusNode(pending.nodeId);
+        });
+        element.addEventListener("keydown", (event) => {
+          if (!["Enter", " "].includes(event.key)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          selectKnowledgeGraphNode(element.getAttribute("data-node-id"));
         });
       });
       svg.onclick = () => {
