@@ -7119,7 +7119,7 @@
             const nextNode = item.node;
             return `<button class="subtle graph-next-hop" data-node-id="${escapeHtml(nextNode.id)}" title="${escapeHtml(`${graphEdgeLabel(item.link.type, item.link.label)} · ${graphNodeTypeLabel(nextNode.type)}`)}">${escapeHtml(nextNode.label)}</button>`;
           }).join("");
-        return `<div class="graph-path-step"><strong>${prefix}</strong> · ${node.label} <span class="small-note">${graphNodeTypeLabel(node.type)}</span>${nextHops ? `<div class="graph-path-next-hops">${nextHops}</div>` : ""}</div>`;
+        return `<div class="graph-path-step"><strong>${escapeHtml(prefix)}</strong> · ${escapeHtml(node.label)} <span class="small-note">${escapeHtml(graphNodeTypeLabel(node.type))}</span>${nextHops ? `<div class="graph-path-next-hops">${nextHops}</div>` : ""}</div>`;
       }).join("");
       renderKnowledgeGraphFocusHistory();
       renderKnowledgeGraphTrail();
@@ -7153,7 +7153,7 @@
           const neighborId = link.source === node.id ? link.target : link.source;
           const neighbor = knowledgeGraphState.nodeById.get(neighborId) || { id: neighborId, label: graphRef(neighborId), type: "evidence" };
           const edgeLabel = graphEdgeLabel(link.type, link.label);
-          return `<div class="graph-neighbor" data-action="focus-graph-node" data-node-id="${neighbor.id}"><strong>${neighbor.label}</strong><span class="small-note">${edgeLabel} · ${graphNodeTypeLabel(neighbor.type)}</span></div>`;
+          return `<div class="graph-neighbor" data-action="focus-graph-node" data-node-id="${escapeHtml(neighbor.id)}"><strong>${escapeHtml(neighbor.label)}</strong><span class="small-note">${escapeHtml(edgeLabel)} · ${escapeHtml(graphNodeTypeLabel(neighbor.type))}</span></div>`;
         });
       $("knowledgeGraphNeighborRows").innerHTML = neighbors.join("") || `<div class="small-note">暂无相邻关系</div>`;
       renderKnowledgeGraphPathPanel();
