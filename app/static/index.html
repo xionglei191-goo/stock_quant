@@ -6649,7 +6649,7 @@
         element.setAttribute("y", ((source.y + target.y) / 2).toFixed(1));
       });
       document.querySelectorAll(".graph-node-svg").forEach((element) => {
-        const node = nodeById[element.getAttribute("data-node-id")];
+        const node = nodeById.get(element.getAttribute("data-node-id"));
         if (node) element.setAttribute("transform", `translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})`);
       });
       updateKnowledgeGraphCommunityLabels();

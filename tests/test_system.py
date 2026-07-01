@@ -19781,6 +19781,7 @@ class SystemServiceTests(unittest.TestCase):
             "knowledgeGraphState.nodeById.get(nodeId)",
             "knowledgeGraphState.nodeById.has(id)",
             "knowledgeGraphState.nodeById.get(knowledgeGraphState.selectedId)",
+            'nodeById.get(element.getAttribute("data-node-id"))',
             'knowledgeGraphState.performanceMode !== "large"',
             "focusRelated || pathRelated",
             "labelMarkup",
