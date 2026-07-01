@@ -39,6 +39,52 @@ def _http_json(url: str, *, timeout: float = 5.0) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _post_json(url: str, payload: dict[str, Any], *, timeout: float = 8.0) -> Any:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "X-Role": "analyst",
+            "X-Actor": "ui_graph_layout_acceptance",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _graph_readiness_probe(base_url: str, *, symbol: str, timeout: float) -> dict[str, Any]:
+    payload = {
+        "issuer_id": symbol if str(symbol).startswith("issuer_") else "",
+        "symbol": "" if str(symbol).startswith("issuer_") else symbol,
+        "record_readiness": False,
+    }
+    try:
+        data = _post_json(f"{base_url.rstrip('/')}/api/graph/knowledge-network/readiness", payload, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - acceptance artifact should record probe failures
+        return {"status": "probe_failed", "error": str(exc), "payload": payload}
+    return {
+        "status": data.get("status"),
+        "ready_for_obsidian_exploration": bool(data.get("ready_for_obsidian_exploration")),
+        "present_layers": data.get("present_layers", []),
+        "missing_layers": data.get("missing_layers", []),
+        "thin_layers": data.get("thin_layers", []),
+        "visible_communities": data.get("visible_communities", []),
+        "graph_summary": data.get("graph_summary", {}),
+        "cross_links": data.get("cross_links", {}),
+        "seed_dependency": data.get("seed_dependency", {}),
+        "next_actions": [
+            item
+            for item in data.get("next_actions", []) or []
+            if isinstance(item, dict) and item.get("layer") in {"seed_dependency", "evidence", "document", "company_event", "viewpoint", "research_report"}
+        ][:8],
+        "usage_boundary": data.get("usage_boundary", ""),
+        "automation_allowed": data.get("automation_allowed"),
+        "live_execution_allowed": data.get("live_execution_allowed"),
+    }
+
+
 def _wait_for_debugger(port: int, *, timeout: float) -> None:
     deadline = time.time() + timeout
     last_error = ""
@@ -196,6 +242,8 @@ def run_graph_layout_acceptance(
     check_saved_subgraph: bool = True,
     expect_performance_mode: str = "",
     max_chain_node_splits: int = 0,
+    check_readiness: bool = True,
+    require_non_seed_readiness: bool = False,
 ) -> dict[str, Any]:
     chrome = _chrome_binary(chrome_bin)
     port = _free_port()
@@ -781,6 +829,7 @@ def run_graph_layout_acceptance(
         except subprocess.TimeoutExpired:
             process.kill()
 
+    readiness = _graph_readiness_probe(base_url, symbol=symbol, timeout=min(max(timeout / 3, 5.0), 15.0)) if check_readiness else {"status": "skipped"}
     failures: list[dict[str, Any]] = []
     if not isinstance(result, dict) or result.get("status") != "measured":
         failures.append({"check": "browser_measurement", "result": result})
@@ -989,6 +1038,14 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "path_next_hops", "expected": ">=1", "actual": path})
             elif int(path.get("after_next_hop_path_nodes", 0)) < 2 or int(path.get("after_next_hop_path_links", 0)) < 1:
                 failures.append({"check": "path_next_hop_highlight", "expected": "path remains highlighted", "actual": path})
+        if require_non_seed_readiness:
+            seed_dependency = readiness.get("seed_dependency") if isinstance(readiness, dict) else {}
+            if readiness.get("status") == "probe_failed":
+                failures.append({"check": "knowledge_network_readiness_probe", "expected": "readiness probe available", "actual": readiness})
+            elif readiness.get("status") != "ready" or not readiness.get("ready_for_obsidian_exploration"):
+                failures.append({"check": "knowledge_network_readiness", "expected": "ready", "actual": readiness})
+            elif isinstance(seed_dependency, dict) and seed_dependency.get("seed_dependent"):
+                failures.append({"check": "knowledge_network_seed_dependency", "expected": "seed_dependent=false", "actual": seed_dependency})
 
     report = {
         "status": "passed" if not failures else "failed",
@@ -1028,8 +1085,11 @@ def run_graph_layout_acceptance(
             "check_saved_subgraph": check_saved_subgraph,
             "expect_performance_mode": expect_performance_mode,
             "max_chain_node_splits": max_chain_node_splits,
+            "check_readiness": check_readiness,
+            "require_non_seed_readiness": require_non_seed_readiness,
         },
         "measurement": result,
+        "knowledge_network_readiness": readiness,
         "failure_count": len(failures),
         "failures": failures,
     }
@@ -1078,6 +1138,8 @@ def main() -> None:
     parser.add_argument("--skip-saved-subgraph", action="store_true")
     parser.add_argument("--expect-performance-mode", choices=["", "standard", "large"], default="")
     parser.add_argument("--max-chain-node-splits", type=int, default=0)
+    parser.add_argument("--skip-readiness-probe", action="store_true")
+    parser.add_argument("--require-non-seed-readiness", action="store_true")
     args = parser.parse_args()
     report = run_graph_layout_acceptance(
         args.base_url,
@@ -1117,6 +1179,8 @@ def main() -> None:
         check_saved_subgraph=not args.skip_saved_subgraph,
         expect_performance_mode=args.expect_performance_mode,
         max_chain_node_splits=args.max_chain_node_splits,
+        check_readiness=not args.skip_readiness_probe,
+        require_non_seed_readiness=args.require_non_seed_readiness,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     if report["status"] != "passed":

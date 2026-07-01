@@ -19743,6 +19743,20 @@ class SystemServiceTests(unittest.TestCase):
         ]:
             self.assertIn(fragment, script)
 
+    def test_ui_graph_layout_acceptance_records_seed_dependency_readiness(self) -> None:
+        script = Path("scripts/ui_graph_layout_acceptance.py").read_text(encoding="utf-8")
+
+        for fragment in [
+            "/api/graph/knowledge-network/readiness",
+            "knowledge_network_readiness",
+            "seed_dependency",
+            "require_non_seed_readiness",
+            "--require-non-seed-readiness",
+            "knowledge_network_seed_dependency",
+            "ui_graph_layout_acceptance",
+        ]:
+            self.assertIn(fragment, script)
+
     def test_api_route_table_is_registered_outside_router_resolve(self) -> None:
         from app.api_routes import build_route_table
 
