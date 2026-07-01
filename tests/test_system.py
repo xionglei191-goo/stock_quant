@@ -19690,6 +19690,26 @@ class SystemServiceTests(unittest.TestCase):
         ]:
             self.assertIn(fragment, ui)
 
+    def test_ui_exposes_knowledge_graph_display_quality_gate(self) -> None:
+        ui = Path("app/static/index.html").read_text(encoding="utf-8")
+
+        for fragment in [
+            "checkKnowledgeGraphDisplayQuality",
+            "knowledgeGraphQualityCenterPayload",
+            "renderKnowledgeGraphQualityGate",
+            "/api/graph/quality-center",
+            "knowledgeGraphQualityGateChips",
+            "knowledgeGraphQualityGateRows",
+            "max_duplicate_labels: 0",
+            "max_raw_label_leaks: 0",
+            "max_display_duplicate_edges: 0",
+            "duplicate_labels: \"重复展示标签\"",
+            "raw_label_leaks: \"原始 ID 泄漏\"",
+            "display_duplicate_edges: \"重复展示边\"",
+            "data-quality-gate-status",
+        ]:
+            self.assertIn(fragment, ui)
+
     def test_api_route_table_is_registered_outside_router_resolve(self) -> None:
         from app.api_routes import build_route_table
 

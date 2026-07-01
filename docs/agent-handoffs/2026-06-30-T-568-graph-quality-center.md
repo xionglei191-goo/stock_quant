@@ -5,7 +5,7 @@
 - Status: DONE
 - Owner group: Product and UI
 - Reviewer groups: Data and Evidence, Research and AI Workflows, Platform and Quality
-- Last updated: 2026-06-30
+- Last updated: 2026-07-01
 - Last agent: Codex
 - Branch/worktree: main
 - Related tasks: T-568
@@ -73,6 +73,7 @@ Without a single quality center, graph work splits across separate readiness che
 - The display relationship derivation algorithms for `industry_peer`, `upstream_of`, `downstream_of`, 13F same-holder expansion, and ownership-holder fact networks are now isolated in `app/service_modules/graph_derived_relationships.py`. `SystemService.query_graph` still owns compatibility node/edge assembly, but the reusable relationship planning logic no longer grows inside the large facade method.
 - The extracted industry and 13F holder planner outputs now use frozen dataclass contracts instead of bare dicts. This makes future graph display optimization less dependent on implicit string keys while preserving `/api/graph/query` output.
 - Graph source-layer actions are now isolated in `app/service_modules/graph_source_actions.py`. The quality center `enhancement_actions` and graph enrichment runner `layer_action_plan` share the same action, endpoint, required source field, and usage-boundary definitions for event, relationship, document, evidence, holding, research report, and viewpoint layers.
+- The knowledge graph UI now exposes a separate display-quality gate through the “检查展示质量” button. It dry-runs `/api/graph/quality-center` for the current issuer/symbol and renders duplicate display labels, raw ID leaks, duplicate display edges, and structural gate failures in `knowledgeGraphQualityGateRows`, separate from the data-density readiness and source-input queue tables.
 - The browser graph layout acceptance now checks focus switching through a coordinate-based `PointerEvent('pointerdown')` + `pointerup` + click path and fails with `focus_switch_pointer_chain` if the target element cannot be exercised through the pointer chain. This keeps the Obsidian-style graph interaction gate aligned with real pointer behavior instead of a synthetic click-only shortcut.
 - Graph quality thresholds are now centralized in the frozen `GraphQualityThresholds` domain contract. `query_graph` filters and `quality_gate.thresholds` share the same parsed values, and explicit query-string `0` values are preserved instead of being replaced by defaults.
 - Local browser acceptance fixture securities are now registered with `company_universe_scope=out_of_scope`. Quality-center and full-graph production universe sampling therefore skip `AAPL-P/AAPL-U/AAPL-D` fixture-only securities by default, while browser relationship-filter acceptance can still use them through explicit query context.
@@ -87,10 +88,10 @@ Without a single quality center, graph work splits across separate readiness che
 
 ### SystemService Growth Freeze Review
 
-- New `SystemService` business logic added: no; this pass moved existing industry relationship, 13F same-holder, ownership-holder derivation planning, and graph source-layer action definitions into domain modules, and kept `query_graph` / quality facades as compatibility surfaces.
+- New `SystemService` business logic added: no; this pass moved existing industry relationship, 13F same-holder, ownership-holder derivation planning, and graph source-layer action definitions into domain modules, and later exposed the existing quality-center facade in the UI without touching `SystemService`.
 - Domain module used: yes, `app/service_modules/graph_quality_center.py`, `app/service_modules/graph_derived_relationships.py`, and `app/service_modules/graph_source_actions.py`.
 - Facade behavior protected by: focused tests for API gap/action output, enrichment dry-run no-write behavior, CLI artifact writing, shared graph source actions, industry relationship graph-query regressions, chain-node canonical structure metrics, 13F holder-key graph-query regressions, and ownership holder-key browser regression.
-- API/storage/UI/paper-only impact: one new quality-center API endpoint from the original T-568 work; no storage schema change; UI display contract now explicitly includes structured research report/viewpoint linkage from existing `/api/graph/query` fields; no broker or live-trading behavior.
+- API/storage/UI/paper-only impact: one new quality-center API endpoint from the original T-568 work; no storage schema change; UI display contract now explicitly includes structured research report/viewpoint linkage from existing `/api/graph/query` fields and a read-only graph display-quality gate; no broker or live-trading behavior.
 
 ## Proposed Work Plan
 
@@ -218,6 +219,16 @@ python3 -m unittest tests.test_system.SystemServiceTests.test_graph_quality_cent
   - `python3 scripts/check_handoffs.py`
   - Result: passed; checked `146` markdown handoff files.
   - `git diff --check`
+  - Result: passed.
+- Knowledge graph UI display-quality gate validation passed:
+  - `python3 -m unittest tests.test_system.SystemServiceTests.test_ui_exposes_graph_source_input_queue tests.test_system.SystemServiceTests.test_ui_exposes_knowledge_graph_display_quality_gate`
+  - Result: passed; UI static contract exposes the source queue and display-quality gate.
+  - `python3 scripts/ui_static_check.py`
+  - Result: passed; static check requires the graph quality-center UI hook, strict display thresholds, and DOM ids.
+  - `python3 -m py_compile app/*.py app/service_modules/*.py tests/*.py scripts/*.py`
+  - Result: passed.
+  - Browser smoke against isolated SQLite service on `55682` passed. The smoke monkey-patched `/api/graph/quality-center`, clicked `#checkKnowledgeGraphDisplayQuality`, captured a POST with `issuer_ids=["issuer_aapl"]`, `max_duplicate_labels=0`, `max_raw_label_leaks=0`, and `max_display_duplicate_edges=0`, and confirmed `重复展示标签` / `重复展示边` / `中心节点过载` rendered in `knowledgeGraphQualityGateRows`.
+  - Artifact: `artifacts/ui-knowledge-graph-quality-gate-smoke.json`, local-only, ignored; valid for this machine/browser smoke only and not a production release artifact.
   - Result: passed.
 - Derived relationship refactor regression passed:
   - `python3 -m unittest tests.test_system.SystemServiceTests.test_graph_derived_relationships_plans_display_edges tests.test_system.SystemServiceTests.test_company_intelligence_first_class_models_are_exposed_and_aggregated tests.test_system.SystemServiceTests.test_graph_acceptance_fixture_supports_industry_relationship_filters tests.test_system.SystemServiceTests.test_obsidian_knowledge_graph_seed_creates_multi_dimension_network`

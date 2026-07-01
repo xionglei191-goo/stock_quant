@@ -2187,11 +2187,14 @@
               </div>
               <div id="knowledgeGraphFilterChips" class="graph-filter-chips" aria-label="当前图谱过滤"><span class="badge">全部关系</span></div>
               <div id="knowledgeGraphReadiness" class="graph-filter-chips" aria-label="知识网络数据密度"><span class="badge">数据密度待检查</span></div>
+              <div id="knowledgeGraphQualityGateChips" class="graph-filter-chips" aria-label="知识网络展示质量"><span class="badge">展示质量待检查</span></div>
               <div id="knowledgeGraphReadinessPanel" class="graph-readiness-panel" aria-label="图谱数据层补齐提示">
                 <div class="graph-readiness-head">
                   <span id="knowledgeGraphQualitySummary">载入图谱后显示数据层缺口和补齐入口。</span>
+                  <button id="checkKnowledgeGraphDisplayQuality">检查展示质量</button>
                   <button id="previewKnowledgeGraphSourceQueue">预览来源队列</button>
                 </div>
+                <table><thead><tr><th>展示检查</th><th>状态</th><th>当前值</th><th>说明</th></tr></thead><tbody id="knowledgeGraphQualityGateRows"></tbody></table>
                 <table><thead><tr><th>缺口层</th><th>影响</th><th>建议动作</th></tr></thead><tbody id="knowledgeGraphReadinessRows"></tbody></table>
                 <table><thead><tr><th>图谱缺口层</th><th>入口</th><th>来源字段</th><th>待补标的</th></tr></thead><tbody id="knowledgeGraphSourceQueueRows"></tbody></table>
               </div>
@@ -5466,7 +5469,9 @@
       const item = data || knowledgeGraphState.readiness;
       if (!item) {
         element.innerHTML = `<span class="badge">数据密度待检查</span>`;
+        if ($("knowledgeGraphQualityGateChips")) $("knowledgeGraphQualityGateChips").innerHTML = `<span class="badge">展示质量待检查</span>`;
         setText("knowledgeGraphQualitySummary", "载入图谱后显示数据层缺口和补齐入口。");
+        if ($("knowledgeGraphQualityGateRows")) $("knowledgeGraphQualityGateRows").innerHTML = rows([], "暂无展示质量检查", () => "");
         if ($("knowledgeGraphReadinessRows")) $("knowledgeGraphReadinessRows").innerHTML = rows([], "暂无数据层诊断", () => "");
         if ($("knowledgeGraphSourceQueueRows")) $("knowledgeGraphSourceQueueRows").innerHTML = rows([], "暂无来源队列预览", () => "");
         return;
@@ -5512,6 +5517,90 @@
         industry_position: { impact: "产业链位置不足，社区和上下游路径不可解释。", next_action: "补公司产业定位和链节点归因" },
       };
       return actions[layer] || { impact: "该图谱层数据不足，展示质量和可探索性受限。", next_action: "按质量中心和来源队列补齐本地/公开/用户提供材料" };
+    }
+
+    function graphQualityCheckLabel(check) {
+      const labels = {
+        duplicate_labels: "重复展示标签",
+        raw_label_leaks: "原始 ID 泄漏",
+        display_duplicate_edges: "重复展示边",
+        duplicate_edges: "原始重复边",
+        hub_dominance: "中心节点过载",
+        leaf_ratio: "叶子节点过多",
+        graph_fragmentation: "图谱断裂",
+      };
+      return labels[check] || check || "展示质量";
+    }
+
+    function graphQualityValue(item) {
+      if (!item) return "-";
+      if (item.expected_max !== undefined) return `${item.actual} / 上限 ${item.expected_max}`;
+      if (item.expected_min !== undefined) return `${item.actual} / 下限 ${item.expected_min}`;
+      return item.actual !== undefined ? String(item.actual) : "-";
+    }
+
+    function knowledgeGraphQualityCenterPayload() {
+      const payload = {
+        market: "A,U",
+        limit: 1,
+        batch_size: 1,
+        min_edges: 12,
+        min_communities: 3,
+        min_layers: 5,
+        max_duplicate_labels: 0,
+        max_raw_label_leaks: 0,
+        max_display_duplicate_edges: 0,
+      };
+      const issuerId = knowledgeGraphState.focusId && String(knowledgeGraphState.focusId).startsWith("issuer_")
+        ? knowledgeGraphState.focusId
+        : String($("issuerId")?.value || "").trim();
+      if (issuerId && issuerId.startsWith("issuer_")) {
+        payload.issuer_ids = [issuerId];
+      } else {
+        const symbol = String($("issuerId")?.value || "").trim();
+        if (symbol && !symbol.startsWith("issuer_")) payload.symbols = [symbol];
+      }
+      return payload;
+    }
+
+    function renderKnowledgeGraphQualityGate(data) {
+      const item = (data.items || [])[0] || {};
+      const gate = item.quality_gate || {};
+      const failures = Array.isArray(gate.failures) ? gate.failures : [];
+      const structure = gate.structure || {};
+      const status = gate.status || "not_checked";
+      const statusClass = status === "passed" ? "ok" : "warn";
+      const duplicateLabels = Array.isArray(gate.duplicate_labels) ? gate.duplicate_labels.length : 0;
+      const rawLeaks = Array.isArray(gate.raw_label_leaks) ? gate.raw_label_leaks.length : 0;
+      const displayDuplicateEdges = Number(structure.duplicate_edge_count || 0);
+      const summaryRows = [
+        { check: "duplicate_labels", status: duplicateLabels ? "needs_attention" : "passed", actual: duplicateLabels, expected_max: gate.thresholds?.max_duplicate_labels ?? 0, note: "同名节点会降低多跳辨识度。" },
+        { check: "raw_label_leaks", status: rawLeaks ? "needs_attention" : "passed", actual: rawLeaks, expected_max: gate.thresholds?.max_raw_label_leaks ?? 0, note: "展示文本不得暴露 issuer_/chain_/event_ 等内部 ID。" },
+        { check: "display_duplicate_edges", status: displayDuplicateEdges ? "needs_attention" : "passed", actual: displayDuplicateEdges, expected_max: gate.thresholds?.max_display_duplicate_edges ?? 0, note: "重复边会制造伪密度，影响布局和阅读。" },
+      ];
+      const failureRows = failures
+        .filter((failure) => !summaryRows.some((row) => row.check === failure.check))
+        .map((failure) => ({ ...failure, status: "needs_attention", note: "结构质量门禁未通过，需要回到来源队列或关系去重处理。" }));
+      const displayRows = item.issuer_id || failures.length || gate.status
+        ? summaryRows.concat(failureRows)
+        : [];
+      if ($("knowledgeGraphQualityGateRows")) {
+        $("knowledgeGraphQualityGateRows").innerHTML = rows(displayRows, "暂无展示质量检查", (row) => {
+          return `<tr data-graph-quality-check="${escapeHtml(row.check || "")}"><td>${escapeHtml(graphQualityCheckLabel(row.check))}</td><td><span class="badge ${row.status === "passed" ? "ok" : "warn"}">${escapeHtml(statusLabel(row.status || "needs_attention"))}</span></td><td>${escapeHtml(graphQualityValue(row))}</td><td>${escapeHtml(row.note || "")}${renderAdvancedTrace("展示质量追溯", row)}</td></tr>`;
+        });
+      }
+      const nodeCount = Number(structure.node_count || 0);
+      const edgeCount = Number(structure.valid_edge_count || 0);
+      const failureCount = Number(gate.failure_count ?? failures.length);
+      setText("knowledgeGraphQualitySummary", `展示质量 ${statusLabel(status)} · 失败 ${failureCount} 项 · 节点 ${nodeCount} · 展示边 ${edgeCount}`);
+      if ($("knowledgeGraphQualityGateChips")) {
+        $("knowledgeGraphQualityGateChips").innerHTML = [
+          `<span class="badge ${statusClass}" data-quality-gate-status="${escapeHtml(status)}">展示 ${escapeHtml(statusLabel(status))}</span>`,
+          `<span class="badge" data-quality-gate-failures="${failureCount}">失败 ${failureCount}</span>`,
+          `<span class="badge" data-quality-gate-nodes="${nodeCount}">节点 ${nodeCount}</span>`,
+          `<span class="badge" data-quality-gate-edges="${edgeCount}">展示边 ${edgeCount}</span>`,
+        ].join("");
+      }
     }
 
     function graphTokenLabel(token = "") {
@@ -10334,6 +10423,26 @@
       }
     }
 
+    async function checkKnowledgeGraphDisplayQuality() {
+      try {
+        setText("knowledgeGraphQualitySummary", "图谱展示质量检查中");
+        if ($("knowledgeGraphQualityGateChips")) $("knowledgeGraphQualityGateChips").innerHTML = `<span class="badge">展示质量检查中</span>`;
+        const { data, trace_id } = await api("/api/graph/quality-center", {
+          method: "POST",
+          role: "analyst",
+          body: knowledgeGraphQualityCenterPayload()
+        });
+        renderKnowledgeGraphQualityGate(data);
+        const item = (data.items || [])[0] || {};
+        const gate = item.quality_gate || {};
+        setStatus(`图谱展示质量检查完成 · ${statusLabel(gate.status || data.status || "dry_run")} · ${trace_id}`);
+      } catch (error) {
+        setText("knowledgeGraphQualitySummary", "图谱展示质量检查失败");
+        if ($("knowledgeGraphQualityGateChips")) $("knowledgeGraphQualityGateChips").innerHTML = `<span class="badge warn">展示质量检查失败</span>`;
+        setStatus(error.message, true);
+      }
+    }
+
     function renderCompanyCoverageAudit(data) {
       const companies = data.companies || [];
       const first = companies[0] || {};
@@ -12082,6 +12191,7 @@
     $("previewCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(false));
     $("runCompanyQualityReconcile").addEventListener("click", () => reconcileCompanyDatabaseQuality(true));
     $("previewGraphSourceQueue").addEventListener("click", () => previewGraphSourceInputQueue());
+    $("checkKnowledgeGraphDisplayQuality").addEventListener("click", () => checkKnowledgeGraphDisplayQuality());
     $("previewKnowledgeGraphSourceQueue").addEventListener("click", () => previewKnowledgeGraphSourceInputQueue());
     $("previewCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(false));
     $("runCompanyReportRealization").addEventListener("click", () => updateCompanyReportRealization(true));
