@@ -3448,6 +3448,8 @@
       nodes: [],
       links: [],
       nodeById: new Map(),
+      communitySummaries: [],
+      communityNodesByKey: new Map(),
       selectedId: "",
       focusId: "",
       search: "",
@@ -6729,9 +6731,8 @@
     }
 
     function communityRepresentativeNodeId(community = "") {
-      const summaries = graphCommunitySummaries(knowledgeGraphState.nodes, knowledgeGraphState.links);
-      const summary = summaries.find((item) => item.key === community);
-      const candidates = knowledgeGraphState.nodes.filter((node) => (node.community || graphCommunityForType(node.type)) === community);
+      const summary = (knowledgeGraphState.communitySummaries || []).find((item) => item.key === community);
+      const candidates = knowledgeGraphState.communityNodesByKey.get(community) || [];
       if (!candidates.length) return "";
       return candidates
         .slice()
@@ -6745,7 +6746,7 @@
     }
 
     function updateKnowledgeGraphCommunityLabels() {
-      const summaries = graphCommunitySummaries(knowledgeGraphState.nodes, knowledgeGraphState.links);
+      const summaries = knowledgeGraphState.communitySummaries || [];
       document.querySelectorAll(".graph-community-label").forEach((element) => {
         const community = element.getAttribute("data-community");
         const summary = summaries.find((item) => item.key === community);
@@ -7249,6 +7250,13 @@
       knowledgeGraphState.nodes = layout.nodes;
       knowledgeGraphState.links = layout.links;
       knowledgeGraphState.nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+      knowledgeGraphState.communitySummaries = graphCommunitySummaries(layout.nodes, layout.links);
+      knowledgeGraphState.communityNodesByKey = new Map();
+      layout.nodes.forEach((node) => {
+        const key = node.community || graphCommunityForType(node.type);
+        if (!knowledgeGraphState.communityNodesByKey.has(key)) knowledgeGraphState.communityNodesByKey.set(key, []);
+        knowledgeGraphState.communityNodesByKey.get(key).push(node);
+      });
       const largeGraph = model.nodes.length > 72 || model.links.length > 150 || layout.nodes.length > 48 || layout.links.length > 96;
       knowledgeGraphState.performanceMode = largeGraph ? "large" : "standard";
       knowledgeGraphState.renderStats = {
@@ -7301,7 +7309,7 @@
         const halo = node.hiddenNeighborCount > 0 ? `<circle r="${node.radius + Math.min(8, 3 + node.hiddenNeighborCount * 0.35)}" fill="none" stroke="${graphNodeColor(node.type)}" stroke-width="1.2" opacity="0.24"></circle>` : "";
         return `<g class="graph-node-svg ${visibleLabel ? "has-label" : ""}" data-node-id="${escapeHtml(node.id)}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">${halo}<circle r="${node.radius}" fill="${graphNodeColor(node.type)}"></circle><text text-anchor="middle" y="${node.radius + 15}">${escapeHtml(node.label)}</text></g>`;
       }).join("");
-      const communityMarkup = graphCommunitySummaries(layout.nodes, layout.links).map((summary) => {
+      const communityMarkup = knowledgeGraphState.communitySummaries.map((summary) => {
         const qualityText = graphCommunityQualityText(summary);
         const title = `${summary.label} · ${qualityText}`;
         return `<g class="graph-community-label" data-community="${escapeHtml(summary.key)}" data-quality="${escapeHtml(qualityText)}" transform="translate(${summary.x.toFixed(1)} ${(summary.y - 34).toFixed(1)})"><title>${escapeHtml(title)}</title><circle r="${Math.max(30, Math.min(52, 22 + summary.count * 1.8)).toFixed(1)}"></circle><text text-anchor="middle" y="-2">${escapeHtml(summary.label)}</text><text class="graph-community-quality" text-anchor="middle" y="13">${escapeHtml(qualityText)}</text></g>`;

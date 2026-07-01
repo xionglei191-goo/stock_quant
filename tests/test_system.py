@@ -19774,7 +19774,12 @@ class SystemServiceTests(unittest.TestCase):
             self.assertIn(fragment, script)
         for fragment in [
             "nodeById: new Map()",
+            "communitySummaries: []",
+            "communityNodesByKey: new Map()",
             "knowledgeGraphState.nodeById = new Map(layout.nodes.map((node) => [node.id, node]))",
+            "knowledgeGraphState.communitySummaries = graphCommunitySummaries(layout.nodes, layout.links)",
+            "knowledgeGraphState.communityNodesByKey.get(community) || []",
+            "const summaries = knowledgeGraphState.communitySummaries || []",
             "const layoutNodeById = knowledgeGraphState.nodeById",
             "layoutNodeById.get(link.source)",
             "layoutNodeById.get(link.target)",
