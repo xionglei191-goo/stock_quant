@@ -621,10 +621,28 @@ def run_graph_layout_acceptance(
               }}
               let focusSwitch = {{ checked: false }};
               if ({json.dumps(check_focus_switch)}) {{
+                if (focusId && window.knowledgeGraphState?.focusId !== focusId) {{
+                  switchKnowledgeGraphFocusNode(focusId);
+                  await wait(1200);
+                }}
                 const beforeFocusId = window.knowledgeGraphState?.focusId || '';
-                const focusTarget = (window.knowledgeGraphState?.nodes || []).find((item) =>
+                const visibleFocusNodeIds = new Set([...document.querySelectorAll('.graph-node-svg')].map((element) => element.getAttribute('data-node-id')));
+                const visibleFocusNeighbors = (window.knowledgeGraphState?.links || [])
+                  .map((link) => {{
+                    if (link.source === beforeFocusId && visibleFocusNodeIds.has(link.target)) return window.knowledgeGraphState?.nodeById?.get?.(link.target);
+                    if (link.target === beforeFocusId && visibleFocusNodeIds.has(link.source)) return window.knowledgeGraphState?.nodeById?.get?.(link.source);
+                    return null;
+                  }})
+                  .filter(Boolean);
+                const knowledgeFocusTarget = visibleFocusNeighbors.find((item) =>
                   item.id && item.id !== beforeFocusId && (['event', 'research', 'evidence'].includes(item.type) || ['research', 'evidence'].includes(item.community))
-                ) || (window.knowledgeGraphState?.nodes || []).find((item) => item.id && item.id !== beforeFocusId);
+                );
+                const focusTarget = knowledgeFocusTarget
+                  || visibleFocusNeighbors.find((item) => item.id && item.id !== beforeFocusId)
+                  || (window.knowledgeGraphState?.nodes || []).find((item) =>
+                    item.id && item.id !== beforeFocusId && visibleFocusNodeIds.has(item.id) && (['event', 'research', 'evidence'].includes(item.type) || ['research', 'evidence'].includes(item.community))
+                  )
+                  || (window.knowledgeGraphState?.nodes || []).find((item) => item.id && item.id !== beforeFocusId && visibleFocusNodeIds.has(item.id));
                 if (focusTarget && window.CSS?.escape) {{
                   const targetElement = document.querySelector(`.graph-node-svg[data-node-id="${{CSS.escape(focusTarget.id)}}"]`);
                   const targetBox = targetElement?.getBoundingClientRect?.();
@@ -636,8 +654,12 @@ def run_graph_layout_acceptance(
                     targetElement.dispatchEvent(new MouseEvent('click', {{ bubbles: true, clientX: targetX, clientY: targetY }}));
                   }}
                   await wait(700);
-                  document.querySelector('#graphFocusSelected')?.click();
-                  await wait(1200);
+                  if ((window.knowledgeGraphState?.focusId || '') !== focusTarget.id) {{
+                    document.querySelector('#graphFocusSelected')?.click();
+                    await wait(1200);
+                  }} else {{
+                    await wait(500);
+                  }}
                   const afterFocusId = window.knowledgeGraphState?.focusId || '';
                   const pathAfterFocus = {{
                     start_id: window.knowledgeGraphState?.pathStartId || '',
@@ -656,10 +678,44 @@ def run_graph_layout_acceptance(
                     path_links: document.querySelectorAll('.graph-link-svg.is-path-link').length
                   }};
                   const historyButtonsAfterBack = [...document.querySelectorAll('.graph-focus-history-node')];
+                  let keyboardNode = {{ checked: false }};
+                  const keyboardTargetElement = document.querySelector(`.graph-node-svg[data-node-id="${{CSS.escape(focusTarget.id)}}"]`);
+                  if (keyboardTargetElement) {{
+                    const keyboardBeforeFocus = window.knowledgeGraphState?.focusId || '';
+                    try {{
+                      keyboardTargetElement.focus({{ preventScroll: true, focusVisible: true }});
+                    }} catch (error) {{
+                      keyboardTargetElement.focus();
+                    }}
+                    await wait(150);
+                    const circleStyle = getComputedStyle(keyboardTargetElement.querySelector('circle'));
+                    const textStyle = getComputedStyle(keyboardTargetElement.querySelector('text'));
+                    const activeBeforeKey = document.activeElement === keyboardTargetElement;
+                    const focusVisibleBeforeKey = keyboardTargetElement.matches(':focus-visible');
+                    keyboardTargetElement.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: 'Enter', code: 'Enter' }}));
+                    await wait(1000);
+                    keyboardNode = {{
+                      checked: true,
+                      node_id: focusTarget.id,
+                      before_focus_id: keyboardBeforeFocus,
+                      after_focus_id: window.knowledgeGraphState?.focusId || '',
+                      selected_id: window.knowledgeGraphState?.selectedId || '',
+                      role: keyboardTargetElement.getAttribute('role') || '',
+                      tab_index: keyboardTargetElement.getAttribute('tabindex') || '',
+                      focusable: keyboardTargetElement.getAttribute('focusable') || '',
+                      aria_label: keyboardTargetElement.getAttribute('aria-label') || '',
+                      active_before_key: activeBeforeKey,
+                      focus_visible_before_key: focusVisibleBeforeKey,
+                      stroke_width_before_key: circleStyle.strokeWidth || '',
+                      label_opacity_before_key: textStyle.opacity || ''
+                    }};
+                    document.querySelector('#graphBackFocus')?.click();
+                    await wait(1000);
+                  }}
                   const neighborRow = document.querySelector('.graph-neighbor[data-node-id]');
                   const neighborClick = {{
                     checked: Boolean(neighborRow),
-                    before_focus_id: afterBackFocusId,
+                    before_focus_id: window.knowledgeGraphState?.focusId || '',
                     node_id: neighborRow?.dataset?.nodeId || ''
                   }};
                   if (neighborRow) {{
@@ -684,6 +740,7 @@ def run_graph_layout_acceptance(
                     path_after_focus: pathAfterFocus,
                     path_after_back_focus: pathAfterBackFocus,
                     neighbor_click: neighborClick,
+                    keyboard_node: keyboardNode,
                     button_present: Boolean(document.querySelector('#graphFocusSelected')),
                     back_button_present: Boolean(document.querySelector('#graphBackFocus')),
                     history_nodes_after_focus: historyButtonsAfterFocus.length,
@@ -712,6 +769,42 @@ def run_graph_layout_acceptance(
                   selected_title: document.querySelector('#knowledgeGraphNodeTitle')?.textContent || '',
                   focus_label: document.querySelector('#knowledgeGraphFocusLabel')?.textContent || ''
                 }};
+                let keyboardCommunity = {{ checked: false }};
+                const keyboardCommunityElement = [...document.querySelectorAll('.graph-community-label')].find((element) => {{
+                  const nodeId = communityRepresentativeNodeId(element.getAttribute('data-community') || '');
+                  return nodeId && nodeId !== (window.knowledgeGraphState?.focusId || '');
+                }});
+                if (keyboardCommunityElement) {{
+                  const beforeKeyboardFocus = window.knowledgeGraphState?.focusId || '';
+                  const representativeId = communityRepresentativeNodeId(keyboardCommunityElement.getAttribute('data-community') || '');
+                  try {{
+                    keyboardCommunityElement.focus({{ preventScroll: true, focusVisible: true }});
+                  }} catch (error) {{
+                    keyboardCommunityElement.focus();
+                  }}
+                  await wait(150);
+                  const circleStyle = getComputedStyle(keyboardCommunityElement.querySelector('circle'));
+                  const activeBeforeKey = document.activeElement === keyboardCommunityElement;
+                  const focusVisibleBeforeKey = keyboardCommunityElement.matches(':focus-visible');
+                  keyboardCommunityElement.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: ' ', code: 'Space' }}));
+                  await wait(1000);
+                  keyboardCommunity = {{
+                    checked: true,
+                    community: keyboardCommunityElement.getAttribute('data-community') || '',
+                    representative_id: representativeId,
+                    before_focus_id: beforeKeyboardFocus,
+                    after_focus_id: window.knowledgeGraphState?.focusId || '',
+                    selected_id: window.knowledgeGraphState?.selectedId || '',
+                    role: keyboardCommunityElement.getAttribute('role') || '',
+                    tab_index: keyboardCommunityElement.getAttribute('tabindex') || '',
+                    focusable: keyboardCommunityElement.getAttribute('focusable') || '',
+                    aria_label: keyboardCommunityElement.getAttribute('aria-label') || '',
+                    active_before_key: activeBeforeKey,
+                    focus_visible_before_key: focusVisibleBeforeKey,
+                    stroke_width_before_key: circleStyle.strokeWidth || ''
+                  }};
+                }}
+                communityClick.keyboard_community = keyboardCommunity;
               }}
               let trailCheck = {{ checked: false }};
               if ({json.dumps(check_trail)}) {{
@@ -1034,6 +1127,16 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "focus_back_path_context", "expected": "back focus keeps target as path end", "actual": focus_switch})
             elif int(focus_switch.get("path_after_back_focus", {}).get("path_nodes", 0)) < 2 or int(focus_switch.get("path_after_back_focus", {}).get("path_links", 0)) < 1:
                 failures.append({"check": "focus_back_path_highlight", "expected": "back focus path remains highlighted", "actual": focus_switch})
+            elif not focus_switch.get("keyboard_node", {}).get("checked"):
+                failures.append({"check": "focus_switch_keyboard_node", "expected": "keyboard-activated SVG node", "actual": focus_switch})
+            elif focus_switch.get("keyboard_node", {}).get("after_focus_id") != focus_switch.get("keyboard_node", {}).get("node_id"):
+                failures.append({"check": "focus_switch_keyboard_node_activation", "expected": "Enter switches SVG node focus", "actual": focus_switch})
+            elif focus_switch.get("keyboard_node", {}).get("selected_id") != focus_switch.get("keyboard_node", {}).get("node_id"):
+                failures.append({"check": "focus_switch_keyboard_node_selection", "expected": "Enter selects SVG node", "actual": focus_switch})
+            elif focus_switch.get("keyboard_node", {}).get("role") != "button" or focus_switch.get("keyboard_node", {}).get("tab_index") != "0" or not focus_switch.get("keyboard_node", {}).get("aria_label"):
+                failures.append({"check": "focus_switch_keyboard_node_semantics", "expected": "button role, tabindex, aria-label", "actual": focus_switch})
+            elif not focus_switch.get("keyboard_node", {}).get("active_before_key") or not focus_switch.get("keyboard_node", {}).get("focus_visible_before_key"):
+                failures.append({"check": "focus_switch_keyboard_node_focus_visible", "expected": "focused SVG node has focus-visible state", "actual": focus_switch})
             elif not focus_switch.get("neighbor_click", {}).get("checked"):
                 failures.append({"check": "focus_switch_neighbor_click", "expected": "clickable neighbor row", "actual": focus_switch})
             elif focus_switch.get("neighbor_click", {}).get("after_focus_id") != focus_switch.get("neighbor_click", {}).get("node_id") or focus_switch.get("neighbor_click", {}).get("selected_id") != focus_switch.get("neighbor_click", {}).get("node_id"):
@@ -1048,6 +1151,14 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "community_click_focus_switch", "expected": "focus changes after community label click", "actual": community_click})
             elif not community_click.get("selected_title"):
                 failures.append({"check": "community_click_selected_title", "expected": "selected community representative title", "actual": community_click})
+            elif not community_click.get("keyboard_community", {}).get("checked"):
+                failures.append({"check": "community_keyboard", "expected": "keyboard-activated SVG community label", "actual": community_click})
+            elif community_click.get("keyboard_community", {}).get("after_focus_id") != community_click.get("keyboard_community", {}).get("representative_id"):
+                failures.append({"check": "community_keyboard_activation", "expected": "Space switches to community representative", "actual": community_click})
+            elif community_click.get("keyboard_community", {}).get("role") != "button" or community_click.get("keyboard_community", {}).get("tab_index") != "0" or not community_click.get("keyboard_community", {}).get("aria_label"):
+                failures.append({"check": "community_keyboard_semantics", "expected": "button role, tabindex, aria-label", "actual": community_click})
+            elif not community_click.get("keyboard_community", {}).get("active_before_key") or not community_click.get("keyboard_community", {}).get("focus_visible_before_key"):
+                failures.append({"check": "community_keyboard_focus_visible", "expected": "focused community label has focus-visible state", "actual": community_click})
         trail = result.get("trail") if isinstance(result.get("trail"), dict) else {}
         if check_trail:
             if not trail.get("checked"):
