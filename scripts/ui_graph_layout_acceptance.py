@@ -919,6 +919,8 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "graph_stage_performance_mode", "expected": "graph-stage.is-performance-mode", "actual": result.get("graph_stage_performance_mode")})
             if expect_performance_mode == "large" and "高性能" not in str(result.get("motion_status", "")):
                 failures.append({"check": "graph_performance_mode_status", "expected": "status includes 高性能", "actual": result.get("motion_status")})
+            if expect_performance_mode == "large" and "标签" not in str(result.get("motion_status", "")):
+                failures.append({"check": "graph_performance_label_budget_status", "expected": "status includes label DOM budget", "actual": result.get("motion_status")})
         chain_node_splits = result.get("chain_node_splits") or []
         if len(chain_node_splits) > max_chain_node_splits:
             failures.append({"check": "chain_node_splits", "expected": f"<={max_chain_node_splits}", "actual": len(chain_node_splits), "examples": chain_node_splits[:5]})

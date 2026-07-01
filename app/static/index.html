@@ -7364,7 +7364,7 @@
       const frameMs = Number(perf.avgFrameMs || 0);
       const perfText = fps ? ` · FPS ${Math.round(Math.min(99, fps))} · 帧 ${frameMs.toFixed(1)}ms` : "";
       const renderMode = knowledgeGraphState.performanceMode === "large"
-        ? ` · 高性能 ${knowledgeGraphState.renderStats.visibleNodes}/${knowledgeGraphState.renderStats.fullNodes} 节点`
+        ? ` · 高性能 ${knowledgeGraphState.renderStats.visibleNodes}/${knowledgeGraphState.renderStats.fullNodes} 节点 · ${knowledgeGraphState.renderStats.visibleLinks}/${knowledgeGraphState.renderStats.fullLinks} 边 · 标签 ${knowledgeGraphState.renderStats.linkLabelDomCount}`
         : "";
       setText("knowledgeGraphMotionStatus", `${motion}${renderMode} · 缩放 ${knowledgeGraphScaleLabel()}${perfText}`);
     }

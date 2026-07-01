@@ -19779,12 +19779,15 @@ class SystemServiceTests(unittest.TestCase):
             'knowledgeGraphState.performanceMode === "large" && result.links.length',
             "rerenderKnowledgeGraphExplorer();",
             "linkLabelDomCount",
+            '${knowledgeGraphState.renderStats.visibleLinks}/${knowledgeGraphState.renderStats.fullLinks} 边',
+            "标签 ${knowledgeGraphState.renderStats.linkLabelDomCount}",
             'svg.querySelectorAll(".graph-link-label").length',
         ]:
             self.assertIn(fragment, ui)
         for fragment in [
             "link_label_dom_count",
             "renderStats?.linkLabelDomCount",
+            "graph_performance_label_budget_status",
             "path_link_labels",
             "path_next_hop_link_labels",
         ]:
