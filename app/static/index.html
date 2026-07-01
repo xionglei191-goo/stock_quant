@@ -7140,9 +7140,9 @@
       setText("knowledgeGraphNodeType", `${graphNodeTypeLabel(node.type)} · ${graphRef(node.id)}`);
       const meta = node.meta || {};
       $("knowledgeGraphNodeMeta").innerHTML = [
-        `<span class="badge">${graphNodeTypeLabel(node.type)}</span>`,
-        meta.status ? `<span class="badge ${meta.status === "open" ? "warn" : ""}">${statusLabel(meta.status)}</span>` : "",
-        meta.market ? `<span class="badge ok">${meta.market}</span>` : "",
+        `<span class="badge">${escapeHtml(graphNodeTypeLabel(node.type))}</span>`,
+        meta.status ? `<span class="badge ${meta.status === "open" ? "warn" : ""}">${escapeHtml(statusLabel(meta.status))}</span>` : "",
+        meta.market ? `<span class="badge ok">${escapeHtml(meta.market)}</span>` : "",
         meta.confidence != null ? `<span class="badge">置信 ${formatScore(meta.confidence)}</span>` : "",
         renderAdvancedTrace("节点追溯", graphNodeTrace(node)),
       ].filter(Boolean).join("");
@@ -7275,7 +7275,7 @@
       setText("knowledgeGraphLinkCount", `关系 ${layout.links.length}/${model.links.length}`);
       setText("knowledgeGraphFocusLabel", `${knowledgeGraphState.scope === "global" ? "全局图" : "局部图"} · 焦点 ${graphNodeDisplayLabel(knowledgeGraphState.focusId, "-")}`);
       const legendTypes = [...new Set(layout.nodes.map((node) => node.type))];
-      $("knowledgeGraphLegend").innerHTML = legendTypes.map((type) => `<span><i style="background:${graphNodeColor(type)}"></i>${graphNodeTypeLabel(type)}</span>`).join("");
+      $("knowledgeGraphLegend").innerHTML = legendTypes.map((type) => `<span><i style="background:${graphNodeColor(type)}"></i>${escapeHtml(graphNodeTypeLabel(type))}</span>`).join("");
       renderKnowledgeGraphFilterChips();
       const transform = knowledgeGraphState.transform;
       const graphStage = svg.closest(".graph-stage");
