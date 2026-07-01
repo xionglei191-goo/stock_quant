@@ -5890,16 +5890,17 @@
       return Boolean(node && (["event", "evidence", "research", "decision"].includes(node.type) || ["research", "evidence"].includes(node.community)));
     }
 
-    function graphNextHopPriority(node, link = null) {
+    function graphNextHopPriority(node, link = null, sourceCommunity = "") {
       if (!node) return 0;
       const linkWeight = Number(link?.weight || 1) * 24;
       const knowledgeBonus = graphKnowledgeNode(node) ? 180 : 0;
-      const bridgeBonus = node.community && node.community !== graphCommunityForType(graphNodeById(knowledgeGraphState.focusId).type) ? 34 : 0;
+      const bridgeBonus = sourceCommunity && node.community && node.community !== sourceCommunity ? 34 : 0;
       return graphNodePriority(node, { focusId: knowledgeGraphState.focusId }) + knowledgeBonus + bridgeBonus + linkWeight;
     }
 
     function graphPathNextHops(nodeId, limit = 3) {
       const seen = new Set();
+      const sourceCommunity = knowledgeGraphState.nodeById.get(nodeId)?.community || "";
       return knowledgeGraphState.links
         .filter((item) => item.source === nodeId || item.target === nodeId)
         .map((item) => ({
@@ -5907,7 +5908,7 @@
           node: knowledgeGraphState.nodeById.get(item.source === nodeId ? item.target : item.source),
         }))
         .filter((item) => item.node && !knowledgeGraphState.pathNodeIds.has(item.node.id))
-        .sort((a, b) => graphNextHopPriority(b.node, b.link) - graphNextHopPriority(a.node, a.link) || String(a.node.id).localeCompare(String(b.node.id)))
+        .sort((a, b) => graphNextHopPriority(b.node, b.link, sourceCommunity) - graphNextHopPriority(a.node, a.link, sourceCommunity) || String(a.node.id).localeCompare(String(b.node.id)))
         .filter((item) => {
           if (seen.has(item.node.id)) return false;
           seen.add(item.node.id);
