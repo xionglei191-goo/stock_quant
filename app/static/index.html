@@ -6543,7 +6543,7 @@
 
     function graphLayoutTargetForNode(node, nodeById, width, height) {
       const center = { x: width / 2, y: height / 2 };
-      const anchor = node.localAnchorId ? nodeById[node.localAnchorId] : null;
+      const anchor = node.localAnchorId ? nodeById.get(node.localAnchorId) : null;
       if (anchor) return { x: anchor.x, y: anchor.y };
       if (node.id === knowledgeGraphState.focusId) return center;
       const communityCenter = graphClusterCenter(node.type, width, height);
@@ -6558,7 +6558,7 @@
     function tickKnowledgeGraphLayout(width, height) {
       const liveNodes = knowledgeGraphState.nodes;
       const liveLinks = knowledgeGraphState.links;
-      const nodeById = Object.fromEntries(liveNodes.map((node) => [node.id, node]));
+      const nodeById = knowledgeGraphState.nodeById;
       const centerX = width / 2;
       const centerY = height / 2;
       const alpha = knowledgeGraphState.alpha;
@@ -6600,8 +6600,8 @@
         }
       });
       liveLinks.forEach((link) => {
-        const a = nodeById[link.source];
-        const b = nodeById[link.target];
+        const a = nodeById.get(link.source);
+        const b = nodeById.get(link.target);
         if (!a || !b) return;
         const dx = b.x - a.x;
         const dy = b.y - a.y;

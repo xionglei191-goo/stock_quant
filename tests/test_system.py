@@ -19808,6 +19808,10 @@ class SystemServiceTests(unittest.TestCase):
             "knowledgeGraphState.nodeById.has(id)",
             "knowledgeGraphState.nodeById.get(knowledgeGraphState.selectedId)",
             'nodeById.get(element.getAttribute("data-node-id"))',
+            "const nodeById = knowledgeGraphState.nodeById",
+            "nodeById.get(node.localAnchorId)",
+            "nodeById.get(link.source)",
+            "nodeById.get(link.target)",
             "function graphPathNextHops(nodeId, limit = 3)",
             'const sourceCommunity = knowledgeGraphState.nodeById.get(nodeId)?.community || ""',
             "knowledgeGraphState.nodeById.get(item.source === nodeId ? item.target : item.source)",
@@ -19823,6 +19827,7 @@ class SystemServiceTests(unittest.TestCase):
             'svg.querySelectorAll(".graph-link-label").length',
         ]:
             self.assertIn(fragment, ui)
+        self.assertNotIn("Object.fromEntries(liveNodes.map((node) => [node.id, node]))", ui)
         for fragment in [
             "link_label_dom_count",
             "renderStats?.linkLabelDomCount",
