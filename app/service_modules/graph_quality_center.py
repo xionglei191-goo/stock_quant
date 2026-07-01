@@ -12,6 +12,9 @@ from .graph_intelligence import graph_node_identity
 
 
 RAW_LABEL_MARKERS = ("obsidian", "relationship", "pos_", "doc_", "hold_", "issuer_", "security_", "sec_", "md_", "vp_rr_", "rr_", "srr_")
+QUALITY_REMEDIATION_USAGE_BOUNDARY = "graph_quality_remediation_is_dry_run_local_public_or_provided_data_only_no_broker_no_trade_execution"
+SOURCE_QUEUE_QUALITY_CHECKS = {"edge_density", "community_count", "layer_count", "hub_dominance", "leaf_ratio", "graph_fragmentation"}
+QUALITY_RECONCILE_CHECKS = {"duplicate_labels", "display_duplicate_edges", "duplicate_edges"}
 
 RELATIONSHIP_TYPE_LABELS = {
     "industry_position": "产业链位置",
@@ -562,6 +565,85 @@ def _enhancement_actions(target: knowledge_graph_bulk.BulkGraphTarget, readiness
     return actions
 
 
+def _quality_remediation_actions(
+    target: knowledge_graph_bulk.BulkGraphTarget,
+    quality_gate: Mapping[str, Any],
+    readiness: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    failures = quality_gate.get("failures", []) or []
+    checks = {str(item.get("check", "")) for item in failures if isinstance(item, Mapping)}
+    target_payload = {"issuer_id": target.issuer_id, "security_id": target.security_id, "symbol": target.symbol}
+    actions: list[dict[str, Any]] = []
+    if checks & SOURCE_QUEUE_QUALITY_CHECKS:
+        missing_layers = [str(item) for item in readiness.get("missing_layers", []) or []]
+        thin_layers = [str(item) for item in readiness.get("thin_layers", []) or []]
+        priority_layers = [layer for layer in graph_source_actions.SOURCE_BACKED_LAYERS if layer in set(missing_layers + thin_layers)]
+        actions.append(
+            {
+                "action": "preview_graph_source_input_queue",
+                "label": "预览来源输入队列，优先补齐让图谱变厚的真实数据层",
+                "quality_checks": sorted(checks & SOURCE_QUEUE_QUALITY_CHECKS),
+                "endpoint": "/api/graph/enrichment-runner",
+                "method": "POST",
+                "default_execute": False,
+                "payload": {
+                    "market": payload.get("market", "A,U"),
+                    "issuer_ids": [target.issuer_id],
+                    "limit": 1,
+                    "batch_size": 1,
+                    "priority_layers": ",".join(priority_layers or graph_source_actions.SOURCE_BACKED_LAYERS),
+                    "quality_mode": "fast",
+                    "include_events": False,
+                    "include_relationships": False,
+                    "execute": False,
+                },
+                "next_action": "先补来源层，再重跑展示质量检查。",
+                "usage_boundary": QUALITY_REMEDIATION_USAGE_BOUNDARY,
+            }
+        )
+    if checks & QUALITY_RECONCILE_CHECKS:
+        actions.append(
+            {
+                "action": "preview_company_database_quality_reconcile",
+                "label": "预览公司数据库质量归并，定位重复标签或重复事实边",
+                "quality_checks": sorted(checks & QUALITY_RECONCILE_CHECKS),
+                "endpoint": "/api/company-database/quality/reconcile",
+                "method": "POST",
+                "default_execute": False,
+                "payload": {
+                    "symbols": [target.symbol] if target.symbol else [],
+                    "issuer_ids": [target.issuer_id],
+                    "merge_duplicates": False,
+                    "execute": False,
+                },
+                "next_action": "先 dry-run 审查重复项，人工确认后再执行归并。",
+                "usage_boundary": QUALITY_REMEDIATION_USAGE_BOUNDARY,
+            }
+        )
+    if "raw_label_leaks" in checks:
+        actions.append(
+            {
+                "action": "inspect_graph_label_model",
+                "label": "检查图谱标签模型，修正泄漏到可见文本的内部 ID",
+                "quality_checks": ["raw_label_leaks"],
+                "endpoint": "/api/graph/quality-center",
+                "method": "POST",
+                "default_execute": False,
+                "payload": {
+                    "issuer_ids": [target.issuer_id],
+                    "limit": 1,
+                    "batch_size": 1,
+                    "max_raw_label_leaks": 0,
+                    "execute": False,
+                },
+                "next_action": "定位 raw label 来源后修正展示标签或节点 identity 口径。",
+                "usage_boundary": QUALITY_REMEDIATION_USAGE_BOUNDARY,
+            }
+        )
+    return actions
+
+
 def graph_quality_center(service: Any, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
     payload = payload or {}
     execute = _truthy(payload.get("execute", False))
@@ -586,6 +668,7 @@ def graph_quality_center(service: Any, payload: Mapping[str, Any] | None = None,
         graph = service.query_graph(filters)
         readiness = service.graph_knowledge_network_readiness(filters, actor=actor)
         quality = _graph_quality_snapshot(graph, readiness, payload)
+        quality["remediation_actions"] = _quality_remediation_actions(target, quality, readiness, payload)
         actions = _enhancement_actions(target, readiness, payload)
         item = {
             "issuer_id": target.issuer_id,

@@ -5539,6 +5539,10 @@
       return item.actual !== undefined ? String(item.actual) : "-";
     }
 
+    function graphQualityRemediationForCheck(actions = [], check = "") {
+      return (actions || []).find((action) => (action.quality_checks || []).includes(check)) || null;
+    }
+
     function knowledgeGraphQualityCenterPayload() {
       const payload = {
         market: "A,U",
@@ -5573,6 +5577,7 @@
       const duplicateLabels = Array.isArray(gate.duplicate_labels) ? gate.duplicate_labels.length : 0;
       const rawLeaks = Array.isArray(gate.raw_label_leaks) ? gate.raw_label_leaks.length : 0;
       const displayDuplicateEdges = Number(structure.duplicate_edge_count || 0);
+      const remediationActions = Array.isArray(gate.remediation_actions) ? gate.remediation_actions : [];
       const summaryRows = [
         { check: "duplicate_labels", status: duplicateLabels ? "needs_attention" : "passed", actual: duplicateLabels, expected_max: gate.thresholds?.max_duplicate_labels ?? 0, note: "同名节点会降低多跳辨识度。" },
         { check: "raw_label_leaks", status: rawLeaks ? "needs_attention" : "passed", actual: rawLeaks, expected_max: gate.thresholds?.max_raw_label_leaks ?? 0, note: "展示文本不得暴露 issuer_/chain_/event_ 等内部 ID。" },
@@ -5586,7 +5591,9 @@
         : [];
       if ($("knowledgeGraphQualityGateRows")) {
         $("knowledgeGraphQualityGateRows").innerHTML = rows(displayRows, "暂无展示质量检查", (row) => {
-          return `<tr data-graph-quality-check="${escapeHtml(row.check || "")}"><td>${escapeHtml(graphQualityCheckLabel(row.check))}</td><td><span class="badge ${row.status === "passed" ? "ok" : "warn"}">${escapeHtml(statusLabel(row.status || "needs_attention"))}</span></td><td>${escapeHtml(graphQualityValue(row))}</td><td>${escapeHtml(row.note || "")}${renderAdvancedTrace("展示质量追溯", row)}</td></tr>`;
+          const remediation = graphQualityRemediationForCheck(remediationActions, row.check || "");
+          const remediationText = remediation ? metaLine("处理动作", `${remediation.label || remediation.action || "-"} · ${remediation.endpoint || "-"}`) : "";
+          return `<tr data-graph-quality-check="${escapeHtml(row.check || "")}"><td>${escapeHtml(graphQualityCheckLabel(row.check))}</td><td><span class="badge ${row.status === "passed" ? "ok" : "warn"}">${escapeHtml(statusLabel(row.status || "needs_attention"))}</span></td><td>${escapeHtml(graphQualityValue(row))}</td><td>${escapeHtml(row.note || "")}${remediationText}${renderAdvancedTrace("展示质量追溯", { ...row, remediation_action: remediation })}</td></tr>`;
         });
       }
       const nodeCount = Number(structure.node_count || 0);

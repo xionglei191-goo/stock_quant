@@ -19697,9 +19697,12 @@ class SystemServiceTests(unittest.TestCase):
             "checkKnowledgeGraphDisplayQuality",
             "knowledgeGraphQualityCenterPayload",
             "renderKnowledgeGraphQualityGate",
+            "graphQualityRemediationForCheck",
             "/api/graph/quality-center",
             "knowledgeGraphQualityGateChips",
             "knowledgeGraphQualityGateRows",
+            "remediation_actions",
+            "处理动作",
             "max_duplicate_labels: 0",
             "max_raw_label_leaks: 0",
             "max_display_duplicate_edges: 0",
@@ -22597,7 +22600,7 @@ class SystemServiceTests(unittest.TestCase):
         result = self.router.dispatch(
             "POST",
             "/api/graph/quality-center",
-            {"market": "A", "limit": 1, "min_edges": 1, "min_communities": 1, "min_layers": 1},
+            {"market": "A", "limit": 1, "min_edges": 1, "min_communities": 1, "min_layers": 9},
             actor="analyst",
             role="analyst",
         )
@@ -22615,6 +22618,10 @@ class SystemServiceTests(unittest.TestCase):
         self.assertIn("ingest_source_documents", action_names)
         self.assertIn("extract_and_link_evidence", action_names)
         self.assertIn("structure_research_reports", action_names)
+        remediation_actions = {item["action"]: item for item in row["quality_gate"]["remediation_actions"]}
+        self.assertIn("preview_graph_source_input_queue", remediation_actions)
+        self.assertEqual(remediation_actions["preview_graph_source_input_queue"]["endpoint"], "/api/graph/enrichment-runner")
+        self.assertFalse(remediation_actions["preview_graph_source_input_queue"]["default_execute"])
         self.assertFalse(result.data["live_execution_allowed"])
 
     def test_graph_quality_center_actions_follow_remaining_missing_layers(self) -> None:
@@ -22691,6 +22698,41 @@ class SystemServiceTests(unittest.TestCase):
                 runner_by_layer[layer]["required_source_fields"],
                 graph_source_actions.REQUIRED_SOURCE_FIELDS[layer],
             )
+
+    def test_graph_quality_gate_remediation_routes_duplicate_edges_to_reconcile(self) -> None:
+        duplicate_relationship = {
+            "issuer_id": "issuer_001",
+            "security_id": "sec_001",
+            "subject_type": "company",
+            "subject_id": "issuer_001",
+            "object_type": "security",
+            "object_id": "sec_001",
+            "relationship_type": "listed_security",
+            "relationship_status": "active",
+            "review_status": "auto_generated",
+        }
+        for relationship_id in ["rel_quality_duplicate_listing_a", "rel_quality_duplicate_listing_b"]:
+            response = self.router.dispatch(
+                "POST",
+                "/api/company-relationships",
+                {"relationship_id": relationship_id, **duplicate_relationship},
+                role="analyst",
+            )
+            self.assertTrue(response.success, response.error)
+
+        result = self.service.graph_quality_center(
+            {"market": "A", "limit": 1, "min_edges": 0, "min_communities": 1, "min_layers": 1},
+            actor="test",
+        )
+
+        quality_gate = result["items"][0]["quality_gate"]
+        self.assertIn("display_duplicate_edges", {failure["check"] for failure in quality_gate["failures"]})
+        remediation_by_action = {item["action"]: item for item in quality_gate["remediation_actions"]}
+        reconcile = remediation_by_action["preview_company_database_quality_reconcile"]
+        self.assertEqual(reconcile["endpoint"], "/api/company-database/quality/reconcile")
+        self.assertEqual(reconcile["payload"]["symbols"], ["DEMO"])
+        self.assertFalse(reconcile["payload"]["merge_duplicates"])
+        self.assertFalse(reconcile["default_execute"])
 
     def test_graph_quality_center_get_route_uses_query_thresholds(self) -> None:
         result = self.router.dispatch(
@@ -23280,6 +23322,9 @@ class SystemServiceTests(unittest.TestCase):
             "max_duplicate_edges",
             "默认 `4`",
             "quality_gate",
+            "remediation_actions",
+            "/api/graph/enrichment-runner",
+            "/api/company-database/quality/reconcile",
             "structure",
             "raw_structure",
             "automation_allowed=false",
