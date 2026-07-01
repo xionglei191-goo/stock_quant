@@ -7258,9 +7258,10 @@
       const transform = knowledgeGraphState.transform;
       const graphStage = svg.closest(".graph-stage");
       if (graphStage) graphStage.classList.toggle("is-performance-mode", knowledgeGraphState.performanceMode === "large");
+      const layoutNodeById = new Map(layout.nodes.map((node) => [node.id, node]));
       const edgeMarkup = layout.links.map((link) => {
-        const source = layout.nodes.find((node) => node.id === link.source);
-        const target = layout.nodes.find((node) => node.id === link.target);
+        const source = layoutNodeById.get(link.source);
+        const target = layoutNodeById.get(link.target);
         if (!source || !target) return "";
         const mx = (source.x + target.x) / 2;
         const my = (source.y + target.y) / 2;
