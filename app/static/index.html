@@ -787,11 +787,23 @@
       stroke-width: 1.4;
       opacity: 0.72;
       marker-end: url(#graphArrowMarker);
+      cursor: pointer;
+    }
+    .graph-link-svg:focus-visible {
+      outline: none;
+      stroke: #2563eb;
+      stroke-width: 3px !important;
+      opacity: 1;
     }
     .graph-link-svg.is-highlighted {
       stroke: var(--blue);
       stroke-width: 2.2;
       opacity: 0.95;
+    }
+    .graph-link-svg.is-selected-link {
+      stroke: #111827;
+      stroke-width: 3.2px !important;
+      opacity: 1;
     }
     .graph-link-svg.is-path-link {
       stroke: #0f172a;
@@ -810,6 +822,10 @@
       pointer-events: none;
     }
     .graph-link-label.is-highlighted {
+      opacity: 1;
+    }
+    .graph-link-label.is-selected-link {
+      fill: #111827;
       opacity: 1;
     }
     .graph-stage.is-performance-mode .graph-link-label:not(.is-highlighted):not(.is-path-link) {
@@ -3500,9 +3516,11 @@
       nodes: [],
       links: [],
       nodeById: new Map(),
+      linkById: new Map(),
       communitySummaries: [],
       communityNodesByKey: new Map(),
       selectedId: "",
+      selectedLinkId: "",
       focusId: "",
       search: "",
       depth: 3,
@@ -6081,6 +6099,7 @@
           securityId: activeEntitySecurityId || "",
           focusId: knowledgeGraphState.focusId || "",
           selectedId: knowledgeGraphState.selectedId || "",
+          selectedLinkId: knowledgeGraphState.selectedLinkId || "",
           scope: knowledgeGraphState.scope || "local",
           depth: Number(knowledgeGraphState.depth || 3),
           search: knowledgeGraphState.search || "",
@@ -6147,6 +6166,8 @@
       const keepVisible = (ids = []) => (Array.isArray(ids) ? ids.map(String).filter((id) => visibleIds.has(id)) : []);
       if (state.focusId && visibleIds.has(String(state.focusId))) knowledgeGraphState.focusId = String(state.focusId);
       if (state.selectedId && visibleIds.has(String(state.selectedId))) knowledgeGraphState.selectedId = String(state.selectedId);
+      const visibleLinkIds = new Set((knowledgeGraphState.fullLinks || []).map((link) => link.id));
+      knowledgeGraphState.selectedLinkId = visibleLinkIds.has(String(state.selectedLinkId || "")) ? String(state.selectedLinkId) : "";
       knowledgeGraphState.scope = state.scope === "global" ? "global" : "local";
       knowledgeGraphState.depth = Math.max(0, Math.min(6, Number(state.depth ?? knowledgeGraphState.depth ?? 3)));
       knowledgeGraphState.search = String(state.search || "");
@@ -7073,6 +7094,7 @@
         }
         knowledgeGraphState.focusId = nodeId;
         knowledgeGraphState.selectedId = nodeId;
+        knowledgeGraphState.selectedLinkId = "";
         knowledgeGraphState.expandedIds.add(nodeId);
         addKnowledgeGraphTrailNode(nodeId);
         updateKnowledgeGraphFocusPathAnchor(nodeId, previousFocusId);
@@ -7088,6 +7110,7 @@
         return;
       }
       knowledgeGraphState.selectedId = nodeId || "";
+      knowledgeGraphState.selectedLinkId = "";
       if (nodeId) {
         switchKnowledgeGraphFocusNode(nodeId);
         knowledgeGraphState.suppressNextNodeClick = false;
@@ -7150,6 +7173,10 @@
       return knowledgeGraphState.nodeById.get(nodeId) || { id: nodeId, label: graphRef(nodeId), fullLabel: graphRef(nodeId), type: "evidence" };
     }
 
+    function graphLinkById(linkId) {
+      return knowledgeGraphState.linkById.get(linkId) || null;
+    }
+
     function sanitizeGraphTraceValue(value, key = "") {
       if (Array.isArray(value)) {
         if (key === "source_data_ids") return `行情明细 ${value.length} 条`;
@@ -7175,6 +7202,21 @@
         label: node.fullLabel || node.label || graphRef(node.id),
         type: graphNodeTypeLabel(node.type),
         meta: sanitizeGraphTraceValue(node.meta || {}),
+      };
+    }
+
+    function graphLinkTrace(link) {
+      const source = graphNodeById(link.source);
+      const target = graphNodeById(link.target);
+      const strength = graphLinkStrength(link);
+      return {
+        label: graphEdgeLabel(link.type, link.label),
+        source: source.fullLabel || source.label || graphRef(link.source),
+        target: target.fullLabel || target.label || graphRef(link.target),
+        weight: Number(link.weight || 0),
+        confidence: Number(strength.confidence || 0),
+        stroke_width: Number(strength.strokeWidth || 0),
+        meta: sanitizeGraphTraceValue(link.meta || {}),
       };
     }
 
@@ -7216,6 +7258,7 @@
       addKnowledgeGraphFocusHistory(targetId);
       knowledgeGraphState.focusId = targetId;
       knowledgeGraphState.selectedId = targetId;
+      knowledgeGraphState.selectedLinkId = "";
       knowledgeGraphState.expandedIds.add(targetId);
       Object.keys(knowledgeGraphState.positions || {}).forEach((id) => {
         if (!knowledgeGraphState.fixedIds.has(id)) delete knowledgeGraphState.positions[id];
@@ -7234,6 +7277,7 @@
         return;
       }
       knowledgeGraphState.selectedId = nodeId;
+      knowledgeGraphState.selectedLinkId = "";
       knowledgeGraphState.expandedIds.add(nodeId);
       addKnowledgeGraphTrailNode(nodeId);
       if (mode === "path") {
@@ -7254,6 +7298,7 @@
       knowledgeGraphState.focusHistoryIds = [previousId, currentId, ...knowledgeGraphState.focusHistoryIds.filter((id) => id !== previousId && id !== currentId)].slice(0, 10);
       knowledgeGraphState.focusId = previousId;
       knowledgeGraphState.selectedId = previousId;
+      knowledgeGraphState.selectedLinkId = "";
       knowledgeGraphState.expandedIds.add(previousId);
       updateKnowledgeGraphFocusPathAnchor(previousId, currentId);
       knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.82);
@@ -7343,6 +7388,7 @@
         knowledgeGraphState.scope = data.scope === "global" ? "global" : "local";
         knowledgeGraphState.depth = Number(data.depth || knowledgeGraphState.depth || 2);
         knowledgeGraphState.selectedId = String(data.selectedId || knowledgeGraphState.selectedId || "");
+        knowledgeGraphState.selectedLinkId = "";
         knowledgeGraphState.trailIds = Array.isArray(data.trailIds) ? data.trailIds.map(String) : [];
         knowledgeGraphState.focusHistoryIds = Array.isArray(data.focusHistoryIds) ? data.focusHistoryIds.map(String) : [...knowledgeGraphState.focusHistoryIds];
         knowledgeGraphState.fixedIds = new Set(Array.isArray(data.fixedIds) ? data.fixedIds.map(String) : [...knowledgeGraphState.fixedIds]);
@@ -7410,7 +7456,43 @@
       renderKnowledgeGraphTrail();
     }
 
+    function selectKnowledgeGraphLink(linkId = "") {
+      const link = graphLinkById(linkId);
+      if (!link) return;
+      knowledgeGraphState.selectedLinkId = link.id;
+      knowledgeGraphState.selectedId = "";
+      renderKnowledgeGraphInspector();
+      updateKnowledgeGraphHighlight();
+    }
+    window.selectKnowledgeGraphLink = selectKnowledgeGraphLink;
+
+    function renderKnowledgeGraphLinkInspector(link) {
+      const source = graphNodeById(link.source);
+      const target = graphNodeById(link.target);
+      const edgeLabel = graphEdgeLabel(link.type, link.label);
+      const strength = graphLinkStrength(link);
+      setText("knowledgeGraphNodeTitle", `${source.fullLabel || source.label || graphRef(link.source)} -> ${target.fullLabel || target.label || graphRef(link.target)}`);
+      setText("knowledgeGraphNodeType", `关系 · ${edgeLabel}`);
+      $("knowledgeGraphNodeMeta").innerHTML = [
+        `<span class="badge">${escapeHtml(edgeLabel)}</span>`,
+        `<span class="badge ok">强度 ${escapeHtml(strength.strokeWidth.toFixed(2))}</span>`,
+        strength.confidence ? `<span class="badge">置信 ${escapeHtml(formatScore(strength.confidence))}</span>` : "",
+        Number(link.weight || 0) ? `<span class="badge">权重 ${escapeHtml(Number(link.weight || 0).toFixed(2))}</span>` : "",
+        renderAdvancedTrace("关系追溯", graphLinkTrace(link)),
+      ].filter(Boolean).join("");
+      $("knowledgeGraphNeighborRows").innerHTML = [
+        `<button type="button" class="graph-neighbor" data-action="focus-graph-node" data-node-id="${escapeHtml(source.id)}"><strong>${escapeHtml(source.label || graphRef(source.id))}</strong><span class="small-note">起点 · ${escapeHtml(graphNodeTypeLabel(source.type))}</span></button>`,
+        `<button type="button" class="graph-neighbor" data-action="focus-graph-node" data-node-id="${escapeHtml(target.id)}"><strong>${escapeHtml(target.label || graphRef(target.id))}</strong><span class="small-note">终点 · ${escapeHtml(graphNodeTypeLabel(target.type))}</span></button>`,
+      ].join("");
+      renderKnowledgeGraphPathPanel();
+    }
+
     function renderKnowledgeGraphInspector() {
+      const selectedLink = graphLinkById(knowledgeGraphState.selectedLinkId);
+      if (selectedLink) {
+        renderKnowledgeGraphLinkInspector(selectedLink);
+        return;
+      }
       const node = knowledgeGraphState.nodeById.get(knowledgeGraphState.selectedId) || knowledgeGraphState.nodeById.get(knowledgeGraphState.focusId) || knowledgeGraphState.nodes[0];
       if (!node) {
         setText("knowledgeGraphNodeTitle", "未选择节点");
@@ -7484,13 +7566,19 @@
 
     function knowledgeGraphHighlightContext() {
       const selected = knowledgeGraphState.selectedId;
+      const selectedLinkId = knowledgeGraphState.selectedLinkId;
+      const selectedLink = graphLinkById(selectedLinkId);
+      const selectedLinkNodeIds = new Set(selectedLink ? [selectedLink.source, selectedLink.target] : []);
       const neighborIds = new Set([selected]);
       knowledgeGraphState.links.forEach((link) => {
         if (link.source === selected) neighborIds.add(link.target);
         if (link.target === selected) neighborIds.add(link.source);
       });
+      selectedLinkNodeIds.forEach((id) => neighborIds.add(id));
       return {
         selected,
+        selectedLinkId,
+        selectedLinkNodeIds,
         neighborIds,
         hasPath: knowledgeGraphState.pathNodeIds.size > 0,
       };
@@ -7500,19 +7588,25 @@
       const isSelected = id === context.selected;
       const isExpanded = knowledgeGraphState.expandedIds.has(id);
       const isPathNode = knowledgeGraphState.pathNodeIds.has(id);
+      const isSelectedLinkEndpoint = context.selectedLinkNodeIds?.has(id);
       const selectedDimmed = Boolean(context.selected) && !context.neighborIds.has(id) && !isPathNode;
+      const selectedLinkDimmed = Boolean(context.selectedLinkId) && !isSelectedLinkEndpoint && !isPathNode;
       const pathDimmed = context.hasPath && !isPathNode && !isSelected;
-      return { isSelected, isExpanded, isPathNode, isDimmed: selectedDimmed || pathDimmed };
+      return { isSelected, isExpanded, isPathNode, isDimmed: selectedDimmed || selectedLinkDimmed || pathDimmed };
     }
 
     function knowledgeGraphLinkHighlightState(element, context = knowledgeGraphHighlightContext()) {
+      const linkId = element.getAttribute("data-link-id");
       const source = element.getAttribute("data-source");
       const target = element.getAttribute("data-target");
+      const isSelectedLink = linkId === context.selectedLinkId;
       const highlighted = Boolean(context.selected) && (source === context.selected || target === context.selected);
-      const pathHighlighted = knowledgeGraphState.pathLinkIds.has(element.getAttribute("data-link-id"));
+      const selectedLinkEndpoint = Boolean(context.selectedLinkId) && context.selectedLinkNodeIds?.has(source) && context.selectedLinkNodeIds?.has(target);
+      const pathHighlighted = knowledgeGraphState.pathLinkIds.has(linkId);
       const selectedDimmed = Boolean(context.selected) && !highlighted && !pathHighlighted;
+      const selectedLinkDimmed = Boolean(context.selectedLinkId) && !isSelectedLink && !selectedLinkEndpoint && !pathHighlighted;
       const pathDimmed = knowledgeGraphState.pathLinkIds.size > 0 && !pathHighlighted && !highlighted;
-      return { highlighted, pathHighlighted, isDimmed: selectedDimmed || pathDimmed };
+      return { highlighted: highlighted || selectedLinkEndpoint, pathHighlighted, isSelectedLink, isDimmed: selectedDimmed || selectedLinkDimmed || pathDimmed };
     }
 
     function updateKnowledgeGraphHighlight() {
@@ -7529,6 +7623,7 @@
         const state = knowledgeGraphLinkHighlightState(element, context);
         element.classList.toggle("is-highlighted", state.highlighted);
         element.classList.toggle("is-path-link", state.pathHighlighted);
+        element.classList.toggle("is-selected-link", state.isSelectedLink);
         element.classList.toggle("is-dimmed", state.isDimmed);
       });
       updateKnowledgeGraphLabels();
@@ -7560,6 +7655,7 @@
       knowledgeGraphState.nodes = layout.nodes;
       knowledgeGraphState.links = layout.links;
       knowledgeGraphState.nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+      knowledgeGraphState.linkById = new Map(layout.links.map((link) => [link.id, link]));
       knowledgeGraphState.communitySummaries = graphCommunitySummaries(layout.nodes, layout.links);
       knowledgeGraphState.communityNodesByKey = new Map();
       layout.nodes.forEach((node) => {
@@ -7587,6 +7683,9 @@
       knowledgeGraphState.focusId = filtered.focusId || knowledgeGraphState.focusId;
       if (!knowledgeGraphState.nodeById.has(knowledgeGraphState.selectedId)) {
         knowledgeGraphState.selectedId = knowledgeGraphState.focusId || layout.nodes[0]?.id || "";
+      }
+      if (knowledgeGraphState.selectedLinkId && !knowledgeGraphState.linkById.has(knowledgeGraphState.selectedLinkId)) {
+        knowledgeGraphState.selectedLinkId = "";
       }
       $("knowledgeGraphEmpty").style.display = layout.nodes.length ? "none" : "grid";
       setText("knowledgeGraphNodeCount", `节点 ${layout.nodes.length}/${model.nodes.length}`);
@@ -7620,7 +7719,7 @@
         const confidenceText = strength.confidence ? ` · 置信 ${Math.round(strength.confidence * 100)}%` : "";
         const directionLabel = `${source.label} → ${target.label} · ${edgeLabel} · 强度 ${strength.strokeWidth.toFixed(2)}${confidenceText}`;
         const labelMarkup = renderLabel ? `<text class="graph-link-label" data-link-id="${linkId}" data-source="${sourceId}" data-target="${targetId}" x="${mx.toFixed(1)}" y="${my.toFixed(1)}">${escapeHtml(edgeLabel)}</text>` : "";
-        return `<line class="graph-link-svg" data-link-id="${linkId}" data-source="${sourceId}" data-target="${targetId}" data-weight="${Number(link.weight || 0).toFixed(2)}" data-confidence="${strength.confidence.toFixed(2)}" data-strength="${strength.strokeWidth.toFixed(2)}" data-direction-label="${escapeHtml(directionLabel)}" aria-label="${escapeHtml(directionLabel)}" role="img" style="stroke-width:${strength.strokeWidth.toFixed(2)}" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"></line>${labelMarkup}`;
+        return `<line class="graph-link-svg" data-link-id="${linkId}" data-source="${sourceId}" data-target="${targetId}" data-weight="${Number(link.weight || 0).toFixed(2)}" data-confidence="${strength.confidence.toFixed(2)}" data-strength="${strength.strokeWidth.toFixed(2)}" data-direction-label="${escapeHtml(directionLabel)}" aria-label="选择关系 ${escapeHtml(directionLabel)}" role="button" tabindex="0" focusable="true" style="stroke-width:${strength.strokeWidth.toFixed(2)}" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"></line>${labelMarkup}`;
       }).join("");
       const nodeMarkup = layout.nodes.map((node) => {
         const visibleLabel = node.type === "issuer" || node.type === "security" || node.type === "industry" || node.id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(node.id) || graphKnowledgeNode(node) || (node.degree || 0) >= 6;
@@ -7664,6 +7763,19 @@
           if (nodeId && knowledgeGraphState.focusId !== nodeId) switchKnowledgeGraphFocusNode(nodeId);
         });
       });
+      svg.querySelectorAll(".graph-link-svg").forEach((element) => {
+        element.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          selectKnowledgeGraphLink(element.getAttribute("data-link-id") || "");
+        });
+        element.addEventListener("keydown", (event) => {
+          if (!["Enter", " "].includes(event.key)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          selectKnowledgeGraphLink(element.getAttribute("data-link-id") || "");
+        });
+      });
       svg.querySelectorAll(".graph-node-svg").forEach((element) => {
         element.addEventListener("click", (event) => {
           event.stopPropagation();
@@ -7682,6 +7794,7 @@
           if (!node) return;
           knowledgeGraphState.pendingNodePointer = { nodeId, x: event.clientX, y: event.clientY };
           knowledgeGraphState.selectedId = nodeId;
+          knowledgeGraphState.selectedLinkId = "";
           renderKnowledgeGraphInspector();
           updateKnowledgeGraphHighlight();
           svg.setPointerCapture(event.pointerId);
@@ -7853,6 +7966,7 @@
       }, { passive: false });
       svg.addEventListener("pointerdown", (event) => {
         if (event.target.closest(".graph-node-svg")) return;
+        if (event.target.closest(".graph-link-svg")) return;
         knowledgeGraphState.pointer = { x: event.clientX, y: event.clientY, startX: knowledgeGraphState.transform.x, startY: knowledgeGraphState.transform.y };
         svg.setPointerCapture(event.pointerId);
       });
@@ -7897,6 +8011,7 @@
           }
         } else if (!knowledgeGraphState.draggingNodeId) {
           const target = document.elementFromPoint(event.clientX, event.clientY);
+          if (target?.closest?.(".graph-link-svg")) return;
           const nodeElement = target?.closest?.(".graph-node-svg");
           const communityElement = target?.closest?.(".graph-community-label");
           const nodeId = nodeElement?.getAttribute("data-node-id")
@@ -7953,6 +8068,7 @@
           knowledgeGraphState.transform = { x: 0, y: 0, scale: 1 };
           knowledgeGraphState.search = "";
           knowledgeGraphState.selectedId = "";
+          knowledgeGraphState.selectedLinkId = "";
           knowledgeGraphState.positions = {};
           knowledgeGraphState.fixedIds.clear();
           knowledgeGraphState.expandedIds.clear();

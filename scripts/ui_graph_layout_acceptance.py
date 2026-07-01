@@ -252,6 +252,7 @@ def run_graph_layout_acceptance(
     check_trail: bool = True,
     check_saved_subgraph: bool = True,
     check_share_view: bool = False,
+    check_link_selection: bool = False,
     expect_performance_mode: str = "",
     max_chain_node_splits: int = 0,
     check_readiness: bool = True,
@@ -493,6 +494,30 @@ def run_graph_layout_acceptance(
                 link_label_dom_count: Number(window.knowledgeGraphState?.renderStats?.linkLabelDomCount ?? document.querySelectorAll('.graph-link-label').length),
                 render_stats: window.knowledgeGraphState?.renderStats || {{}},
               }};
+              let linkSelection = {{ checked: false }};
+              if ({str(check_link_selection).lower()}) {{
+                const firstLink = document.querySelector('.graph-link-svg');
+                const linkId = firstLink?.getAttribute('data-link-id') || '';
+                if (firstLink && linkId) {{
+                  firstLink.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true }}));
+                  await wait(250);
+                  const selectedLink = document.querySelector(`.graph-link-svg[data-link-id="${{CSS.escape(linkId)}}"]`);
+                  linkSelection = {{
+                    checked: true,
+                    link_id: linkId,
+                    selected_link_id: window.knowledgeGraphState?.selectedLinkId || '',
+                    selected_node_id: window.knowledgeGraphState?.selectedId || '',
+                    selected_link_class: Boolean(selectedLink?.classList.contains('is-selected-link')),
+                    selected_link_focusable: firstLink.getAttribute('role') === 'button' && firstLink.getAttribute('tabindex') === '0',
+                    title: document.querySelector('#knowledgeGraphNodeTitle')?.textContent || '',
+                    type: document.querySelector('#knowledgeGraphNodeType')?.textContent || '',
+                    meta: document.querySelector('#knowledgeGraphNodeMeta')?.textContent || '',
+                    endpoint_buttons: document.querySelectorAll('#knowledgeGraphNeighborRows .graph-neighbor').length,
+                  }};
+                }} else {{
+                  linkSelection = {{ checked: true, link_id: '', error: 'no visible graph link' }};
+                }}
+              }}
               const communityBuckets = new Map();
               nodes.filter((node) => node.community).forEach((node) => {{
                 const bucket = communityBuckets.get(node.community) || {{ community: node.community, count: 0, x: 0, y: 0 }};
@@ -1042,6 +1067,7 @@ def run_graph_layout_acceptance(
                 overlap_pairs: initialGraphSnapshot.overlap_pairs,
                 near_edge_nodes: initialGraphSnapshot.near_edge_nodes,
                 initial_graph: initialGraphSnapshot,
+                link_selection: linkSelection,
                 first_expandable: firstExpandable,
                 expanded_after_click: document.querySelectorAll('.graph-node-svg.is-expanded').length,
                 expansion_after_click: expansionCheck,
@@ -1187,6 +1213,24 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "weighted_edges", "expected": "every visible link has stroke-width strength encoding", "actual": {"links": result.get("links"), "weighted_link_count": result.get("weighted_link_count"), "missing": result.get("missing_weighted_links")}})
             elif int(result.get("links", 0)) >= 4 and len(result.get("edge_strength_buckets") or []) < 2:
                 failures.append({"check": "weighted_edge_variance", "expected": "at least two visible edge strength buckets", "actual": result.get("edge_strength_buckets")})
+        if check_link_selection:
+            selection = result.get("link_selection") if isinstance(result.get("link_selection"), dict) else {}
+            if not selection.get("checked") or not selection.get("link_id"):
+                failures.append({"check": "link_selection_target", "expected": "visible graph link can be selected", "actual": selection})
+            elif selection.get("selected_link_id") != selection.get("link_id"):
+                failures.append({"check": "link_selection_state", "expected": selection.get("link_id"), "actual": selection})
+            elif selection.get("selected_node_id"):
+                failures.append({"check": "link_selection_clears_node", "expected": "selected node cleared when selecting an edge", "actual": selection})
+            elif not selection.get("selected_link_class"):
+                failures.append({"check": "link_selection_highlight", "expected": "selected edge receives is-selected-link", "actual": selection})
+            elif not selection.get("selected_link_focusable"):
+                failures.append({"check": "link_selection_keyboard_access", "expected": "selected edge is keyboard focusable", "actual": selection})
+            elif "关系" not in str(selection.get("type", "")):
+                failures.append({"check": "link_selection_inspector_type", "expected": "inspector switches to relationship view", "actual": selection})
+            elif "强度" not in str(selection.get("meta", "")):
+                failures.append({"check": "link_selection_strength_meta", "expected": "inspector shows edge strength", "actual": selection})
+            elif int(selection.get("endpoint_buttons", 0)) < 2:
+                failures.append({"check": "link_selection_endpoints", "expected": "source and target endpoint buttons", "actual": selection})
         if int(result.get("expanded_after_click", 0)) < 2:
             failures.append({"check": "node_expansion", "expected": ">=2", "actual": result.get("expanded_after_click")})
         expansion = result.get("expansion_after_click") if isinstance(result.get("expansion_after_click"), dict) else {}
@@ -1498,6 +1542,7 @@ def run_graph_layout_acceptance(
             "check_trail": check_trail,
             "check_saved_subgraph": check_saved_subgraph,
             "check_share_view": check_share_view,
+            "check_link_selection": check_link_selection,
             "viewport_width": viewport_width,
             "viewport_height": viewport_height,
             "expect_mobile_layout": expect_mobile_layout,
@@ -1571,6 +1616,7 @@ def main() -> None:
     parser.add_argument("--skip-trail", action="store_true")
     parser.add_argument("--skip-saved-subgraph", action="store_true")
     parser.add_argument("--check-share-view", action="store_true")
+    parser.add_argument("--check-link-selection", action="store_true")
     parser.add_argument("--expect-performance-mode", choices=["", "standard", "large"], default="")
     parser.add_argument("--max-chain-node-splits", type=int, default=0)
     parser.add_argument("--skip-readiness-probe", action="store_true")
@@ -1624,6 +1670,7 @@ def main() -> None:
         check_trail=not args.skip_trail,
         check_saved_subgraph=not args.skip_saved_subgraph,
         check_share_view=args.check_share_view,
+        check_link_selection=args.check_link_selection,
         expect_performance_mode=args.expect_performance_mode,
         max_chain_node_splits=args.max_chain_node_splits,
         check_readiness=not args.skip_readiness_probe,
