@@ -2224,6 +2224,7 @@
                   <button id="graphFitView" title="适配全部可见节点" aria-label="适配全部可见节点">适配</button>
                   <button id="graphCenterFocus" title="居中当前焦点节点" aria-label="居中当前焦点节点">居中</button>
                 </div>
+                <button id="graphShareView">复制视图链接</button>
                 <button id="graphToggleDynamic" class="primary">暂停动态</button>
                 <button id="graphReleaseNodes">释放节点</button>
                 <button id="graphClearLayout">清除布局</button>
@@ -6056,6 +6057,119 @@
       return `ai_quant_graph_subgraph:${focus}`;
     }
 
+    function knowledgeGraphSharePayload() {
+      const transform = knowledgeGraphState.transform || {};
+      return {
+        graph: {
+          issuerId: activeEntityIssuerId || "",
+          securityId: activeEntitySecurityId || "",
+          focusId: knowledgeGraphState.focusId || "",
+          selectedId: knowledgeGraphState.selectedId || "",
+          scope: knowledgeGraphState.scope || "local",
+          depth: Number(knowledgeGraphState.depth || 3),
+          search: knowledgeGraphState.search || "",
+          pathStartId: knowledgeGraphState.pathStartId || "",
+          pathEndId: knowledgeGraphState.pathEndId || "",
+          trailIds: [...new Set(knowledgeGraphState.trailIds || [])].slice(0, 12),
+          focusHistoryIds: [...new Set(knowledgeGraphState.focusHistoryIds || [])].slice(0, 10),
+          expandedIds: [...knowledgeGraphState.expandedIds].slice(0, 24),
+          transform: {
+            x: Math.round(Number(transform.x || 0) * 10) / 10,
+            y: Math.round(Number(transform.y || 0) * 10) / 10,
+            scale: Math.round(Number(transform.scale || 1) * 1000) / 1000,
+          },
+        },
+      };
+    }
+
+    function encodeKnowledgeGraphShareState(payload = knowledgeGraphSharePayload()) {
+      try {
+        return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+      } catch (_error) {
+        return "";
+      }
+    }
+
+    function decodeKnowledgeGraphShareState(value = "") {
+      try {
+        const decoded = JSON.parse(decodeURIComponent(escape(atob(String(value || "")))));
+        return decoded && typeof decoded === "object" ? decoded.graph || null : null;
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function graphShareHash() {
+      const encoded = encodeKnowledgeGraphShareState();
+      return encoded ? `#graph=${encoded}` : "";
+    }
+
+    function graphShareUrl() {
+      const hash = graphShareHash();
+      if (!hash) return window.location.href;
+      return `${window.location.origin}${window.location.pathname}${window.location.search}${hash}`;
+    }
+
+    function graphSharedStateFromLocation() {
+      return decodeKnowledgeGraphShareState(new URLSearchParams(String(window.location.hash || "").replace(/^#/, "")).get("graph") || "");
+    }
+
+    function applyKnowledgeGraphSharedState(shared = null) {
+      const state = shared || graphSharedStateFromLocation();
+      if (!state) return false;
+      knowledgeGraphState.pendingSharedState = state;
+      if (state.issuerId) activeEntityIssuerId = String(state.issuerId);
+      if (state.securityId) activeEntitySecurityId = String(state.securityId);
+      return true;
+    }
+
+    function consumeKnowledgeGraphSharedState() {
+      const state = knowledgeGraphState.pendingSharedState;
+      if (!state) return;
+      knowledgeGraphState.pendingSharedState = null;
+      const visibleIds = new Set((knowledgeGraphState.fullNodes || []).map((node) => node.id));
+      const keepVisible = (ids = []) => (Array.isArray(ids) ? ids.map(String).filter((id) => visibleIds.has(id)) : []);
+      if (state.focusId && visibleIds.has(String(state.focusId))) knowledgeGraphState.focusId = String(state.focusId);
+      if (state.selectedId && visibleIds.has(String(state.selectedId))) knowledgeGraphState.selectedId = String(state.selectedId);
+      knowledgeGraphState.scope = state.scope === "global" ? "global" : "local";
+      knowledgeGraphState.depth = Math.max(0, Math.min(6, Number(state.depth ?? knowledgeGraphState.depth ?? 3)));
+      knowledgeGraphState.search = String(state.search || "");
+      knowledgeGraphState.pathStartId = visibleIds.has(String(state.pathStartId || "")) ? String(state.pathStartId) : "";
+      knowledgeGraphState.pathEndId = visibleIds.has(String(state.pathEndId || "")) ? String(state.pathEndId) : "";
+      knowledgeGraphState.trailIds = keepVisible(state.trailIds);
+      knowledgeGraphState.focusHistoryIds = keepVisible(state.focusHistoryIds);
+      knowledgeGraphState.expandedIds = new Set(keepVisible(state.expandedIds));
+      if (knowledgeGraphState.focusId) knowledgeGraphState.expandedIds.add(knowledgeGraphState.focusId);
+      if (state.transform && Number.isFinite(Number(state.transform.scale))) {
+        knowledgeGraphState.transform = {
+          x: Number(state.transform.x || 0),
+          y: Number(state.transform.y || 0),
+          scale: Math.max(0.35, Math.min(3.2, Number(state.transform.scale || 1))),
+        };
+      }
+      if ($("graphSearch")) $("graphSearch").value = knowledgeGraphState.search;
+      if ($("graphScope")) $("graphScope").value = knowledgeGraphState.scope;
+      if ($("graphDepth")) $("graphDepth").value = String(knowledgeGraphState.depth);
+      knowledgeGraphState.subgraphStatusOverride = "已从分享链接恢复视图";
+    }
+
+    async function shareKnowledgeGraphView() {
+      const url = graphShareUrl();
+      if (window.history?.replaceState) window.history.replaceState(null, "", url);
+      try {
+        await navigator.clipboard?.writeText(url);
+        setText("knowledgeGraphSubgraphStatus", "已复制图谱视图链接");
+      } catch (_error) {
+        setText("knowledgeGraphSubgraphStatus", "图谱视图链接已生成，可从地址栏复制");
+      }
+      return url;
+    }
+    window.graphShareUrl = graphShareUrl;
+    window.decodeKnowledgeGraphShareState = decodeKnowledgeGraphShareState;
+    window.shareKnowledgeGraphView = shareKnowledgeGraphView;
+    window.applyKnowledgeGraphSharedState = applyKnowledgeGraphSharedState;
+    window.consumeKnowledgeGraphSharedState = consumeKnowledgeGraphSharedState;
+
     function loadKnowledgeGraphLayout() {
       const key = graphLayoutStorageKey();
       knowledgeGraphState.layoutKey = key;
@@ -7418,6 +7532,7 @@
       if (knowledgeGraphState.focusId) knowledgeGraphState.expandedIds.add(knowledgeGraphState.focusId);
       if (knowledgeGraphState.focusId && !knowledgeGraphState.focusHistoryIds.length) addKnowledgeGraphFocusHistory(knowledgeGraphState.focusId);
       seedKnowledgeGraphDefaultExpansions(model, knowledgeGraphState.focusId);
+      consumeKnowledgeGraphSharedState();
       loadKnowledgeGraphLayout();
       const filtered = filteredGraphModel(model);
       const rect = svg.getBoundingClientRect();
@@ -7855,6 +7970,11 @@
       if (centerFocus && !centerFocus.dataset.graphControlReady) {
         centerFocus.dataset.graphControlReady = "ready";
         centerFocus.addEventListener("click", () => centerKnowledgeGraphNode());
+      }
+      const shareView = $("graphShareView");
+      if (shareView && !shareView.dataset.graphControlReady) {
+        shareView.dataset.graphControlReady = "ready";
+        shareView.addEventListener("click", () => shareKnowledgeGraphView());
       }
       const dynamic = $("graphToggleDynamic");
       if (dynamic && !dynamic.dataset.graphControlReady) {
@@ -12528,10 +12648,18 @@
       return `opr_${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}`;
     }
     $("reportId").value = currentReportId();
+    const hasSharedGraphState = applyKnowledgeGraphSharedState();
+    if (hasSharedGraphState && knowledgeGraphState.pendingSharedState?.issuerId && $("issuerId")) {
+      $("issuerId").value = knowledgeGraphState.pendingSharedState.issuerId;
+    }
     renderChokepointPlaybook("generic");
     setWorkspaceMode("personal");
     loadDashboard();
     loadCompanyIntelligence(false);
+    if (hasSharedGraphState && knowledgeGraphState.pendingSharedState?.issuerId) {
+      openTab("entity", { mode: "personal" });
+      loadEntity();
+    }
   </script>
 </body>
 </html>

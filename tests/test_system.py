@@ -19895,6 +19895,12 @@ class SystemServiceTests(unittest.TestCase):
             '${knowledgeGraphState.renderStats.visibleLinks}/${knowledgeGraphState.renderStats.fullLinks} 边',
             "标签 ${knowledgeGraphState.renderStats.linkLabelDomCount}",
             'svg.querySelectorAll(".graph-link-label").length',
+            "function knowledgeGraphSharePayload",
+            "function graphShareUrl",
+            "function applyKnowledgeGraphSharedState",
+            "function consumeKnowledgeGraphSharedState",
+            "graphShareView",
+            "已从分享链接恢复视图",
         ]:
             self.assertIn(fragment, ui)
         self.assertNotIn("Object.fromEntries(liveNodes.map((node) => [node.id, node]))", ui)
@@ -19931,6 +19937,11 @@ class SystemServiceTests(unittest.TestCase):
             "mobile_graph_single_column",
             "mobile_graph_overflow",
             "mobile_graph_height",
+            "check_share_view",
+            "--check-share-view",
+            "share_view_hash",
+            "share_view_restore_focus",
+            "share_view_restore_status",
         ]:
             self.assertIn(fragment, script)
 

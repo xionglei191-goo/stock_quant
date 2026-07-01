@@ -249,6 +249,7 @@ def run_graph_layout_acceptance(
     check_view_controls: bool = True,
     check_trail: bool = True,
     check_saved_subgraph: bool = True,
+    check_share_view: bool = False,
     expect_performance_mode: str = "",
     max_chain_node_splits: int = 0,
     check_readiness: bool = True,
@@ -953,6 +954,51 @@ def run_graph_layout_acceptance(
                 }};
                 if (storedRaw) window.localStorage?.removeItem(storageKey);
               }}
+              let shareView = {{ checked: false }};
+              if ({json.dumps(check_share_view)}) {{
+                const expected = {{
+                  focus_id: window.knowledgeGraphState?.focusId || '',
+                  selected_id: window.knowledgeGraphState?.selectedId || '',
+                  scope: window.knowledgeGraphState?.scope || '',
+                  depth: Number(window.knowledgeGraphState?.depth || 0),
+                  search: 'share-gate',
+                  trail_nodes: window.knowledgeGraphState?.trailIds?.length || 0
+                }};
+                window.knowledgeGraphState.search = expected.search;
+                const searchInput = document.querySelector('#graphSearch');
+                if (searchInput) searchInput.value = expected.search;
+                const shareUrl = typeof window.shareKnowledgeGraphView === 'function' ? await window.shareKnowledgeGraphView() : '';
+                const graphParam = new URL(shareUrl || window.location.href).hash.replace(/^#/, '').split('&').find((part) => part.startsWith('graph='));
+                const encoded = graphParam ? graphParam.slice('graph='.length) : '';
+                const decoded = typeof window.decodeKnowledgeGraphShareState === 'function' ? window.decodeKnowledgeGraphShareState(encoded) : null;
+                if (window.knowledgeGraphState) {{
+                  window.knowledgeGraphState.search = '';
+                  window.knowledgeGraphState.selectedId = '';
+                  window.knowledgeGraphState.trailIds = [];
+                  window.knowledgeGraphState.focusHistoryIds = [];
+                  window.knowledgeGraphState.expandedIds = new Set();
+                  window.knowledgeGraphState.transform = {{ x: 0, y: 0, scale: 1 }};
+                }}
+                if (typeof window.applyKnowledgeGraphSharedState === 'function') window.applyKnowledgeGraphSharedState(decoded);
+                if (typeof window.rerenderKnowledgeGraphExplorer === 'function') window.rerenderKnowledgeGraphExplorer();
+                await wait(900);
+                shareView = {{
+                  checked: true,
+                  button: Boolean(document.querySelector('#graphShareView')),
+                  url_has_graph_hash: Boolean(encoded),
+                  decoded_focus_id: decoded?.focusId || '',
+                  decoded_selected_id: decoded?.selectedId || '',
+                  decoded_search: decoded?.search || '',
+                  restored_focus_id: window.knowledgeGraphState?.focusId || '',
+                  restored_selected_id: window.knowledgeGraphState?.selectedId || '',
+                  restored_scope: window.knowledgeGraphState?.scope || '',
+                  restored_depth: Number(window.knowledgeGraphState?.depth || 0),
+                  restored_search: window.knowledgeGraphState?.search || '',
+                  restored_trail_nodes: window.knowledgeGraphState?.trailIds?.length || 0,
+                  restored_status: document.querySelector('#knowledgeGraphSubgraphStatus')?.textContent || '',
+                  expected
+                }};
+              }}
               const visibleTexts = visibleTextsForRawCheck();
               return {{
                 status: 'measured',
@@ -1016,6 +1062,7 @@ def run_graph_layout_acceptance(
                 view_controls: viewControls,
                 trail: trailCheck,
                 saved_subgraph: savedSubgraph,
+                share_view: shareView,
                 persistence,
                 path: pathCheck,
                 motion_status: document.querySelector('#knowledgeGraphMotionStatus')?.textContent || '',
@@ -1310,6 +1357,33 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "saved_subgraph_restore", "expected": "restored trail nodes", "actual": saved_subgraph})
             elif "已恢复" not in str(saved_subgraph.get("status", "")):
                 failures.append({"check": "saved_subgraph_status", "expected": "已恢复", "actual": saved_subgraph})
+        share_view = result.get("share_view") if isinstance(result.get("share_view"), dict) else {}
+        if check_share_view:
+            expected = share_view.get("expected") if isinstance(share_view.get("expected"), dict) else {}
+            if not share_view.get("checked"):
+                failures.append({"check": "share_view", "expected": "checked", "actual": share_view})
+            elif not share_view.get("button"):
+                failures.append({"check": "share_view_button", "expected": "graphShareView", "actual": share_view})
+            elif not share_view.get("url_has_graph_hash"):
+                failures.append({"check": "share_view_hash", "expected": "#graph share state", "actual": share_view})
+            elif share_view.get("decoded_focus_id") != expected.get("focus_id"):
+                failures.append({"check": "share_view_decode_focus", "expected": expected.get("focus_id"), "actual": share_view})
+            elif share_view.get("decoded_selected_id") != expected.get("selected_id"):
+                failures.append({"check": "share_view_decode_selection", "expected": expected.get("selected_id"), "actual": share_view})
+            elif share_view.get("decoded_search") != expected.get("search"):
+                failures.append({"check": "share_view_decode_search", "expected": expected.get("search"), "actual": share_view})
+            elif share_view.get("restored_focus_id") != expected.get("focus_id"):
+                failures.append({"check": "share_view_restore_focus", "expected": expected.get("focus_id"), "actual": share_view})
+            elif share_view.get("restored_selected_id") != expected.get("selected_id"):
+                failures.append({"check": "share_view_restore_selection", "expected": expected.get("selected_id"), "actual": share_view})
+            elif share_view.get("restored_scope") != expected.get("scope") or share_view.get("restored_depth") != expected.get("depth"):
+                failures.append({"check": "share_view_restore_filters", "expected": expected, "actual": share_view})
+            elif share_view.get("restored_search") != expected.get("search"):
+                failures.append({"check": "share_view_restore_search", "expected": expected.get("search"), "actual": share_view})
+            elif int(share_view.get("restored_trail_nodes") or 0) < min(1, int(expected.get("trail_nodes") or 0)):
+                failures.append({"check": "share_view_restore_trail", "expected": expected.get("trail_nodes"), "actual": share_view})
+            elif "分享链接" not in str(share_view.get("restored_status", "")):
+                failures.append({"check": "share_view_restore_status", "expected": "status includes 分享链接", "actual": share_view})
         persistence = result.get("persistence") if isinstance(result.get("persistence"), dict) else {}
         if check_persistence:
             if not persistence.get("checked"):
@@ -1380,6 +1454,7 @@ def run_graph_layout_acceptance(
             "check_view_controls": check_view_controls,
             "check_trail": check_trail,
             "check_saved_subgraph": check_saved_subgraph,
+            "check_share_view": check_share_view,
             "viewport_width": viewport_width,
             "viewport_height": viewport_height,
             "expect_mobile_layout": expect_mobile_layout,
@@ -1448,6 +1523,7 @@ def main() -> None:
     parser.add_argument("--skip-view-controls", action="store_true")
     parser.add_argument("--skip-trail", action="store_true")
     parser.add_argument("--skip-saved-subgraph", action="store_true")
+    parser.add_argument("--check-share-view", action="store_true")
     parser.add_argument("--expect-performance-mode", choices=["", "standard", "large"], default="")
     parser.add_argument("--max-chain-node-splits", type=int, default=0)
     parser.add_argument("--skip-readiness-probe", action="store_true")
@@ -1498,6 +1574,7 @@ def main() -> None:
         check_view_controls=not args.skip_view_controls,
         check_trail=not args.skip_trail,
         check_saved_subgraph=not args.skip_saved_subgraph,
+        check_share_view=args.check_share_view,
         expect_performance_mode=args.expect_performance_mode,
         max_chain_node_splits=args.max_chain_node_splits,
         check_readiness=not args.skip_readiness_probe,
