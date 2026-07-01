@@ -216,6 +216,7 @@ def run_graph_layout_acceptance(
     expect_mobile_layout: bool = False,
     emulate_reduced_motion: bool = False,
     expect_reduced_motion: bool = False,
+    expect_redundant_node_encoding: bool = False,
     max_overlap_pairs: int = 3,
     max_near_edge_nodes: int = 0,
     min_nodes: int = 32,
@@ -403,6 +404,7 @@ def run_graph_layout_acceptance(
                 const match = /translate\\(([-0-9.]+) ([-0-9.]+)\\)/.exec(el.getAttribute('transform') || '');
                 const circle = el.querySelector('circle[fill]') || el.querySelector('circle');
                 const stateNode = window.knowledgeGraphState?.nodes?.find?.((item) => item.id === el.getAttribute('data-node-id')) || {{}};
+                const typeCodeEl = el.querySelector('.graph-node-type-code');
                 return {{
                   id: el.getAttribute('data-node-id'),
                   x: Number(match?.[1] || 0),
@@ -410,6 +412,9 @@ def run_graph_layout_acceptance(
                   r: Number(circle?.getAttribute('r') || 0),
                   type: stateNode.type || '',
                   community: stateNode.community || '',
+                  type_code: el.getAttribute('data-type-code') || '',
+                  type_code_text: (typeCodeEl?.textContent || '').trim(),
+                  has_type_code: Boolean(typeCodeEl && (typeCodeEl.textContent || '').trim()),
                   label: el.classList.contains('has-label'),
                   expanded: el.classList.contains('is-expanded'),
                   hidden_neighbors: Number(stateNode.hiddenNeighborCount || 0)
@@ -430,12 +435,27 @@ def run_graph_layout_acceptance(
                 }}
               }}
               const nearEdgeNodes = nodes.filter((n) => n.x < 75 || n.y < 75 || n.x > rect.width - 75 || n.y > rect.height - 75).length;
+              const visibleTypes = [...new Set(nodes.map((item) => item.type).filter(Boolean))];
+              const encodedNodeTypes = [...new Set(nodes.filter((item) => item.has_type_code && item.type_code && item.type_code === item.type_code_text).map((item) => item.type).filter(Boolean))];
+              const legendEncodings = [...document.querySelectorAll('#knowledgeGraphLegend [data-node-type]')].map((el) => ({{
+                type: el.getAttribute('data-node-type') || '',
+                code: el.getAttribute('data-type-code') || '',
+                text: (el.querySelector('.graph-legend-code')?.textContent || '').trim(),
+                label: (el.textContent || '').trim()
+              }})).filter((item) => item.type);
+              const legendEncodingTypes = [...new Set(legendEncodings.filter((item) => item.code && item.code === item.text).map((item) => item.type))];
               const initialGraphSnapshot = {{
                 nodes: nodes.length,
                 links: document.querySelectorAll('.graph-link-svg').length,
                 labels: document.querySelectorAll('.graph-node-svg.has-label').length,
                 community_labels: document.querySelectorAll('.graph-community-label').length,
                 community_quality_labels: [...document.querySelectorAll('.graph-community-label')].filter((el) => /密度\\d+% · 强度\\d+ · 强边\\d+%/.test(el.textContent || '')).length,
+                visible_node_types: visibleTypes,
+                encoded_node_types: encodedNodeTypes,
+                legend_encoded_types: legendEncodingTypes,
+                legend_encodings: legendEncodings,
+                missing_node_type_codes: visibleTypes.filter((type) => !encodedNodeTypes.includes(type)),
+                missing_legend_type_codes: visibleTypes.filter((type) => !legendEncodingTypes.includes(type)),
                 near_edge_nodes: nearEdgeNodes,
                 overlap_pairs: overlapPairs,
                 link_label_dom_count: Number(window.knowledgeGraphState?.renderStats?.linkLabelDomCount ?? document.querySelectorAll('.graph-link-label').length),
@@ -953,11 +973,16 @@ def run_graph_layout_acceptance(
                 responsive_layout: responsiveLayout,
                 community_labels: initialGraphSnapshot.community_labels,
                 community_quality_labels: initialGraphSnapshot.community_quality_labels,
+                encoded_node_types: initialGraphSnapshot.encoded_node_types,
+                legend_encoded_types: initialGraphSnapshot.legend_encoded_types,
+                legend_encodings: initialGraphSnapshot.legend_encodings,
+                missing_node_type_codes: initialGraphSnapshot.missing_node_type_codes,
+                missing_legend_type_codes: initialGraphSnapshot.missing_legend_type_codes,
                 visible_communities: [...new Set(nodes.map((item) => item.community).filter(Boolean))],
                 community_centroids: communityCentroids,
                 community_spread_ratio: Number((avgCommunityDistance / communityScale).toFixed(4)),
                 min_community_spread_ratio: Number((minCommunityDistance / communityScale).toFixed(4)),
-                visible_node_types: [...new Set(nodes.map((item) => item.type).filter(Boolean))],
+                visible_node_types: initialGraphSnapshot.visible_node_types,
                 industry_nodes: nodes.filter((item) => item.community === 'industry').length,
                 visible_knowledge_types: [...new Set(nodes.filter((item) => ['event', 'evidence', 'research', 'decision'].includes(item.type) || ['research', 'evidence'].includes(item.community)).map((item) => item.type || item.community).filter(Boolean))],
                 performance: perfBeforeInteractions,
@@ -1062,6 +1087,16 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "reduced_motion_status", "expected": "status includes 减少动态", "actual": reduced_motion})
             elif "继续动态" not in str(reduced_motion.get("button_text", "")):
                 failures.append({"check": "reduced_motion_toggle", "expected": "button offers explicit opt-in to motion", "actual": reduced_motion})
+        if expect_redundant_node_encoding:
+            visible_types = set(result.get("visible_node_types") or [])
+            encoded_types = set(result.get("encoded_node_types") or [])
+            legend_types = set(result.get("legend_encoded_types") or [])
+            missing_node_codes = sorted(visible_types - encoded_types)
+            missing_legend_codes = sorted(visible_types - legend_types)
+            if missing_node_codes:
+                failures.append({"check": "node_redundant_type_codes", "expected": "every visible node type has a visible non-color code", "actual": {"missing": missing_node_codes, "node_missing": result.get("missing_node_type_codes")}})
+            if missing_legend_codes:
+                failures.append({"check": "legend_redundant_type_codes", "expected": "legend repeats each visible node type code", "actual": {"missing": missing_legend_codes, "legend": result.get("legend_encodings")}})
         if int(result.get("expanded_after_click", 0)) < 2:
             failures.append({"check": "node_expansion", "expected": ">=2", "actual": result.get("expanded_after_click")})
         expansion = result.get("expansion_after_click") if isinstance(result.get("expansion_after_click"), dict) else {}
@@ -1350,6 +1385,7 @@ def run_graph_layout_acceptance(
             "expect_mobile_layout": expect_mobile_layout,
             "emulate_reduced_motion": emulate_reduced_motion,
             "expect_reduced_motion": expect_reduced_motion,
+            "expect_redundant_node_encoding": expect_redundant_node_encoding,
             "expect_performance_mode": expect_performance_mode,
             "max_chain_node_splits": max_chain_node_splits,
             "check_readiness": check_readiness,
@@ -1379,6 +1415,7 @@ def main() -> None:
     parser.add_argument("--expect-mobile-layout", action="store_true")
     parser.add_argument("--emulate-reduced-motion", action="store_true")
     parser.add_argument("--expect-reduced-motion", action="store_true")
+    parser.add_argument("--expect-redundant-node-encoding", action="store_true")
     parser.add_argument("--max-overlap-pairs", type=int, default=3)
     parser.add_argument("--max-near-edge-nodes", type=int, default=0)
     parser.add_argument("--min-nodes", type=int, default=32)
@@ -1428,6 +1465,7 @@ def main() -> None:
         expect_mobile_layout=args.expect_mobile_layout,
         emulate_reduced_motion=args.emulate_reduced_motion,
         expect_reduced_motion=args.expect_reduced_motion,
+        expect_redundant_node_encoding=args.expect_redundant_node_encoding,
         max_overlap_pairs=args.max_overlap_pairs,
         max_near_edge_nodes=args.max_near_edge_nodes,
         min_nodes=args.min_nodes,

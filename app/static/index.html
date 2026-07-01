@@ -747,6 +747,14 @@
       stroke-linejoin: round;
       pointer-events: none;
     }
+    .graph-node-svg .graph-node-type-code {
+      fill: #fff;
+      font-size: 9px;
+      font-weight: 900;
+      opacity: 0.94;
+      stroke: none;
+      text-transform: uppercase;
+    }
     .graph-node-svg.has-label text,
     .graph-node-svg.is-selected text,
     .graph-node-svg:focus-visible text {
@@ -864,6 +872,17 @@
       height: 10px;
       border-radius: 999px;
       display: inline-block;
+    }
+    .graph-legend .graph-legend-code {
+      min-width: 18px;
+      height: 18px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 999px;
+      color: #fff;
+      font-size: 10px;
+      font-weight: 900;
+      line-height: 1;
     }
     .graph-inspector {
       border: 1px solid var(--line);
@@ -5367,6 +5386,21 @@
       }[type] || "#475569";
     }
 
+    function graphNodeTypeCode(type) {
+      return {
+        issuer: "C",
+        security: "S",
+        industry: "I",
+        chain_node: "N",
+        event: "E",
+        evidence: "V",
+        research: "R",
+        decision: "D",
+        portfolio: "P",
+        risk: "!",
+      }[type] || "?";
+    }
+
     function graphNodeTypeLabel(type) {
       return {
         issuer: "公司",
@@ -7428,7 +7462,11 @@
       setText("knowledgeGraphLinkCount", `关系 ${layout.links.length}/${model.links.length}`);
       setText("knowledgeGraphFocusLabel", `${knowledgeGraphState.scope === "global" ? "全局图" : "局部图"} · 焦点 ${graphNodeDisplayLabel(knowledgeGraphState.focusId, "-")}`);
       const legendTypes = [...new Set(layout.nodes.map((node) => node.type))];
-      $("knowledgeGraphLegend").innerHTML = legendTypes.map((type) => `<span><i style="background:${graphNodeColor(type)}"></i>${escapeHtml(graphNodeTypeLabel(type))}</span>`).join("");
+      $("knowledgeGraphLegend").innerHTML = legendTypes.map((type) => {
+        const color = graphNodeColor(type);
+        const code = graphNodeTypeCode(type);
+        return `<span data-node-type="${escapeHtml(type)}" data-type-code="${escapeHtml(code)}"><span class="graph-legend-code" style="background:${color}">${escapeHtml(code)}</span>${escapeHtml(graphNodeTypeLabel(type))}</span>`;
+      }).join("");
       renderKnowledgeGraphFilterChips();
       const transform = knowledgeGraphState.transform;
       const graphStage = svg.closest(".graph-stage");
@@ -7452,7 +7490,8 @@
       const nodeMarkup = layout.nodes.map((node) => {
         const visibleLabel = node.type === "issuer" || node.type === "security" || node.type === "industry" || node.id === knowledgeGraphState.focusId || knowledgeGraphState.expandedIds.has(node.id) || graphKnowledgeNode(node) || (node.degree || 0) >= 6;
         const halo = node.hiddenNeighborCount > 0 ? `<circle r="${node.radius + Math.min(8, 3 + node.hiddenNeighborCount * 0.35)}" fill="none" stroke="${graphNodeColor(node.type)}" stroke-width="1.2" opacity="0.24"></circle>` : "";
-        return `<g class="graph-node-svg ${visibleLabel ? "has-label" : ""}" data-node-id="${escapeHtml(node.id)}" role="button" tabindex="0" focusable="true" aria-label="聚焦图谱节点 ${escapeHtml(node.label)}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">${halo}<circle r="${node.radius}" fill="${graphNodeColor(node.type)}"></circle><text text-anchor="middle" y="${node.radius + 15}">${escapeHtml(node.label)}</text></g>`;
+        const typeCode = graphNodeTypeCode(node.type);
+        return `<g class="graph-node-svg ${visibleLabel ? "has-label" : ""}" data-node-id="${escapeHtml(node.id)}" data-node-type="${escapeHtml(node.type)}" data-type-code="${escapeHtml(typeCode)}" role="button" tabindex="0" focusable="true" aria-label="聚焦图谱节点 ${escapeHtml(node.label)}，类型 ${escapeHtml(graphNodeTypeLabel(node.type))}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">${halo}<circle r="${node.radius}" fill="${graphNodeColor(node.type)}"></circle><text class="graph-node-type-code" text-anchor="middle" y="3">${escapeHtml(typeCode)}</text><text text-anchor="middle" y="${node.radius + 15}">${escapeHtml(node.label)}</text></g>`;
       }).join("");
       const communityMarkup = knowledgeGraphState.communitySummaries.map((summary) => {
         const qualityText = graphCommunityQualityText(summary);

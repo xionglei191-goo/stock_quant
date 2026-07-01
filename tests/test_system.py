@@ -19775,9 +19775,13 @@ class SystemServiceTests(unittest.TestCase):
             "graph_performance_mode",
             "--emulate-reduced-motion",
             "--expect-reduced-motion",
+            "--expect-redundant-node-encoding",
             "Emulation.setEmulatedMedia",
             "reduced_motion",
             "reduced_motion_animation_frame",
+            "encoded_node_types",
+            "legend_encoded_types",
+            "node_redundant_type_codes",
         ]:
             self.assertIn(fragment, script)
         for fragment in [
@@ -19795,6 +19799,10 @@ class SystemServiceTests(unittest.TestCase):
             "function settleKnowledgeGraphStaticLayout",
             "减少动态 · 静态布局",
             "refreshKnowledgeGraphDynamicButton",
+            "function graphNodeTypeCode",
+            "graph-node-type-code",
+            "graph-legend-code",
+            'data-type-code="${escapeHtml(typeCode)}"',
             "knowledgeGraphState.nodeById = new Map(layout.nodes.map((node) => [node.id, node]))",
             "knowledgeGraphState.communitySummaries = graphCommunitySummaries(layout.nodes, layout.links)",
             "knowledgeGraphState.communityNodesByKey.get(community) || []",
@@ -19820,7 +19828,7 @@ class SystemServiceTests(unittest.TestCase):
             ".graph-community-label:focus-visible",
             ".graph-community-label:focus-visible circle",
             'data-node-id="${escapeHtml(node.id)}"',
-            'role="button" tabindex="0" focusable="true" aria-label="聚焦图谱节点 ${escapeHtml(node.label)}"',
+            'role="button" tabindex="0" focusable="true" aria-label="聚焦图谱节点 ${escapeHtml(node.label)}，类型 ${escapeHtml(graphNodeTypeLabel(node.type))}"',
             "${escapeHtml(node.label)}",
             'data-community="${escapeHtml(summary.key)}"',
             'role="button" tabindex="0" focusable="true" aria-label="切换到${escapeHtml(summary.label)}代表节点"',
