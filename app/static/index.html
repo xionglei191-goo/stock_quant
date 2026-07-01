@@ -1557,6 +1557,12 @@
       .flow-step::after { display: none; }
       .risk-row { grid-template-columns: 1fr; }
       .personal-card { grid-column: 1 / -1; }
+      .graph-explorer { grid-template-columns: minmax(0, 1fr); }
+      .graph-stage { min-height: 480px; }
+      .graph-stage svg { min-height: 480px; }
+      .graph-inspector { min-height: 360px; }
+      .graph-toolbar .field { min-width: min(100%, 180px); max-width: 100%; }
+      .graph-view-actions { flex-wrap: wrap; }
     }
   </style>
 </head>
@@ -7337,8 +7343,8 @@
       loadKnowledgeGraphLayout();
       const filtered = filteredGraphModel(model);
       const rect = svg.getBoundingClientRect();
-      const width = Math.max(720, Math.round(rect.width || 900));
-      const height = Math.max(640, Math.round(rect.height || 640));
+      const width = Math.max(360, Math.round(rect.width || 900));
+      const height = Math.max(480, Math.round(rect.height || 640));
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
       stopKnowledgeGraphAnimation();
       const layout = seedGraphLayout(filtered.nodes, filtered.links, width, height);

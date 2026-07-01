@@ -19768,11 +19768,20 @@ class SystemServiceTests(unittest.TestCase):
             "--max-visible-nodes",
             "--max-visible-links",
             "--max-link-label-dom-count",
+            "--viewport-width",
+            "--viewport-height",
+            "--expect-mobile-layout",
             "render_stats",
             "graph_performance_mode",
         ]:
             self.assertIn(fragment, script)
         for fragment in [
+            ".graph-explorer { grid-template-columns: minmax(0, 1fr); }",
+            ".graph-stage { min-height: 480px; }",
+            ".graph-stage svg { min-height: 480px; }",
+            ".graph-inspector { min-height: 360px; }",
+            "const width = Math.max(360, Math.round(rect.width || 900))",
+            "const height = Math.max(480, Math.round(rect.height || 640))",
             "nodeById: new Map()",
             "communitySummaries: []",
             "communityNodesByKey: new Map()",
@@ -19897,6 +19906,13 @@ class SystemServiceTests(unittest.TestCase):
             "KeyboardEvent('keydown', {{ bubbles: true, key: ' ', code: 'Space' }})",
             "community_keyboard_activation",
             "community_keyboard_focus_visible",
+            "responsive_layout",
+            "initial_graph",
+            "initialGraphSnapshot",
+            "expect_mobile_layout",
+            "mobile_graph_single_column",
+            "mobile_graph_overflow",
+            "mobile_graph_height",
         ]:
             self.assertIn(fragment, script)
 

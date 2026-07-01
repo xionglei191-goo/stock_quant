@@ -211,6 +211,9 @@ def run_graph_layout_acceptance(
     output: str | Path = DEFAULT_OUTPUT,
     chrome_bin: str = "",
     timeout: float = 45.0,
+    viewport_width: int = 1600,
+    viewport_height: int = 950,
+    expect_mobile_layout: bool = False,
     max_overlap_pairs: int = 3,
     max_near_edge_nodes: int = 0,
     min_nodes: int = 32,
@@ -259,7 +262,7 @@ def run_graph_layout_acceptance(
             "--no-sandbox",
             "--disable-gpu",
             "--hide-scrollbars",
-            "--window-size=1600,950",
+            f"--window-size={viewport_width},{viewport_height}",
             f"--remote-debugging-port={port}",
             ui_url,
         ],
@@ -357,6 +360,31 @@ def run_graph_layout_acceptance(
                 }};
               }}
               const rect = svg.getBoundingClientRect();
+              const graphExplorerElement = document.querySelector('.graph-explorer');
+              const graphStageElement = document.querySelector('.graph-stage');
+              const graphInspectorElement = document.querySelector('.graph-inspector');
+              const explorerBox = graphExplorerElement?.getBoundingClientRect?.() || {{ left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 }};
+              const stageBox = graphStageElement?.getBoundingClientRect?.() || {{ left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 }};
+              const inspectorBox = graphInspectorElement?.getBoundingClientRect?.() || {{ left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 }};
+              const responsiveLayout = {{
+                viewport_width: window.innerWidth,
+                viewport_height: window.innerHeight,
+                explorer_width: Number(explorerBox.width.toFixed(1)),
+                stage_width: Number(stageBox.width.toFixed(1)),
+                stage_height: Number(stageBox.height.toFixed(1)),
+                svg_width: Number(rect.width.toFixed(1)),
+                svg_height: Number(rect.height.toFixed(1)),
+                inspector_width: Number(inspectorBox.width.toFixed(1)),
+                inspector_height: Number(inspectorBox.height.toFixed(1)),
+                inspector_below_stage: inspectorBox.top >= stageBox.bottom - 2,
+                stage_overflows_viewport: stageBox.right > window.innerWidth + 1 || stageBox.left < -1,
+                inspector_overflows_viewport: inspectorBox.right > window.innerWidth + 1 || inspectorBox.left < -1,
+                explorer_columns: getComputedStyle(graphExplorerElement).gridTemplateColumns,
+                toolbar_overflows_viewport: Boolean([...document.querySelectorAll('.graph-toolbar, .graph-toolbar .row, .graph-filter-row, .graph-view-actions')].some((element) => {{
+                  const box = element.getBoundingClientRect();
+                  return box.right > window.innerWidth + 1 || box.left < -1;
+                }}))
+              }};
               await wait(3600);
               const readNodes = () => [...document.querySelectorAll('.graph-node-svg')].map((el) => {{
                 const match = /translate\\(([-0-9.]+) ([-0-9.]+)\\)/.exec(el.getAttribute('transform') || '');
@@ -389,6 +417,17 @@ def run_graph_layout_acceptance(
                 }}
               }}
               const nearEdgeNodes = nodes.filter((n) => n.x < 75 || n.y < 75 || n.x > rect.width - 75 || n.y > rect.height - 75).length;
+              const initialGraphSnapshot = {{
+                nodes: nodes.length,
+                links: document.querySelectorAll('.graph-link-svg').length,
+                labels: document.querySelectorAll('.graph-node-svg.has-label').length,
+                community_labels: document.querySelectorAll('.graph-community-label').length,
+                community_quality_labels: [...document.querySelectorAll('.graph-community-label')].filter((el) => /密度\\d+% · 强度\\d+ · 强边\\d+%/.test(el.textContent || '')).length,
+                near_edge_nodes: nearEdgeNodes,
+                overlap_pairs: overlapPairs,
+                link_label_dom_count: Number(window.knowledgeGraphState?.renderStats?.linkLabelDomCount ?? document.querySelectorAll('.graph-link-label').length),
+                render_stats: window.knowledgeGraphState?.renderStats || {{}},
+              }};
               const communityBuckets = new Map();
               nodes.filter((node) => node.community).forEach((node) => {{
                 const bucket = communityBuckets.get(node.community) || {{ community: node.community, count: 0, x: 0, y: 0 }};
@@ -878,18 +917,20 @@ def run_graph_layout_acceptance(
                 rect: {{ width: rect.width, height: rect.height }},
                 node_count_text: document.querySelector('#knowledgeGraphNodeCount')?.textContent || '',
                 link_count_text: document.querySelector('#knowledgeGraphLinkCount')?.textContent || '',
-                nodes: nodes.length,
-                links: document.querySelectorAll('.graph-link-svg').length,
-                labels: document.querySelectorAll('.graph-node-svg.has-label').length,
-                overlap_pairs: overlapPairs,
-                near_edge_nodes: nearEdgeNodes,
+                nodes: initialGraphSnapshot.nodes,
+                links: initialGraphSnapshot.links,
+                labels: initialGraphSnapshot.labels,
+                overlap_pairs: initialGraphSnapshot.overlap_pairs,
+                near_edge_nodes: initialGraphSnapshot.near_edge_nodes,
+                initial_graph: initialGraphSnapshot,
                 first_expandable: firstExpandable,
                 expanded_after_click: document.querySelectorAll('.graph-node-svg.is-expanded').length,
                 expansion_after_click: expansionCheck,
                 selected_title_after_click: document.querySelector('#knowledgeGraphNodeTitle')?.textContent || '',
                 focus_label: document.querySelector('#knowledgeGraphFocusLabel')?.textContent || '',
-                community_labels: document.querySelectorAll('.graph-community-label').length,
-                community_quality_labels: [...document.querySelectorAll('.graph-community-label')].filter((el) => /密度\\d+% · 强度\\d+ · 强边\\d+%/.test(el.textContent || '')).length,
+                responsive_layout: responsiveLayout,
+                community_labels: initialGraphSnapshot.community_labels,
+                community_quality_labels: initialGraphSnapshot.community_quality_labels,
                 visible_communities: [...new Set(nodes.map((item) => item.community).filter(Boolean))],
                 community_centroids: communityCentroids,
                 community_spread_ratio: Number((avgCommunityDistance / communityScale).toFixed(4)),
@@ -899,9 +940,9 @@ def run_graph_layout_acceptance(
                 visible_knowledge_types: [...new Set(nodes.filter((item) => ['event', 'evidence', 'research', 'decision'].includes(item.type) || ['research', 'evidence'].includes(item.community)).map((item) => item.type || item.community).filter(Boolean))],
                 performance: perfBeforeInteractions,
                 performance_mode: window.knowledgeGraphState?.performanceMode || '',
-                render_stats: window.knowledgeGraphState?.renderStats || {{}},
+                render_stats: initialGraphSnapshot.render_stats,
                 graph_stage_performance_mode: Boolean(document.querySelector('.graph-stage.is-performance-mode')),
-                link_label_dom_count: Number(window.knowledgeGraphState?.renderStats?.linkLabelDomCount ?? document.querySelectorAll('.graph-link-label').length),
+                link_label_dom_count: initialGraphSnapshot.link_label_dom_count,
                 filter_chips: document.querySelector('#knowledgeGraphFilterChips')?.textContent || '',
                 raw_knowledge_nodes: (window.knowledgeGraphState?.raw?.documents?.length || 0)
                   + (window.knowledgeGraphState?.raw?.company_events?.length || 0)
@@ -976,6 +1017,16 @@ def run_graph_layout_acceptance(
             failures.append({"check": "max_overlap_pairs", "expected": max_overlap_pairs, "actual": result.get("overlap_pairs")})
         if int(result.get("near_edge_nodes", 0)) > max_near_edge_nodes:
             failures.append({"check": "max_near_edge_nodes", "expected": max_near_edge_nodes, "actual": result.get("near_edge_nodes")})
+        responsive_layout = result.get("responsive_layout") if isinstance(result.get("responsive_layout"), dict) else {}
+        if expect_mobile_layout:
+            if int(responsive_layout.get("viewport_width", 9999)) > 900:
+                failures.append({"check": "mobile_viewport_width", "expected": "<=900", "actual": responsive_layout})
+            elif not responsive_layout.get("inspector_below_stage"):
+                failures.append({"check": "mobile_graph_single_column", "expected": "inspector below graph stage", "actual": responsive_layout})
+            elif responsive_layout.get("stage_overflows_viewport") or responsive_layout.get("inspector_overflows_viewport") or responsive_layout.get("toolbar_overflows_viewport"):
+                failures.append({"check": "mobile_graph_overflow", "expected": "graph stage, inspector, and toolbar fit viewport width", "actual": responsive_layout})
+            elif float(responsive_layout.get("svg_height", 0)) < 440 or float(responsive_layout.get("stage_height", 0)) < 440:
+                failures.append({"check": "mobile_graph_height", "expected": ">=440px graph viewport", "actual": responsive_layout})
         if int(result.get("expanded_after_click", 0)) < 2:
             failures.append({"check": "node_expansion", "expected": ">=2", "actual": result.get("expanded_after_click")})
         expansion = result.get("expansion_after_click") if isinstance(result.get("expansion_after_click"), dict) else {}
@@ -1255,6 +1306,9 @@ def run_graph_layout_acceptance(
             "check_view_controls": check_view_controls,
             "check_trail": check_trail,
             "check_saved_subgraph": check_saved_subgraph,
+            "viewport_width": viewport_width,
+            "viewport_height": viewport_height,
+            "expect_mobile_layout": expect_mobile_layout,
             "expect_performance_mode": expect_performance_mode,
             "max_chain_node_splits": max_chain_node_splits,
             "check_readiness": check_readiness,
@@ -1279,6 +1333,9 @@ def main() -> None:
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--chrome-bin", default="")
     parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument("--viewport-width", type=int, default=1600)
+    parser.add_argument("--viewport-height", type=int, default=950)
+    parser.add_argument("--expect-mobile-layout", action="store_true")
     parser.add_argument("--max-overlap-pairs", type=int, default=3)
     parser.add_argument("--max-near-edge-nodes", type=int, default=0)
     parser.add_argument("--min-nodes", type=int, default=32)
@@ -1323,6 +1380,9 @@ def main() -> None:
         output=args.output,
         chrome_bin=args.chrome_bin,
         timeout=args.timeout,
+        viewport_width=args.viewport_width,
+        viewport_height=args.viewport_height,
+        expect_mobile_layout=args.expect_mobile_layout,
         max_overlap_pairs=args.max_overlap_pairs,
         max_near_edge_nodes=args.max_near_edge_nodes,
         min_nodes=args.min_nodes,
