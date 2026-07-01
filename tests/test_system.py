@@ -19726,6 +19726,19 @@ class SystemServiceTests(unittest.TestCase):
         ]:
             self.assertIn(fragment, ui)
 
+    def test_ui_graph_layout_acceptance_measures_community_spread(self) -> None:
+        script = Path("scripts/ui_graph_layout_acceptance.py").read_text(encoding="utf-8")
+
+        for fragment in [
+            "communityCentroids",
+            "community_spread_ratio",
+            "min_community_spread_ratio",
+            "--min-community-spread-ratio",
+            "community_spread_ratio",
+            "centroids",
+        ]:
+            self.assertIn(fragment, script)
+
     def test_api_route_table_is_registered_outside_router_resolve(self) -> None:
         from app.api_routes import build_route_table
 

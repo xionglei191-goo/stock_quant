@@ -173,6 +173,7 @@ def run_graph_layout_acceptance(
     max_frame_ms: float = 35.0,
     min_community_labels: int = 2,
     min_visible_communities: int = 0,
+    min_community_spread_ratio: float = 0.0,
     min_industry_nodes: int = 0,
     min_raw_knowledge_nodes: int = 0,
     min_visible_knowledge_types: int = 0,
@@ -337,6 +338,37 @@ def run_graph_layout_acceptance(
                 }}
               }}
               const nearEdgeNodes = nodes.filter((n) => n.x < 75 || n.y < 75 || n.x > rect.width - 75 || n.y > rect.height - 75).length;
+              const communityBuckets = new Map();
+              nodes.filter((node) => node.community).forEach((node) => {{
+                const bucket = communityBuckets.get(node.community) || {{ community: node.community, count: 0, x: 0, y: 0 }};
+                bucket.count += 1;
+                bucket.x += node.x;
+                bucket.y += node.y;
+                communityBuckets.set(node.community, bucket);
+              }});
+              const communityCentroids = [...communityBuckets.values()]
+                .filter((bucket) => bucket.count > 0)
+                .map((bucket) => ({{
+                  community: bucket.community,
+                  count: bucket.count,
+                  x: Number((bucket.x / bucket.count).toFixed(2)),
+                  y: Number((bucket.y / bucket.count).toFixed(2))
+                }}))
+                .sort((a, b) => a.community.localeCompare(b.community));
+              const communityDistances = [];
+              for (let i = 0; i < communityCentroids.length; i += 1) {{
+                for (let j = i + 1; j < communityCentroids.length; j += 1) {{
+                  communityDistances.push(Math.hypot(
+                    communityCentroids[i].x - communityCentroids[j].x,
+                    communityCentroids[i].y - communityCentroids[j].y
+                  ));
+                }}
+              }}
+              const communityScale = Math.max(1, Math.min(rect.width, rect.height));
+              const avgCommunityDistance = communityDistances.length
+                ? communityDistances.reduce((sum, distance) => sum + distance, 0) / communityDistances.length
+                : 0;
+              const minCommunityDistance = communityDistances.length ? Math.min(...communityDistances) : 0;
               const perfBeforeInteractions = {{
                 frames: Number(window.knowledgeGraphState?.perf?.frames || 0),
                 fps: Number(window.knowledgeGraphState?.perf?.fps || 0),
@@ -684,6 +716,9 @@ def run_graph_layout_acceptance(
                 community_labels: document.querySelectorAll('.graph-community-label').length,
                 community_quality_labels: [...document.querySelectorAll('.graph-community-label')].filter((el) => /密度\\d+% · 强度\\d+ · 强边\\d+%/.test(el.textContent || '')).length,
                 visible_communities: [...new Set(nodes.map((item) => item.community).filter(Boolean))],
+                community_centroids: communityCentroids,
+                community_spread_ratio: Number((avgCommunityDistance / communityScale).toFixed(4)),
+                min_community_spread_ratio: Number((minCommunityDistance / communityScale).toFixed(4)),
                 visible_node_types: [...new Set(nodes.map((item) => item.type).filter(Boolean))],
                 industry_nodes: nodes.filter((item) => item.community === 'industry').length,
                 visible_knowledge_types: [...new Set(nodes.filter((item) => ['event', 'evidence', 'research', 'decision'].includes(item.type) || ['research', 'evidence'].includes(item.community)).map((item) => item.type || item.community).filter(Boolean))],
@@ -788,6 +823,16 @@ def run_graph_layout_acceptance(
             failures.append({"check": "community_quality_labels", "expected": f">={min_community_labels}", "actual": result.get("community_quality_labels")})
         if min_visible_communities and len(result.get("visible_communities", []) or []) < min_visible_communities:
             failures.append({"check": "visible_communities", "expected": f">={min_visible_communities}", "actual": result.get("visible_communities")})
+        if min_community_spread_ratio and len(result.get("visible_communities", []) or []) >= 3:
+            community_spread_ratio = float(result.get("community_spread_ratio") or 0.0)
+            if community_spread_ratio < min_community_spread_ratio:
+                failures.append({
+                    "check": "community_spread_ratio",
+                    "expected": f">={min_community_spread_ratio}",
+                    "actual": community_spread_ratio,
+                    "centroids": result.get("community_centroids"),
+                    "min_pair_ratio": result.get("min_community_spread_ratio"),
+                })
         if min_industry_nodes and int(result.get("industry_nodes", 0)) < min_industry_nodes:
             failures.append({"check": "industry_nodes", "expected": f">={min_industry_nodes}", "actual": result.get("industry_nodes")})
         if min_raw_knowledge_nodes and int(result.get("raw_knowledge_nodes", 0)) < min_raw_knowledge_nodes:
@@ -960,6 +1005,7 @@ def run_graph_layout_acceptance(
             "max_frame_ms": max_frame_ms,
             "min_community_labels": min_community_labels,
             "min_visible_communities": min_visible_communities,
+            "min_community_spread_ratio": min_community_spread_ratio,
             "min_industry_nodes": min_industry_nodes,
             "min_raw_knowledge_nodes": min_raw_knowledge_nodes,
             "min_raw_structured_reports": min_raw_structured_reports,
@@ -1009,6 +1055,7 @@ def main() -> None:
     parser.add_argument("--max-frame-ms", type=float, default=35.0)
     parser.add_argument("--min-community-labels", type=int, default=2)
     parser.add_argument("--min-visible-communities", type=int, default=0)
+    parser.add_argument("--min-community-spread-ratio", type=float, default=0.0)
     parser.add_argument("--min-industry-nodes", type=int, default=0)
     parser.add_argument("--min-raw-knowledge-nodes", type=int, default=0)
     parser.add_argument("--min-raw-structured-reports", type=int, default=0)
@@ -1047,6 +1094,7 @@ def main() -> None:
         max_frame_ms=args.max_frame_ms,
         min_community_labels=args.min_community_labels,
         min_visible_communities=args.min_visible_communities,
+        min_community_spread_ratio=args.min_community_spread_ratio,
         min_industry_nodes=args.min_industry_nodes,
         min_raw_knowledge_nodes=args.min_raw_knowledge_nodes,
         min_raw_structured_reports=args.min_raw_structured_reports,
