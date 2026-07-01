@@ -6745,8 +6745,29 @@
         })[0]?.id || "";
     }
 
-    function updateKnowledgeGraphCommunityLabels() {
+    function refreshKnowledgeGraphCommunitySummaryPositions() {
       const summaries = knowledgeGraphState.communitySummaries || [];
+      summaries.forEach((summary) => {
+        const nodes = knowledgeGraphState.communityNodesByKey.get(summary.key) || [];
+        let x = 0;
+        let y = 0;
+        let weight = 0;
+        nodes.forEach((node) => {
+          const nodeWeight = Math.max(1, Number(node.radius || 1));
+          x += (Number(node.x) || 0) * nodeWeight;
+          y += (Number(node.y) || 0) * nodeWeight;
+          weight += nodeWeight;
+        });
+        if (weight > 0) {
+          summary.x = x / weight;
+          summary.y = y / weight;
+        }
+      });
+      return summaries;
+    }
+
+    function updateKnowledgeGraphCommunityLabels() {
+      const summaries = refreshKnowledgeGraphCommunitySummaryPositions();
       document.querySelectorAll(".graph-community-label").forEach((element) => {
         const community = element.getAttribute("data-community");
         const summary = summaries.find((item) => item.key === community);
