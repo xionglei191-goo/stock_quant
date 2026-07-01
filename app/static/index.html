@@ -6981,6 +6981,26 @@
     }
     window.focusKnowledgeGraphNode = focusKnowledgeGraphNode;
 
+    function activateKnowledgeGraphSideNode(nodeId = "", { mode = "select", center = true } = {}) {
+      if (!nodeId || !knowledgeGraphState.nodeById.has(nodeId)) return;
+      if (mode === "focus") {
+        focusKnowledgeGraphNode(nodeId);
+        return;
+      }
+      knowledgeGraphState.selectedId = nodeId;
+      knowledgeGraphState.expandedIds.add(nodeId);
+      addKnowledgeGraphTrailNode(nodeId);
+      if (mode === "path") {
+        knowledgeGraphState.pathEndId = nodeId;
+        knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.72);
+        rerenderKnowledgeGraphExplorer();
+        return;
+      }
+      if (center) centerKnowledgeGraphNode(nodeId);
+      renderKnowledgeGraphInspector();
+      updateKnowledgeGraphHighlight();
+    }
+
     function backKnowledgeGraphFocus() {
       const currentId = knowledgeGraphState.focusId;
       const previousId = knowledgeGraphState.focusHistoryIds.find((id) => id && id !== currentId);
@@ -7799,12 +7819,16 @@
           const target = event.target.closest(".graph-next-hop");
           if (!target) return;
           const nodeId = target.dataset.nodeId || "";
-          if (!nodeId) return;
-          knowledgeGraphState.expandedIds.add(nodeId);
-          knowledgeGraphState.selectedId = nodeId;
-          knowledgeGraphState.pathEndId = nodeId;
-          knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.72);
-          rerenderKnowledgeGraphExplorer();
+          activateKnowledgeGraphSideNode(nodeId, { mode: "path", center: false });
+        });
+      }
+      const neighborRows = $("knowledgeGraphNeighborRows");
+      if (neighborRows && !neighborRows.dataset.graphControlReady) {
+        neighborRows.dataset.graphControlReady = "ready";
+        neighborRows.addEventListener("click", (event) => {
+          const target = event.target.closest('[data-action="focus-graph-node"]');
+          if (!target) return;
+          activateKnowledgeGraphSideNode(target.dataset.nodeId || "", { mode: "focus" });
         });
       }
       const focusHistoryList = $("knowledgeGraphFocusHistoryList");
@@ -7813,9 +7837,7 @@
         focusHistoryList.addEventListener("click", (event) => {
           const target = event.target.closest(".graph-focus-history-node");
           if (!target) return;
-          const nodeId = target.dataset.nodeId || "";
-          if (!nodeId) return;
-          focusKnowledgeGraphNode(nodeId);
+          activateKnowledgeGraphSideNode(target.dataset.nodeId || "", { mode: "focus" });
         });
       }
       const trailList = $("knowledgeGraphTrailList");
@@ -7824,13 +7846,7 @@
         trailList.addEventListener("click", (event) => {
           const target = event.target.closest(".graph-trail-node");
           if (!target) return;
-          const nodeId = target.dataset.nodeId || "";
-          if (!nodeId) return;
-          knowledgeGraphState.selectedId = nodeId;
-          knowledgeGraphState.expandedIds.add(nodeId);
-          centerKnowledgeGraphNode(nodeId);
-          renderKnowledgeGraphInspector();
-          updateKnowledgeGraphHighlight();
+          activateKnowledgeGraphSideNode(target.dataset.nodeId || "");
         });
       }
     }
