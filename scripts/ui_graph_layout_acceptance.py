@@ -656,6 +656,19 @@ def run_graph_layout_acceptance(
                     path_links: document.querySelectorAll('.graph-link-svg.is-path-link').length
                   }};
                   const historyButtonsAfterBack = [...document.querySelectorAll('.graph-focus-history-node')];
+                  const neighborRow = document.querySelector('.graph-neighbor[data-node-id]');
+                  const neighborClick = {{
+                    checked: Boolean(neighborRow),
+                    before_focus_id: afterBackFocusId,
+                    node_id: neighborRow?.dataset?.nodeId || ''
+                  }};
+                  if (neighborRow) {{
+                    neighborRow.click();
+                    await wait(1000);
+                    neighborClick.after_focus_id = window.knowledgeGraphState?.focusId || '';
+                    neighborClick.selected_id = window.knowledgeGraphState?.selectedId || '';
+                    neighborClick.selected_title = document.querySelector('#knowledgeGraphNodeTitle')?.textContent || '';
+                  }}
                   focusSwitch = {{
                     checked: true,
                     before_focus_id: beforeFocusId,
@@ -670,6 +683,7 @@ def run_graph_layout_acceptance(
                     focus_label: document.querySelector('#knowledgeGraphFocusLabel')?.textContent || '',
                     path_after_focus: pathAfterFocus,
                     path_after_back_focus: pathAfterBackFocus,
+                    neighbor_click: neighborClick,
                     button_present: Boolean(document.querySelector('#graphFocusSelected')),
                     back_button_present: Boolean(document.querySelector('#graphBackFocus')),
                     history_nodes_after_focus: historyButtonsAfterFocus.length,
@@ -1020,6 +1034,10 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "focus_back_path_context", "expected": "back focus keeps target as path end", "actual": focus_switch})
             elif int(focus_switch.get("path_after_back_focus", {}).get("path_nodes", 0)) < 2 or int(focus_switch.get("path_after_back_focus", {}).get("path_links", 0)) < 1:
                 failures.append({"check": "focus_back_path_highlight", "expected": "back focus path remains highlighted", "actual": focus_switch})
+            elif not focus_switch.get("neighbor_click", {}).get("checked"):
+                failures.append({"check": "focus_switch_neighbor_click", "expected": "clickable neighbor row", "actual": focus_switch})
+            elif focus_switch.get("neighbor_click", {}).get("after_focus_id") != focus_switch.get("neighbor_click", {}).get("node_id") or focus_switch.get("neighbor_click", {}).get("selected_id") != focus_switch.get("neighbor_click", {}).get("node_id"):
+                failures.append({"check": "focus_switch_neighbor_activation", "expected": "neighbor click switches focus and selection", "actual": focus_switch})
             elif "焦点" not in str(focus_switch.get("focus_label", "")):
                 failures.append({"check": "focus_switch_label", "expected": "焦点 label", "actual": focus_switch.get("focus_label")})
         community_click = result.get("community_click") if isinstance(result.get("community_click"), dict) else {}

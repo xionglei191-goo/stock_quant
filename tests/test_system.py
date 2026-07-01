@@ -19858,6 +19858,9 @@ class SystemServiceTests(unittest.TestCase):
             "focus_switch_path_highlight",
             "focus_back_path_context",
             "focus_back_path_highlight",
+            "neighbor_click",
+            "focus_switch_neighbor_click",
+            "focus_switch_neighbor_activation",
         ]:
             self.assertIn(fragment, script)
 
