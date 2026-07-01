@@ -88,13 +88,14 @@ Without a single quality center, graph work splits across separate readiness che
 - Browser graph layout acceptance now records `raw_structured_reports` and fails when structured reports exist but no visible `research` node type is rendered.
 - Backend quality-center structure now records `community_counts` and `max_community_node_share`, with `max_community_node_share` defaulting to `0.72`. The new `community_balance` failure catches graphs where the nominal community count passes but one community still dominates the display model.
 - `scripts/graph_quality_center.py --browser-matrix` can now pass `--min-browser-visible-communities` and `--min-browser-community-spread-ratio` into the browser layout matrix, so one quality-center run can pair backend community balance with pixel-level community spread acceptance.
+- The knowledge graph display-quality panel now renders `community_balance` as `社区节点失衡`, displays the actual/max community share as percentages, and includes a readable `community_counts` summary such as company/evidence/industry node counts.
 
 ### SystemService Growth Freeze Review
 
 - New `SystemService` business logic added: no; this pass moved existing industry relationship, 13F same-holder, ownership-holder derivation planning, graph source-layer action definitions, and quality-center community-balance checks into domain modules, and later exposed the existing quality-center facade in the UI without touching `SystemService`.
 - Domain module used: yes, `app/service_modules/graph_quality_center.py`, `app/service_modules/graph_derived_relationships.py`, and `app/service_modules/graph_source_actions.py`.
 - Facade behavior protected by: focused tests for API gap/action output, enrichment dry-run no-write behavior, CLI artifact writing, shared graph source actions, industry relationship graph-query regressions, chain-node canonical structure metrics, community-balance structure metrics, 13F holder-key graph-query regressions, and ownership holder-key browser regression.
-- API/storage/UI/paper-only impact: one new quality-center API endpoint from the original T-568 work; no storage schema change; UI display contract now explicitly includes structured research report/viewpoint linkage from existing `/api/graph/query` fields, a read-only graph display-quality gate, dry-run remediation routing for failed display gates, and community-balance structure fields in `quality_gate.structure`; no broker or live-trading behavior.
+- API/storage/UI/paper-only impact: one new quality-center API endpoint from the original T-568 work; no storage schema change; UI display contract now explicitly includes structured research report/viewpoint linkage from existing `/api/graph/query` fields, a read-only graph display-quality gate, dry-run remediation routing for failed display gates, community-balance structure fields in `quality_gate.structure`, and a front-end display row for community balance; no broker or live-trading behavior.
 
 ## Proposed Work Plan
 

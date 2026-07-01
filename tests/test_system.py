@@ -19706,9 +19706,13 @@ class SystemServiceTests(unittest.TestCase):
             "max_duplicate_labels: 0",
             "max_raw_label_leaks: 0",
             "max_display_duplicate_edges: 0",
+            "max_community_node_share",
             "duplicate_labels: \"重复展示标签\"",
             "raw_label_leaks: \"原始 ID 泄漏\"",
             "display_duplicate_edges: \"重复展示边\"",
+            "community_balance: \"社区节点失衡\"",
+            "graphQualityCommunityCountsText",
+            "structure.community_counts",
             "data-quality-gate-status",
         ]:
             self.assertIn(fragment, ui)

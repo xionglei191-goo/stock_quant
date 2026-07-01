@@ -5528,12 +5528,29 @@
         hub_dominance: "中心节点过载",
         leaf_ratio: "叶子节点过多",
         graph_fragmentation: "图谱断裂",
+        community_balance: "社区节点失衡",
       };
       return labels[check] || check || "展示质量";
     }
 
+    function graphQualityCommunityCountsText(counts = []) {
+      return (counts || [])
+        .slice(0, 6)
+        .map((item) => {
+          const community = Array.isArray(item) ? item[0] : item.community || item.key || "";
+          const count = Array.isArray(item) ? item[1] : item.count || item.value || 0;
+          if (!community) return "";
+          return `${graphCommunityLabel(community)} ${count}`;
+        })
+        .filter(Boolean)
+        .join(" · ");
+    }
+
     function graphQualityValue(item) {
       if (!item) return "-";
+      if (item.check === "community_balance") {
+        return `${pct(item.actual || 0)} / 上限 ${pct(item.expected_max ?? 0)}`;
+      }
       if (item.expected_max !== undefined) return `${item.actual} / 上限 ${item.expected_max}`;
       if (item.expected_min !== undefined) return `${item.actual} / 下限 ${item.expected_min}`;
       return item.actual !== undefined ? String(item.actual) : "-";
@@ -5582,6 +5599,7 @@
         { check: "duplicate_labels", status: duplicateLabels ? "needs_attention" : "passed", actual: duplicateLabels, expected_max: gate.thresholds?.max_duplicate_labels ?? 0, note: "同名节点会降低多跳辨识度。" },
         { check: "raw_label_leaks", status: rawLeaks ? "needs_attention" : "passed", actual: rawLeaks, expected_max: gate.thresholds?.max_raw_label_leaks ?? 0, note: "展示文本不得暴露 issuer_/chain_/event_ 等内部 ID。" },
         { check: "display_duplicate_edges", status: displayDuplicateEdges ? "needs_attention" : "passed", actual: displayDuplicateEdges, expected_max: gate.thresholds?.max_display_duplicate_edges ?? 0, note: "重复边会制造伪密度，影响布局和阅读。" },
+        { check: "community_balance", status: Number(structure.max_community_node_share || 0) > Number(gate.thresholds?.max_community_node_share ?? 1) ? "needs_attention" : "passed", actual: Number(structure.max_community_node_share || 0), expected_max: gate.thresholds?.max_community_node_share ?? 0.72, community_counts: structure.community_counts || [], note: `社区节点分布 ${graphQualityCommunityCountsText(structure.community_counts || []) || "-"}。` },
       ];
       const failureRows = failures
         .filter((failure) => !summaryRows.some((row) => row.check === failure.check))
