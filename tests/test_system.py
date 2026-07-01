@@ -19757,6 +19757,19 @@ class SystemServiceTests(unittest.TestCase):
         ]:
             self.assertIn(fragment, script)
 
+    def test_ui_graph_layout_acceptance_enforces_large_graph_dom_budget(self) -> None:
+        script = Path("scripts/ui_graph_layout_acceptance.py").read_text(encoding="utf-8")
+
+        for fragment in [
+            "max_visible_nodes",
+            "max_visible_links",
+            "--max-visible-nodes",
+            "--max-visible-links",
+            "render_stats",
+            "graph_performance_mode",
+        ]:
+            self.assertIn(fragment, script)
+
     def test_api_route_table_is_registered_outside_router_resolve(self) -> None:
         from app.api_routes import build_route_table
 
