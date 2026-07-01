@@ -19796,6 +19796,7 @@ class SystemServiceTests(unittest.TestCase):
             "${escapeHtml(meta.market)}",
             "${escapeHtml(graphNodeTypeLabel(type))}",
             "knowledgeGraphState.nodeById.get(nodeId)",
+            "const node = knowledgeGraphState.nodeById.get(nodeId)",
             "knowledgeGraphState.nodeById.has(id)",
             "knowledgeGraphState.nodeById.get(knowledgeGraphState.selectedId)",
             'nodeById.get(element.getAttribute("data-node-id"))',

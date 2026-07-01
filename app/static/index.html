@@ -5304,7 +5304,7 @@
     }
 
     function graphNodeDisplayLabel(nodeId, fallback = "-") {
-      const node = (knowledgeGraphState.nodes || []).find((item) => item.id === nodeId);
+      const node = knowledgeGraphState.nodeById.get(nodeId);
       return node?.fullLabel || node?.label || graphRef(nodeId, fallback);
     }
 
