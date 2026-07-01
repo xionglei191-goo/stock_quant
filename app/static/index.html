@@ -881,6 +881,14 @@
       padding: 8px;
       background: #fbfcfd;
       cursor: pointer;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      width: 100%;
+    }
+    .graph-neighbor:focus-visible {
+      outline: 2px solid #2563eb;
+      outline-offset: 2px;
     }
     .graph-neighbor strong {
       display: block;
@@ -7193,7 +7201,7 @@
           const neighborId = link.source === node.id ? link.target : link.source;
           const neighbor = knowledgeGraphState.nodeById.get(neighborId) || { id: neighborId, label: graphRef(neighborId), type: "evidence" };
           const edgeLabel = graphEdgeLabel(link.type, link.label);
-          return `<div class="graph-neighbor" data-action="focus-graph-node" data-node-id="${escapeHtml(neighbor.id)}"><strong>${escapeHtml(neighbor.label)}</strong><span class="small-note">${escapeHtml(edgeLabel)} · ${escapeHtml(graphNodeTypeLabel(neighbor.type))}</span></div>`;
+          return `<button type="button" class="graph-neighbor" data-action="focus-graph-node" data-node-id="${escapeHtml(neighbor.id)}"><strong>${escapeHtml(neighbor.label)}</strong><span class="small-note">${escapeHtml(edgeLabel)} · ${escapeHtml(graphNodeTypeLabel(neighbor.type))}</span></button>`;
         });
       $("knowledgeGraphNeighborRows").innerHTML = neighbors.join("") || `<div class="small-note">暂无相邻关系</div>`;
       renderKnowledgeGraphPathPanel();

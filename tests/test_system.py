@@ -19797,6 +19797,8 @@ class SystemServiceTests(unittest.TestCase):
             "${escapeHtml(qualityText)}",
             "<strong>${escapeHtml(prefix)}</strong>",
             "${escapeHtml(node.label)}",
+            '<button type="button" class="graph-neighbor"',
+            ".graph-neighbor:focus-visible",
             'data-node-id="${escapeHtml(neighbor.id)}"',
             "<strong>${escapeHtml(neighbor.label)}</strong>",
             "${escapeHtml(edgeLabel)}",
