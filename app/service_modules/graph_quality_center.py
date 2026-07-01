@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from app.utils import to_plain, utcnow
 
-from . import knowledge_graph_bulk
+from . import graph_source_actions, knowledge_graph_bulk
 from .graph_intelligence import graph_node_identity
 
 
@@ -545,107 +545,20 @@ def _enhancement_actions(target: knowledge_graph_bulk.BulkGraphTarget, readiness
     gap_layers = missing_layers | thin_layers
     symbol_payload = _symbols_payload(target.symbol, payload, execute=False)
     target_payload = {"issuer_id": target.issuer_id, "security_id": target.security_id, "symbol": target.symbol}
-    action_specs = [
-        (
-            "company_event",
-            {
-                "action": "build_company_events",
-                "label": "从本地行情、披露和已绑定研报构建公司事件",
-                "endpoint": "/api/company-database/events/build",
-                "execute_required": True,
-                "payload": symbol_payload,
-            },
-        ),
-        (
-            "company_relationship",
-            {
-                "action": "build_company_relationships",
-                "label": "从上市证券、研报覆盖、披露和股权表构建关系候选",
-                "endpoint": "/api/company-database/relationships/build",
-                "execute_required": True,
-                "payload": symbol_payload,
-            },
-        ),
-        (
-            "shareholder_holding",
-            {
-                "action": "import_13f_holdings",
-                "label": "导入或映射公开 13F/持仓数据，补齐持有人网络",
-                "endpoint": "/api/13f/filings/parse",
-                "fallback_endpoint": "/api/13f/holdings",
-                "execute_required": True,
-                "payload": {**target_payload, "import_holdings": False},
-            },
-        ),
-        (
-            "document",
-            {
-                "action": "ingest_source_documents",
-                "label": "登记本地或公开来源文档，补齐图谱文档层",
-                "endpoint": "/api/ingestion/documents",
-                "execute_required": True,
-                "payload": {**target_payload, "automation_allowed": False},
-            },
-        ),
-        (
-            "evidence",
-            {
-                "action": "extract_and_link_evidence",
-                "label": "从已登记文档抽取证据并回链事件、关系和观点",
-                "endpoint": "/api/evidence/extract",
-                "secondary_endpoint": "/api/graph/knowledge-network/evidence-links/backfill",
-                "execute_required": True,
-                "payload": {**target_payload, "execute": False},
-            },
-        ),
-        (
-            "research_report",
-            {
-                "action": "structure_research_reports",
-                "label": "把已入库研报结构化为观点层对象，保持观点边界",
-                "endpoint": "/api/research-reports/structure",
-                "execute_required": True,
-                "payload": {**symbol_payload, "dry_run": True},
-            },
-        ),
-        (
-            "viewpoint",
-            {
-                "action": "structure_or_register_viewpoints",
-                "label": "生成或登记研报观点，补齐观点节点和观点边",
-                "endpoint": "/api/research-reports/structure",
-                "fallback_endpoint": "/api/research-report-viewpoints",
-                "execute_required": True,
-                "payload": {**symbol_payload, "dry_run": True},
-            },
-        ),
-    ]
     actions: list[dict[str, Any]] = []
-    for layer, spec in action_specs:
+    for layer in graph_source_actions.LAYER_ACTION_SPECS:
         if layer not in gap_layers:
             continue
-        action = {
-            "layer": layer,
-            "method": "POST",
-            "default_execute": False,
-            "usage_boundary": "local_public_or_provided_data_only_no_broker_no_trade_execution",
-            **spec,
-        }
-        actions.append(action)
-    if {"company_event", "company_relationship"} & gap_layers:
-        actions.append(
-            {
-                "layer": "candidate_review",
-                "action": "review_relationship_and_event_candidates",
-                "label": "审核候选事件和关系后再提升为可信图谱事实",
-                "endpoint": "/api/company-database/events/review and /api/company-database/relationships/review",
-                "method": "POST",
-                "execute_required": False,
-                "default_execute": False,
-                "payload": {"issuer_id": target.issuer_id, "security_id": target.security_id},
-                "usage_boundary": "manual_review_required_before_fact_promotion",
-            }
+        action = graph_source_actions.layer_action(
+            layer,
+            target_payload,
+            symbol_payload=symbol_payload,
+            source_payload_style="symbol",
         )
+        if action:
+            actions.append(action)
+    if {"company_event", "company_relationship"} & gap_layers:
+        actions.append(graph_source_actions.candidate_review_action({"issuer_id": target.issuer_id, "security_id": target.security_id}))
     return actions
 
 

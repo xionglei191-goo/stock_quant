@@ -65,12 +65,13 @@ Graph quality gaps were visible but not operationalized into a recoverable batch
 - The runner now emits a top-level `source_input_queue` (`graph-source-input-queue-v1`) that groups source-backed work by layer. Each queue layer carries endpoint/fallback/secondary endpoint, `required_source_fields`, `target_count`, and bounded target samples, so operators do not need to scrape every row's `layer_action_plan` to collect missing documents, holdings, evidence, research reports, or viewpoints.
 - The company intelligence maintenance UI now exposes the source input queue through a dry-run-only "预览图谱来源队列" action. It calls `/api/graph/enrichment-runner`, renders queue status/layer count/target counts, and shows endpoint, required source fields, and bounded target samples per graph layer.
 - The knowledge graph page now exposes a graph-local data-layer readiness panel under the graph filter/readiness badges. It translates `missing_layers` into Chinese layer labels, impact, and next action, and provides a dry-run "预览来源队列" action scoped to the current graph issuer.
+- The runner and quality center now share graph source-layer action definitions from `app/service_modules/graph_source_actions.py`, so endpoints, required source fields, manual-input flags, and local-only usage boundaries cannot drift between `enhancement_actions`, `layer_action_plan`, and `source_input_queue`.
 
 ### SystemService Growth Freeze Review
 
 - New `SystemService` business logic added: no.
-- Domain module used: yes, `app/service_modules/graph_enrichment_runner.py`.
-- Facade behavior protected by: focused tests for dry-run, execute review-gated writes, and CLI artifact/state writing.
+- Domain module used: yes, `app/service_modules/graph_enrichment_runner.py` and `app/service_modules/graph_source_actions.py`.
+- Facade behavior protected by: focused tests for dry-run, execute review-gated writes, CLI artifact/state writing, and shared graph source action definitions.
 - API/storage/UI/paper-only impact: one new API endpoint; no storage schema change; company intelligence maintenance UI and knowledge graph page now preview `source_input_queue`; response contract includes `source_input_queue` for local/public/provided source collection; no broker or live-trading behavior.
 
 ## Proposed Work Plan

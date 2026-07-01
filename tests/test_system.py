@@ -22639,6 +22639,39 @@ class SystemServiceTests(unittest.TestCase):
             all(item.get("usage_boundary") == "local_public_or_provided_data_only_no_broker_no_trade_execution" for item in row["enhancement_actions"])
         )
 
+    def test_graph_source_actions_are_shared_by_quality_center_and_runner(self) -> None:
+        from app.service_modules import graph_source_actions
+
+        quality = self.service.graph_quality_center(
+            {"market": "A", "limit": 1, "min_edges": 1, "min_communities": 1, "min_layers": 1},
+            actor="test",
+        )
+        runner = self.service.graph_enrichment_runner(
+            {
+                "market": "A",
+                "limit": 1,
+                "batch_size": 1,
+                "priority_layers": "document,evidence,shareholder_holding,research_report,viewpoint",
+                "include_events": False,
+                "include_relationships": False,
+            },
+            actor="test",
+        )
+
+        quality_by_layer = {item["layer"]: item for item in quality["items"][0]["enhancement_actions"]}
+        runner_by_layer = {item["layer"]: item for item in runner["items"][0]["layer_action_plan"]}
+        for layer in graph_source_actions.SOURCE_BACKED_LAYERS:
+            self.assertEqual(quality_by_layer[layer]["action"], runner_by_layer[layer]["action"])
+            self.assertEqual(quality_by_layer[layer]["endpoint"], runner_by_layer[layer]["endpoint"])
+            self.assertEqual(
+                quality_by_layer[layer]["required_source_fields"],
+                graph_source_actions.REQUIRED_SOURCE_FIELDS[layer],
+            )
+            self.assertEqual(
+                runner_by_layer[layer]["required_source_fields"],
+                graph_source_actions.REQUIRED_SOURCE_FIELDS[layer],
+            )
+
     def test_graph_quality_center_get_route_uses_query_thresholds(self) -> None:
         result = self.router.dispatch(
             "GET",

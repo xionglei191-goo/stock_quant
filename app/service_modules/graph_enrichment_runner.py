@@ -5,11 +5,10 @@ from typing import Any, Mapping
 
 from app.utils import utcnow
 
-from . import graph_quality_center, knowledge_graph_bulk
+from . import graph_quality_center, graph_source_actions, knowledge_graph_bulk
 
 
 PRIORITY_LAYERS = ["company_event", "company_relationship", "document", "evidence", "shareholder_holding", "research_report", "viewpoint"]
-MANUAL_INPUT_LAYERS = {"document", "evidence", "shareholder_holding", "research_report", "viewpoint"}
 
 
 def _truthy(value: Any) -> bool:
@@ -138,60 +137,7 @@ def _source_input_queue(items: list[Mapping[str, Any]]) -> dict[str, Any]:
         "target_count": sum(int(item.get("target_count", 0) or 0) for item in layers),
         "unique_target_count": len(unique_targets),
         "layers": layers,
-        "usage_boundary": "local_public_or_provided_source_input_queue_no_auto_fact_promotion_no_broker_no_trade_execution",
-    }
-
-
-def _manual_layer_action(layer: str, target: knowledge_graph_bulk.BulkGraphTarget) -> dict[str, Any]:
-    target_payload = {"issuer_id": target.issuer_id, "security_id": target.security_id, "symbol": target.symbol}
-    specs: dict[str, dict[str, Any]] = {
-        "shareholder_holding": {
-            "action": "import_13f_holdings",
-            "endpoint": "/api/13f/filings/parse",
-            "fallback_endpoint": "/api/13f/holdings",
-            "label": "导入或映射公开 13F/持仓数据，补齐持有人网络",
-        },
-        "document": {
-            "action": "ingest_source_documents",
-            "endpoint": "/api/ingestion/documents",
-            "label": "登记本地或公开来源文档，补齐图谱文档层",
-        },
-        "evidence": {
-            "action": "extract_and_link_evidence",
-            "endpoint": "/api/evidence/extract",
-            "secondary_endpoint": "/api/graph/knowledge-network/evidence-links/backfill",
-            "label": "从已登记文档抽取证据并回链事件、关系和观点",
-        },
-        "research_report": {
-            "action": "structure_research_reports",
-            "endpoint": "/api/research-reports/structure",
-            "label": "把已入库研报结构化为观点层对象，保持观点边界",
-        },
-        "viewpoint": {
-            "action": "structure_or_register_viewpoints",
-            "endpoint": "/api/research-reports/structure",
-            "fallback_endpoint": "/api/research-report-viewpoints",
-            "label": "生成或登记研报观点，补齐观点节点和观点边",
-        },
-    }
-    spec = specs.get(layer, {"action": "review_layer_gap", "endpoint": "", "label": f"补齐 {layer} 图谱层"})
-    source_requirements = {
-        "shareholder_holding": ["filer identity", "report period", "security identifier", "holding quantity or market value", "public filing/source URI"],
-        "document": ["document type", "source id", "source URI or local path", "issuer/security mapping", "rights/source boundary"],
-        "evidence": ["document id", "quoted span or extracted text", "issuer/security mapping", "parser/model version"],
-        "research_report": ["research report asset id or local path", "broker/institution", "publication date", "opinion-only boundary"],
-        "viewpoint": ["research_report_id", "viewpoint text/topic", "viewpoint type", "issuer/security mapping", "opinion-only boundary"],
-    }
-    return {
-        "layer": layer,
-        "method": "POST" if spec.get("endpoint") else "",
-        "default_execute": False,
-        "execute_required": True,
-        "manual_input_required": True,
-        "payload": target_payload,
-        "required_source_fields": source_requirements.get(layer, []),
-        "usage_boundary": "local_public_or_provided_data_only_no_broker_no_trade_execution",
-        **spec,
+        "usage_boundary": graph_source_actions.SOURCE_INPUT_QUEUE_USAGE_BOUNDARY,
     }
 
 
@@ -200,37 +146,12 @@ def _layer_action_plan(target: knowledge_graph_bulk.BulkGraphTarget, before_gaps
     if force_build:
         planned_layers = planned_layers | priority_layers
     plan: list[dict[str, Any]] = []
+    target_payload = {"issuer_id": target.issuer_id, "security_id": target.security_id, "symbol": target.symbol}
+    symbol_payload = {"symbols": [target.symbol], "issuer_ids": [target.issuer_id], "limit": 1, "execute": False}
     for layer in sorted(planned_layers):
-        if layer == "company_event":
-            plan.append(
-                {
-                    "layer": layer,
-                    "action": "build_company_events",
-                    "endpoint": "/api/company-database/events/build",
-                    "method": "POST",
-                    "default_execute": False,
-                    "execute_required": True,
-                    "manual_input_required": False,
-                    "payload": {"symbols": [target.symbol], "issuer_ids": [target.issuer_id], "limit": 1, "execute": False},
-                    "usage_boundary": "local_public_or_provided_data_only_no_broker_no_trade_execution",
-                }
-            )
-        elif layer == "company_relationship":
-            plan.append(
-                {
-                    "layer": layer,
-                    "action": "build_company_relationships",
-                    "endpoint": "/api/company-database/relationships/build",
-                    "method": "POST",
-                    "default_execute": False,
-                    "execute_required": True,
-                    "manual_input_required": False,
-                    "payload": {"symbols": [target.symbol], "issuer_ids": [target.issuer_id], "limit": 1, "execute": False},
-                    "usage_boundary": "local_public_or_provided_data_only_no_broker_no_trade_execution",
-                }
-            )
-        elif layer in MANUAL_INPUT_LAYERS:
-            plan.append(_manual_layer_action(layer, target))
+        action = graph_source_actions.layer_action(layer, target_payload, symbol_payload=symbol_payload)
+        if action:
+            plan.append(action)
     return plan
 
 
