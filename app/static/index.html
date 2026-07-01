@@ -7043,7 +7043,7 @@
       element.innerHTML = ids.map((nodeId) => {
         const node = graphNodeById(nodeId);
         const pinned = knowledgeGraphState.fixedIds.has(nodeId) ? "已固定" : "轨迹";
-        return `<button class="graph-trail-node" data-node-id="${escapeHtml(nodeId)}" title="${escapeHtml(pinned)}">${escapeHtml(node.label)}</button>`;
+        return `<button type="button" class="graph-trail-node" data-node-id="${escapeHtml(nodeId)}" title="${escapeHtml(pinned)}" aria-label="选择轨迹节点 ${escapeHtml(node.label)}">${escapeHtml(node.label)}</button>`;
       }).join("");
     }
 
@@ -7059,7 +7059,7 @@
       element.innerHTML = ids.map((nodeId) => {
         const node = graphNodeById(nodeId);
         const label = nodeId === knowledgeGraphState.focusId ? "当前焦点" : "切回焦点";
-        return `<button class="graph-focus-history-node" data-node-id="${escapeHtml(nodeId)}" title="${escapeHtml(label)}">${escapeHtml(node.label)}</button>`;
+        return `<button type="button" class="graph-focus-history-node" data-node-id="${escapeHtml(nodeId)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)} ${escapeHtml(node.label)}">${escapeHtml(node.label)}</button>`;
       }).join("");
     }
 
@@ -7165,7 +7165,7 @@
         const nextHops = graphPathNextHops(nodeId, 3)
           .map((item) => {
             const nextNode = item.node;
-            return `<button class="subtle graph-next-hop" data-node-id="${escapeHtml(nextNode.id)}" title="${escapeHtml(`${graphEdgeLabel(item.link.type, item.link.label)} · ${graphNodeTypeLabel(nextNode.type)}`)}">${escapeHtml(nextNode.label)}</button>`;
+            return `<button type="button" class="subtle graph-next-hop" data-node-id="${escapeHtml(nextNode.id)}" title="${escapeHtml(`${graphEdgeLabel(item.link.type, item.link.label)} · ${graphNodeTypeLabel(nextNode.type)}`)}" aria-label="继续探索 ${escapeHtml(nextNode.label)}">${escapeHtml(nextNode.label)}</button>`;
           }).join("");
         return `<div class="graph-path-step"><strong>${escapeHtml(prefix)}</strong> · ${escapeHtml(node.label)} <span class="small-note">${escapeHtml(graphNodeTypeLabel(node.type))}</span>${nextHops ? `<div class="graph-path-next-hops">${nextHops}</div>` : ""}</div>`;
       }).join("");
