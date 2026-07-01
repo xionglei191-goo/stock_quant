@@ -214,6 +214,8 @@ def run_graph_layout_acceptance(
     viewport_width: int = 1600,
     viewport_height: int = 950,
     expect_mobile_layout: bool = False,
+    emulate_reduced_motion: bool = False,
+    expect_reduced_motion: bool = False,
     max_overlap_pairs: int = 3,
     max_near_edge_nodes: int = 0,
     min_nodes: int = 32,
@@ -286,6 +288,17 @@ def run_graph_layout_acceptance(
             page_tab = next((tab for tab in tabs if tab.get("type") == "page"), tabs[0])
         websocket_url = page_tab["webSocketDebuggerUrl"]
         client = DevToolsClient(websocket_url, timeout=timeout)
+        if emulate_reduced_motion:
+            client.call(
+                "Emulation.setEmulatedMedia",
+                {
+                    "features": [
+                        {"name": "prefers-reduced-motion", "value": "reduce"},
+                    ],
+                },
+            )
+            client.call("Page.reload", {"ignoreCache": True})
+            time.sleep(1.0)
         expression = f"""
             (async () => {{
               const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -465,6 +478,15 @@ def run_graph_layout_acceptance(
                 avg_frame_ms: Number(window.knowledgeGraphState?.perf?.avgFrameMs || 0),
                 worst_frame_ms: Number(window.knowledgeGraphState?.perf?.worstFrameMs || 0),
                 status: document.querySelector('#knowledgeGraphMotionStatus')?.textContent || ''
+              }};
+              const reducedMotion = {{
+                matches: Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches),
+                dynamic: Boolean(window.knowledgeGraphState?.dynamic),
+                reduced_state: Boolean(window.knowledgeGraphState?.reducedMotion),
+                motion_override: Boolean(window.knowledgeGraphState?.motionOverride),
+                frame_id: Number(window.knowledgeGraphState?.frameId || 0),
+                status: document.querySelector('#knowledgeGraphMotionStatus')?.textContent || '',
+                button_text: document.querySelector('#graphToggleDynamic')?.textContent || ''
               }};
               const visibleTextTargets = [
                 '#knowledgeGraphCanvas text',
@@ -939,6 +961,7 @@ def run_graph_layout_acceptance(
                 industry_nodes: nodes.filter((item) => item.community === 'industry').length,
                 visible_knowledge_types: [...new Set(nodes.filter((item) => ['event', 'evidence', 'research', 'decision'].includes(item.type) || ['research', 'evidence'].includes(item.community)).map((item) => item.type || item.community).filter(Boolean))],
                 performance: perfBeforeInteractions,
+                reduced_motion: reducedMotion,
                 performance_mode: window.knowledgeGraphState?.performanceMode || '',
                 render_stats: initialGraphSnapshot.render_stats,
                 graph_stage_performance_mode: Boolean(document.querySelector('.graph-stage.is-performance-mode')),
@@ -1027,6 +1050,18 @@ def run_graph_layout_acceptance(
                 failures.append({"check": "mobile_graph_overflow", "expected": "graph stage, inspector, and toolbar fit viewport width", "actual": responsive_layout})
             elif float(responsive_layout.get("svg_height", 0)) < 440 or float(responsive_layout.get("stage_height", 0)) < 440:
                 failures.append({"check": "mobile_graph_height", "expected": ">=440px graph viewport", "actual": responsive_layout})
+        reduced_motion = result.get("reduced_motion") if isinstance(result.get("reduced_motion"), dict) else {}
+        if expect_reduced_motion:
+            if not reduced_motion.get("matches") or not reduced_motion.get("reduced_state"):
+                failures.append({"check": "reduced_motion_media", "expected": "prefers-reduced-motion reduce is active in graph state", "actual": reduced_motion})
+            elif reduced_motion.get("dynamic"):
+                failures.append({"check": "reduced_motion_dynamic", "expected": "dynamic=false until user override", "actual": reduced_motion})
+            elif int(reduced_motion.get("frame_id", 0)) != 0:
+                failures.append({"check": "reduced_motion_animation_frame", "expected": "no active requestAnimationFrame", "actual": reduced_motion})
+            elif "减少动态" not in str(reduced_motion.get("status", "")):
+                failures.append({"check": "reduced_motion_status", "expected": "status includes 减少动态", "actual": reduced_motion})
+            elif "继续动态" not in str(reduced_motion.get("button_text", "")):
+                failures.append({"check": "reduced_motion_toggle", "expected": "button offers explicit opt-in to motion", "actual": reduced_motion})
         if int(result.get("expanded_after_click", 0)) < 2:
             failures.append({"check": "node_expansion", "expected": ">=2", "actual": result.get("expanded_after_click")})
         expansion = result.get("expansion_after_click") if isinstance(result.get("expansion_after_click"), dict) else {}
@@ -1077,14 +1112,18 @@ def run_graph_layout_acceptance(
         if min_visible_knowledge_types and len(result.get("visible_knowledge_types", []) or []) < min_visible_knowledge_types:
             failures.append({"check": "visible_knowledge_types", "expected": f">={min_visible_knowledge_types}", "actual": result.get("visible_knowledge_types")})
         perf = result.get("performance") if isinstance(result.get("performance"), dict) else {}
+        reduced_motion = result.get("reduced_motion") if isinstance(result.get("reduced_motion"), dict) else {}
         fps_tolerance = 0.5
         avg_frame_ms = float(perf.get("avg_frame_ms", 999))
-        if float(perf.get("fps", 0)) + fps_tolerance < min_fps and avg_frame_ms > max_frame_ms / 2:
-            failures.append({"check": "graph_fps", "expected": f">={min_fps}", "actual": perf})
-        if avg_frame_ms > max_frame_ms:
-            failures.append({"check": "graph_avg_frame_ms", "expected": f"<={max_frame_ms}", "actual": perf})
-        if "FPS" not in str(perf.get("status", "")) or "帧" not in str(perf.get("status", "")):
-            failures.append({"check": "graph_performance_status", "expected": "status includes FPS and frame time", "actual": perf})
+        if not expect_reduced_motion:
+            if float(perf.get("fps", 0)) + fps_tolerance < min_fps and avg_frame_ms > max_frame_ms / 2:
+                failures.append({"check": "graph_fps", "expected": f">={min_fps}", "actual": perf})
+            if avg_frame_ms > max_frame_ms:
+                failures.append({"check": "graph_avg_frame_ms", "expected": f"<={max_frame_ms}", "actual": perf})
+            if "FPS" not in str(perf.get("status", "")) or "帧" not in str(perf.get("status", "")):
+                failures.append({"check": "graph_performance_status", "expected": "status includes FPS and frame time", "actual": perf})
+        elif avg_frame_ms > max_frame_ms:
+            failures.append({"check": "reduced_motion_static_settle_ms", "expected": f"<={max_frame_ms}", "actual": {"performance": perf, "reduced_motion": reduced_motion}})
         if expect_performance_mode:
             if result.get("performance_mode") != expect_performance_mode:
                 failures.append({"check": "graph_performance_mode", "expected": expect_performance_mode, "actual": result.get("performance_mode")})
@@ -1309,6 +1348,8 @@ def run_graph_layout_acceptance(
             "viewport_width": viewport_width,
             "viewport_height": viewport_height,
             "expect_mobile_layout": expect_mobile_layout,
+            "emulate_reduced_motion": emulate_reduced_motion,
+            "expect_reduced_motion": expect_reduced_motion,
             "expect_performance_mode": expect_performance_mode,
             "max_chain_node_splits": max_chain_node_splits,
             "check_readiness": check_readiness,
@@ -1336,6 +1377,8 @@ def main() -> None:
     parser.add_argument("--viewport-width", type=int, default=1600)
     parser.add_argument("--viewport-height", type=int, default=950)
     parser.add_argument("--expect-mobile-layout", action="store_true")
+    parser.add_argument("--emulate-reduced-motion", action="store_true")
+    parser.add_argument("--expect-reduced-motion", action="store_true")
     parser.add_argument("--max-overlap-pairs", type=int, default=3)
     parser.add_argument("--max-near-edge-nodes", type=int, default=0)
     parser.add_argument("--min-nodes", type=int, default=32)
@@ -1383,6 +1426,8 @@ def main() -> None:
         viewport_width=args.viewport_width,
         viewport_height=args.viewport_height,
         expect_mobile_layout=args.expect_mobile_layout,
+        emulate_reduced_motion=args.emulate_reduced_motion,
+        expect_reduced_motion=args.expect_reduced_motion,
         max_overlap_pairs=args.max_overlap_pairs,
         max_near_edge_nodes=args.max_near_edge_nodes,
         min_nodes=args.min_nodes,

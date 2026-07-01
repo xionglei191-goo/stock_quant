@@ -3488,6 +3488,8 @@
       scope: "local",
       transform: { x: 0, y: 0, scale: 1 },
       dynamic: true,
+      motionOverride: false,
+      reducedMotion: false,
       alpha: 0.9,
       tick: 0,
       frameId: 0,
@@ -6472,6 +6474,18 @@
       }
     }
 
+    function knowledgeGraphPrefersReducedMotion() {
+      return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+    }
+
+    function syncKnowledgeGraphMotionPreference() {
+      knowledgeGraphState.reducedMotion = knowledgeGraphPrefersReducedMotion();
+      if (knowledgeGraphState.reducedMotion && !knowledgeGraphState.motionOverride) {
+        knowledgeGraphState.dynamic = false;
+      }
+      refreshKnowledgeGraphDynamicButton();
+    }
+
     function graphClusterCenter(type, width, height) {
       const cx = width / 2;
       const cy = height / 2;
@@ -6815,9 +6829,39 @@
       return `密度${density}% · 强度${quality} · 强边${highValue}%`;
     }
 
+    function settleKnowledgeGraphStaticLayout(width, height, ticks = 80) {
+      const previousDynamic = knowledgeGraphState.dynamic;
+      knowledgeGraphState.dynamic = false;
+      knowledgeGraphState.alpha = Math.max(knowledgeGraphState.alpha, 0.72);
+      const startedAt = performance.now();
+      for (let index = 0; index < ticks && knowledgeGraphState.alpha > 0.02; index += 1) {
+        tickKnowledgeGraphLayout(width, height);
+      }
+      updateKnowledgeGraphSvgPositions();
+      updateKnowledgeGraphHighlight();
+      const elapsed = performance.now() - startedAt;
+      knowledgeGraphState.perf = {
+        frames: ticks,
+        lastAt: startedAt + elapsed,
+        fps: 0,
+        avgFrameMs: ticks ? elapsed / ticks : elapsed,
+        worstFrameMs: elapsed,
+        sampleStartedAt: startedAt,
+      };
+      knowledgeGraphState.dynamic = previousDynamic && !knowledgeGraphState.reducedMotion;
+      knowledgeGraphState.alpha = 0;
+      knowledgeGraphState.frameId = 0;
+      updateKnowledgeGraphViewStatus();
+    }
+
     function startKnowledgeGraphAnimation(width, height) {
       stopKnowledgeGraphAnimation();
+      syncKnowledgeGraphMotionPreference();
       knowledgeGraphState.perf = { frames: 0, lastAt: 0, fps: 0, avgFrameMs: 0, worstFrameMs: 0, sampleStartedAt: performance.now() };
+      if (!knowledgeGraphState.dynamic) {
+        settleKnowledgeGraphStaticLayout(width, height);
+        return;
+      }
       const animate = (timestamp = performance.now()) => {
         const frameStartedAt = performance.now();
         const lastAt = knowledgeGraphState.perf.lastAt || timestamp;
@@ -7505,8 +7549,21 @@
       return `${Math.round((knowledgeGraphState.transform.scale || 1) * 100)}%`;
     }
 
+    function refreshKnowledgeGraphDynamicButton() {
+      const dynamic = $("graphToggleDynamic");
+      if (!dynamic) return;
+      dynamic.textContent = knowledgeGraphState.dynamic ? "暂停动态" : "继续动态";
+      dynamic.classList.toggle("primary", knowledgeGraphState.dynamic);
+      dynamic.setAttribute(
+        "aria-label",
+        knowledgeGraphState.dynamic ? "暂停知识图谱动态布局" : "继续知识图谱动态布局"
+      );
+    }
+
     function updateKnowledgeGraphViewStatus() {
-      const motion = knowledgeGraphState.dynamic ? `动态运行 · α ${knowledgeGraphState.alpha.toFixed(2)}` : "已暂停";
+      const motion = knowledgeGraphState.dynamic
+        ? `动态运行 · α ${knowledgeGraphState.alpha.toFixed(2)}`
+        : (knowledgeGraphState.reducedMotion && !knowledgeGraphState.motionOverride ? "减少动态 · 静态布局" : "已暂停");
       const perf = knowledgeGraphState.perf || {};
       const fps = Number(perf.fps || 0);
       const frameMs = Number(perf.avgFrameMs || 0);
@@ -7764,14 +7821,15 @@
       if (dynamic && !dynamic.dataset.graphControlReady) {
         dynamic.dataset.graphControlReady = "ready";
         dynamic.addEventListener("click", () => {
+          knowledgeGraphState.motionOverride = true;
           knowledgeGraphState.dynamic = !knowledgeGraphState.dynamic;
-          dynamic.textContent = knowledgeGraphState.dynamic ? "暂停动态" : "继续动态";
-          dynamic.classList.toggle("primary", knowledgeGraphState.dynamic);
+          refreshKnowledgeGraphDynamicButton();
           knowledgeGraphState.alpha = knowledgeGraphState.dynamic ? Math.max(knowledgeGraphState.alpha, 0.6) : 0;
           if (knowledgeGraphState.dynamic && !knowledgeGraphState.frameId && knowledgeGraphState.raw) rerenderKnowledgeGraphExplorer();
           if (!knowledgeGraphState.dynamic) stopKnowledgeGraphAnimation();
           updateKnowledgeGraphViewStatus();
         });
+        refreshKnowledgeGraphDynamicButton();
       }
       const release = $("graphReleaseNodes");
       if (release && !release.dataset.graphControlReady) {

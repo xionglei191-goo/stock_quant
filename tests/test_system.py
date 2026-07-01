@@ -19773,6 +19773,11 @@ class SystemServiceTests(unittest.TestCase):
             "--expect-mobile-layout",
             "render_stats",
             "graph_performance_mode",
+            "--emulate-reduced-motion",
+            "--expect-reduced-motion",
+            "Emulation.setEmulatedMedia",
+            "reduced_motion",
+            "reduced_motion_animation_frame",
         ]:
             self.assertIn(fragment, script)
         for fragment in [
@@ -19785,6 +19790,11 @@ class SystemServiceTests(unittest.TestCase):
             "nodeById: new Map()",
             "communitySummaries: []",
             "communityNodesByKey: new Map()",
+            "motionOverride: false",
+            "function knowledgeGraphPrefersReducedMotion",
+            "function settleKnowledgeGraphStaticLayout",
+            "减少动态 · 静态布局",
+            "refreshKnowledgeGraphDynamicButton",
             "knowledgeGraphState.nodeById = new Map(layout.nodes.map((node) => [node.id, node]))",
             "knowledgeGraphState.communitySummaries = graphCommunitySummaries(layout.nodes, layout.links)",
             "knowledgeGraphState.communityNodesByKey.get(community) || []",
