@@ -135,6 +135,7 @@ from .service_modules import industry_chain_analysis
 from .service_modules import evidence_extraction
 from .service_modules import evidence_locator
 from .service_modules import ingestion_helpers
+from .service_modules import parsing_13f
 from .service_modules import research_reports as research_report_module
 from .service_modules.feedback_scoring import score_simulation_feedback
 from .utils import chunk_text, chunk_text_by_page, env_float, env_int, looks_like_html, new_id, parse_datetime, pdf_bytes_to_text, to_plain, utcnow
@@ -16012,58 +16013,13 @@ class SystemService:
         return text, source_uri, "fetched_source_uri"
 
     def _parse_13f_information_rows(self, text: str) -> list[dict[str, Any]]:
-        normalized = str(text or "").strip()
-        if not normalized:
-            raise ValidationError("13F information table body is empty")
-        start = self._find_13f_information_table_start(normalized)
-        if start > 0:
-            normalized = normalized[start:]
-            end = self._find_13f_information_table_end(normalized)
-            if end > 0:
-                normalized = normalized[:end]
-        try:
-            root = ET.fromstring(normalized.encode("utf-8"))
-        except ET.ParseError as exc:
-            raise ValidationError(f"invalid 13F information table XML: {exc}") from exc
-        info_tables = [element for element in root.iter() if self._xml_local_name(element.tag).lower() == "infotable"]
-        rows: list[dict[str, Any]] = []
-        for index, element in enumerate(info_tables):
-            raw_value = self._xml_child_text(element, "value")
-            shares = self._float_from_text(self._xml_child_text(element, "sshPrnamt"))
-            value_usd = self._float_from_text(raw_value) * 1000.0
-            put_call = self._xml_child_text(element, "putCall")
-            row = {
-                "name_of_issuer": self._xml_child_text(element, "nameOfIssuer"),
-                "title_of_class": self._xml_child_text(element, "titleOfClass"),
-                "cusip": self._normalize_cusip(self._xml_child_text(element, "cusip")),
-                "figi": self._xml_child_text(element, "figi"),
-                "value_thousands": self._float_from_text(raw_value),
-                "value_usd": value_usd,
-                "shares": shares,
-                "share_type": self._xml_child_text(element, "sshPrnamtType"),
-                "put_call": put_call,
-                "investment_discretion": self._xml_child_text(element, "investmentDiscretion"),
-                "other_manager": self._xml_child_text(element, "otherManager"),
-                "voting_authority": self._13f_voting_authority(element),
-                "row_number": index + 1,
-            }
-            if not row["cusip"] and not row["figi"] and not row["name_of_issuer"]:
-                continue
-            if put_call:
-                row["derivative_flag"] = True
-            rows.append(row)
-        if not rows:
-            raise ValidationError("13F information table contains no infoTable rows")
-        return rows
+        return parsing_13f.parse_information_rows(text)
 
     def _find_13f_information_table_start(self, text: str) -> int:
-        for match in re.finditer(r"<([A-Za-z0-9_]+:)?informationTable\b", text):
-            return match.start()
-        return -1
+        return parsing_13f.find_information_table_start(text)
 
     def _find_13f_information_table_end(self, text: str) -> int:
-        match = re.search(r"</([A-Za-z0-9_]+:)?informationTable\s*>", text)
-        return match.end() if match else -1
+        return parsing_13f.find_information_table_end(text)
 
     def _resolve_13f_holding_target(self, row: Mapping[str, Any], payload: Mapping[str, Any], overrides: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
         explicit_issuer = str(payload.get("issuer_id", "")).strip()
@@ -16093,23 +16049,7 @@ class SystemService:
         return {"issuer_id": issuer_id, "security_id": security_id, "mapping_status": status or "explicit_payload", "mapping_confidence": round(float(confidence), 4)}
 
     def _13f_mapping_overrides(self, values: Any) -> dict[str, Mapping[str, Any]]:
-        if isinstance(values, Mapping):
-            iterable = values.values()
-        elif isinstance(values, list):
-            iterable = values
-        else:
-            iterable = []
-        mappings: dict[str, Mapping[str, Any]] = {}
-        for item in iterable:
-            if not isinstance(item, Mapping):
-                continue
-            cusip = self._normalize_cusip(str(item.get("cusip", "")))
-            figi = str(item.get("figi", "")).strip().upper()
-            if cusip:
-                mappings[cusip] = item
-            if figi:
-                mappings[figi] = item
-        return mappings
+        return parsing_13f.mapping_overrides(values)
 
     def _form13f_mapping_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
         aliases = {
@@ -16234,82 +16174,25 @@ class SystemService:
         )
 
     def _13f_holding_payload(self, row: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
-        report_period = str(row["report_period"])
-        filer_cik = str(row.get("filer_cik", ""))
-        issuer_id = str(row["issuer_id"])
-        security_id = str(row["security_id"])
-        cusip = str(row.get("cusip", ""))
-        holding_id = str(payload.get("holding_id", "")).strip()
-        if not holding_id:
-            raw = f"13f_{issuer_id}_{security_id}_{report_period}_{filer_cik}_{cusip}_{row.get('row_number', '')}"
-            holding_id = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_").lower()
-        return {
-            "holding_id": holding_id,
-            "issuer_id": issuer_id,
-            "security_id": security_id,
-            "source_id": str(row.get("source_id", payload.get("source_id", "sec_edgar"))),
-            "filer_cik": filer_cik,
-            "filer_name": str(row.get("filer_name", "")),
-            "report_period": report_period,
-            "shares": float(row.get("shares", 0.0) or 0.0),
-            "value_usd": float(row.get("value_usd", 0.0) or 0.0),
-            "voting_authority": str(row.get("voting_authority", "")),
-        }
+        return parsing_13f.holding_payload(row, payload)
 
     def _13f_unmapped_row(self, row: Mapping[str, Any], *, index: int) -> dict[str, Any]:
-        return {
-            "index": index,
-            "name_of_issuer": row.get("name_of_issuer", ""),
-            "title_of_class": row.get("title_of_class", ""),
-            "cusip": row.get("cusip", ""),
-            "figi": row.get("figi", ""),
-            "value_usd": row.get("value_usd", 0.0),
-            "shares": row.get("shares", 0.0),
-            "reason": "missing_cusip_figi_issuer_security_mapping",
-        }
+        return parsing_13f.unmapped_row(row, index=index)
 
     def _normalize_13f_report_period(self, payload: Mapping[str, Any], rows: list[Mapping[str, Any]]) -> str:
         return normalizers.normalize_13f_report_period(payload, rows)
 
     def _13f_voting_authority(self, element: ET.Element) -> str:
-        sole = self._xml_child_text(element, "Sole")
-        shared = self._xml_child_text(element, "Shared")
-        none = self._xml_child_text(element, "None")
-        parts = []
-        if sole:
-            parts.append(f"sole={sole}")
-        if shared:
-            parts.append(f"shared={shared}")
-        if none:
-            parts.append(f"none={none}")
-        return ";".join(parts)
+        return parsing_13f.voting_authority(element)
 
     def _xml_child_text(self, element: ET.Element, local_name: str) -> str:
-        for child in element.iter():
-            if child is element:
-                continue
-            if self._xml_local_name(child.tag) == local_name:
-                return (child.text or "").strip()
-        return ""
+        return parsing_13f.xml_child_text(element, local_name)
 
     def _xml_local_name(self, tag: Any) -> str:
-        value = str(tag)
-        if "}" in value:
-            value = value.rsplit("}", maxsplit=1)[-1]
-        if ":" in value:
-            value = value.rsplit(":", maxsplit=1)[-1]
-        return value
+        return parsing_13f.xml_local_name(tag)
 
     def _float_from_text(self, value: Any) -> float:
-        text = str(value or "").replace(",", "").strip()
-        if not text:
-            return 0.0
-        if text.startswith("(") and text.endswith(")"):
-            text = f"-{text[1:-1]}"
-        try:
-            return float(text)
-        except ValueError as exc:
-            raise ValidationError(f"expected numeric value, got {value!r}") from exc
+        return parsing_13f.float_from_text(value)
 
     def _normalize_cusip(self, value: str) -> str:
         return normalizers.normalize_cusip(value)
