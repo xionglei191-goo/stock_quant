@@ -124,6 +124,14 @@ from .service_modules import knowledge_graph_bulk
 from .service_modules import knowledge_network_backfill
 from .service_modules import market_data as market_data_module
 from .service_modules import personal_research_loop
+from .service_modules import workflow_planning
+from .service_modules import source_review_escalation
+from .service_modules import llm_escalation
+from .service_modules import portfolio_analytics
+from .service_modules import normalizers
+from .service_modules import chokepoint_analysis
+from .service_modules import hotspot_analysis
+from .service_modules import industry_chain_analysis
 from .service_modules import research_reports as research_report_module
 from .service_modules.feedback_scoring import score_simulation_feedback
 from .utils import chunk_text, chunk_text_by_page, env_float, env_int, looks_like_html, new_id, parse_datetime, pdf_bytes_to_text, to_plain, utcnow
@@ -1178,33 +1186,10 @@ class SystemService:
         return "failed", "", {"mode": "failed", "needs_review": True, "upstream_error": error}
 
     def _llm_task_review_reasons(self, run: LLMTaskRun, template: LLMTaskTemplate | None) -> list[str]:
-        reasons: list[str] = []
-        if run.human_review_required:
-            reasons.append("human_review_required")
-        if run.status != "succeeded":
-            reasons.append(f"status_{run.status}")
-        if run.fallback_used:
-            reasons.append(f"fallback_{run.fallback_used}")
-        if run.error:
-            reasons.append("upstream_error")
-        if template and template.risk_level in {"high", "critical"}:
-            reasons.append(f"risk_{template.risk_level}")
-        if template and template.max_latency_ms and run.latency_ms > template.max_latency_ms:
-            reasons.append("latency_sla_breach")
-        if run.estimated_cost > env_float("AI_QUANT_LLM_REVIEW_COST_THRESHOLD", 1.0, minimum=0.0):
-            reasons.append("cost_threshold_breach")
-        return sorted(set(reasons))
+        return llm_escalation.task_review_reasons(run, template)
 
     def _llm_task_review_severity(self, reasons: list[str], template: LLMTaskTemplate | None) -> str:
-        if "risk_critical" in reasons or "status_failed" in reasons:
-            return "critical"
-        if template and template.risk_level == "high":
-            return "high"
-        if any(item in reasons for item in {"status_needs_review", "fallback_manual_review", "latency_sla_breach", "cost_threshold_breach"}):
-            return "high"
-        if any(item.startswith("fallback_") or item == "upstream_error" for item in reasons):
-            return "medium"
-        return "low"
+        return llm_escalation.task_review_severity(reasons, template)
 
     def _count_review_reasons(self, rows: list[dict[str, Any]]) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -1214,36 +1199,7 @@ class SystemService:
         return counts
 
     def _llm_escalation_policy(self, filters: Mapping[str, Any]) -> dict[str, Any]:
-        default_channels = {
-            "critical": "pager",
-            "high": "slack",
-            "medium": "email",
-            "low": "review_queue",
-        }
-        default_targets = {
-            "critical": "nlp-ml-oncall",
-            "high": "llm-ops-risk",
-            "medium": "llm-review-queue",
-            "low": "analyst-review-queue",
-        }
-        channels = dict(default_channels)
-        targets = dict(default_targets)
-        channels.update({str(key): str(value) for key, value in dict(filters.get("channels", {})).items()})
-        targets.update({str(key): str(value) for key, value in dict(filters.get("targets", {})).items()})
-        return {
-            "channels": channels,
-            "targets": targets,
-            "owner_roles": {
-                "critical": "NLP/ML 负责人",
-                "high": "NLP/ML 负责人",
-                "medium": "分析师",
-                "low": "分析师",
-            },
-            "retry_policy": {
-                "max_attempts": int(filters.get("max_delivery_attempts", 3)),
-                "backoff": str(filters.get("delivery_backoff", "manual_or_external_sender")),
-            },
-        }
+        return llm_escalation.escalation_policy(filters)
 
     def _llm_metric_escalation_row(
         self,
@@ -1299,31 +1255,16 @@ class SystemService:
         }
 
     def _llm_primary_escalation_reason(self, reasons: list[str]) -> str:
-        priority = [
-            "risk_critical",
-            "status_failed",
-            "latency_sla_breach",
-            "cost_threshold_breach",
-            "risk_high",
-            "status_needs_review",
-            "fallback_manual_review",
-            "fallback_rule_summary",
-            "upstream_error",
-            "human_review_required",
-        ]
-        for item in priority:
-            if item in reasons:
-                return item
-        return reasons[0] if reasons else ""
+        return llm_escalation.primary_escalation_reason(reasons)
 
     def _llm_escalation_owner(self, severity: str, policy: Mapping[str, Any]) -> str:
-        return str(policy.get("owner_roles", {}).get(severity, "NLP/ML 负责人"))
+        return llm_escalation.escalation_owner(severity, policy)
 
     def _llm_escalation_channel(self, severity: str, policy: Mapping[str, Any]) -> str:
-        return str(policy.get("channels", {}).get(severity, "review_queue"))
+        return llm_escalation.escalation_channel(severity, policy)
 
     def _llm_escalation_target(self, severity: str, policy: Mapping[str, Any]) -> str:
-        return str(policy.get("targets", {}).get(severity, "llm-review-queue"))
+        return llm_escalation.escalation_target(severity, policy)
 
     def _llm_readiness_artifact_uris(self, payload: Mapping[str, Any]) -> dict[str, str]:
         aliases = {
@@ -2739,36 +2680,13 @@ class SystemService:
         }
 
     def _workflow_supported_task_types(self) -> list[str]:
-        return [
-            "benchmark_run",
-            "benchmark_sample_register",
-            "document_parse",
-            "extract_evidence",
-            "extract_structured_facts",
-            "ingest_document",
-            "market_data_backfill",
-            "noop",
-            "paddleocr",
-            "search_rebuild",
-            "structured_extraction",
-        ]
+        return workflow_planning.supported_task_types()
 
     def _workflow_task_type(self, task: Mapping[str, Any]) -> str:
         return str(task.get("task_type") or task.get("type") or "noop").strip().lower()
 
     def _workflow_default_queue_for_task_type(self, task_type: str) -> str:
-        task_type = str(task_type).strip().lower()
-        if task_type in {"ingest_document"}:
-            return "ingestion"
-        if task_type in {"document_parse", "paddleocr", "extract_evidence", "extract_structured_facts", "structured_extraction"}:
-            return "document_ai"
-        if task_type == "search_rebuild":
-            return "search"
-        if task_type == "market_data_backfill":
-            return "market_data"
-        if task_type in {"benchmark_sample_register", "register_benchmark_sample", "benchmark_run"}:
-            return "evaluation"
-        return "default"
+        return workflow_planning.default_queue_for_task_type(task_type)
 
     def _workflow_task_queue(self, task: Mapping[str, Any]) -> str:
         raw = task.get("queue", task.get("execution_queue", task.get("worker_queue", "")))
@@ -2863,23 +2781,7 @@ class SystemService:
         }
 
     def _workflow_dependency_snapshots(self, payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-        raw = payload.get("dependency_snapshots", payload.get("previous_task_results", {}))
-        snapshots: dict[str, dict[str, Any]] = {}
-        if not isinstance(raw, Mapping):
-            return snapshots
-        for task_id, value in raw.items():
-            if not isinstance(value, Mapping):
-                continue
-            snapshots[str(task_id)] = {
-                "task_id": str(value.get("task_id", task_id)),
-                "task_type": str(value.get("task_type", "")),
-                "status": str(value.get("status", "snapshot")),
-                "output_refs": [str(item) for item in value.get("output_refs", [])],
-                "output_ids": [str(item) for item in value.get("output_ids", [])],
-                "result": to_plain(value.get("result", {})),
-                "error": str(value.get("error", "")),
-            }
-        return snapshots
+        return workflow_planning.dependency_snapshots(payload)
 
     def _workflow_task_payload(
         self,
@@ -3072,12 +2974,7 @@ class SystemService:
         )
 
     def _workflow_idempotency_key(self, workflow: WorkflowDefinition, inputs: Mapping[str, Any]) -> str:
-        if workflow.idempotency_key_fields:
-            material = {field: inputs.get(field) for field in workflow.idempotency_key_fields}
-        else:
-            material = inputs
-        raw = json.dumps(to_plain(material), ensure_ascii=False, sort_keys=True, default=str)
-        return hashlib.sha256(f"{workflow.dag_id}:{raw}".encode("utf-8")).hexdigest()[:24]
+        return workflow_planning.idempotency_key(workflow, inputs)
 
     def _workflow_last_run(self, dag_id: str) -> WorkflowRun | None:
         runs = [item for item in self.store.workflow_runs.values() if item.dag_id == dag_id]
@@ -3164,45 +3061,13 @@ class SystemService:
         }
 
     def _workflow_task_dependencies(self, task: Mapping[str, Any]) -> list[str]:
-        raw = task.get("depends_on", task.get("dependencies", task.get("upstream", [])))
-        if isinstance(raw, str):
-            items = re.split(r"[,\s]+", raw)
-        elif isinstance(raw, list):
-            items = raw
-        elif isinstance(raw, tuple) or isinstance(raw, set):
-            items = list(raw)
-        else:
-            items = []
-        dependencies: list[str] = []
-        for item in items:
-            value = str(item).strip()
-            if value and value not in dependencies:
-                dependencies.append(value)
-        return dependencies
+        return workflow_planning.task_dependencies(task)
 
     def _workflow_task_sla_minutes(self, task: Mapping[str, Any]) -> int:
-        try:
-            return int(task.get("sla_minutes", 0) or 0)
-        except (TypeError, ValueError):
-            return 0
+        return workflow_planning.task_sla_minutes(task)
 
     def _workflow_topological_order(self, task_ids: list[str], dependency_map: Mapping[str, list[str]]) -> tuple[list[str], bool]:
-        task_id_set = set(task_ids)
-        remaining = set(task_ids)
-        order: list[str] = []
-        while remaining:
-            ready = sorted(
-                task_id
-                for task_id in remaining
-                if all(dependency not in task_id_set or dependency in order for dependency in dependency_map.get(task_id, []))
-            )
-            if not ready:
-                order.extend(sorted(remaining))
-                return order, True
-            for task_id in ready:
-                remaining.remove(task_id)
-                order.append(task_id)
-        return order, False
+        return workflow_planning.topological_order(task_ids, dependency_map)
 
     def _workflow_lineage_summary(self, dag_id: str, latest_run_id: str = "") -> dict[str, Any]:
         runs = [item.run_id for item in self.store.workflow_runs.values() if item.dag_id == dag_id]
@@ -3303,18 +3168,7 @@ class SystemService:
         return max(dates) if dates else None
 
     def _workflow_cron_schedule(self, cadence: str) -> str:
-        cadence = str(cadence).strip().lower()
-        if cadence == "hourly":
-            return "0 * * * *"
-        if cadence == "daily":
-            return "0 9 * * *"
-        if cadence == "business_daily":
-            return "0 9 * * 1-5"
-        if cadence == "weekly":
-            return "0 9 * * 1"
-        if cadence == "monthly":
-            return "0 9 1 * *"
-        return ""
+        return workflow_planning.cron_schedule(cadence)
 
     def _workflow_scheduler_choice(
         self,
@@ -3324,22 +3178,12 @@ class SystemService:
         sensor_count: int,
         backfill_candidate_count: int,
     ) -> dict[str, Any]:
-        if sensor_count or queue_count > 2 or backfill_candidate_count > 30:
-            recommended = "airflow_or_dagster"
-            reason = "external_sensors_worker_pools_or_large_backfills"
-        elif workflow_count <= 3 and queue_count <= 1 and backfill_candidate_count == 0:
-            recommended = "cron_plus_api"
-            reason = "simple_cadence_without_external_dependencies"
-        else:
-            recommended = "airflow_or_dagster"
-            reason = "multi_dag_governance_and_lineage_handoff"
-        return {
-            "recommended": recommended,
-            "reason": reason,
-            "cron_allowed_for_simple_dags": recommended == "cron_plus_api",
-            "airflow_fit": "strong" if recommended == "airflow_or_dagster" else "optional",
-            "dagster_fit": "strong" if recommended == "airflow_or_dagster" else "optional",
-        }
+        return workflow_planning.scheduler_choice(
+            workflow_count=workflow_count,
+            queue_count=queue_count,
+            sensor_count=sensor_count,
+            backfill_candidate_count=backfill_candidate_count,
+        )
 
     def _workflow_upcoming_runs(self, workflow: WorkflowDefinition, *, as_of: Any, horizon_days: int, limit: int) -> list[Any]:
         cadence = workflow.cadence.strip().lower()
@@ -3397,68 +3241,19 @@ class SystemService:
         return sorted(set(dates))
 
     def _workflow_backfill_date(self, value: Any) -> date:
-        if isinstance(value, datetime):
-            return value.date()
-        if isinstance(value, date):
-            return value
-        return parse_datetime(str(value)).date()
+        return workflow_planning.backfill_date(value)
 
     def _advance_workflow_schedule_date(self, value: date, cadence: str) -> date:
-        if cadence == "hourly":
-            return value + timedelta(days=1)
-        if cadence in {"daily", "business_daily"}:
-            return value + timedelta(days=1)
-        if cadence == "weekly":
-            return value + timedelta(days=7)
-        if cadence == "monthly":
-            month = value.month + 1
-            year = value.year
-            if month > 12:
-                month = 1
-                year += 1
-            return value.replace(year=year, month=month, day=min(value.day, 28))
-        if cadence == "manual":
-            return value + timedelta(days=1)
-        return value + timedelta(days=1)
+        return workflow_planning.advance_schedule_date(value, cadence)
 
     def _advance_workflow_schedule(self, value: Any, cadence: str) -> Any:
-        if cadence == "hourly":
-            return value + timedelta(hours=1)
-        if cadence in {"daily", "business_daily"}:
-            return value + timedelta(days=1)
-        if cadence == "weekly":
-            return value + timedelta(days=7)
-        if cadence == "monthly":
-            month = value.month + 1
-            year = value.year
-            if month > 12:
-                month = 1
-                year += 1
-            return value.replace(year=year, month=month, day=min(value.day, 28))
-        return value + timedelta(days=1)
+        return workflow_planning.advance_schedule(value, cadence)
 
     def _workflow_sla_minutes(self, workflow: WorkflowDefinition | None, *, default_sla_minutes: int) -> int:
-        if workflow is None:
-            return max(1, default_sla_minutes)
-        task_slas = []
-        for task in workflow.tasks:
-            try:
-                minutes = int(task.get("sla_minutes", 0))
-            except (TypeError, ValueError):
-                minutes = 0
-            if minutes > 0:
-                task_slas.append(minutes)
-        return max(1, min(task_slas) if task_slas else default_sla_minutes)
+        return workflow_planning.workflow_sla_minutes(workflow, default_sla_minutes=default_sla_minutes)
 
     def _workflow_run_owner(self, workflow: WorkflowDefinition | None, failed_tasks: list[str]) -> str:
-        if workflow is None:
-            return "平台负责人"
-        task_owners = {str(task.get("task_id")): str(task.get("owner", workflow.owner_role)) for task in workflow.tasks}
-        for task_id in failed_tasks:
-            owner = task_owners.get(task_id)
-            if owner:
-                return owner
-        return workflow.owner_role
+        return workflow_planning.run_owner(workflow, failed_tasks)
 
     def _workflow_openlineage_event(
         self,
@@ -8085,7 +7880,7 @@ class SystemService:
         return deduped
 
     def _normalize_us_backfill_symbol(self, value: Any) -> str:
-        return re.sub(r"[^A-Za-z0-9.-]+", "", str(value or "").strip().upper())
+        return normalizers.normalize_us_backfill_symbol(value)
 
     def _validate_backfill_date(self, value: str, field_name: str) -> None:
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value)):
@@ -10121,20 +9916,7 @@ class SystemService:
         return {}
 
     def _normalize_gold_bbox(self, value: Any) -> dict[str, Any]:
-        if isinstance(value, Mapping):
-            x = float(value.get("x", 0) or 0)
-            y = float(value.get("y", 0) or 0)
-            if "width" in value or "height" in value:
-                width = float(value.get("width", 0) or 0)
-                height = float(value.get("height", 0) or 0)
-            else:
-                width = float(value.get("right", value.get("x2", x)) or x) - x
-                height = float(value.get("bottom", value.get("y2", y)) or y) - y
-            return {"x": x, "y": y, "width": max(0.0, width), "height": max(0.0, height)}
-        if isinstance(value, list) and len(value) >= 4:
-            x1, y1, x2, y2 = [float(item or 0) for item in value[:4]]
-            return {"x": x1, "y": y1, "width": max(0.0, x2 - x1), "height": max(0.0, y2 - y1)}
-        return {}
+        return normalizers.normalize_gold_bbox(value)
 
     def _bbox_iou(self, left: Mapping[str, Any], right: Mapping[str, Any]) -> float:
         if not left or not right:
@@ -10943,29 +10725,7 @@ class SystemService:
         return weights
 
     def _normalize_scores_with_caps(self, scores: Mapping[str, float], caps: Mapping[str, float]) -> dict[str, float]:
-        result = {security_id: 0.0 for security_id in scores}
-        active = {security_id for security_id, cap in caps.items() if cap > 0}
-        remaining = min(1.0, sum(caps[security_id] for security_id in active))
-        base = {security_id: max(0.0, float(scores.get(security_id, 0.0))) for security_id in scores}
-        if sum(base[security_id] for security_id in active) <= 0:
-            base = {security_id: 1.0 for security_id in active}
-        while active and remaining > 0:
-            total = sum(base.get(security_id, 0.0) for security_id in active)
-            if total <= 0:
-                break
-            capped = False
-            for security_id in list(active):
-                proposed = remaining * base.get(security_id, 0.0) / total
-                if proposed > caps[security_id]:
-                    result[security_id] = caps[security_id]
-                    remaining -= caps[security_id]
-                    active.remove(security_id)
-                    capped = True
-            if not capped:
-                for security_id in active:
-                    result[security_id] = remaining * base.get(security_id, 0.0) / total
-                break
-        return result
+        return normalizers.normalize_scores_with_caps(scores, caps)
 
     def _budget_map(self, value: Any) -> dict[str, float]:
         if not isinstance(value, Mapping):
@@ -11026,11 +10786,7 @@ class SystemService:
             remaining -= moved
 
     def _portfolio_group_exposure(self, weights: Mapping[str, float], securities: Mapping[str, dict[str, Any]], group_key: str) -> dict[str, float]:
-        exposure: dict[str, float] = {}
-        for security_id, weight in weights.items():
-            group = str(securities[security_id].get(group_key, "unknown"))
-            exposure[group] = exposure.get(group, 0.0) + float(weight)
-        return {key: round(value, 6) for key, value in sorted(exposure.items())}
+        return portfolio_analytics.group_exposure(weights, securities, group_key)
 
     def _portfolio_constraint_shadow_prices(
         self,
@@ -11090,46 +10846,13 @@ class SystemService:
         return rows
 
     def _portfolio_risk_contribution(self, weights: Mapping[str, float], securities: Mapping[str, dict[str, Any]]) -> dict[str, float]:
-        raw = {
-            security_id: max(0.0, float(weight)) * securities[security_id]["volatility"]
-            for security_id, weight in weights.items()
-        }
-        total = sum(raw.values())
-        if total <= 0:
-            return {security_id: 0.0 for security_id in weights}
-        return {security_id: round(value / total, 6) for security_id, value in raw.items()}
+        return portfolio_analytics.risk_contribution(weights, securities)
 
     def _portfolio_turnover(self, weights: Mapping[str, float], current_weights: Any) -> float:
-        if not isinstance(current_weights, Mapping):
-            return 0.0
-        all_ids = set(weights) | {str(key) for key in current_weights}
-        total = 0.0
-        for security_id in all_ids:
-            try:
-                current = float(current_weights.get(security_id, 0.0))
-            except (TypeError, ValueError):
-                current = 0.0
-            total += abs(float(weights.get(security_id, 0.0)) - current)
-        return total / 2
+        return portfolio_analytics.turnover(weights, current_weights)
 
     def _portfolio_stress_report(self, weights: Mapping[str, float], scenarios: Any) -> list[dict[str, Any]]:
-        if not isinstance(scenarios, list):
-            return []
-        report: list[dict[str, Any]] = []
-        for scenario in scenarios:
-            if not isinstance(scenario, Mapping):
-                continue
-            shocks = scenario.get("shocks", {})
-            if not isinstance(shocks, Mapping):
-                continue
-            portfolio_return = 0.0
-            for security_id, weight in weights.items():
-                try:
-                    portfolio_return += float(weight) * float(shocks.get(security_id, 0.0))
-                except (TypeError, ValueError):
-                    continue
-            report.append({"name": str(scenario.get("name", "stress")), "portfolio_return": round(portfolio_return, 6)})
-        return report
+        return portfolio_analytics.stress_report(weights, scenarios)
 
     def _portfolio_walk_forward(self, weights: Mapping[str, float], history: Any) -> dict[str, Any]:
         if not isinstance(history, Mapping):
@@ -11816,49 +11539,13 @@ class SystemService:
         *,
         reference_label: str,
     ) -> dict[str, Any]:
-        universe = sorted(set(weights) | set(reference_weights))
-        if not universe:
-            raise ValidationError("portfolio comparison requires weights")
-        candidate = {security_id: max(0.0, float(weights.get(security_id, 0.0))) for security_id in universe}
-        reference = {security_id: max(0.0, float(reference_weights.get(security_id, 0.0))) for security_id in universe}
-        candidate_total = sum(candidate.values())
-        reference_total = sum(reference.values())
-        if candidate_total <= 0 or reference_total <= 0:
-            raise ValidationError("portfolio comparison requires positive normalized weights")
-        candidate = {security_id: value / candidate_total for security_id, value in candidate.items()}
-        reference = {security_id: value / reference_total for security_id, value in reference.items()}
-        score_source = {
-            security_id: float(proposal.posterior_returns.get(security_id, proposal.prior_returns.get(security_id, 0.0)))
-            for security_id in universe
-        }
-        candidate_score = sum(candidate[security_id] * score_source[security_id] for security_id in universe)
-        reference_score = sum(reference[security_id] * score_source[security_id] for security_id in universe)
-        restricted = {str(item) for item in proposal.constraints.get("restricted_securities", [])}
-        max_weight_limit = float(proposal.constraints.get("max_weight", 1.0))
-        candidate_restricted_weight = sum(candidate.get(security_id, 0.0) for security_id in restricted)
-        candidate_breaches = sorted([security_id for security_id, weight in candidate.items() if weight > max_weight_limit + 1e-6])
-        top_security_id = max(candidate, key=candidate.get)
-        return {
-            "optimizer": optimizer_label,
-            "reference": reference_label,
-            "security_count": len(candidate),
-            "reference_security_count": len(reference),
-            "weight_sum": round(sum(candidate.values()), 8),
-            "reference_weight_sum": round(sum(reference.values()), 8),
-            "top_security_id": top_security_id,
-            "top_weight": round(candidate[top_security_id], 8),
-            "l1_distance_to_reference": round(sum(abs(candidate[security_id] - reference[security_id]) for security_id in universe) / 2, 8),
-            "concentration": round(sum(weight * weight for weight in candidate.values()), 8),
-            "expected_return_proxy": round(candidate_score, 8),
-            "reference_expected_return_proxy": round(reference_score, 8),
-            "expected_return_delta": round(candidate_score - reference_score, 8),
-            "restricted_security_weight": round(candidate_restricted_weight, 8),
-            "max_weight_limit": round(max_weight_limit, 8),
-            "max_weight_breach_count": len(candidate_breaches),
-            "max_weight_breach_securities": candidate_breaches,
-            "weights": {security_id: round(candidate[security_id], 8) for security_id in universe if candidate[security_id] > 0},
-            "reference_weights": {security_id: round(reference[security_id], 8) for security_id in universe if reference[security_id] > 0},
-        }
+        return portfolio_analytics.weight_comparison_row(
+            optimizer_label,
+            weights,
+            reference_weights,
+            proposal,
+            reference_label=reference_label,
+        )
 
     def _portfolio_compare_constraint_report(self, weights: Mapping[str, float], proposal: PortfolioProposal) -> dict[str, Any]:
         universe = [security_id for security_id in proposal.universe if security_id in self.store.securities] or list(weights)
@@ -12569,55 +12256,12 @@ class SystemService:
         cash_weight: float,
         portfolio_currency: str,
     ) -> dict[str, Any]:
-        group_keys = ["market", "currency", "industry", "style"]
-        exposures: dict[str, dict[str, dict[str, Any]]] = {key: {} for key in group_keys}
-        for position in positions:
-            market_value = float(position.get("market_value", 0.0))
-            weight = float(position.get("weight", 0.0))
-            for group_key in group_keys:
-                group_value = str(position.get(group_key) or "unknown")
-                row = exposures[group_key].setdefault(group_value, {"market_value": 0.0, "weight": 0.0, "position_count": 0, "top_position": "", "top_weight": 0.0})
-                row["market_value"] += market_value
-                row["weight"] += weight
-                row["position_count"] += 1
-                if weight > float(row["top_weight"]):
-                    row["top_position"] = str(position.get("security_id", ""))
-                    row["top_weight"] = weight
-        rounded_exposures = {
-            group_key: {
-                group_value: {
-                    "market_value": round(values["market_value"], 6),
-                    "weight": round(values["weight"], 8),
-                    "position_count": values["position_count"],
-                    "top_position": values["top_position"],
-                    "top_weight": round(values["top_weight"], 8),
-                }
-                for group_value, values in sorted(group_values.items())
-            }
-            for group_key, group_values in exposures.items()
-        }
-        sorted_positions = sorted(positions, key=lambda item: float(item.get("weight", 0.0)), reverse=True)
-        weights = [float(item.get("weight", 0.0)) for item in positions]
-        foreign_currency_weight = sum(float(item.get("weight", 0.0)) for item in positions if str(item.get("currency", "")) != portfolio_currency)
-        unclassified = {
-            group_key: round(float(rounded_exposures[group_key].get("unclassified", {}).get("weight", 0.0)), 8)
-            for group_key in ["industry", "style"]
-        }
-        return {
-            "by_market": rounded_exposures["market"],
-            "by_currency": rounded_exposures["currency"],
-            "by_industry": rounded_exposures["industry"],
-            "by_style": rounded_exposures["style"],
-            "cash": {"market_value": round(cash, 6), "weight": cash_weight, "currency": portfolio_currency},
-            "concentration": {
-                "position_count": len(positions),
-                "top_position_weight": round(weights[0], 8) if weights else 0.0,
-                "top_5_weight": round(sum(sorted(weights, reverse=True)[:5]), 8),
-                "herfindahl_index": round(sum(weight * weight for weight in weights), 8),
-            },
-            "foreign_currency_weight": round(foreign_currency_weight, 8),
-            "unclassified_weight": unclassified,
-        }
+        return portfolio_analytics.valuation_risk_decomposition(
+            positions,
+            cash=cash,
+            cash_weight=cash_weight,
+            portfolio_currency=portfolio_currency,
+        )
 
     def register_portfolio_transaction(self, payload: Mapping[str, Any], *, actor: str = "system") -> PortfolioTransaction:
         security_id = str(payload["security_id"])
@@ -14338,31 +13982,7 @@ class SystemService:
         }
 
     def _industry_chain_readiness_coverage(self, counters: Mapping[str, Any]) -> dict[str, Any]:
-        node_count = max(1, int(counters.get("node_count", 0) or 0))
-        position_count = max(1, int(counters.get("company_node_position_count", 0) or 0))
-        process_coverage = int(counters.get("process_ready_nodes", 0) or 0) / node_count
-        flow_coverage = int(counters.get("flow_ready_nodes", 0) or 0) / node_count
-        evidence_coverage = int(counters.get("official_evidence_ready_nodes", 0) or 0) / node_count
-        economics_coverage = int(counters.get("economic_pool_ready_nodes", 0) or 0) / node_count
-        company_mapping_coverage = int(counters.get("company_mapped_nodes", 0) or 0) / node_count
-        attribution_coverage = int(counters.get("company_attribution_ready_positions", 0) or 0) / position_count
-        readiness_score = (
-            0.25 * process_coverage
-            + 0.15 * flow_coverage
-            + 0.2 * evidence_coverage
-            + 0.15 * economics_coverage
-            + 0.1 * company_mapping_coverage
-            + 0.15 * attribution_coverage
-        )
-        return {
-            "process_coverage": round(process_coverage, 4),
-            "flow_coverage": round(flow_coverage, 4),
-            "official_evidence_coverage": round(evidence_coverage, 4),
-            "economic_pool_coverage": round(economics_coverage, 4),
-            "company_mapping_coverage": round(company_mapping_coverage, 4),
-            "company_attribution_coverage": round(attribution_coverage, 4),
-            "readiness_score": round(readiness_score, 4),
-        }
+        return industry_chain_analysis.readiness_coverage(counters)
 
     def _dedupe_research_task_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         task_map: dict[str, dict[str, Any]] = {}
@@ -14472,31 +14092,10 @@ class SystemService:
         return False
 
     def _industry_chain_stage_bucket(self, buckets: dict[str, dict[str, Any]], stage: str) -> dict[str, Any]:
-        normalized = stage or "unknown"
-        return buckets.setdefault(
-            normalized,
-            {
-                "process_stage": normalized,
-                "node_count": 0,
-                "company_count": 0,
-                "revenue_pool": 0.0,
-                "profit_pool": 0.0,
-                "mapped_revenue": 0.0,
-                "mapped_profit": 0.0,
-                "process_steps": [],
-                "segments": [],
-            },
-        )
+        return industry_chain_analysis.stage_bucket(buckets, stage)
 
     def _industry_chain_stage_order(self, stage: str) -> int:
-        return {
-            "upstream": 10,
-            "midstream": 20,
-            "downstream": 30,
-            "supporting": 40,
-            "adjacent": 50,
-            "unknown": 99,
-        }.get(stage, 80)
+        return industry_chain_analysis.stage_order(stage)
 
     def _industry_chain_node_sort_key(self, node: Mapping[str, Any]) -> tuple[float, float, str]:
         flow_order = self._coerce_float(node.get("flow_order", node.get("sequence", node.get("order"))))
@@ -14508,15 +14107,7 @@ class SystemService:
         )
 
     def _industry_chain_node_relations(self, chain: IndustryChain) -> dict[str, dict[str, list[dict[str, Any]]]]:
-        relations: dict[str, dict[str, list[dict[str, Any]]]] = {}
-        for edge in chain.edges:
-            source_node_id = str(edge.get("source_node_id", "")).strip()
-            target_node_id = str(edge.get("target_node_id", "")).strip()
-            if source_node_id:
-                relations.setdefault(source_node_id, {"upstream": [], "downstream": []})["downstream"].append(dict(edge))
-            if target_node_id:
-                relations.setdefault(target_node_id, {"upstream": [], "downstream": []})["upstream"].append(dict(edge))
-        return relations
+        return industry_chain_analysis.node_relations(chain)
 
     def _industry_chain_process_step(
         self,
@@ -16868,17 +16459,7 @@ class SystemService:
         }
 
     def _normalize_13f_report_period(self, payload: Mapping[str, Any], rows: list[Mapping[str, Any]]) -> str:
-        del rows
-        for field in ("report_period", "period_of_report", "report_date"):
-            value = str(payload.get(field, "")).strip()
-            if not value:
-                continue
-            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-                return value
-            compact = re.sub(r"[^0-9]", "", value)
-            if len(compact) == 8:
-                return f"{compact[:4]}-{compact[4:6]}-{compact[6:]}"
-        raise ValidationError("13F report_period must use YYYY-MM-DD")
+        return normalizers.normalize_13f_report_period(payload, rows)
 
     def _13f_voting_authority(self, element: ET.Element) -> str:
         sole = self._xml_child_text(element, "Sole")
@@ -16921,10 +16502,10 @@ class SystemService:
             raise ValidationError(f"expected numeric value, got {value!r}") from exc
 
     def _normalize_cusip(self, value: str) -> str:
-        return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+        return normalizers.normalize_cusip(value)
 
     def _normalize_name(self, value: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+        return normalizers.normalize_name(value)
 
     def institutional_holdings_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -19308,10 +18889,7 @@ class SystemService:
         return updated
 
     def _chokepoint_step_index(self, run: ChokepointResearchRun, step_id: str) -> int:
-        for index, step in enumerate(run.steps):
-            if step.get("step_id") == step_id:
-                return index
-        raise NotFoundError(f"chokepoint research step {step_id} not found")
+        return chokepoint_analysis.step_index(run, step_id)
 
     def _next_chokepoint_step_id(self, steps: list[dict[str, Any]], index: int) -> str:
         if index + 1 < len(steps):
@@ -19319,26 +18897,10 @@ class SystemService:
         return str(steps[index]["step_id"])
 
     def _chokepoint_completed(self, steps: list[dict[str, Any]]) -> bool:
-        return all(str(step.get("status")) in {"done", "review"} for step in steps)
+        return chokepoint_analysis.completed(steps)
 
     def _chokepoint_research_context(self, run: ChokepointResearchRun | Mapping[str, Any]) -> dict[str, Any]:
-        if isinstance(run, ChokepointResearchRun):
-            return {
-                "topic": run.topic,
-                "ticker": run.ticker,
-                "theme": run.theme,
-                "chokepoint_node": run.chokepoint_node,
-                "playbook": run.playbook,
-                "mode": run.mode,
-            }
-        return {
-            "topic": str(run.get("topic", run.get("theme", ""))),
-            "ticker": str(run.get("ticker", "")),
-            "theme": str(run.get("theme", "")),
-            "chokepoint_node": str(run.get("chokepoint_node", run.get("node", ""))),
-            "playbook": str(run.get("playbook", "generic")),
-            "mode": str(run.get("mode", "strict")),
-        }
+        return chokepoint_analysis.research_context(run)
 
     def _chokepoint_validation_context(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         context = self._chokepoint_research_context(payload)
@@ -19425,19 +18987,7 @@ class SystemService:
         return dict(sorted(counts.items()))
 
     def _chokepoint_light_evidence_match(self, evidence: Evidence, topic_terms: list[str]) -> bool:
-        haystack = " ".join(
-            [
-                evidence.section,
-                evidence.document_id,
-                evidence.security_id,
-                evidence.issuer_id,
-                evidence.chain_id,
-                " ".join(evidence.evidence_topics[:8]),
-                " ".join(evidence.risk_tags[:8]),
-                " ".join(evidence.financial_metric_tags[:8]),
-            ]
-        ).lower()
-        return any(term in haystack for term in topic_terms)
+        return chokepoint_analysis.light_evidence_match(evidence, topic_terms)
 
     def _chokepoint_evidence_row(self, evidence: Evidence) -> dict[str, Any]:
         document = self.store.documents.get(evidence.document_id)
@@ -19461,34 +19011,10 @@ class SystemService:
         return f"{mode_notes.get(run.mode, mode_notes['strict'])}\n{base}"
 
     def _chokepoint_prior_outputs(self, run: ChokepointResearchRun, step_index: int) -> str:
-        blocks = []
-        for step in run.steps[:step_index]:
-            output = str(step.get("output_text", "")).strip()
-            if output:
-                blocks.append(f"## {step.get('label')}\n{output[:2500]}")
-        return "\n\n".join(blocks) if blocks else "无"
+        return chokepoint_analysis.prior_outputs(run, step_index)
 
     def _chokepoint_steps_summary(self, run: ChokepointResearchRun) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for step in run.steps:
-            quality = dict(step.get("evidence_quality") or {})
-            rows.append(
-                {
-                    "step_id": step.get("step_id", ""),
-                    "label": step.get("label", ""),
-                    "status": step.get("status", "pending"),
-                    "summary": step.get("summary", ""),
-                    "llm_run_id": step.get("llm_run_id", ""),
-                    "url_count": quality.get("url_count", 0),
-                    "confirmed_count": quality.get("confirmed_count", 0),
-                    "inferred_count": quality.get("inferred_count", 0),
-                    "speculative_count": quality.get("speculative_count", 0),
-                    "unknown_count": quality.get("unknown_count", 0),
-                    "fallback_used": quality.get("fallback_used", ""),
-                    "issue_count": len(step.get("issues") or []),
-                }
-            )
-        return rows
+        return chokepoint_analysis.steps_summary(run)
 
     def _chokepoint_run_tasks_summary(self, run: ChokepointResearchRun) -> dict[str, Any]:
         tasks = [
@@ -19976,17 +19502,7 @@ class SystemService:
         return {"status": status, "summary": summary, "issues": issues, "evidence_quality": quality}
 
     def _chokepoint_issue(self, step: Mapping[str, Any], severity: str, message: str, suggestion: str) -> dict[str, Any]:
-        basis = f"{step.get('step_id')}|{severity}|{message}"
-        return {
-            "issue_id": f"cpissue_{safe_source_part(basis)}",
-            "step_id": str(step.get("step_id", "")),
-            "step": str(step.get("label", step.get("step_id", ""))),
-            "severity": severity,
-            "message": message,
-            "suggestion": suggestion,
-            "status": "open",
-            "created_at": utcnow(),
-        }
+        return chokepoint_analysis.issue(step, severity, message, suggestion)
 
     def _merge_chokepoint_issues(self, existing: list[dict[str, Any]], new_issues: list[dict[str, Any]], step_label: str) -> list[dict[str, Any]]:
         retained = [dict(item) for item in existing if item.get("step") != step_label]
@@ -19996,67 +19512,7 @@ class SystemService:
         return list(by_id.values())
 
     def _chokepoint_verification_candidates(self, run: ChokepointResearchRun) -> list[dict[str, Any]]:
-        candidates: dict[str, dict[str, Any]] = {}
-        for issue in run.issues:
-            if issue.get("status") == "closed":
-                continue
-            reason = f"{issue.get('step')}: {issue.get('message')} {issue.get('suggestion')}"
-            task_type = "chokepoint_verification"
-            task_id = f"rtask_{safe_source_part(run.run_id + '|' + str(issue.get('issue_id', reason)))}"
-            candidates[task_id] = {
-                "task_id": task_id,
-                "task_type": task_type,
-                "source": "chokepoint_research",
-                "reason": reason,
-                "status": "open",
-                "priority": 80 if issue.get("severity") == "block" else 60,
-                "required_slots": ["source_url", "published_date", "source_type", "confidence", "fact_layer"],
-                "metadata": {
-                    "run_id": run.run_id,
-                    "topic": run.topic,
-                    "step_id": issue.get("step_id", ""),
-                    "usage_boundary": "research_only_not_trade_signal",
-                    "automation_allowed": False,
-                    "live_execution_allowed": False,
-                },
-            }
-        for step in run.steps:
-            text = str(step.get("output_text", ""))
-            for index, line in enumerate([line.strip() for line in text.splitlines() if re.search(r"unknown|未知|待验证|无法确认|needs_verification|P0", line, re.I)][:8]):
-                task_id = f"rtask_{safe_source_part(run.run_id + '|' + str(step.get('step_id')) + '|' + str(index) + '|' + line[:80])}"
-                candidates.setdefault(
-                    task_id,
-                    {
-                        "task_id": task_id,
-                        "task_type": "chokepoint_verification",
-                        "source": "chokepoint_research",
-                        "reason": line[:500],
-                        "status": "open",
-                        "priority": 70,
-                        "required_slots": ["official_source", "source_url", "published_date", "verification_result"],
-                        "metadata": {
-                            "run_id": run.run_id,
-                            "topic": run.topic,
-                            "step_id": step.get("step_id", ""),
-                            "usage_boundary": "research_only_not_trade_signal",
-                            "automation_allowed": False,
-                            "live_execution_allowed": False,
-                        },
-                    },
-                )
-        if not candidates:
-            task_id = f"rtask_{safe_source_part(run.run_id + '|manual_review')}"
-            candidates[task_id] = {
-                "task_id": task_id,
-                "task_type": "chokepoint_verification",
-                "source": "chokepoint_research",
-                "reason": "人工复核瓶颈研究来源台账、事实分层和证伪条件。",
-                "status": "open",
-                "priority": 50,
-                "required_slots": ["source_ledger_review", "falsification_review"],
-                "metadata": {"run_id": run.run_id, "topic": run.topic, "usage_boundary": "research_only_not_trade_signal"},
-            }
-        return list(candidates.values())
+        return chokepoint_analysis.verification_candidates(run)
 
     def _build_research_task(self, task_id: str, task_type: str, payload: Mapping[str, Any]) -> ResearchTask:
         if task_type == "company_position_backfill":
@@ -20092,44 +19548,14 @@ class SystemService:
         )
 
     def _normalize_hotspot_research_task(self, raw_task: Mapping[str, Any], request: Mapping[str, Any], expansion: Mapping[str, Any]) -> dict[str, Any]:
-        task_type = str(raw_task.get("task_type", raw_task.get("type", "hotspot_research_backfill"))).strip()
-        chain_id = str(raw_task.get("chain_id", request.get("seed_chain_id", ""))).strip()
-        node_ids = [str(item) for item in raw_task.get("node_ids", [raw_task.get("node_id")]) if item]
-        position_id = str(raw_task.get("position_id", "")).strip()
-        issuer_id = str(raw_task.get("issuer_id", "")).strip()
-        basis = "|".join([task_type, chain_id, position_id, issuer_id, ",".join(node_ids), str(expansion.get("query", ""))])
-        task_id = str(raw_task.get("task_id") or f"rtask_{safe_source_part(basis)}").strip()
-        return {
-            "task_id": task_id,
-            "task_type": task_type,
-            "source": "hotspot_expansion",
-            "issuer_id": issuer_id,
-            "chain_id": chain_id,
-            "node_ids": node_ids,
-            "position_id": position_id,
-            "required_slots": [str(item) for item in raw_task.get("required_slots", [])],
-            "reason": str(raw_task.get("reason", "")),
-            "status": "open",
-            "priority": int(raw_task.get("priority", 70 if task_type == "company_position_backfill" else 55)),
-            "metadata": {
-                "query": expansion.get("query", ""),
-                "seed_theme_id": request.get("seed_theme_id", ""),
-                "seed_chain_id": request.get("seed_chain_id", ""),
-                "usage_boundary": "macro_industry_chain_research_only_not_trade_signal",
-            },
-        }
+        return normalizers.normalize_hotspot_research_task(raw_task, request, expansion)
 
     def _matching_hotspot_lexicons(self, query: str) -> list[HotspotLexicon]:
         lowered = query.lower()
         return [item for item in self.store.hotspot_lexicons.values() if self._hotspot_lexicon_matches(item, lowered)]
 
     def _hotspot_lexicon_matches(self, lexicon: HotspotLexicon, query: str) -> bool:
-        terms = [lexicon.name, *lexicon.terms]
-        for key, values in lexicon.synonyms.items():
-            terms.append(key)
-            terms.extend(values)
-        lowered_terms = [str(item).lower() for item in terms]
-        return any(query in item or item in query for item in lowered_terms if item)
+        return hotspot_analysis.lexicon_matches(lexicon, query)
 
     def hotspot_expansion(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
         query = str(payload.get("query", "")).strip()
@@ -20401,23 +19827,7 @@ class SystemService:
         return self._unique_strings(chain_ids)
 
     def _hotspot_layer_summary(self, expansion: Mapping[str, Any]) -> dict[str, Any]:
-        layers = expansion.get("evidence_layers", {})
-        if not isinstance(layers, Mapping):
-            layers = {}
-        counts = {
-            "facts": len(layers.get("facts", [])) if isinstance(layers.get("facts", []), list) else 0,
-            "opinions": len(layers.get("opinions", [])) if isinstance(layers.get("opinions", []), list) else 0,
-            "inferences": len(layers.get("inferences", [])) if isinstance(layers.get("inferences", []), list) else 0,
-            "needs_verification": len(layers.get("needs_verification", [])) if isinstance(layers.get("needs_verification", []), list) else 0,
-        }
-        counts["present_layer_count"] = sum(1 for value in counts.values() if value > 0)
-        recall = expansion.get("retrieval_recall", {})
-        if isinstance(recall, Mapping):
-            counts["public_recall_count"] = len(recall.get("public_facts", [])) if isinstance(recall.get("public_facts", []), list) else 0
-            counts["research_opinion_recall_count"] = len(recall.get("research_opinions", [])) if isinstance(recall.get("research_opinions", []), list) else 0
-            counts["inference_recall_count"] = len(recall.get("inferences", [])) if isinstance(recall.get("inferences", []), list) else 0
-            counts["market_signal_recall_count"] = len(recall.get("market_signals", [])) if isinstance(recall.get("market_signals", []), list) else 0
-        return counts
+        return hotspot_analysis.layer_summary(expansion)
 
     def _hotspot_expansion_required_slots(self, expansion: Mapping[str, Any], payload: Mapping[str, Any]) -> list[str]:
         raw = payload.get("required_data_slots", [])
@@ -20434,31 +19844,7 @@ class SystemService:
         return self._unique_strings(slots)
 
     def _hotspot_boundary_summary(self, expansion: Mapping[str, Any]) -> dict[str, Any]:
-        layers = expansion.get("evidence_layers", {})
-        if not isinstance(layers, Mapping):
-            layers = {}
-        facts = [item for item in layers.get("facts", []) if isinstance(item, Mapping)]
-        opinions = [item for item in layers.get("opinions", []) if isinstance(item, Mapping)]
-        inferences = [item for item in layers.get("inferences", []) if isinstance(item, Mapping)]
-        needs_verification = [item for item in layers.get("needs_verification", []) if isinstance(item, Mapping)]
-        inference_flags = [
-            item
-            for item in inferences
-            if item.get("needs_verification") is True
-            or item.get("automation_allowed") is False
-            or "not_fact" in str(item.get("source_boundary", ""))
-        ]
-        fact_resources = {str(item.get("resource_id", "")) for item in facts if item.get("resource_id")}
-        inference_resources = {str(item.get("resource_id", "")) for item in inferences if item.get("resource_id")}
-        overlap = sorted(fact_resources & inference_resources)
-        return {
-            "facts_have_source_or_evidence": all(item.get("evidence_ids") or item.get("source_uri") or item.get("resource_type") in {"document", "evidence"} for item in facts),
-            "opinions_have_boundary": all(item.get("source_refs") or item.get("source_boundary") or item.get("resource_type") == "macro_theme" for item in opinions),
-            "inferences_need_verification": len(inference_flags) == len(inferences) if inferences else False,
-            "needs_verification_count": len(needs_verification),
-            "fact_inference_overlap": overlap,
-            "separated_layers": bool(facts) and bool(opinions) and bool(inferences) and bool(needs_verification) and not overlap,
-        }
+        return hotspot_analysis.boundary_summary(expansion)
 
     def _hotspot_research_queue_summary(self, expansion: Mapping[str, Any]) -> dict[str, Any]:
         source_tasks = [item for item in expansion.get("research_tasks", []) if isinstance(item, Mapping)]
@@ -20702,69 +20088,13 @@ class SystemService:
         retrieval_recall: dict[str, list[dict[str, Any]]],
         matched_lexicons: list[HotspotLexicon],
     ) -> dict[str, Any]:
-        terms = {term.lower() for term in re.findall(r"[\w\u4e00-\u9fff]+", query)}
-        for lexicon in matched_lexicons:
-            terms.update(term.lower() for term in lexicon.terms)
-            for key, values in lexicon.synonyms.items():
-                terms.add(str(key).lower())
-                terms.update(str(value).lower() for value in values)
-        coverage_by_position = {row["position_id"]: row for row in data_coverage}
-        recall_by_issuer: dict[str, int] = {}
-        for bucket in retrieval_recall.values():
-            if not isinstance(bucket, list):
-                continue
-            for row in bucket:
-                issuer_id = str(row.get("issuer_id", ""))
-                if issuer_id:
-                    recall_by_issuer[issuer_id] = recall_by_issuer.get(issuer_id, 0) + 1
-
-        candidates: list[dict[str, Any]] = []
-        for position in company_positions:
-            text = " ".join(
-                [
-                    str(position.get("role", "")),
-                    str(position.get("positioning_summary", "")),
-                    " ".join(str(item) for item in position.get("technology_tags", [])),
-                ]
-            ).lower()
-            term_hits = sorted(term for term in terms if term and term in text)
-            term_score = min(1.0, len(term_hits) / max(1, min(len(terms), 6)))
-            coverage = coverage_by_position.get(position.get("position_id", ""), {})
-            coverage_score = float(coverage.get("coverage_ratio", 0.0) or 0.0)
-            evidence_score = 1.0 if coverage.get("linked_evidence_ids") else 0.0
-            recall_score = min(1.0, recall_by_issuer.get(str(position.get("issuer_id", "")), 0) / 3)
-            data_quality = str(position.get("data_quality", "needs_review"))
-            quality_score = {"verified": 1.0, "complete": 0.9, "partial": 0.55, "needs_review": 0.25}.get(data_quality, 0.35)
-            rank_score = round(term_score * 0.25 + coverage_score * 0.25 + evidence_score * 0.2 + recall_score * 0.2 + quality_score * 0.1, 6)
-            candidates.append(
-                {
-                    "position_id": position.get("position_id", ""),
-                    "issuer_id": position.get("issuer_id", ""),
-                    "security_id": position.get("security_id", ""),
-                    "chain_id": position.get("chain_id", ""),
-                    "node_ids": position.get("node_ids", []),
-                    "rank_score": rank_score,
-                    "score_components": {
-                        "term_score": round(term_score, 4),
-                        "coverage_score": round(coverage_score, 4),
-                        "evidence_score": round(evidence_score, 4),
-                        "recall_score": round(recall_score, 4),
-                        "quality_score": round(quality_score, 4),
-                    },
-                    "matched_terms": term_hits,
-                    "explanation": "term match + data coverage + evidence link + public recall + data quality",
-                }
-            )
-        candidates.sort(key=lambda item: item["rank_score"], reverse=True)
-        return {
-            "ranker": "local_hotspot_chain_coverage_evidence_score",
-            "candidate_count": len(candidates),
-            "candidates": candidates,
-            "adapter_recommendation": {
-                "llm_rerank_trigger": "use LLM rerank only after public recall, evidence layers, and company positioning coverage are available",
-                "inputs": ["matched_lexicons", "retrieval_recall", "evidence_layers", "data_coverage"],
-            },
-        }
+        return hotspot_analysis.rank_candidates(
+            query=query,
+            company_positions=company_positions,
+            data_coverage=data_coverage,
+            retrieval_recall=retrieval_recall,
+            matched_lexicons=matched_lexicons,
+        )
 
     def _hotspot_retrieval_recall(self, query: str, *, include_restricted: bool, limit: int) -> dict[str, list[dict[str, Any]]]:
         """T-406A: Enhanced hotspot retrieval recall.
@@ -23686,20 +23016,7 @@ class SystemService:
         return {key: value for key, value in kwargs.items()}
 
     def _normalize_data_health_status(self, status: str) -> str:
-        value = str(status or "").strip().lower()
-        if value in {"executed", "completed", "passed", "success", "ok", "active"}:
-            return "success"
-        if value in {"partial", "retrying"}:
-            return "partial"
-        if value in {"failed", "error", "invalid"}:
-            return "failed"
-        if value in {"dry_run", "planned"}:
-            return "planned"
-        if value in {"skipped", "not_found", "inactive"}:
-            return "skipped"
-        if value in {"running", "pending"}:
-            return "running"
-        return value or "unknown"
+        return normalizers.normalize_data_health_status(status)
 
     def _data_health_row(
         self,
@@ -25746,14 +25063,7 @@ class SystemService:
         return mentions
 
     def _normalize_relationship_entity_name(self, value: str) -> str:
-        cleaned = re.sub(r"\s+", " ", str(value)).strip(" \t\r\n,.;:：，。；、()（）")
-        cleaned = re.sub(r"\b(the|a|an|our|its|their|major|key)\b\s+", "", cleaned, flags=re.IGNORECASE).strip()
-        if len(cleaned) < 2 or len(cleaned) > 80:
-            return ""
-        blocked = {"customer", "supplier", "partner", "subsidiary", "shareholder", "holder", "controller", "investee", "company", "group", "客户", "供应商", "合作伙伴", "子公司", "股东", "持有人", "实控人", "实际控制人", "参股"}
-        if cleaned.lower() in blocked:
-            return ""
-        return cleaned
+        return normalizers.normalize_relationship_entity_name(value)
 
     def build_company_workflow(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
@@ -32286,76 +31596,13 @@ class SystemService:
         return source.review_owner or self._source_review_owner_role(source)
 
     def _source_review_escalation_policy(self, filters: Mapping[str, Any]) -> dict[str, Any]:
-        default_channels = {
-            "critical": "pager",
-            "high": "source_review_outbox",
-            "medium": "source_review_outbox",
-            "low": "review_queue",
-        }
-        default_targets = {
-            "critical": "risk-compliance-source-review",
-            "high": "risk-compliance-source-review",
-            "medium": "source-review-owner-board",
-            "low": "source-review-queue",
-        }
-        channels = dict(default_channels)
-        targets = dict(default_targets)
-        channels.update({str(key): str(value) for key, value in dict(filters.get("channels", {})).items()})
-        targets.update({str(key): str(value) for key, value in dict(filters.get("targets", {})).items()})
-        return {
-            "channels": channels,
-            "targets": targets,
-            "owner_roles": {
-                "critical": "风险/合规",
-                "high": "风险/合规",
-                "medium": "数据工程",
-                "low": "数据工程",
-            },
-            "thresholds": {
-                "critical_days_overdue": int(filters.get("critical_days_overdue", 30)),
-                "high_days_overdue": int(filters.get("high_days_overdue", 7)),
-                "due_soon_high_risk_days": int(filters.get("due_soon_high_risk_days", 7)),
-            },
-            "retry_policy": {
-                "max_attempts": int(filters.get("max_delivery_attempts", 3)),
-                "backoff": str(filters.get("delivery_backoff", "manual_or_external_sender")),
-            },
-        }
+        return source_review_escalation.escalation_policy(filters)
 
     def _source_review_escalation_reasons(self, reminder: Mapping[str, Any]) -> list[str]:
-        reasons: list[str] = []
-        if reminder.get("missing_review"):
-            reasons.append("missing_review")
-        if reminder.get("status") == "overdue":
-            reasons.append("review_overdue")
-        elif reminder.get("status") == "due_soon":
-            reasons.append("review_due_soon")
-        if reminder.get("risk_level") == "red":
-            reasons.append("red_source")
-        elif reminder.get("risk_level") == "yellow":
-            reasons.append("yellow_source")
-        for reason in reminder.get("blocked_reasons", []):
-            reasons.append(str(reason))
-        return sorted(set(reasons))
+        return source_review_escalation.escalation_reasons(reminder)
 
     def _source_review_primary_escalation_reason(self, reasons: list[str]) -> str:
-        priority = [
-            "red_source_manual_reference_only",
-            "red_source",
-            "latest_source_review_rejected",
-            "latest_source_usage_scope_blocked",
-            "latest_source_publicness_unclear",
-            "latest_source_robots_blocked",
-            "latest_source_tos_needs_review",
-            "review_overdue",
-            "missing_review",
-            "review_due_soon",
-            "yellow_source",
-        ]
-        for reason in priority:
-            if reason in reasons:
-                return reason
-        return reasons[0] if reasons else "review_due_soon"
+        return source_review_escalation.primary_escalation_reason(reasons)
 
     def _source_review_escalation_severity(
         self,
@@ -32365,50 +31612,16 @@ class SystemService:
         days_until_due: int,
         policy: Mapping[str, Any],
     ) -> str:
-        thresholds = policy.get("thresholds", {})
-        critical_days = int(thresholds.get("critical_days_overdue", 30)) if isinstance(thresholds, Mapping) else 30
-        high_days = int(thresholds.get("high_days_overdue", 7)) if isinstance(thresholds, Mapping) else 7
-        high_risk_due_days = int(thresholds.get("due_soon_high_risk_days", 7)) if isinstance(thresholds, Mapping) else 7
-        critical_reasons = {"red_source", "red_source_manual_reference_only", "latest_source_review_rejected", "latest_source_usage_scope_blocked"}
-        high_reasons = {"latest_source_publicness_unclear", "latest_source_robots_blocked", "latest_source_tos_needs_review"}
-        if any(reason in critical_reasons for reason in reasons) or days_overdue >= critical_days:
-            return "critical"
-        if reminder.get("status") == "overdue" and (days_overdue >= high_days or any(reason in high_reasons for reason in reasons)):
-            return "high"
-        if reminder.get("risk_level") == "yellow" and reminder.get("status") == "due_soon" and days_until_due <= high_risk_due_days:
-            return "high"
-        if reminder.get("status") == "overdue" or any(reason in high_reasons for reason in reasons):
-            return "medium"
-        return "low"
+        return source_review_escalation.escalation_severity(reminder, reasons, days_overdue, days_until_due, policy)
 
     def _source_review_escalation_channel(self, severity: str, policy: Mapping[str, Any]) -> str:
-        return str(policy.get("channels", {}).get(severity, "source_review_outbox"))
+        return source_review_escalation.escalation_channel(severity, policy)
 
     def _source_review_escalation_target(self, severity: str, policy: Mapping[str, Any], reminder: Mapping[str, Any]) -> str:
-        targets = policy.get("targets", {})
-        default_target = str(targets.get(severity, "source-review-owner-board")) if isinstance(targets, Mapping) else "source-review-owner-board"
-        return str(default_target or reminder.get("review_owner") or reminder.get("review_owner_role") or "source-review-owner-board")
+        return source_review_escalation.escalation_target(severity, policy, reminder)
 
     def _source_review_escalation_action(self, reminder: Mapping[str, Any], reason: str, severity: str) -> str:
-        if reason in {"red_source", "red_source_manual_reference_only"}:
-            return "Keep the source manual-reference-only and complete risk/compliance review before any automated use."
-        if reason == "latest_source_review_rejected":
-            return "Block automated use, resolve rejected review findings, and record a new approved source review."
-        if reason == "latest_source_usage_scope_blocked":
-            return "Clarify allowed usage scope and keep derived automation disabled until risk approval is recorded."
-        if reason == "latest_source_publicness_unclear":
-            return "Confirm publicness or move the source to metadata-only manual reference before continued use."
-        if reason in {"latest_source_robots_blocked", "latest_source_robots_needs_review"}:
-            return "Recheck robots and source terms before any automated collection or cache refresh."
-        if reason == "latest_source_tos_needs_review":
-            return "Review source TOS and update the governance record before the next ingestion run."
-        if reason == "missing_review":
-            return "Assign an owner and complete the initial source review with publicness, TOS, robots, and usage scope fields."
-        if reason == "review_overdue":
-            return "Complete the overdue source review and attach evidence URI or review notes for audit."
-        if severity == "low":
-            return "Schedule the upcoming source review before the due date."
-        return "Resolve source review blockers and notify the owner board."
+        return source_review_escalation.escalation_action(reminder, reason, severity)
 
     def _entity_mapping_confidence(self, payload: Mapping[str, Any]) -> float:
         identifiers = ["lei", "cik", "figi", "isin", "ticker"]
@@ -32650,29 +31863,10 @@ class SystemService:
         return None
 
     def _normalize_transaction_date(self, value: Any) -> str:
-        raw = str(value or "").strip()
-        if not raw:
-            raise ValidationError("transaction row requires trade_date")
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw[:10]):
-            return raw[:10]
-        digits = re.sub(r"\D", "", raw)
-        if len(digits) >= 8:
-            digits = digits[:8]
-            return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
-        raise ValidationError("transaction trade_date must be YYYY-MM-DD or YYYYMMDD")
+        return normalizers.normalize_transaction_date(value)
 
     def _normalize_transaction_side(self, value: Any, *, signed_quantity: Any = None) -> str:
-        raw = str(value or "").strip().lower()
-        if not raw and signed_quantity is not None:
-            try:
-                return "sell" if float(signed_quantity) < 0 else "buy"
-            except (TypeError, ValueError):
-                pass
-        if raw in {"buy", "b", "long", "open_long", "1", "+1"}:
-            return "buy"
-        if raw in {"sell", "s", "short", "close_long", "-1"}:
-            return "sell"
-        raise ValidationError("transaction side must map to buy or sell")
+        return normalizers.normalize_transaction_side(value, signed_quantity=signed_quantity)
 
     def _first_present(self, row: Mapping[str, Any], *keys: str) -> Any:
         lowered = {str(key).lower(): key for key in row}
@@ -32952,26 +32146,7 @@ class SystemService:
         return None
 
     def _normalize_tdx_symbol(self, symbol: str) -> str:
-        """Normalize a TDX symbol to a bare 6-digit A-share code.
-
-        Handles these real-world formats (T-403):
-        - sh600000, sz000001, bj430047   (TDX internal prefix)
-        - 600000.SH, 000001.SZ           (common Chinese data vendor)
-        - 600000.SS, 000001.SHG, SZE     (Reuters/Refinitiv/Bloomberg variants)
-        - 600000.XSHG, 000001.XSHE       (ISO MIC suffix)
-        - CN0000000000 / CN000000xxx      (ISIN style — extract 6-digit code)
-        """
-        value = str(symbol).strip()
-        # Handle ISIN-style (12 chars starting with CN)
-        if re.match(r'^CN\d{10}$', value, re.IGNORECASE):
-            return value[-6:]
-        value = value.lower()
-        # Strip exchange prefixes: sh/sz/bj
-        value = re.sub(r'^(sh|sz|bj)', '', value)
-        # Strip common exchange suffixes
-        value = re.sub(r'\.(sh|sz|bj|ss|shg|sze|sse|szse|xshg|xshe|xbei)$', '', value)
-        # Keep only digits
-        return re.sub(r'\D+', '', value)
+        return normalizers.normalize_tdx_symbol(symbol)
 
     def _tdx_market_from_symbol(self, symbol: str) -> str:
         """Infer the A-share market ('A', 'H', 'U') from a TDX symbol (T-403).

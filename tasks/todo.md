@@ -693,6 +693,26 @@
   - **已完成（图谱页缺口可解释化）**：知识图谱页在 readiness badges 下新增“图谱数据层补齐提示”，把 `missing_layers` 转成中文缺口层、展示影响和建议动作，并提供“预览来源队列”按钮；该按钮按当前图谱主体生成 `/api/graph/enrichment-runner` dry-run payload，把来源队列直接渲染在图谱页，避免用户只看到“需补数据”却不知道下一步补哪些来源。
   - 验收：`python3 -m unittest tests.test_system.SystemServiceTests.test_graph_enrichment_runner_dry_run_plans_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_execute_writes_review_gated_candidates tests.test_system.SystemServiceTests.test_graph_enrichment_runner_respects_skip_issuer_ids tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_dry_run_does_not_mark_completed_state tests.test_system.SystemServiceTests.test_graph_enrichment_runner_script_execute_marks_completed_state`；`python3 -m unittest tests.test_system.SystemServiceTests.test_ui_exposes_graph_source_input_queue tests.test_system.SystemServiceTests.test_ui_static_contract_matches_target_information_architecture tests.test_system.SystemServiceTests.test_graph_enrichment_runner_plans_manual_input_layers`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；`python3 scripts/ui_static_check.py`；`python3 scripts/check_handoffs.py`；`git diff --check`。
 
+- `DONE` T-571 SystemService 升级/组合纯助手模块化(批次 2）
+  - 对应：E8-US2, E9-US2；愿景扩展/生产化增强；SystemService 模块化 ADR 后续（T-570 之后）
+  - Owner：Platform and Quality；Reviewer：Governance/Security、Research/Workflow
+  - 目标：延续 ADR,继续抽取三簇纯助手(来源复核升级/治理、LLM 任务升级/研究、组合风险数学),缩减单体,不改 API/schema/UI/paper-only 边界。
+  - **已完成(本轮)**：新增 `app/service_modules/source_review_escalation.py`（7 纯函数:policy/reasons/primary_reason/severity/channel/target/action）、`llm_escalation.py`（7 纯函数:review reasons/severity/policy/primary_reason/owner/channel/target）、`portfolio_analytics.py`（6 纯函数:group_exposure/risk_contribution/turnover/stress_report/weight_comparison_row/valuation_risk_decomposition）。
+  - **已完成(本轮)**：`SystemService` 对应 20 个方法保留原签名,改为一行委托;调用这些助手的非纯方法(`_llm_metric_escalation_row`、`_llm_run_escalation_row`、`_portfolio_walk_forward` 等)不变。`app/services.py` 由 33776 行降至 33499 行(-277);本会话累计(含 T-570) 33921→33499(-422)。
+  - **已完成(本轮)**：仅依赖 `app.utils`/`app.errors`,模型类型仅在注解(TYPE_CHECKING),无循环依赖。
+  - SystemService Growth Freeze Review：未新增业务逻辑;纯重构;facade 签名与 API/存储 schema/UI/paper-only 边界不变;全量 332 单测(含 golden API baseline)通过保护 facade。
+  - 验收：`python3 -m py_compile app/*.py app/service_modules/*.py tests/*.py scripts/*.py`、clean-env `python3 -m unittest discover -s tests`（332 通过）、`python3 scripts/ui_static_check.py`、`python3 scripts/security_check.py .`（0 findings）、`python3 scripts/check_handoffs.py`、`git diff --check`；handoff：`docs/agent-handoffs/2026-07-10-T-571-escalation-portfolio-extraction.md`。
+
+- `DONE` T-570 SystemService 工作流调度助手模块化
+  - 对应：E8-US2, E9-US2；愿景扩展/生产化增强；SystemService 模块化 ADR 后续
+  - Owner：Platform and Quality
+  - 目标：延续 T-500/T-503 模块化路线，把 `SystemService` 中的纯工作流调度/DAG 规划助手抽到领域模块，缩减单体行数，不改 API/schema/UI/paper-only 边界。
+  - **已完成（本轮）**：新增 `app/service_modules/workflow_planning.py`（248 行），承载 14 个纯函数（cron 映射、拓扑排序、调度/回填日期推进、队列路由、scheduler 选择、依赖快照、幂等键、SLA/owner 计算等），仅依赖 `app.utils` 的 `to_plain`/`parse_datetime`，无循环依赖。
+  - **已完成（本轮）**：`SystemService` 对应 14 个方法保留原签名，改为一行委托调用领域模块；内部调用方（`self._workflow_*`）不变。`app/services.py` 由 33921 行降至 33776 行（-145）。
+  - **已完成（本轮）**：ADR 域边界 #6（workflow）首批纯助手抽取落地；触及 store 的有状态工作流方法（`_workflow_last_run`、`_workflow_lineage_summary` 等）明确留在 `SystemService`，待第二批再评估。
+  - SystemService Growth Freeze Review：未新增业务逻辑；纯重构；facade 签名与 API/存储 schema/UI/paper-only 边界不变；全量 332 单测（含 golden API baseline）通过保护 facade。
+  - 验收：`python3 -m py_compile app/*.py app/service_modules/*.py tests/*.py scripts/*.py`、clean-env `python3 -m unittest discover -s tests`（332 通过）、`python3 scripts/ui_static_check.py`、`python3 scripts/security_check.py .`（0 findings）、`python3 scripts/check_handoffs.py`、`git diff --check`；handoff：`docs/agent-handoffs/2026-07-10-T-570-workflow-planning-extraction.md`。
+
 - `DONE` T-486 公开行情 K 线板块
   - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
   - 背景：公司情报和知识图谱已经能展示关系与证据，但个人用户还需要直接查看证券价格走势，避免在研究时离开系统另找行情图。
