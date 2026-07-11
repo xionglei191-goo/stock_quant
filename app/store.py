@@ -81,6 +81,7 @@ from .models import (
     ReviewRecord,
     Security,
     SecretRotationRecord,
+    UsageMetric,
     SimulatedExecution,
     SimulationFeedback,
     ScorecardProfile,
@@ -180,6 +181,7 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("system_alerts", "alert_id", SystemAlert),
     ("alert_notifications", "notification_id", AlertNotification),
     ("exceptions", "exception_id", ExceptionItem),
+    ("usage_metrics", "feature", UsageMetric),
 )
 
 
@@ -366,6 +368,7 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     WorkflowRun: ("started_at", "completed_at"),
     LineageEvent: ("created_at",),
     ModelVersionRecord: ("created_at",),
+    UsageMetric: ("first_seen_at", "last_seen_at"),
 }
 
 
@@ -511,6 +514,7 @@ class InMemoryStore:
     system_alerts: dict[str, SystemAlert] = field(default_factory=dict)
     alert_notifications: dict[str, AlertNotification] = field(default_factory=dict)
     exceptions: dict[str, ExceptionItem] = field(default_factory=dict)
+    usage_metrics: dict[str, UsageMetric] = field(default_factory=dict)
     audit_log: list[AuditEvent] = field(default_factory=list)
 
     def commit(self) -> None:

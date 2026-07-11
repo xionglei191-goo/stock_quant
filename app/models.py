@@ -1668,6 +1668,19 @@ class SecretRotationRecord:
 
 
 @dataclass(slots=True)
+class UsageMetric:
+    feature: str
+    hit_count: int = 0
+    read_count: int = 0
+    write_count: int = 0
+    last_method: str = ""
+    last_path: str = ""
+    last_role: str = ""
+    first_seen_at: Any = field(default_factory=utcnow)
+    last_seen_at: Any = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
 class CacheRetentionRunRecord:
     run_id: str
     actor: str

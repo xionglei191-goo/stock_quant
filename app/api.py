@@ -296,6 +296,7 @@ class ApiRouter:
                 self.service.record_permission_denied(method.upper(), path, role=role, actor=actor)
                 raise PermissionDenied(f"role {role} is not allowed for {method} {path}")
             data = handler(path, body, actor=actor)
+            self.service.record_usage(method.upper(), path, role=role)
             return ApiResponse(success=True, data=data, error=None, status_code=200, trace_id=trace_id)
         except ValidationError as exc:
             return self._error(422, "validation_error", str(exc), trace_id)
@@ -317,6 +318,9 @@ class ApiRouter:
     def _error(self, status_code: int, kind: str, message: str, trace_id: str) -> ApiResponse:
         return ApiResponse(success=False, data=None, error={"type": kind, "message": message}, status_code=status_code, trace_id=trace_id)
 
+    def _usage_metrics(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.usage_metrics_payload(body)
+
     def _normalize_role(self, role: str) -> str:
         return ROLE_ALIASES.get(str(role).strip().lower(), role)
 
@@ -328,7 +332,7 @@ class ApiRouter:
         return None
 
     def _authorize(self, method: str, path: str, role: str) -> bool:
-        if path.startswith("/api/health") or path.startswith("/api/metrics") or path.startswith("/api/analysis/latest"):
+        if path.startswith("/api/health") or path.startswith("/api/metrics") or path.startswith("/api/analysis/latest") or path.startswith("/api/usage-metrics"):
             return True
         safe_roles = {"system", "CEO", "CIO", "PM", "风险/合规", "平台负责人", "分析师", "数据工程", "NLP/ML 负责人", "海外研究负责人"}
         if role not in safe_roles:

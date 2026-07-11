@@ -25,6 +25,7 @@ def build_route_table(owner: Any) -> list[tuple[str, str, Callable[..., Any]]]:
             ("POST", r"^/api/governance/storage-policy-templates$", owner._storage_policy_templates),
             ("GET", r"^/api/governance/storage-readiness-report$", owner._storage_readiness_report),
             ("POST", r"^/api/governance/storage-readiness-report$", owner._storage_readiness_report),
+            ("GET", r"^/api/usage-metrics$", owner._usage_metrics),
             ("GET", r"^/api/governance/secret-rotations$", owner._secret_rotations),
             ("POST", r"^/api/governance/secret-rotations$", owner._record_secret_rotation),
             ("GET", r"^/api/governance/cache-retention-report$", owner._cache_retention_report),

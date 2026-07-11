@@ -98,6 +98,7 @@ from .models import (
     RightsTag,
     Security,
     SecretRotationRecord,
+    UsageMetric,
     SimulatedExecution,
     SimulationFeedback,
     ScorecardProfile,
@@ -30674,6 +30675,121 @@ class SystemService:
             "tdx_vipdoc": self.tdx_vipdoc.describe(),
         }
 
+    _USAGE_FEATURE_MAP = (
+        ("/api/company-intelligence", "company_intelligence"),
+        ("/api/company-profiles", "company_profile"),
+        ("/api/company-events", "company_events"),
+        ("/api/company-relationships", "company_relationships"),
+        ("/api/company-database", "company_database"),
+        ("/api/company-financial-metrics", "company_financials"),
+        ("/api/graph", "knowledge_graph"),
+        ("/api/hotspots", "hotspot_expansion"),
+        ("/api/hotspot-lexicons", "hotspot_expansion"),
+        ("/api/industry-chains", "industry_chain"),
+        ("/api/macro-themes", "macro_theme"),
+        ("/api/research/answers", "research_answers"),
+        ("/api/research/tasks", "research_tasks"),
+        ("/api/research-reports", "research_reports"),
+        ("/api/research-report-viewpoints", "research_viewpoints"),
+        ("/api/research-report-forecasts", "research_forecasts"),
+        ("/api/analyst-profiles", "analyst_reliability"),
+        ("/api/analyst-reliability-scores", "analyst_reliability"),
+        ("/api/observation-items", "observation_items"),
+        ("/api/analysis-conclusions", "analysis_conclusions"),
+        ("/api/simulation-feedback", "simulation_feedback"),
+        ("/api/market-data", "market_data"),
+        ("/api/13f", "institutional_holdings"),
+        ("/api/disclosure-events", "disclosure_events"),
+        ("/api/portfolio", "portfolio"),
+        ("/api/entity-mappings", "entity_mappings"),
+        ("/api/evidence", "evidence"),
+        ("/api/extractions", "evidence"),
+        ("/api/search", "search"),
+        ("/api/dashboard", "dashboard"),
+        ("/api/analysis/latest", "latest_analysis"),
+        ("/api/llm", "llm"),
+        ("/api/orchestration", "orchestration"),
+        ("/api/lineage", "orchestration"),
+        ("/api/model-versions", "orchestration"),
+        ("/api/governance", "governance"),
+        ("/api/observability", "observability"),
+        ("/api/readiness", "readiness"),
+        ("/api/benchmarks", "benchmarks"),
+        ("/api/document-parsing", "document_parsing"),
+        ("/api/ingestion", "ingestion"),
+        ("/api/connectors", "connectors"),
+        ("/api/decision-packs", "committee"),
+        ("/api/approvals", "committee"),
+        ("/api/execution-intents", "paper_execution"),
+        ("/api/simulated-executions", "paper_execution"),
+        ("/api/operating-reports", "operating_reports"),
+        ("/api/strategy-replays", "strategy_replays"),
+    )
+
+    def _feature_for_path(self, path: str) -> str:
+        path = str(path)
+        for skip in ("/api/health", "/api/metrics", "/api/usage-metrics"):
+            if path.startswith(skip):
+                return ""
+        for prefix, feature in self._USAGE_FEATURE_MAP:
+            if path.startswith(prefix):
+                return feature
+        if path.startswith("/api/"):
+            return "other"
+        return ""
+
+    def record_usage(self, method: str, path: str, role: str = "") -> None:
+        """Best-effort local usage telemetry; never raises into the request path."""
+        try:
+            feature = self._feature_for_path(path)
+            if not feature:
+                return
+            method = str(method or "").upper()
+            now = utcnow()
+            metric = self.store.usage_metrics.get(feature)
+            if metric is None:
+                metric = UsageMetric(feature=feature, first_seen_at=now)
+                self.store.usage_metrics[feature] = metric
+            metric.hit_count += 1
+            if method == "GET":
+                metric.read_count += 1
+            else:
+                metric.write_count += 1
+            metric.last_method = method
+            metric.last_path = str(path)
+            metric.last_role = str(role or "")
+            metric.last_seen_at = now
+            self.store.commit()
+        except Exception:
+            return
+
+    def usage_metrics_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        limit = self._bounded_limit(filters.get("limit", 200), 1000)
+        metrics = sorted(
+            self.store.usage_metrics.values(),
+            key=lambda item: (item.hit_count, item.feature),
+            reverse=True,
+        )
+        rows = [to_plain(item) for item in metrics[:limit]]
+        total_hits = sum(int(item.hit_count) for item in self.store.usage_metrics.values())
+        return {
+            "features": rows,
+            "feature_count": len(self.store.usage_metrics),
+            "total_hits": total_hits,
+            "usage_boundary": "local_usage_telemetry_only_no_pii_no_external_transmission",
+        }
+
+    def usage_metrics_summary(self) -> dict[str, Any]:
+        metrics = list(self.store.usage_metrics.values())
+        total_hits = sum(int(item.hit_count) for item in metrics)
+        top = sorted(metrics, key=lambda item: item.hit_count, reverse=True)[:5]
+        return {
+            "feature_count": len(metrics),
+            "total_hits": total_hits,
+            "top_features": [{"feature": item.feature, "hit_count": item.hit_count} for item in top],
+        }
+
     def metrics(self) -> dict[str, Any]:
         dashboard = self.dashboard()
         source_review_reminders = self.source_review_reminders_payload({"due_within_days": 30, "limit": 1000})
@@ -30711,6 +30827,7 @@ class SystemService:
             "document_parser": self.document_parser.describe(),
             "tdx_market_data": self.tdx_market_data.describe(),
             "tdx_vipdoc": self.tdx_vipdoc.describe(),
+            "usage_metrics": self.usage_metrics_summary(),
             "store": type(self.store).__name__,
         }
 
