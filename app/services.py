@@ -133,6 +133,8 @@ from .service_modules import chokepoint_analysis
 from .service_modules import hotspot_analysis
 from .service_modules import industry_chain_analysis
 from .service_modules import evidence_extraction
+from .service_modules import evidence_locator
+from .service_modules import ingestion_helpers
 from .service_modules import research_reports as research_report_module
 from .service_modules.feedback_scoring import score_simulation_feedback
 from .utils import chunk_text, chunk_text_by_page, env_float, env_int, looks_like_html, new_id, parse_datetime, pdf_bytes_to_text, to_plain, utcnow
@@ -5387,27 +5389,7 @@ class SystemService:
             source.review_owner = source.review_owner_role
 
     def _source_governance_gaps(self, source: SourceDefinition) -> list[str]:
-        gaps: list[str] = []
-        if not source.retention_policy:
-            gaps.append("missing_retention_policy")
-        if source.cache_ttl_days < 0:
-            gaps.append("invalid_cache_ttl_days")
-        if source.source_type in {"public_market_data", "public_web", "local_reference", "third_party_connector"} and not (source.provenance_ref or source.source_tos_uri):
-            gaps.append("missing_provenance_ref")
-        if source.source_type in {"public_web", "third_party_connector"} and not source.robots_policy:
-            gaps.append("missing_robots_policy")
-        if not source.usage_scope:
-            gaps.append("missing_usage_scope")
-        if not source.collection_method:
-            gaps.append("missing_collection_method")
-        if source.field_mapping and not source.field_whitelist:
-            gaps.append("missing_field_whitelist")
-        if source.risk_level not in {"green", "yellow", "red"}:
-            gaps.append("invalid_risk_level")
-        if source.rights_tag.training_allowed and source.risk_level != "green":
-            gaps.append("training_allowed_on_non_green_source")
-        return gaps
-
+        return ingestion_helpers.source_governance_gaps(source)
     def _source_review_reminder_rows(self, *, as_of: Any, due_before: Any) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         reviews_by_source: dict[str, list[SourceReviewRecord]] = {}
@@ -9390,16 +9372,7 @@ class SystemService:
         return created
 
     def _evidence_source_pages(self, source_text: str, parsed_pages: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
-        pages: dict[int, dict[str, Any]] = {}
-        for index, page_text in enumerate(source_text.split("\f"), start=1):
-            pages[index] = {"page_no": index, "markdown": page_text, "layout_items": [], "tables": [], "assets": []}
-        for page in parsed_pages:
-            page_no = int(page.get("page_no") or len(pages) + 1)
-            merged = dict(pages.get(page_no, {"page_no": page_no, "markdown": ""}))
-            merged.update(page)
-            pages[page_no] = merged
-        return pages
-
+        return evidence_locator.evidence_source_pages(source_text, parsed_pages)
     def _evidence_locator(
         self,
         *,
@@ -9410,89 +9383,23 @@ class SystemService:
         source_pages: Mapping[int, Mapping[str, Any]],
         locator_source: str,
     ) -> dict[str, Any]:
-        page = source_pages.get(page_no, {})
-        page_text = str(page.get("markdown", ""))
-        layout_item = self._best_layout_item(chunk, page.get("layout_items", []), chunk_index=chunk_index)
-        bbox = dict(layout_item.get("bbox", {})) if isinstance(layout_item.get("bbox"), Mapping) else {}
-        tables = self._matching_locator_tables(chunk, page.get("tables", []))
-        assets = [dict(item) for item in page.get("assets", []) if isinstance(item, Mapping)]
-        scheme = "ocr_bbox_span_v1" if bbox or tables or assets else "page_chunk_v1"
-        return {
-            "scheme": scheme,
-            "document_id": document_id,
-            "page_no": page_no,
-            "chunk_index": chunk_index,
-            "source": locator_source,
-            "span": self._chunk_span(page_text, chunk),
-            "bbox": bbox,
-            "layout_type": str(layout_item.get("type", "")) if layout_item else "",
-            "layout_confidence": float(layout_item.get("confidence", 0.0) or 0.0) if layout_item else 0.0,
-            "tables": tables,
-            "assets": assets,
-            "legacy_bbox": f"page={page_no};chunk={chunk_index}",
-        }
+        return evidence_locator.evidence_locator(
+            document_id=document_id,
+            page_no=page_no,
+            chunk_index=chunk_index,
+            chunk=chunk,
+            source_pages=source_pages,
+            locator_source=locator_source,
+        )
 
     def _chunk_span(self, page_text: str, chunk: str) -> dict[str, Any]:
-        start = page_text.find(chunk) if page_text else -1
-        if start < 0:
-            compact_page = re.sub(r"\s+", " ", page_text)
-            compact_chunk = re.sub(r"\s+", " ", chunk).strip()
-            start = compact_page.find(compact_chunk) if compact_page and compact_chunk else -1
-            return {
-                "start": max(0, start),
-                "end": max(0, start) + len(compact_chunk) if start >= 0 else len(chunk),
-                "length": len(chunk),
-                "matched": start >= 0,
-                "text_sha256": hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
-            }
-        return {
-            "start": start,
-            "end": start + len(chunk),
-            "length": len(chunk),
-            "matched": True,
-            "text_sha256": hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
-        }
-
+        return evidence_locator.chunk_span(page_text, chunk)
     def _best_layout_item(self, chunk: str, layout_items: Any, *, chunk_index: int) -> dict[str, Any]:
-        if not isinstance(layout_items, list):
-            return {}
-        candidates = [dict(item) for item in layout_items if isinstance(item, Mapping)]
-        if not candidates:
-            return {}
-        scored = [(self._text_overlap_score(chunk, str(item.get("text", ""))), item) for item in candidates]
-        scored.sort(key=lambda item: item[0], reverse=True)
-        if scored and scored[0][0] > 0:
-            return scored[0][1]
-        if 0 <= chunk_index - 1 < len(candidates):
-            return candidates[chunk_index - 1]
-        return {}
-
+        return evidence_locator.best_layout_item(chunk, layout_items, chunk_index=chunk_index)
     def _text_overlap_score(self, left: str, right: str) -> float:
-        left_norm = re.sub(r"\s+", " ", left).strip().lower()
-        right_norm = re.sub(r"\s+", " ", right).strip().lower()
-        if not left_norm or not right_norm:
-            return 0.0
-        if left_norm in right_norm or right_norm in left_norm:
-            return min(len(left_norm), len(right_norm)) / max(1, max(len(left_norm), len(right_norm)))
-        left_terms = set(re.findall(r"[\w\u4e00-\u9fff]+", left_norm))
-        right_terms = set(re.findall(r"[\w\u4e00-\u9fff]+", right_norm))
-        return len(left_terms & right_terms) / max(1, len(left_terms | right_terms))
-
+        return evidence_locator.text_overlap_score(left, right)
     def _matching_locator_tables(self, chunk: str, tables: Any) -> list[dict[str, Any]]:
-        if not isinstance(tables, list):
-            return []
-        matched: list[dict[str, Any]] = []
-        for table in tables:
-            if not isinstance(table, Mapping):
-                continue
-            table_copy = dict(table)
-            cells = [dict(cell) for cell in table_copy.get("cells", []) if isinstance(cell, Mapping)] if isinstance(table_copy.get("cells", []), list) else []
-            cell_text = " ".join(str(cell.get("text", "")) for cell in cells)
-            if cells and (self._text_overlap_score(chunk, cell_text) > 0 or len(tables) == 1):
-                table_copy["cells"] = cells
-                matched.append(table_copy)
-        return matched
-
+        return evidence_locator.matching_locator_tables(chunk, tables)
     def _locator_bbox_string(self, locator: Mapping[str, Any], *, page_no: int, chunk_index: int) -> str:
         bbox = locator.get("bbox", {})
         if isinstance(bbox, Mapping) and bbox:
@@ -9813,35 +9720,13 @@ class SystemService:
         }
 
     def _evidence_has_structured_locator(self, evidence: Evidence) -> bool:
-        return isinstance(evidence.locator, Mapping) and bool(evidence.locator.get("scheme"))
-
+        return evidence_locator.evidence_has_structured_locator(evidence)
     def _evidence_has_real_bbox(self, evidence: Evidence) -> bool:
-        bbox = evidence.locator.get("bbox", {}) if isinstance(evidence.locator, Mapping) else {}
-        return isinstance(bbox, Mapping) and {"x", "y", "width", "height"}.issubset(bbox.keys())
-
+        return evidence_locator.evidence_has_real_bbox(evidence)
     def _evidence_table_cell_count(self, evidence: Evidence) -> int:
-        tables = evidence.locator.get("tables", []) if isinstance(evidence.locator, Mapping) else []
-        if not isinstance(tables, list):
-            return 0
-        return sum(len(table.get("cells", [])) for table in tables if isinstance(table, Mapping) and isinstance(table.get("cells", []), list))
-
+        return evidence_locator.evidence_table_cell_count(evidence)
     def _evidence_table_cell_bbox_count(self, evidence: Evidence) -> int:
-        tables = evidence.locator.get("tables", []) if isinstance(evidence.locator, Mapping) else []
-        if not isinstance(tables, list):
-            return 0
-        count = 0
-        for table in tables:
-            if not isinstance(table, Mapping):
-                continue
-            cells = table.get("cells", [])
-            if not isinstance(cells, list):
-                continue
-            for cell in cells:
-                bbox = cell.get("bbox", {}) if isinstance(cell, Mapping) else {}
-                if isinstance(bbox, Mapping) and bbox:
-                    count += 1
-        return count
-
+        return evidence_locator.evidence_table_cell_bbox_count(evidence)
     def _bbox_gold_label_validation(self, evidence: list[Evidence], filters: Mapping[str, Any]) -> dict[str, Any]:
         labels = filters.get("bbox_gold_labels", filters.get("gold_labels", []))
         if labels is None:
@@ -9904,33 +9789,12 @@ class SystemService:
         }
 
     def _evidence_bbox(self, evidence: Evidence) -> dict[str, Any]:
-        bbox = evidence.locator.get("bbox", {}) if isinstance(evidence.locator, Mapping) else {}
-        if isinstance(bbox, Mapping) and bbox:
-            return self._normalize_gold_bbox(bbox)
-        return {}
-
+        return evidence_locator.evidence_bbox(evidence)
     def _normalize_gold_bbox(self, value: Any) -> dict[str, Any]:
         return normalizers.normalize_gold_bbox(value)
 
     def _bbox_iou(self, left: Mapping[str, Any], right: Mapping[str, Any]) -> float:
-        if not left or not right:
-            return 0.0
-        left_x1 = float(left.get("x", 0) or 0)
-        left_y1 = float(left.get("y", 0) or 0)
-        left_x2 = left_x1 + float(left.get("width", 0) or 0)
-        left_y2 = left_y1 + float(left.get("height", 0) or 0)
-        right_x1 = float(right.get("x", 0) or 0)
-        right_y1 = float(right.get("y", 0) or 0)
-        right_x2 = right_x1 + float(right.get("width", 0) or 0)
-        right_y2 = right_y1 + float(right.get("height", 0) or 0)
-        intersection_width = max(0.0, min(left_x2, right_x2) - max(left_x1, right_x1))
-        intersection_height = max(0.0, min(left_y2, right_y2) - max(left_y1, right_y1))
-        intersection = intersection_width * intersection_height
-        left_area = max(0.0, left_x2 - left_x1) * max(0.0, left_y2 - left_y1)
-        right_area = max(0.0, right_x2 - right_x1) * max(0.0, right_y2 - right_y1)
-        union = left_area + right_area - intersection
-        return intersection / union if union > 0 else 0.0
-
+        return evidence_locator.bbox_iou(left, right)
     def _create_manual_review(
         self,
         document: Document,
@@ -14409,64 +14273,16 @@ class SystemService:
         percent_as_ratio: bool = False,
         skip_keys: set[str] | None = None,
     ) -> float | None:
-        skip_keys = skip_keys or set()
-        if isinstance(payload, list):
-            for item in payload:
-                value = self._extract_number_by_alias(item, aliases, percent_as_ratio=percent_as_ratio, skip_keys=skip_keys)
-                if value is not None:
-                    return value
-            return None
-        if not isinstance(payload, Mapping):
-            return self._coerce_float(payload, percent_as_ratio=percent_as_ratio)
-        normalized_aliases = {self._normalized_metric_key(alias) for alias in aliases}
-        for key, value in payload.items():
-            if self._normalized_metric_key(str(key)) in normalized_aliases:
-                number = self._coerce_float(value, percent_as_ratio=percent_as_ratio)
-                if number is not None:
-                    return number
-        for key, value in payload.items():
-            if str(key) in skip_keys:
-                continue
-            if isinstance(value, Mapping) or isinstance(value, list):
-                number = self._extract_number_by_alias(value, aliases, percent_as_ratio=percent_as_ratio, skip_keys=skip_keys)
-                if number is not None:
-                    return number
-        return None
+        return evidence_locator.extract_number_by_alias(
+            payload, aliases, percent_as_ratio=percent_as_ratio, skip_keys=skip_keys
+        )
 
     def _coerce_float(self, value: Any, *, percent_as_ratio: bool = False) -> float | None:
-        if value is None or isinstance(value, bool):
-            return None
-        if isinstance(value, int | float):
-            return float(value)
-        text = str(value).strip()
-        if not text or text in {"-", "--", "None", "null"}:
-            return None
-        multiplier = 1.0
-        if text.startswith("(") and text.endswith(")"):
-            multiplier = -1.0
-            text = text[1:-1]
-        is_percent = text.endswith("%")
-        text = text.replace(",", "").replace("$", "").replace("¥", "").replace("￥", "").replace("%", "")
-        try:
-            number = float(text) * multiplier
-        except ValueError:
-            return None
-        if is_percent and percent_as_ratio:
-            return number / 100.0
-        return number
-
+        return evidence_locator.coerce_float(value, percent_as_ratio=percent_as_ratio)
     def _normalized_metric_key(self, value: str) -> str:
-        return re.sub(r"[\s_\-:/]+", "", value.strip().lower())
-
+        return evidence_locator.normalized_metric_key(value)
     def _string_list(self, value: Any) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [item.strip() for item in re.split(r"[,;/，；]+", value) if item.strip()]
-        if isinstance(value, list | tuple | set):
-            return [str(item).strip() for item in value if str(item).strip()]
-        return [str(value).strip()] if str(value).strip() else []
-
+        return evidence_locator.string_list(value)
     def register_benchmark(self, payload: Mapping[str, Any], *, actor: str = "system") -> BenchmarkConfig:
         benchmark = BenchmarkConfig(
             benchmark_id=str(payload.get("benchmark_id", new_id("bm"))),
@@ -31415,12 +31231,7 @@ class SystemService:
         return SOURCE_ID_ALIASES.get(str(source_id).strip(), str(source_id).strip())
 
     def _default_source_review_owner_role(self, source: SourceDefinition) -> str:
-        if source.source_type in {"regulatory", "exchange", "public_market_data", "public_web", "third_party_connector"}:
-            return "数据工程"
-        if source.source_type in {"company_ir", "local_reference", "manual_reference"}:
-            return "风险/合规"
-        return "平台负责人"
-
+        return ingestion_helpers.default_source_review_owner_role(source)
     def _source_review_owner_role(self, source: SourceDefinition) -> str:
         return source.review_owner_role or self._default_source_review_owner_role(source)
 
@@ -31716,26 +31527,11 @@ class SystemService:
         return f"{reviewed_at.year}Q{quarter}"
 
     def _next_source_review_due_at(self, reviewed_at: Any, cadence: str) -> Any:
-        cadence = str(cadence or "quarterly").strip().lower()
-        days_by_cadence = {
-            "monthly": 30,
-            "quarterly": 90,
-            "semiannual": 182,
-            "semi-annually": 182,
-            "annual": 365,
-            "yearly": 365,
-        }
-        days = days_by_cadence.get(cadence, 90)
-        return reviewed_at + timedelta(days=days)
-
+        return ingestion_helpers.next_source_review_due_at(reviewed_at, cadence)
     def _source_initial_review_due_at(self, source: SourceDefinition, as_of: Any) -> Any:
-        if source.last_reviewed_at:
-            return self._next_source_review_due_at(source.last_reviewed_at, source.review_cadence)
-        return as_of
-
+        return ingestion_helpers.source_initial_review_due_at(source, as_of)
     def _source_review_overdue(self, review: SourceReviewRecord | None) -> bool:
-        return bool(review and review.next_review_due_at and review.next_review_due_at < utcnow())
-
+        return ingestion_helpers.source_review_overdue(review)
     def _source_review_blockers(self, review: SourceReviewRecord) -> list[str]:
         blockers: list[str] = []
         if review.status == "rejected":
@@ -31996,8 +31792,7 @@ class SystemService:
         return ""
 
     def _research_report_source_id(self, broker: str) -> str:
-        return f"local_research_{safe_source_part(broker)}"
-
+        return ingestion_helpers.research_report_source_id(broker)
     def _ensure_research_report_source(self, source_id: str, broker: str, *, actor: str) -> None:
         if source_id in self.store.sources:
             return
@@ -32023,22 +31818,11 @@ class SystemService:
         )
 
     def _sec_document_id(self, filing: Any) -> str:
-        metadata = filing.metadata or {}
-        accession_no = str(metadata.get("accession_no", "")).replace("-", "")
-        primary_doc = str(metadata.get("primary_doc", "index")).rsplit("/", maxsplit=1)[-1]
-        raw = f"sec_{accession_no}_{primary_doc}"
-        return "doc_" + re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_").lower()
-
+        return ingestion_helpers.sec_document_id(filing)
     def _ashare_document_id(self, filing: Any) -> str:
-        basename = str(filing.source_uri or filing.title or new_id("ashare")).rsplit("/", maxsplit=1)[-1]
-        raw = f"ashare_{basename}"
-        return "doc_" + re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_").lower()
-
+        return ingestion_helpers.ashare_document_id(filing)
     def _hkex_document_id(self, filing: Any) -> str:
-        basename = str(filing.source_uri or filing.title or new_id("hkex")).rsplit("/", maxsplit=1)[-1]
-        raw = f"hkex_{basename}"
-        return "doc_" + re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_").lower()
-
+        return ingestion_helpers.hkex_document_id(filing)
     def _market_data_id(self, security_id: str, as_of_date: str, data_type: str, source_id: str) -> str:
         raw = f"md_{source_id}_{security_id}_{as_of_date}_{data_type}"
         return re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_").lower()
@@ -32174,13 +31958,7 @@ class SystemService:
         return citations
 
     def _source_publicness(self, documents: list[Document]) -> str:
-        licenses = {document.rights_tag.license_class.lower() for document in documents}
-        if licenses and all(item == "public" or item.startswith("public_") for item in licenses):
-            return "public"
-        if any("private" in item or "restricted" in item for item in licenses):
-            return "restricted"
-        return ",".join(sorted(licenses)) or "unknown"
-
+        return ingestion_helpers.source_publicness(documents)
     def _citation_limited_text(self, source_text: str, *, source_publicness: str, char_limit: int) -> tuple[str, bool]:
         if source_publicness == "public" or len(source_text) <= char_limit:
             return source_text, False
@@ -32383,18 +32161,7 @@ class SystemService:
         return suffix if suffix and len(suffix) <= 12 else ".bin"
 
     def _sanitize_source_uri(self, source_uri: str) -> str:
-        value = str(source_uri or "").strip()
-        if not value:
-            return ""
-        parsed = urlparse(value)
-        if not parsed.scheme or not parsed.netloc:
-            return value
-        sensitive_keys = {"access_token", "api_key", "apikey", "auth", "key", "password", "secret", "signature", "token"}
-        query = []
-        for key, item_value in parse_qsl(parsed.query, keep_blank_values=True):
-            query.append((key, "REDACTED" if key.lower() in sensitive_keys else item_value))
-        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(query, doseq=True), ""))
-
+        return ingestion_helpers.sanitize_source_uri(source_uri)
     def _mark_schedule_retry(self, schedule: IngestionSchedule, error: str) -> None:
         schedule.retry_count += 1
         schedule.last_error = error
@@ -32405,17 +32172,7 @@ class SystemService:
             schedule.next_run_at = utcnow()
 
     def _next_schedule_run(self, cadence: str) -> Any:
-        now = utcnow()
-        seconds = {
-            "manual": 0,
-            "hourly": 3600,
-            "daily": 86400,
-            "weekly": 604800,
-        }.get(cadence, 0)
-        if seconds <= 0:
-            return now
-        return now + timedelta(seconds=seconds)
-
+        return ingestion_helpers.next_schedule_run(cadence)
     def _job_document_id(self, market: str, raw: Mapping[str, Any], source_uri: str) -> str:
         if raw.get("document_id"):
             return str(raw["document_id"])
