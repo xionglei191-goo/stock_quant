@@ -26,6 +26,19 @@
 
 项目经理口径：以下任务来自 2026-06-24 产品方向重定位，目标是把项目从组织/执行导向的旧叙事，调整为公司情报、市场综合分析、研报观点追踪、观察任务、分析结论和模拟反馈闭环。T-431 先完成文档重定位；T-432 至 T-436 已补齐最小可验收代码、API、UI 和测试闭环。
 
+- `TODO` T-572 修复 TDX 行情导入未提交落库
+  - 对应：E3-US4；平台与质量
+  - 背景：`import_tdx_market_data` 只写内存 `store.market_data` dict，方法结尾缺少 `self.store.commit()`（库内其他数十个写方法均有 commit）。SQLite 落盘模式下，经该入口导入的 TDX 行情在进程结束后不落盘，导致复盘评分取不到行情、README 所述“TDX 行情已导入 SQLite”在落盘口径下不成立。
+  - 目标：在 `import_tdx_market_data` 非 dry-run 写入后显式 `self.store.commit()`；补一条单测验证导入后新进程可读回行情。
+  - 验收：导入 sz000001 后重启进程 `store.market_data` 非空；`update_simulation_feedback_performance` 能取到该证券行情而非 `skipped_no_market_data`；全量单测通过。
+
+- `TODO` T-573 端到端价值案例固化为可复跑脚本与 artifact
+  - 对应：E5-US1, E6-US5, E8-US1；愿景扩展/生产化增强
+  - 背景：2026-07-11 首次真正跑通完整闭环（分析结论 → 观察任务 → 纸面反馈 → 行情复盘评分），用真实通达信行情把“2023 年初看多平安银行”结论判定为 `missed`（区间收益 -13.36%、最大回撤 -23.5%），首次以真实行情证伪一个分析判断。但该闭环是在临时进程内脚本跑通的，跑完即丢，无留痕。
+  - 目标：把该闭环固化为一个可复跑脚本（建主体/结论/观察/纸面反馈 → 触发 `performance/update` → 读回复盘结果），并导出 artifact（如 `artifacts/e2e-value-case/pingan-bull-2023.json`）作为“分析→反馈闭环真正产出验证结论”的实证；固定 paper-only、禁券商、禁实弹。
+  - 依赖：T-572（行情需能落库，复盘才能取到数据）。
+  - 验收：一条命令可复跑并产出带 `realization_status`、区间收益、最大回撤、复盘摘要的 artifact；结果可回链到结论/观察/反馈/行情；`live_execution_allowed=false`。
+
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
   - 目标：统一 README、PRD、系统架构、数据结构和文档索引，把主叙事改为“公司情报与市场综合分析平台”。
@@ -1583,14 +1596,7 @@
     - 测试覆盖 backtest alias rows、负 signed quantity 推断 sell、重复导入跳过和 as-of 持仓派生
   - 验收：生产输入数据 100% 能映射到公开来源 provenance 台账；红黄绿分级覆盖率 >= 95%；边界不清、禁止缓存/禁止自动化或实时 non-display 数据不能进入自动化链路
 
-- `BLOCKED` T-404 生产级状态库、对象存储和检索适配
-  - 对应：E3-US4, E6-US4, E8-US2
-  - 已有：SQLite 状态库、PostgreSQL baseline schema、`ai_quant.schema_migrations`、PostgreSQLStore runtime、schema 初始化、`AI_QUANT_POSTGRES_DSN` / PostgreSQL DSN 形式 `AI_QUANT_DB` 启动路径、SQLite -> PostgreSQL 显式迁移脚本、`scripts/postgres_schema_migrate.py` baseline apply/dry-run/rollback-record、本地/S3 对象存储 adapter、内置/OpenSearch 检索 adapter、外部检索失败 fallback、runtime fake-driver 持久化测试
-  - 已有：`/api/governance/storage-policy-templates` 输出 S3 scoped-prefix IAM、对象生命周期、OpenSearch index role、PostgreSQL app/migration grants 和破坏性 DDL rollback 审批模板，作为真实环境最小权限样例
-  - 已有：`GET|POST /api/governance/storage-readiness-report` 可汇总 PostgreSQL/S3/OpenSearch 非本机 runtime 配置、最小权限模板、migration artifact URI、真实数据 smoke、容量 baseline、备份恢复、PostgreSQL connect/query、S3 put/get/checksum 和 OpenSearch bulk/search smoke artifact URI；内联 migration/smoke payload 只作为指标摘要，不能替代外部 artifact；本机路径、`file://` 和 `local://` 不会被视为生产归档证据；接口不执行压测或连接外部后端
-  - 待做：S3/OpenSearch/PostgreSQL 真实环境压测、容量和延迟基线、备份恢复演练
-  - 验收：真实环境 smoke test、容量 baseline、恢复演练记录和最小权限策略样例齐备
-
+- `BLOCKED` T-404 生产级状态库、对象存储和检索适配 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
 - `BLOCKED` T-405 美股 13F 与披露事件流水线
   - 对应：E5-US4, E7-US2, E7-US3, E8-US1
   - 已有：InstitutionalHolding、`/api/13f/holdings`、`/api/13f/crowding/update`、DisclosureEvent、`/api/disclosure-events/classify`、8-K/6-K/20-F 事件模板、管理层变更/指引/重大协议/资本配置标签、事件严重性标签、事件 evidence 链接、dashboard 事件墙、图谱事件边、PostgreSQL 视图、持久化测试
@@ -1604,16 +1610,7 @@
   - 待做：真实 Form 13F 大样本执行记录、CUSIP/FIGI/issuer 大样本映射准确率达标验收 artifact URI
   - 验收：13F 只用于中低频拥挤度与反身性风控，不直接触发交易；事件必须可回链到 filing/evidence
 
-- `BLOCKED` T-406 三市场主体页和知识图谱生产化
-  - 对应：E3-US2, E3-US4, E8-US2
-  - 已有：EntityMapping、LEI/FIGI/CIK/ISIN/ticker 字段、`/api/entity-mappings/batch`、`/api/entity-mappings/quality-report`、A/H/U 批量映射入库、样本映射准确率报告、基于标识符完整度的实体消歧 confidence、低置信映射清单、`/api/graph/query` 按 issuer/security/evidence/thesis/decision 聚合主体、证券、公开行情、公司行动、文件、证据、观点、信号、决策、纸面执行意图、复盘、回放、例外、research card、13F、crowding、challenger、disclosure event 和派生 `portfolio_positions`，并返回带时间/来源属性的图谱边
-  - 已有：`/api/graph/traceability-report` 可检查 thesis、decision、research answer 是否能回溯到 evidence/document，并输出缺失 evidence、document、signal/thesis 断链和英文原文缺失问题
-  - 已有：EntityMapping 双时间轴版本字段 `valid_from` / `valid_to` / `recorded_at` / `supersedes_mapping_id` / `status`，`GET /api/entity-mappings` 支持按业务生效时点和记录时点查询，quality report 输出版本覆盖率和重叠清单
-  - 已有：知识图谱主体页新增 Entity Mapping 双时态面板，可按 issuer、`valid_at`、`recorded_at`、status 查询映射版本，并展示 accuracy、版本覆盖率、时间重叠、低置信映射和 label mismatch
-  - 已有：`GET|POST /api/entity-mappings/readiness-report` 汇总 A/H/U 覆盖、人工金标准确率、双时间轴版本覆盖率、低置信/重叠/mismatch、图谱回溯率、edge 元数据覆盖、Neo4j/Qdrant 非本地 endpoint 和真实批量映射/主体页/adapter artifact URI；固定 `automation_allowed=false` / `live_execution_allowed=false`
-  - 待做：ADR/中概队列真实批量映射执行记录、主体页生产浏览器验收 artifact、Neo4j 图谱 adapter 外部同步 artifact、Qdrant 向量检索 adapter 外部同步 artifact
-  - 验收：A/H/U 样本公司映射准确率 >= 98%；观点到证据可回溯率 >= 95%；节点/边具备来源、时间戳和版本
-
+- `BLOCKED` T-406 三市场主体页和知识图谱生产化 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
 - `BLOCKED` T-406A 宏观主题、热点扩散和产业链公司定位图谱
   - 对应：E3-US2, E5-US1, E5-US2, E7-US2, E8-US2；愿景扩展/生产化增强
   - 目标：从宏观变量、政策、技术周期、产品热点或市场热词出发，自动/半自动发散到产业链节点、上下游关系、相关公司和数据槽位
@@ -1680,52 +1677,9 @@
 
 ## 历史能力与兼容附录 / M7 经营驾驶舱和投研闭环
 
-- `BLOCKED` T-407 CEO Dashboard 与 UI 图对齐验收
-  - 对应：E6-US5, E7-US1, E7-US2, E7-US3, E8-US2, E9-US1
-  - 已有：左侧信息架构补齐“总览、数据中台、研究工作台、Agent 协作、策略实验室、投委会、风控合规、CEO 看板、知识图谱、系统治理”；顶部 A/H/U 市场、研究、风险、冲突证据和高优先级事件状态；SEC/披露时间线、8-K/6-K/20-F 事件墙、13F crowding 热图、公司行动摘要、风险治理、系统状态；UI 静态验收脚本检查导航、顶部状态、关键面板 ID 和前端脚本语法
-  - **已完成（本轮）**：Apple/AAPL SEC 单标的研究工作台闭环
-    - `/ui` 研究工作台已从单纯检索页改为单标的闭环控制台，前置 ticker/CIK/form/limit、一键运行、阶段进度、证据列表、研究摘要、投委会 Pack 和模拟反馈，辅助检索下沉到闭环结果之后
-    - UI 与浏览器验收显式展示 `Realtime SEC` / `Fallback sample`、`simulated only`、`no broker execution`，减少把纸面模拟链路误认为真实券商执行的风险
-    - 后续保留：多标的批量队列、生产 UI 分页/过滤/错误恢复/权限态细化
-  - 已有：投委会 UI 新增“异常审批面板”，可对 Decision Pack 做人工签字、创建 open exception、刷新风险队列，并展示 approval state、signature count、open exceptions、pending decisions 和 `human approval · no broker execution` 边界；浏览器验收覆盖桌面/移动非空截图和关键文案
-  - **已完成（本轮 UI 联动修复）**：总览收益卡、组合权重、研报观点证据、数据来源、产业链和公司定位已补齐点击联动，可自动切换到数据中台、研究工作台、知识图谱、热点扩散或投委会并带入上下文；`loadDashboard()` 已拆成最新分析快渲染和慢看板补全，避免慢接口导致首屏“点不动”
-    - 新增 `scripts/ui_interaction_acceptance.py`，用 Headless Chrome + DevTools Protocol 真实点击 7 条关键链路：收益卡到行情、研报证据到研究检索、公司定位到图谱、产业链到热点扩散、组合方案到最新投委会方案；2026-05-22 本机运行 `status=passed`、`failure_count=0`
-  - **已完成（本轮）**：UI 上线 readiness 细粒度验收门槛
-    - `/api/readiness/ui-report` 已把真实数据量、分页、过滤、错误恢复、权限态、文本无重叠、视觉无溢出和跨浏览器矩阵覆盖拆成独立 gate；跨浏览器覆盖必须从 metrics 解析出足够 browser family 与 desktop/mobile viewport，artifact URI 不能替代矩阵内容
-    - `scripts/ui_cross_browser_matrix_check.py` 可校验真实跨浏览器矩阵：至少 2 个 browser family、desktop/mobile viewport、必备 UI 文案、无 missing text 和 failure
-    - `scripts/staging_acceptance.py` 默认只写入 Headless Chrome `production_ui_screenshot_acceptance`；只有传入已校验矩阵时才回填 `cross_browser_acceptance`
-  - 待做：在非本机生产/预发真实数据量下执行分页/过滤/错误恢复/权限态、文本无重叠和视觉无溢出复核，并归档跨浏览器矩阵 artifact URI
-  - 验收：桌面和移动端截图验收通过；关键视图在真实数据量下无卡死、无明显溢出、无权限越界
-
-- `BLOCKED` T-408 月报/回放生产化和真实绩效归因
-  - 对应：E8-US3, E7-US1
-  - 已有：月报草稿/发布状态、CEO/CIO/风险合规发布审批、`/api/operating-reports/{report_id}/publish`、红灯项逐条审计、`/api/portfolio/transactions` 交易流水 ledger、`/api/portfolio/positions` as-of 持仓派生 adapter
-  - 已有：`/api/portfolio/returns` 支持按 market/currency/industry/style 输出组合收益分组归因；`/api/operating-reports/{report_id}/board-pack`；`/api/strategy-replays/compare`
-  - **已完成（本轮）**：`POST /api/portfolio/attribution/backfill`（T-408 代码层）
-    - 对纸面/模拟组合执行 market/currency/industry/style 分组绩效归因批次回填，写入 OperatingReport.annotations
-    - 固定 `simulation_only=true`、`live_execution_allowed=false`；支持 `dry_run=true` 只计算不写入
-    - 支持 `proposal_id` 引用已有 PortfolioProposal 或直接传 `holdings` 列表
-    - `docs/api-contracts.md` 已补充完整契约文档
-  - 已有：`GET|POST /api/portfolio/attribution/readiness-report` 可汇总月报归因注释、发布审批、红灯项 owner/due、策略回放复盘、模拟 ledger 来源边界、forward attribution 结果与外部 artifact URI、绩效 reconciliation、ledger extract、strategy replay 和 board pack 外部 artifact URI；本地 board pack 导出只作为审计事件，不能替代归档 URI；固定不接真实券商账户
-  - 待做：真实生产/预发绩效 reconciliation、NAV/ledger 对账、board pack artifact 和大样本回放验收 URI 归档
-  - 验收：月报草稿不能绕过审批发布；绩效指标可由公开行情收益、模拟持仓 ledger 或 NAV 序列复算；每个红灯项有 owner 和截止时间；不接入真实交易账户
-
-- `BLOCKED` T-409 Black-Litterman、风险预算和组合约束原型
-  - 对应：E5-US3, E6-US1, E7-US1, E8-US3
-  - 已有：`docs/portfolio-construction-spec.md` 数学规格、PortfolioProposal、`/api/portfolio/optimize`、`/api/portfolio/proposals`、观点置信度与 `Omega` 绑定、市场/行业/主题/币种预算、禁投清单、单证券上限、walk-forward 与压力测试诊断、协方差矩阵诊断
-  - 已有：`/api/execution-intents/{intent_id}/simulate` 只对已审批纸面执行意图生成模拟成交，写入 `SimulatedExecution` 和 `PortfolioTransaction` ledger，并固定 `live_execution_allowed=false`
-  - **已完成（本轮）**：`POST /api/portfolio/simulated-feedback`（T-409 代码层）
-    - 投委会审批入口：对 PortfolioProposal 做模拟决策（approved/rejected/pending/needs_revision）
-    - 支持 `include_valuation=true` 触发模拟持仓估值、`feedback_start/end_date` 触发区间归因反馈
-    - 固定 `simulation_only=true`、`live_execution_allowed=false`、`automation_allowed=false`、`usage_boundary=paper_portfolio_simulation`
-    - `docs/api-contracts.md` 已补充完整契约文档
-  - 已有：`/api/portfolio/optimizer/compare` 可对候选组合与 equal-weight / prior / posterior / external solver 权重做纸面对照，并输出约束报告与诊断摘要；`/api/portfolio/forward-report` 可生成纸面前向跟踪报告、active return、tracking error、information ratio 和 review flags
-  - 已有：投委会 UI 新增“组合模拟审批”，可加载 PortfolioProposal、选择 approved/rejected/pending/needs_revision，调用 `/api/portfolio/simulated-feedback` 并展示 proposal status、paper/no-broker 边界、模拟估值和区间反馈
-  - 已有：`/api/portfolio/optimizer/compare` 可通过 `run_external_optimizer=true` 尝试调用 CVXPY / PyPortfolioOpt 做纸面外部求解器对照；本机缺少依赖时返回 `external_optimizer.status=unavailable` 和安装/诊断信息，不伪造外部结果
-  - 已有：`GET|POST /api/portfolio/optimizer/readiness-report` 可对外部求解器对照结果生成归档验收包，检查 solver 状态、weights、版本、参数、solver/comparison/constraint report artifact URI、内联约束报告和 paper-only 边界
-  - 待做：生产环境安装 PyPortfolioOpt/CVXPY 后跑真实外部对照并归档 solver 版本/参数/artifact URI，投委会审批入口生产态细化
-  - 验收：候选权重不包含禁投标的；市场/行业预算和单券上限生效；观点置信度影响 `Omega`；输出只作为纸面组合，不直接生成真实交易；后续反馈仅允许模拟成交/模拟持仓 ledger，不接真实券商
-
+- `BLOCKED` T-407 CEO Dashboard 与 UI 图对齐验收 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
+- `BLOCKED` T-408 月报/回放生产化和真实绩效归因 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
+- `BLOCKED` T-409 Black-Litterman、风险预算和组合约束原型 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
 - `BLOCKED` T-410 英文原文优先的研究问答与摘要审计
   - 对应：E4-US2, E6-US3, E6-US4, E7-US2
   - 已有：ResearchAnswer、`/api/research/answers`、`/api/research/answers/{answer_id}/review`、英文 evidence 校验、英文原文保留、标准化 citations（evidence/document/page/bbox/source URI/format）、中文摘要链路、summary/prompt/model 版本、来源公开性、人工覆核状态、人工审核通过/驳回、审计日志写入
@@ -1740,32 +1694,8 @@
   - 待做：真实模型调用质量评估、回退策略大样本对照
   - 验收：关键研究问答必须保留英文原文 evidence；中文摘要不能替代原文引用；摘要变更必须记录模型和 prompt 版本
 
-- `BLOCKED` T-411 生产监控、告警和事故闭环
-  - 对应：E6-US4, E9-US1, E9-US2
-  - 已有：`/api/health`、`/api/metrics`、AlertRule、SystemAlert、AlertNotification、默认告警规则播种、`/api/alerts/evaluate` 指标评估、开放/恢复告警状态、`/api/alerts/notify` 通知 outbox、`/api/alerts/notifications` 查询、risk dashboard 告警计数、解析失败人工复核告警测试
-  - 已有：`/api/playbooks/seed` 可播种文档解析失败、数据采集失败、检索降级、LLM 网关失败和权限/敏感数据泄漏五类事故剧本及季度演练计划；`/api/alerts/incidents/create` 可将带 `playbook_id` 的开放告警自动生成 IncidentReport 并回写 `incident_report_id`
-  - 已有：`/api/drill-schedules/{schedule_id}/result` 可回写事故演练结果、RCA 摘要、行动项和下一次演练时间，并在事故日历中展示
-  - 已有：`/api/alerts/notifications/deliver` 可对通知 outbox 执行 dry-run/execute 发送状态机，写回 provider、attempt、delivered_at、response 和失败原因；`provider=webhook|http|https` 时可向 HTTP(S) target 发送 JSON POST，`provider=email|smtp` 可通过 SMTP 发送 EmailMessage，`provider=slack` 可发送 Slack webhook，并限制非 HTTP(S) target、超时、缺失 SMTP 配置和最大尝试次数
-  - 已有：`/api/alerts/notify` 支持 `route_failures` / `failure_routes`，可按 playbook/rule/metric 将采集、检索、LLM、OCR 和 workflow 失败分流到专属 channel/target，并把 provider/max attempts/backoff 写入 delivery policy
-  - 已有：`/api/observability/logs/export` 可导出 audit、alerts、workflow 和 notifications 的结构化 JSON 日志；`/api/observability/otel/export` 可生成 OTLP logs JSON payload；`/api/observability/otel/submit` 可把 OpenTelemetry 日志提交写入 outbox 并复用通知发送状态机
-  - 已有：`scripts/staging_otel_acceptance.py` 已在本机 staging 直连 OpenTelemetry collector `/v1/logs`、`/v1/metrics` 和 `/v1/traces`，并触发 workflow 告警、通知 outbox 和发送状态机后回填 `otel_collector_drill`
-  - 已有：`/api/observability/readiness-report` 汇总结构化日志、OTLP payload、非本机 logs/metrics/traces collector 参数、日志保留策略、collector 后端存储/查询证据、真实外部告警发送记录和交付 evidence URI、事故剧本 owner/SLA/止血/回滚覆盖率和季度演练覆盖率，缺口进入 `missing_requirements`；默认事故剧本已补齐 SLA 与 rollback 动作
-  - 待做：接入真实非本机生产/预发 OpenTelemetry collector，并附上后端查询、保留策略执行和真实外部告警送达证据
-  - 验收：五类事故剧本均有 owner、SLA、止血动作、回滚动作；季度演练覆盖率 100%；`/api/observability/readiness-report` 无 missing requirements 且对应证据 URI 可追溯
-
-- `BLOCKED` T-412 生产部署 runbook 与验收清单
-  - 对应：E1-US3, E6-US4, E9-US2
-  - 已有：`.env.example` 环境变量模板、`docs/production-runbook.md`、`scripts/capacity_baseline.py`、密钥注入建议、PostgreSQL/S3/OpenSearch 运维步骤、上线前检查命令、容量/延迟 baseline 命令、备份/恢复、回滚步骤、月度运维检查表
-  - 已有：`/api/readiness/capacity-baseline` 可接收容量/延迟基线结果、按阈值自动判定并回填 `capacity_latency_report` readiness 记录和 evidence URI
-  - 已有：`/api/readiness/evidence-package` 可生成上线验收证据包 manifest，汇总 checklist、vision gate、owner 修复计划和 PostgreSQL/S3/OpenSearch、OpenTelemetry、Neo4j/Qdrant、OpenLineage/MLflow、KMS/lifecycle executor、生产 UI 浏览器等外部验证矩阵；`/api/readiness/evidence-package/notify` 可把缺失真实证据项写入通知 outbox
-  - 已有：`/api/readiness/deployment-report` 可汇总生产/预发环境名称、PostgreSQL/S3/OpenSearch 参数存在性、生产参数 manifest artifact URI、外部密钥管理 provider、密钥轮换证据、备份恢复、容量 baseline、权限红队、合规复核、CEO launch checklist、发布 checklist、灰度计划 artifact URI、回滚计划 artifact URI 和真实券商/自动下单关闭边界；灰度/回滚窗口只作为元数据，不能替代 artifact；接口拒绝 secret/token/password/private_key 等敏感字段且不回显 DSN/密钥值
-  - 已有：`scripts/staging_acceptance.py` 可对 staging HTTP 地址执行真实部署 smoke、模拟成交、检索、图谱、metrics、外部依赖配置和可达性检查、Neo4j/Qdrant/OTel outbox 演练，并可只回填真实执行过的 `real_data_smoke_test` 与 `capacity_latency_report`
-  - 已有：`docker-compose.yml` 和 `scripts/local_staging_stack.sh` 可在本机启动 PostgreSQL、MinIO、OpenSearch、Neo4j、Qdrant、OpenTelemetry collector、OpenLineage/MLflow HTTP 占位端点和应用服务，并自动跑 staging 验收；已修复镜像源、host/container 环境变量覆盖、PostgreSQL IMMUTABLE 索引、健康检查等待和 `AI_QUANT_HOST=0.0.0.0` 绑定问题
-  - 已有：本机 staging 验收通过，状态库为 PostgreSQLStore，对象存储为 S3/MinIO，检索为 OpenSearch，模拟成交通过，图谱回溯 100%，HTTP 容量基线无 breach；PostgreSQL/S3/OpenSearch/OTel/Neo4j/Qdrant/OpenLineage/MLflow 均可达，Neo4j/Qdrant/OpenLineage/MLflow outbox 演练通过，最近一次复验 `p95=114ms`
-  - 已有：最终 vision gate 复验通过，`/api/readiness/vision-gate` 返回 `status=ready`、`readiness_checklist_coverage=1.0`、`pending_checklist=[]`，evidence package 返回 `ready_for_launch=true`
-  - 待做：真实生产环境参数确认、外部密钥管理系统真实接入、备份恢复演练 artifact、发布 checklist、灰度/回滚演练 artifact URI 归档
-  - 验收：上线前检查、备份恢复、容量基线、密钥注入、回滚路径均有记录；`/api/readiness/deployment-report` 无 missing requirements 且不暴露任何真实密钥值
-
+- `BLOCKED` T-411 生产监控、告警和事故闭环 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
+- `BLOCKED` T-412 生产部署 runbook 与验收清单 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
 ## 观点与研究资产附录 / M8
 
 - `BLOCKED` T-414 公开电话会/转录稿和研报线索引用策略
@@ -1831,77 +1761,12 @@
   - 输出：最新分析 artifact、研报 evidence 召回审计、UI/浏览器验收 artifact、必要的前端修复记录
   - 验收：最新分析结果包含可回链的公开事实 evidence 和本地研报观点 evidence；UI 可展示分析结论和证据边界；`research_report_citation` 不参与训练、不作为事实源、不触发真实交易
 
-- `BLOCKED` T-418 大模型 / Agent 工作流生产化
-  - 对应：E6-US3, E6-US4, E8-US1, E9-US1；愿景扩展/生产化增强
-  - 已有：LLM gateway、OpenAI/Anthropic 兼容转发、默认模型配置、调用审计、密钥环境变量注入、任务级 prompt 模板、baseline prompt 审批记录、模型回退策略、规则/上一稳定版本/人工复核降级链、调用成本/延迟/错误率记录、角色和数据域元数据
-  - 已有：`GET /api/prompts/changes` 查询 prompt 变更审批记录，Agent 协作 UI 支持创建/审批 prompt 变更和查看 LLM runs/error/cost/budget；默认告警 `alert_llm_cost_budget` / `alert_llm_error_rate` 基于 `llm_tasks` 指标触发
-  - 已有：`/api/llm/tasks/review-queue` 可按任务类型、状态、原因和严重级别输出失败/fallback/高风险/超时/超预算 LLM run 的人工复核队列
-  - 已有：默认 LLM task template 覆盖研究摘要、研报摘要、filing 问答、challenger、red team 和事故 RCA，并在 `output_schema.acceptance_thresholds` 记录引用、反证、合规风险、RCA 事实/推断分离等验收阈值
-  - 已有：Agent 协作 UI 已接入 `/api/governance/permission-matrix`，可按角色、数据域和动作展示 allowed/denied、红区权限和规则覆盖
-  - 已有：`/api/llm/tasks/escalations` 可按成本预算、错误率、fallback 率、人工复核 backlog 和逐 run 原因生成 SLA/预算升级项；`/api/llm/tasks/escalations/notify` 可写入通知 outbox，并可复用 HTTP(S) webhook、SMTP email 或 Slack webhook sender
-  - 已有：`/api/llm/budget-approvals` 和 `/api/llm/budget-approvals/{approval_id}/decide` 可基于预算类升级项创建 pending 审批、记录 CEO/CIO/风险/ML 负责人决策，并让 approved 且未过期预算进入 LLM metrics 的有效成本预算计算
-  - 已有：`/api/llm/budget-approvals/{approval_id}/sync` 可把 approved 预算审批写入外部财务/云预算系统同步 outbox，记录 target、external_system、metadata、delivery_policy，并复用通知发送状态机推进
-  - 已有：`GET|POST /api/llm/readiness-report` 可汇总 approved task template、approved prompt 回链、pending prompt、LLM run 追溯、研究答案版本元数据、高风险 thesis challenger 覆盖率、人工复核/升级、预算同步 outbox 记录、预算同步外部 evidence URI 和真实模型/回退质量 artifact URI；接口只生成验收报告，不调用外部模型
-  - **已完成（本轮）**：Apple/AAPL SEC 单标的研究闭环已落成 `POST /api/research/tasks/sec-single-name/run`
-    - 编排复用 SEC ingestion、evidence extraction、ResearchAnswer、research card、scorecard、challenger、decision pack、审批、execution intent 和 simulated execution；实时 SEC 失败时使用确定性本地样例兜底
-    - 研究结果保留 `summary_version` / `prompt_version` / `model_version` 与人工复核状态，当前仍以规则摘要稳定兜底，真实 LLM 生成继续作为 T-418 后续任务
-    - 权限测试覆盖 analyst/CIO 可运行、未授权角色 403；执行侧固定 `simulation_only=true`、`live_execution_allowed=false`
-  - **已完成（本轮本机长期使用口径）**：`scripts/local_ai_capability_acceptance.py` 已对配置后的 LLM gateway 执行真实 OpenAI-compatible chat smoke，返回 `ok`，并把 provider、模型、choice 数、耗时和短响应预览写入 `artifacts/local-ai-capability-acceptance.json`；脚本和 artifact 均不保存 API key 或完整上游响应
-  - 待做：真实模型调用质量评估、回退策略大样本对照、生产/预发 LLM gateway smoke 与预算同步 artifact URI 归档
-  - 验收：生产 prompt 100% 可追溯；未审批 prompt 变更数 = 0；高风险结论 challenger 覆盖率 = 100%
-
+- `BLOCKED` T-418 大模型 / Agent 工作流生产化 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
 ## 运维/非本机发布附录 / M9 生产基础设施与治理
 
-- `BLOCKED` T-419 图谱 / 向量 / 语义检索生产化
-  - 对应：E3-US2, E3-US4, E8-US2；愿景扩展/生产化增强
-  - 已有：`/api/graph/query` 关系回查、本地轻量语义检索 adapter、证据/研究卡/研报/问答混合 SearchRecord、权限边界继承标记
-  - 已有：语义检索支持 `issuer_id` / `resource_types` payload filter、默认 restricted 结果过滤、显式 `include_restricted`、结果级 `source_boundary` / `rights_tag` / `risk_level` 和 `/api/search/semantic/benchmark` recall@k 质量回归
-  - 已有：`/api/search/semantic/rerank` 复用语义召回并输出本地可解释重排分、term coverage、资源权重、restricted boundary penalty 和 Qdrant/reranker adapter 触发条件
-  - 已有：`/api/search/rebuild` 可从当前事实层重建全文/语义 SearchRecord 索引，返回资源计数、sync 结果、外部全文失败 fallback 和审计记录
-  - 已有：`/api/graph/query` 每条 edge 默认带 `source`、`timestamp`、`version`、`confidence`；`/api/graph/edge-quality-report` 可输出边元数据覆盖率和缺失明细
-  - 已有：`/api/graph/neo4j/export` 和 `/api/graph/neo4j/sync` 可导出 Neo4j bulk upsert-compatible node/relationship payload，并写入 graph sync outbox 交给外部 adapter
-  - 已有：`/api/search/qdrant/export` 和 `/api/search/qdrant/sync` 可导出 Qdrant points upsert-compatible payload，保留 rights/risk 边界，并写入 vector sync outbox
-  - 已有：`/api/search/adapter-sync/retry` 可对 Neo4j/Qdrant sync outbox 的 failed 通知做 dry-run/execute 重试演练，复用通知发送状态机并保留审计
-  - 已有：`scripts/staging_graph_vector_acceptance.py` 已在本机 staging 直连 Neo4j/Qdrant，验证 `/api/graph/neo4j/export` 写入 Neo4j、`/api/search/qdrant/export` 写入 Qdrant collection，并覆盖失败 outbox 重试演练；最近一次本机结果为 Neo4j 54 nodes / 76 relationships、Qdrant 7 points、retried_count=2
-  - 已有：`GET|POST /api/graph-vector/readiness-report` 可输出图谱/向量外部同步验收包，检查 Neo4j/Qdrant payload 规模、追溯率、edge 元数据覆盖率、rights/risk 边界、非本机 endpoint、同步 artifact URI、批量吞吐 baseline 和失败注入/重试恢复证据；接口不直连外部数据库
-  - 待做：真实非本机生产/预发 Neo4j/Qdrant 同步 artifact、批量同步吞吐 baseline 和故障注入恢复证据 URI 归档
-  - 验收：观点、持仓、证据可沿图谱回查；结论到证据回溯率 >= 95%；语义检索结果保留来源和权限边界；`/api/graph-vector/readiness-report` 无 missing requirements
-
-- `BLOCKED` T-420 任务编排、血缘和模型治理
-  - 对应：E3-US4, E6-US4, E8-US3, E9-US2；愿景扩展/生产化增强
-  - 已有：轻量 DAG / workflow definition、任务运行记录、幂等键、任务级审计、数据血缘事件、模型版本记录、模型/prompt/输入输出引用关联
-  - 已有：`/api/orchestration/runs/{run_id}/retry` 支持失败/待复核 run 基于冻结输入重放，保留 `retry_of` / `retry_error`，任务状态可定位到具体 failed task；默认告警 `alert_workflow_failed_runs` 基于 `workflow_failed_runs` 指标触发
-  - 已有：`/api/orchestration/sla-report` 可基于任务级 `sla_minutes` 输出 failed、needs_review 和 runtime SLA breach；`workflow_sla_breaches` 默认告警可触发调度 SLA 风险
-  - 已有：`/api/orchestration/incidents/create` 可将未建单的 workflow SLA/失败 run 自动创建 `IncidentReport`，并用 `ir_workflow_{run_id}` 防重复
-  - 已有：`/api/orchestration/schedule-calendar` 可按 workflow `cadence` 和历史 run 预览未来运行窗口、last/next run、owner、任务数和 Airflow/Dagster 触发阈值建议
-  - 已有：`/api/orchestration/dependency-graph` 可按 DAG 输出任务节点、依赖边、拓扑顺序、未解析依赖、ready/blocked task、latest run 状态和 lineage 摘要，用于任务依赖可视化和失败排障
-  - 已有：`/api/orchestration/openlineage/export` 可把 workflow run、lineage event、模型版本和 prompt 版本导出为 OpenLineage-compatible dry-run payload，保留 run/job/dataset/facet 和外部提交边界
-  - 已有：`/api/model-versions/mlflow/export` 可把模型版本导出为 MLflow Model Registry-compatible dry-run payload，包含 registered model、model version、stage/alias、tags、metrics/params 和 lineage 回链
-  - 已有：`/api/orchestration/openlineage/submit` 和 `/api/model-versions/mlflow/register` 可将外部 lineage/catalog/registry payload 写入可靠 outbox，并复用通知发送状态机或通用 HTTP(S) webhook sender 记录 pending/sent/failed、provider、attempt、response 和错误
-  - 已有：`scripts/staging_lineage_registry_acceptance.py` 可在本机 staging 通过 OpenLineage/MLflow HTTP sink 直接发送 webhook POST，验证 202 响应、sink 记录和失败后重试再发送
-  - 已有：`/api/orchestration/dags/{dag_id}/execute` 内置轻量 DAG 执行器按拓扑顺序运行采集、解析、证据抽取、结构化抽取、索引重建、benchmark sample 登记和 benchmark 执行等白名单任务，支持上游产物占位符、幂等运行、任务状态、output refs、task-level lineage、`task_ids` 选择和 `queues` 队列隔离记录
-  - 已有：`/api/orchestration/dags/{dag_id}/backfill` 可按 `run_dates` 或日期窗口生成 deterministic backfill plan；默认 dry-run，不落库；显式 `dry_run=false` + `execute=true` 时按日期登记 queued `WorkflowRun`，保留 `inputs.backfill`、幂等键、任务选择、队列隔离和未选任务 skipped 状态
-  - 已有：`/api/orchestration/scheduler-handoff` 可导出外部调度器规划包，汇总 Airflow/Dagster/Cron 推荐、worker pool 队列映射、external sensor 清单、backfill gap 预览、adapter endpoint contract 和缺失真实外部证据项；该接口只做 planning contract，不创建外部部署
-  - 已有：`GET|POST /api/orchestration/readiness-report` 可汇总 active workflow、run/retry/replay、dependency graph、SLA/incident、scheduler handoff、OpenLineage/MLflow payload/outbox、approved model artifact coverage，以及真实调度器、worker pool、external sensor、backfill、OpenLineage client 和 MLflow registry 证据 URI；worker pool、external sensor 和 backfill 即使为空/不适用也要求复核 artifact；接口不部署外部系统
-  - 待做：Airflow/Dagster/Cron 真实生产部署、外部 sensor 连通性、分布式 worker、生产 worker pool 级队列隔离和大窗口 backfill 演练 artifact URI
-  - 待做：OpenLineage/MLflow 真实外部 client sender、真实 registry/catalog 连通性验证和失败重试策略演练
-  - 验收：任一解析、特征生产、信号计算和投委会打包均可 replay；失败任务可定位输入、版本、错误和重试记录
-
-- `BLOCKED` T-421 安全、密钥和权限生产化
-  - 对应：E2-US1, E2-US3, E6-US2, E6-US4, E9-US1；愿景扩展/生产化增强
-  - 已有：`scripts/security_check.py` 可检查 `.env` 误提交和常见密钥字面量，测试覆盖误提交场景；source governance report 可检查公开来源 provenance 台账、数据红黄绿分级、字段白名单和缓存期限；audit completeness report 可检查关键审计字段完整性
-  - 已有：`/api/governance/data-security-report` 可扫描 document/evidence/research answer 中的邮箱、手机号、身份证样式和 secret/API key 字面量，返回脱敏 snippet 与按类型/来源聚合统计；默认告警 `alert_sensitive_findings` 基于 `sensitive_findings` 指标触发
-  - 已有：API 网关会对角色越权访问返回 403 并写入 `permission_denied` 审计事件；默认告警 `alert_permission_denied_events` 基于 `permission_denied_events` 指标触发，risk dashboard 已纳入权限/敏感数据风险
-  - 已有：`/api/governance/secret-rotations` 可记录外部密钥管理系统的 rotation metadata、证据 URI 和到期提醒，并拒绝真实密钥值入库；默认告警 `alert_secret_rotation_overdue` 基于逾期记录触发
-  - 已有：`/api/governance/permission-matrix` 可从 API 网关授权规则派生角色 + 数据域 + 动作级权限矩阵，输出 allowed/denied roles、public 标记和 red domain 访问汇总
-  - 已有：`/api/governance/cache-retention-report` 可扫描 document、本地研报和 PaddleOCR 运行时缓存，输出保留/到期/删除 dry-run、no-cache 违规、外部生命周期执行建议，并通过 `record_run=true` 写入缓存保留执行记录和审计事件；`execute=true` 只形成审批证据，不在应用内物理删除缓存
-  - 已有：`/api/governance/cache-retention-runs/{run_id}/execute` 可对已批准 run 执行本进程 PaddleOCR 运行时缓存清理，并把对象存储、搜索索引和研报资产删除输出为外部 handoff 任务
-  - 已有：`/api/governance/cache-retention-runs/{run_id}/execution-evidence` 可回填外部对象生命周期、搜索索引清理、KMS/DLP 或运行时缓存清理 executor 的执行证据，把 run 推进到 `executed_outside_app` 并留痕
-  - 已有：`scripts/staging_security_acceptance.py` 可在本机 staging 验证密钥轮换 metadata-only、真实密钥字段拒绝入库、公开来源 provenance/字段白名单台账、最小权限 S3/OpenSearch/Postgres 模板、cache retention run、runtime cache executor 和外部 lifecycle/search/KMS-DLP executor 证据回填
-  - 已有：`GET|POST /api/governance/security-readiness-report` 可汇总 source governance、audit completeness、敏感数据扫描、permission matrix、真实越权 403/audit 或已通过的 `permission_red_team_test` checklist、secret rotation metadata、最小权限模板、cache retention 外部删除证据和红区训练记录；布尔占位字段不能替代权限红队证据；接口拒绝 secret/token/password/private_key 等敏感字段，固定只记录 metadata 和 evidence URI
-  - 待做：非本机生产/预发外部密钥管理系统真实接入、外部 API key 最小权限策略和对象存储/搜索索引外部删除 executor 真实执行证据 URI 归档
-  - 验收：红区数据自动入库训练数 = 0；关键动作审计字段覆盖率 100%；越权访问可拦截并留痕；`/api/governance/security-readiness-report` 无 missing requirements
-
+- `BLOCKED` T-419 图谱 / 向量 / 语义检索生产化 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
+- `BLOCKED` T-420 任务编排、血缘和模型治理 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
+- `BLOCKED` T-421 安全、密钥和权限生产化 — 已归档至下方“## 非目标 / 运维附录（非本机组织级生产）”，非当前产品主路线
 ## 运维/非本机发布附录 / M10 愿景验收闸门
 
 - `DONE` T-422 本机 staging 真实验收与上线闸门
@@ -1971,6 +1836,169 @@
 
 - `BLOCKED` 脱离人工审批的仓位调整
   - 原因：PortfolioProposal 只输出纸面组合或候选权重；模拟持仓用于反馈分析，不代表真实调仓
+
+## 非目标 / 运维附录（非本机组织级生产）
+
+本区任务为有意归档的非目标，属组织级/非本机生产化增强，不是当前个人/本机公司情报平台的产品主路线。保留完整历史内容仅作运维与未来可能扩展的参考；其待做项均为真实外部 artifact URI / 非本机环境证据，与本机工具定位冲突，不再计入主路线待办。
+
+- `BLOCKED` T-404 生产级状态库、对象存储和检索适配
+  - 对应：E3-US4, E6-US4, E8-US2
+  - 已有：SQLite 状态库、PostgreSQL baseline schema、`ai_quant.schema_migrations`、PostgreSQLStore runtime、schema 初始化、`AI_QUANT_POSTGRES_DSN` / PostgreSQL DSN 形式 `AI_QUANT_DB` 启动路径、SQLite -> PostgreSQL 显式迁移脚本、`scripts/postgres_schema_migrate.py` baseline apply/dry-run/rollback-record、本地/S3 对象存储 adapter、内置/OpenSearch 检索 adapter、外部检索失败 fallback、runtime fake-driver 持久化测试
+  - 已有：`/api/governance/storage-policy-templates` 输出 S3 scoped-prefix IAM、对象生命周期、OpenSearch index role、PostgreSQL app/migration grants 和破坏性 DDL rollback 审批模板，作为真实环境最小权限样例
+  - 已有：`GET|POST /api/governance/storage-readiness-report` 可汇总 PostgreSQL/S3/OpenSearch 非本机 runtime 配置、最小权限模板、migration artifact URI、真实数据 smoke、容量 baseline、备份恢复、PostgreSQL connect/query、S3 put/get/checksum 和 OpenSearch bulk/search smoke artifact URI；内联 migration/smoke payload 只作为指标摘要，不能替代外部 artifact；本机路径、`file://` 和 `local://` 不会被视为生产归档证据；接口不执行压测或连接外部后端
+  - 待做：S3/OpenSearch/PostgreSQL 真实环境压测、容量和延迟基线、备份恢复演练
+  - 验收：真实环境 smoke test、容量 baseline、恢复演练记录和最小权限策略样例齐备
+
+- `BLOCKED` T-406 三市场主体页和知识图谱生产化
+  - 对应：E3-US2, E3-US4, E8-US2
+  - 已有：EntityMapping、LEI/FIGI/CIK/ISIN/ticker 字段、`/api/entity-mappings/batch`、`/api/entity-mappings/quality-report`、A/H/U 批量映射入库、样本映射准确率报告、基于标识符完整度的实体消歧 confidence、低置信映射清单、`/api/graph/query` 按 issuer/security/evidence/thesis/decision 聚合主体、证券、公开行情、公司行动、文件、证据、观点、信号、决策、纸面执行意图、复盘、回放、例外、research card、13F、crowding、challenger、disclosure event 和派生 `portfolio_positions`，并返回带时间/来源属性的图谱边
+  - 已有：`/api/graph/traceability-report` 可检查 thesis、decision、research answer 是否能回溯到 evidence/document，并输出缺失 evidence、document、signal/thesis 断链和英文原文缺失问题
+  - 已有：EntityMapping 双时间轴版本字段 `valid_from` / `valid_to` / `recorded_at` / `supersedes_mapping_id` / `status`，`GET /api/entity-mappings` 支持按业务生效时点和记录时点查询，quality report 输出版本覆盖率和重叠清单
+  - 已有：知识图谱主体页新增 Entity Mapping 双时态面板，可按 issuer、`valid_at`、`recorded_at`、status 查询映射版本，并展示 accuracy、版本覆盖率、时间重叠、低置信映射和 label mismatch
+  - 已有：`GET|POST /api/entity-mappings/readiness-report` 汇总 A/H/U 覆盖、人工金标准确率、双时间轴版本覆盖率、低置信/重叠/mismatch、图谱回溯率、edge 元数据覆盖、Neo4j/Qdrant 非本地 endpoint 和真实批量映射/主体页/adapter artifact URI；固定 `automation_allowed=false` / `live_execution_allowed=false`
+  - 待做：ADR/中概队列真实批量映射执行记录、主体页生产浏览器验收 artifact、Neo4j 图谱 adapter 外部同步 artifact、Qdrant 向量检索 adapter 外部同步 artifact
+  - 验收：A/H/U 样本公司映射准确率 >= 98%；观点到证据可回溯率 >= 95%；节点/边具备来源、时间戳和版本
+
+- `BLOCKED` T-407 CEO Dashboard 与 UI 图对齐验收
+  - 对应：E6-US5, E7-US1, E7-US2, E7-US3, E8-US2, E9-US1
+  - 已有：左侧信息架构补齐“总览、数据中台、研究工作台、Agent 协作、策略实验室、投委会、风控合规、CEO 看板、知识图谱、系统治理”；顶部 A/H/U 市场、研究、风险、冲突证据和高优先级事件状态；SEC/披露时间线、8-K/6-K/20-F 事件墙、13F crowding 热图、公司行动摘要、风险治理、系统状态；UI 静态验收脚本检查导航、顶部状态、关键面板 ID 和前端脚本语法
+  - **已完成（本轮）**：Apple/AAPL SEC 单标的研究工作台闭环
+    - `/ui` 研究工作台已从单纯检索页改为单标的闭环控制台，前置 ticker/CIK/form/limit、一键运行、阶段进度、证据列表、研究摘要、投委会 Pack 和模拟反馈，辅助检索下沉到闭环结果之后
+    - UI 与浏览器验收显式展示 `Realtime SEC` / `Fallback sample`、`simulated only`、`no broker execution`，减少把纸面模拟链路误认为真实券商执行的风险
+    - 后续保留：多标的批量队列、生产 UI 分页/过滤/错误恢复/权限态细化
+  - 已有：投委会 UI 新增“异常审批面板”，可对 Decision Pack 做人工签字、创建 open exception、刷新风险队列，并展示 approval state、signature count、open exceptions、pending decisions 和 `human approval · no broker execution` 边界；浏览器验收覆盖桌面/移动非空截图和关键文案
+  - **已完成（本轮 UI 联动修复）**：总览收益卡、组合权重、研报观点证据、数据来源、产业链和公司定位已补齐点击联动，可自动切换到数据中台、研究工作台、知识图谱、热点扩散或投委会并带入上下文；`loadDashboard()` 已拆成最新分析快渲染和慢看板补全，避免慢接口导致首屏“点不动”
+    - 新增 `scripts/ui_interaction_acceptance.py`，用 Headless Chrome + DevTools Protocol 真实点击 7 条关键链路：收益卡到行情、研报证据到研究检索、公司定位到图谱、产业链到热点扩散、组合方案到最新投委会方案；2026-05-22 本机运行 `status=passed`、`failure_count=0`
+  - **已完成（本轮）**：UI 上线 readiness 细粒度验收门槛
+    - `/api/readiness/ui-report` 已把真实数据量、分页、过滤、错误恢复、权限态、文本无重叠、视觉无溢出和跨浏览器矩阵覆盖拆成独立 gate；跨浏览器覆盖必须从 metrics 解析出足够 browser family 与 desktop/mobile viewport，artifact URI 不能替代矩阵内容
+    - `scripts/ui_cross_browser_matrix_check.py` 可校验真实跨浏览器矩阵：至少 2 个 browser family、desktop/mobile viewport、必备 UI 文案、无 missing text 和 failure
+    - `scripts/staging_acceptance.py` 默认只写入 Headless Chrome `production_ui_screenshot_acceptance`；只有传入已校验矩阵时才回填 `cross_browser_acceptance`
+  - 待做：在非本机生产/预发真实数据量下执行分页/过滤/错误恢复/权限态、文本无重叠和视觉无溢出复核，并归档跨浏览器矩阵 artifact URI
+  - 验收：桌面和移动端截图验收通过；关键视图在真实数据量下无卡死、无明显溢出、无权限越界
+
+- `BLOCKED` T-408 月报/回放生产化和真实绩效归因
+  - 对应：E8-US3, E7-US1
+  - 已有：月报草稿/发布状态、CEO/CIO/风险合规发布审批、`/api/operating-reports/{report_id}/publish`、红灯项逐条审计、`/api/portfolio/transactions` 交易流水 ledger、`/api/portfolio/positions` as-of 持仓派生 adapter
+  - 已有：`/api/portfolio/returns` 支持按 market/currency/industry/style 输出组合收益分组归因；`/api/operating-reports/{report_id}/board-pack`；`/api/strategy-replays/compare`
+  - **已完成（本轮）**：`POST /api/portfolio/attribution/backfill`（T-408 代码层）
+    - 对纸面/模拟组合执行 market/currency/industry/style 分组绩效归因批次回填，写入 OperatingReport.annotations
+    - 固定 `simulation_only=true`、`live_execution_allowed=false`；支持 `dry_run=true` 只计算不写入
+    - 支持 `proposal_id` 引用已有 PortfolioProposal 或直接传 `holdings` 列表
+    - `docs/api-contracts.md` 已补充完整契约文档
+  - 已有：`GET|POST /api/portfolio/attribution/readiness-report` 可汇总月报归因注释、发布审批、红灯项 owner/due、策略回放复盘、模拟 ledger 来源边界、forward attribution 结果与外部 artifact URI、绩效 reconciliation、ledger extract、strategy replay 和 board pack 外部 artifact URI；本地 board pack 导出只作为审计事件，不能替代归档 URI；固定不接真实券商账户
+  - 待做：真实生产/预发绩效 reconciliation、NAV/ledger 对账、board pack artifact 和大样本回放验收 URI 归档
+  - 验收：月报草稿不能绕过审批发布；绩效指标可由公开行情收益、模拟持仓 ledger 或 NAV 序列复算；每个红灯项有 owner 和截止时间；不接入真实交易账户
+
+- `BLOCKED` T-409 Black-Litterman、风险预算和组合约束原型
+  - 对应：E5-US3, E6-US1, E7-US1, E8-US3
+  - 已有：`docs/portfolio-construction-spec.md` 数学规格、PortfolioProposal、`/api/portfolio/optimize`、`/api/portfolio/proposals`、观点置信度与 `Omega` 绑定、市场/行业/主题/币种预算、禁投清单、单证券上限、walk-forward 与压力测试诊断、协方差矩阵诊断
+  - 已有：`/api/execution-intents/{intent_id}/simulate` 只对已审批纸面执行意图生成模拟成交，写入 `SimulatedExecution` 和 `PortfolioTransaction` ledger，并固定 `live_execution_allowed=false`
+  - **已完成（本轮）**：`POST /api/portfolio/simulated-feedback`（T-409 代码层）
+    - 投委会审批入口：对 PortfolioProposal 做模拟决策（approved/rejected/pending/needs_revision）
+    - 支持 `include_valuation=true` 触发模拟持仓估值、`feedback_start/end_date` 触发区间归因反馈
+    - 固定 `simulation_only=true`、`live_execution_allowed=false`、`automation_allowed=false`、`usage_boundary=paper_portfolio_simulation`
+    - `docs/api-contracts.md` 已补充完整契约文档
+  - 已有：`/api/portfolio/optimizer/compare` 可对候选组合与 equal-weight / prior / posterior / external solver 权重做纸面对照，并输出约束报告与诊断摘要；`/api/portfolio/forward-report` 可生成纸面前向跟踪报告、active return、tracking error、information ratio 和 review flags
+  - 已有：投委会 UI 新增“组合模拟审批”，可加载 PortfolioProposal、选择 approved/rejected/pending/needs_revision，调用 `/api/portfolio/simulated-feedback` 并展示 proposal status、paper/no-broker 边界、模拟估值和区间反馈
+  - 已有：`/api/portfolio/optimizer/compare` 可通过 `run_external_optimizer=true` 尝试调用 CVXPY / PyPortfolioOpt 做纸面外部求解器对照；本机缺少依赖时返回 `external_optimizer.status=unavailable` 和安装/诊断信息，不伪造外部结果
+  - 已有：`GET|POST /api/portfolio/optimizer/readiness-report` 可对外部求解器对照结果生成归档验收包，检查 solver 状态、weights、版本、参数、solver/comparison/constraint report artifact URI、内联约束报告和 paper-only 边界
+  - 待做：生产环境安装 PyPortfolioOpt/CVXPY 后跑真实外部对照并归档 solver 版本/参数/artifact URI，投委会审批入口生产态细化
+  - 验收：候选权重不包含禁投标的；市场/行业预算和单券上限生效；观点置信度影响 `Omega`；输出只作为纸面组合，不直接生成真实交易；后续反馈仅允许模拟成交/模拟持仓 ledger，不接真实券商
+
+- `BLOCKED` T-411 生产监控、告警和事故闭环
+  - 对应：E6-US4, E9-US1, E9-US2
+  - 已有：`/api/health`、`/api/metrics`、AlertRule、SystemAlert、AlertNotification、默认告警规则播种、`/api/alerts/evaluate` 指标评估、开放/恢复告警状态、`/api/alerts/notify` 通知 outbox、`/api/alerts/notifications` 查询、risk dashboard 告警计数、解析失败人工复核告警测试
+  - 已有：`/api/playbooks/seed` 可播种文档解析失败、数据采集失败、检索降级、LLM 网关失败和权限/敏感数据泄漏五类事故剧本及季度演练计划；`/api/alerts/incidents/create` 可将带 `playbook_id` 的开放告警自动生成 IncidentReport 并回写 `incident_report_id`
+  - 已有：`/api/drill-schedules/{schedule_id}/result` 可回写事故演练结果、RCA 摘要、行动项和下一次演练时间，并在事故日历中展示
+  - 已有：`/api/alerts/notifications/deliver` 可对通知 outbox 执行 dry-run/execute 发送状态机，写回 provider、attempt、delivered_at、response 和失败原因；`provider=webhook|http|https` 时可向 HTTP(S) target 发送 JSON POST，`provider=email|smtp` 可通过 SMTP 发送 EmailMessage，`provider=slack` 可发送 Slack webhook，并限制非 HTTP(S) target、超时、缺失 SMTP 配置和最大尝试次数
+  - 已有：`/api/alerts/notify` 支持 `route_failures` / `failure_routes`，可按 playbook/rule/metric 将采集、检索、LLM、OCR 和 workflow 失败分流到专属 channel/target，并把 provider/max attempts/backoff 写入 delivery policy
+  - 已有：`/api/observability/logs/export` 可导出 audit、alerts、workflow 和 notifications 的结构化 JSON 日志；`/api/observability/otel/export` 可生成 OTLP logs JSON payload；`/api/observability/otel/submit` 可把 OpenTelemetry 日志提交写入 outbox 并复用通知发送状态机
+  - 已有：`scripts/staging_otel_acceptance.py` 已在本机 staging 直连 OpenTelemetry collector `/v1/logs`、`/v1/metrics` 和 `/v1/traces`，并触发 workflow 告警、通知 outbox 和发送状态机后回填 `otel_collector_drill`
+  - 已有：`/api/observability/readiness-report` 汇总结构化日志、OTLP payload、非本机 logs/metrics/traces collector 参数、日志保留策略、collector 后端存储/查询证据、真实外部告警发送记录和交付 evidence URI、事故剧本 owner/SLA/止血/回滚覆盖率和季度演练覆盖率，缺口进入 `missing_requirements`；默认事故剧本已补齐 SLA 与 rollback 动作
+  - 待做：接入真实非本机生产/预发 OpenTelemetry collector，并附上后端查询、保留策略执行和真实外部告警送达证据
+  - 验收：五类事故剧本均有 owner、SLA、止血动作、回滚动作；季度演练覆盖率 100%；`/api/observability/readiness-report` 无 missing requirements 且对应证据 URI 可追溯
+
+- `BLOCKED` T-412 生产部署 runbook 与验收清单
+  - 对应：E1-US3, E6-US4, E9-US2
+  - 已有：`.env.example` 环境变量模板、`docs/production-runbook.md`、`scripts/capacity_baseline.py`、密钥注入建议、PostgreSQL/S3/OpenSearch 运维步骤、上线前检查命令、容量/延迟 baseline 命令、备份/恢复、回滚步骤、月度运维检查表
+  - 已有：`/api/readiness/capacity-baseline` 可接收容量/延迟基线结果、按阈值自动判定并回填 `capacity_latency_report` readiness 记录和 evidence URI
+  - 已有：`/api/readiness/evidence-package` 可生成上线验收证据包 manifest，汇总 checklist、vision gate、owner 修复计划和 PostgreSQL/S3/OpenSearch、OpenTelemetry、Neo4j/Qdrant、OpenLineage/MLflow、KMS/lifecycle executor、生产 UI 浏览器等外部验证矩阵；`/api/readiness/evidence-package/notify` 可把缺失真实证据项写入通知 outbox
+  - 已有：`/api/readiness/deployment-report` 可汇总生产/预发环境名称、PostgreSQL/S3/OpenSearch 参数存在性、生产参数 manifest artifact URI、外部密钥管理 provider、密钥轮换证据、备份恢复、容量 baseline、权限红队、合规复核、CEO launch checklist、发布 checklist、灰度计划 artifact URI、回滚计划 artifact URI 和真实券商/自动下单关闭边界；灰度/回滚窗口只作为元数据，不能替代 artifact；接口拒绝 secret/token/password/private_key 等敏感字段且不回显 DSN/密钥值
+  - 已有：`scripts/staging_acceptance.py` 可对 staging HTTP 地址执行真实部署 smoke、模拟成交、检索、图谱、metrics、外部依赖配置和可达性检查、Neo4j/Qdrant/OTel outbox 演练，并可只回填真实执行过的 `real_data_smoke_test` 与 `capacity_latency_report`
+  - 已有：`docker-compose.yml` 和 `scripts/local_staging_stack.sh` 可在本机启动 PostgreSQL、MinIO、OpenSearch、Neo4j、Qdrant、OpenTelemetry collector、OpenLineage/MLflow HTTP 占位端点和应用服务，并自动跑 staging 验收；已修复镜像源、host/container 环境变量覆盖、PostgreSQL IMMUTABLE 索引、健康检查等待和 `AI_QUANT_HOST=0.0.0.0` 绑定问题
+  - 已有：本机 staging 验收通过，状态库为 PostgreSQLStore，对象存储为 S3/MinIO，检索为 OpenSearch，模拟成交通过，图谱回溯 100%，HTTP 容量基线无 breach；PostgreSQL/S3/OpenSearch/OTel/Neo4j/Qdrant/OpenLineage/MLflow 均可达，Neo4j/Qdrant/OpenLineage/MLflow outbox 演练通过，最近一次复验 `p95=114ms`
+  - 已有：最终 vision gate 复验通过，`/api/readiness/vision-gate` 返回 `status=ready`、`readiness_checklist_coverage=1.0`、`pending_checklist=[]`，evidence package 返回 `ready_for_launch=true`
+  - 待做：真实生产环境参数确认、外部密钥管理系统真实接入、备份恢复演练 artifact、发布 checklist、灰度/回滚演练 artifact URI 归档
+  - 验收：上线前检查、备份恢复、容量基线、密钥注入、回滚路径均有记录；`/api/readiness/deployment-report` 无 missing requirements 且不暴露任何真实密钥值
+
+- `BLOCKED` T-418 大模型 / Agent 工作流生产化
+  - 对应：E6-US3, E6-US4, E8-US1, E9-US1；愿景扩展/生产化增强
+  - 已有：LLM gateway、OpenAI/Anthropic 兼容转发、默认模型配置、调用审计、密钥环境变量注入、任务级 prompt 模板、baseline prompt 审批记录、模型回退策略、规则/上一稳定版本/人工复核降级链、调用成本/延迟/错误率记录、角色和数据域元数据
+  - 已有：`GET /api/prompts/changes` 查询 prompt 变更审批记录，Agent 协作 UI 支持创建/审批 prompt 变更和查看 LLM runs/error/cost/budget；默认告警 `alert_llm_cost_budget` / `alert_llm_error_rate` 基于 `llm_tasks` 指标触发
+  - 已有：`/api/llm/tasks/review-queue` 可按任务类型、状态、原因和严重级别输出失败/fallback/高风险/超时/超预算 LLM run 的人工复核队列
+  - 已有：默认 LLM task template 覆盖研究摘要、研报摘要、filing 问答、challenger、red team 和事故 RCA，并在 `output_schema.acceptance_thresholds` 记录引用、反证、合规风险、RCA 事实/推断分离等验收阈值
+  - 已有：Agent 协作 UI 已接入 `/api/governance/permission-matrix`，可按角色、数据域和动作展示 allowed/denied、红区权限和规则覆盖
+  - 已有：`/api/llm/tasks/escalations` 可按成本预算、错误率、fallback 率、人工复核 backlog 和逐 run 原因生成 SLA/预算升级项；`/api/llm/tasks/escalations/notify` 可写入通知 outbox，并可复用 HTTP(S) webhook、SMTP email 或 Slack webhook sender
+  - 已有：`/api/llm/budget-approvals` 和 `/api/llm/budget-approvals/{approval_id}/decide` 可基于预算类升级项创建 pending 审批、记录 CEO/CIO/风险/ML 负责人决策，并让 approved 且未过期预算进入 LLM metrics 的有效成本预算计算
+  - 已有：`/api/llm/budget-approvals/{approval_id}/sync` 可把 approved 预算审批写入外部财务/云预算系统同步 outbox，记录 target、external_system、metadata、delivery_policy，并复用通知发送状态机推进
+  - 已有：`GET|POST /api/llm/readiness-report` 可汇总 approved task template、approved prompt 回链、pending prompt、LLM run 追溯、研究答案版本元数据、高风险 thesis challenger 覆盖率、人工复核/升级、预算同步 outbox 记录、预算同步外部 evidence URI 和真实模型/回退质量 artifact URI；接口只生成验收报告，不调用外部模型
+  - **已完成（本轮）**：Apple/AAPL SEC 单标的研究闭环已落成 `POST /api/research/tasks/sec-single-name/run`
+    - 编排复用 SEC ingestion、evidence extraction、ResearchAnswer、research card、scorecard、challenger、decision pack、审批、execution intent 和 simulated execution；实时 SEC 失败时使用确定性本地样例兜底
+    - 研究结果保留 `summary_version` / `prompt_version` / `model_version` 与人工复核状态，当前仍以规则摘要稳定兜底，真实 LLM 生成继续作为 T-418 后续任务
+    - 权限测试覆盖 analyst/CIO 可运行、未授权角色 403；执行侧固定 `simulation_only=true`、`live_execution_allowed=false`
+  - **已完成（本轮本机长期使用口径）**：`scripts/local_ai_capability_acceptance.py` 已对配置后的 LLM gateway 执行真实 OpenAI-compatible chat smoke，返回 `ok`，并把 provider、模型、choice 数、耗时和短响应预览写入 `artifacts/local-ai-capability-acceptance.json`；脚本和 artifact 均不保存 API key 或完整上游响应
+  - 待做：真实模型调用质量评估、回退策略大样本对照、生产/预发 LLM gateway smoke 与预算同步 artifact URI 归档
+  - 验收：生产 prompt 100% 可追溯；未审批 prompt 变更数 = 0；高风险结论 challenger 覆盖率 = 100%
+
+- `BLOCKED` T-419 图谱 / 向量 / 语义检索生产化
+  - 对应：E3-US2, E3-US4, E8-US2；愿景扩展/生产化增强
+  - 已有：`/api/graph/query` 关系回查、本地轻量语义检索 adapter、证据/研究卡/研报/问答混合 SearchRecord、权限边界继承标记
+  - 已有：语义检索支持 `issuer_id` / `resource_types` payload filter、默认 restricted 结果过滤、显式 `include_restricted`、结果级 `source_boundary` / `rights_tag` / `risk_level` 和 `/api/search/semantic/benchmark` recall@k 质量回归
+  - 已有：`/api/search/semantic/rerank` 复用语义召回并输出本地可解释重排分、term coverage、资源权重、restricted boundary penalty 和 Qdrant/reranker adapter 触发条件
+  - 已有：`/api/search/rebuild` 可从当前事实层重建全文/语义 SearchRecord 索引，返回资源计数、sync 结果、外部全文失败 fallback 和审计记录
+  - 已有：`/api/graph/query` 每条 edge 默认带 `source`、`timestamp`、`version`、`confidence`；`/api/graph/edge-quality-report` 可输出边元数据覆盖率和缺失明细
+  - 已有：`/api/graph/neo4j/export` 和 `/api/graph/neo4j/sync` 可导出 Neo4j bulk upsert-compatible node/relationship payload，并写入 graph sync outbox 交给外部 adapter
+  - 已有：`/api/search/qdrant/export` 和 `/api/search/qdrant/sync` 可导出 Qdrant points upsert-compatible payload，保留 rights/risk 边界，并写入 vector sync outbox
+  - 已有：`/api/search/adapter-sync/retry` 可对 Neo4j/Qdrant sync outbox 的 failed 通知做 dry-run/execute 重试演练，复用通知发送状态机并保留审计
+  - 已有：`scripts/staging_graph_vector_acceptance.py` 已在本机 staging 直连 Neo4j/Qdrant，验证 `/api/graph/neo4j/export` 写入 Neo4j、`/api/search/qdrant/export` 写入 Qdrant collection，并覆盖失败 outbox 重试演练；最近一次本机结果为 Neo4j 54 nodes / 76 relationships、Qdrant 7 points、retried_count=2
+  - 已有：`GET|POST /api/graph-vector/readiness-report` 可输出图谱/向量外部同步验收包，检查 Neo4j/Qdrant payload 规模、追溯率、edge 元数据覆盖率、rights/risk 边界、非本机 endpoint、同步 artifact URI、批量吞吐 baseline 和失败注入/重试恢复证据；接口不直连外部数据库
+  - 待做：真实非本机生产/预发 Neo4j/Qdrant 同步 artifact、批量同步吞吐 baseline 和故障注入恢复证据 URI 归档
+  - 验收：观点、持仓、证据可沿图谱回查；结论到证据回溯率 >= 95%；语义检索结果保留来源和权限边界；`/api/graph-vector/readiness-report` 无 missing requirements
+
+- `BLOCKED` T-420 任务编排、血缘和模型治理
+  - 对应：E3-US4, E6-US4, E8-US3, E9-US2；愿景扩展/生产化增强
+  - 已有：轻量 DAG / workflow definition、任务运行记录、幂等键、任务级审计、数据血缘事件、模型版本记录、模型/prompt/输入输出引用关联
+  - 已有：`/api/orchestration/runs/{run_id}/retry` 支持失败/待复核 run 基于冻结输入重放，保留 `retry_of` / `retry_error`，任务状态可定位到具体 failed task；默认告警 `alert_workflow_failed_runs` 基于 `workflow_failed_runs` 指标触发
+  - 已有：`/api/orchestration/sla-report` 可基于任务级 `sla_minutes` 输出 failed、needs_review 和 runtime SLA breach；`workflow_sla_breaches` 默认告警可触发调度 SLA 风险
+  - 已有：`/api/orchestration/incidents/create` 可将未建单的 workflow SLA/失败 run 自动创建 `IncidentReport`，并用 `ir_workflow_{run_id}` 防重复
+  - 已有：`/api/orchestration/schedule-calendar` 可按 workflow `cadence` 和历史 run 预览未来运行窗口、last/next run、owner、任务数和 Airflow/Dagster 触发阈值建议
+  - 已有：`/api/orchestration/dependency-graph` 可按 DAG 输出任务节点、依赖边、拓扑顺序、未解析依赖、ready/blocked task、latest run 状态和 lineage 摘要，用于任务依赖可视化和失败排障
+  - 已有：`/api/orchestration/openlineage/export` 可把 workflow run、lineage event、模型版本和 prompt 版本导出为 OpenLineage-compatible dry-run payload，保留 run/job/dataset/facet 和外部提交边界
+  - 已有：`/api/model-versions/mlflow/export` 可把模型版本导出为 MLflow Model Registry-compatible dry-run payload，包含 registered model、model version、stage/alias、tags、metrics/params 和 lineage 回链
+  - 已有：`/api/orchestration/openlineage/submit` 和 `/api/model-versions/mlflow/register` 可将外部 lineage/catalog/registry payload 写入可靠 outbox，并复用通知发送状态机或通用 HTTP(S) webhook sender 记录 pending/sent/failed、provider、attempt、response 和错误
+  - 已有：`scripts/staging_lineage_registry_acceptance.py` 可在本机 staging 通过 OpenLineage/MLflow HTTP sink 直接发送 webhook POST，验证 202 响应、sink 记录和失败后重试再发送
+  - 已有：`/api/orchestration/dags/{dag_id}/execute` 内置轻量 DAG 执行器按拓扑顺序运行采集、解析、证据抽取、结构化抽取、索引重建、benchmark sample 登记和 benchmark 执行等白名单任务，支持上游产物占位符、幂等运行、任务状态、output refs、task-level lineage、`task_ids` 选择和 `queues` 队列隔离记录
+  - 已有：`/api/orchestration/dags/{dag_id}/backfill` 可按 `run_dates` 或日期窗口生成 deterministic backfill plan；默认 dry-run，不落库；显式 `dry_run=false` + `execute=true` 时按日期登记 queued `WorkflowRun`，保留 `inputs.backfill`、幂等键、任务选择、队列隔离和未选任务 skipped 状态
+  - 已有：`/api/orchestration/scheduler-handoff` 可导出外部调度器规划包，汇总 Airflow/Dagster/Cron 推荐、worker pool 队列映射、external sensor 清单、backfill gap 预览、adapter endpoint contract 和缺失真实外部证据项；该接口只做 planning contract，不创建外部部署
+  - 已有：`GET|POST /api/orchestration/readiness-report` 可汇总 active workflow、run/retry/replay、dependency graph、SLA/incident、scheduler handoff、OpenLineage/MLflow payload/outbox、approved model artifact coverage，以及真实调度器、worker pool、external sensor、backfill、OpenLineage client 和 MLflow registry 证据 URI；worker pool、external sensor 和 backfill 即使为空/不适用也要求复核 artifact；接口不部署外部系统
+  - 待做：Airflow/Dagster/Cron 真实生产部署、外部 sensor 连通性、分布式 worker、生产 worker pool 级队列隔离和大窗口 backfill 演练 artifact URI
+  - 待做：OpenLineage/MLflow 真实外部 client sender、真实 registry/catalog 连通性验证和失败重试策略演练
+  - 验收：任一解析、特征生产、信号计算和投委会打包均可 replay；失败任务可定位输入、版本、错误和重试记录
+
+- `BLOCKED` T-421 安全、密钥和权限生产化
+  - 对应：E2-US1, E2-US3, E6-US2, E6-US4, E9-US1；愿景扩展/生产化增强
+  - 已有：`scripts/security_check.py` 可检查 `.env` 误提交和常见密钥字面量，测试覆盖误提交场景；source governance report 可检查公开来源 provenance 台账、数据红黄绿分级、字段白名单和缓存期限；audit completeness report 可检查关键审计字段完整性
+  - 已有：`/api/governance/data-security-report` 可扫描 document/evidence/research answer 中的邮箱、手机号、身份证样式和 secret/API key 字面量，返回脱敏 snippet 与按类型/来源聚合统计；默认告警 `alert_sensitive_findings` 基于 `sensitive_findings` 指标触发
+  - 已有：API 网关会对角色越权访问返回 403 并写入 `permission_denied` 审计事件；默认告警 `alert_permission_denied_events` 基于 `permission_denied_events` 指标触发，risk dashboard 已纳入权限/敏感数据风险
+  - 已有：`/api/governance/secret-rotations` 可记录外部密钥管理系统的 rotation metadata、证据 URI 和到期提醒，并拒绝真实密钥值入库；默认告警 `alert_secret_rotation_overdue` 基于逾期记录触发
+  - 已有：`/api/governance/permission-matrix` 可从 API 网关授权规则派生角色 + 数据域 + 动作级权限矩阵，输出 allowed/denied roles、public 标记和 red domain 访问汇总
+  - 已有：`/api/governance/cache-retention-report` 可扫描 document、本地研报和 PaddleOCR 运行时缓存，输出保留/到期/删除 dry-run、no-cache 违规、外部生命周期执行建议，并通过 `record_run=true` 写入缓存保留执行记录和审计事件；`execute=true` 只形成审批证据，不在应用内物理删除缓存
+  - 已有：`/api/governance/cache-retention-runs/{run_id}/execute` 可对已批准 run 执行本进程 PaddleOCR 运行时缓存清理，并把对象存储、搜索索引和研报资产删除输出为外部 handoff 任务
+  - 已有：`/api/governance/cache-retention-runs/{run_id}/execution-evidence` 可回填外部对象生命周期、搜索索引清理、KMS/DLP 或运行时缓存清理 executor 的执行证据，把 run 推进到 `executed_outside_app` 并留痕
+  - 已有：`scripts/staging_security_acceptance.py` 可在本机 staging 验证密钥轮换 metadata-only、真实密钥字段拒绝入库、公开来源 provenance/字段白名单台账、最小权限 S3/OpenSearch/Postgres 模板、cache retention run、runtime cache executor 和外部 lifecycle/search/KMS-DLP executor 证据回填
+  - 已有：`GET|POST /api/governance/security-readiness-report` 可汇总 source governance、audit completeness、敏感数据扫描、permission matrix、真实越权 403/audit 或已通过的 `permission_red_team_test` checklist、secret rotation metadata、最小权限模板、cache retention 外部删除证据和红区训练记录；布尔占位字段不能替代权限红队证据；接口拒绝 secret/token/password/private_key 等敏感字段，固定只记录 metadata 和 evidence URI
+  - 待做：非本机生产/预发外部密钥管理系统真实接入、外部 API key 最小权限策略和对象存储/搜索索引外部删除 executor 真实执行证据 URI 归档
+  - 验收：红区数据自动入库训练数 = 0；关键动作审计字段覆盖率 100%；越权访问可拦截并留痕；`/api/governance/security-readiness-report` 无 missing requirements
 
 ## 里程碑检查点
 
