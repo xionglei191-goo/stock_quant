@@ -191,3 +191,15 @@ def normalize_cusip(value: str) -> str:
 
 def normalize_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def unique_strings(values: Any) -> list[str]:
+    """Return input values as trimmed strings, de-duplicated, order-preserving."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in values:
+        value = str(item).strip()
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
