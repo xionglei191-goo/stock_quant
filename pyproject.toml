@@ -5,16 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ai-native-quant-org"
 version = "0.1.0"
-description = "A minimal, testable MVP backend for the AI Native virtual quant fund organization."
+description = "A local-first company intelligence and market analysis platform with evidence-linked research and simulated feedback."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["PyYAML>=6.0"]
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
 market-data = ["psycopg[binary]>=3.1", "baostock==0.9.1"]
+dynamic-allocation-dashboard = ["plotly>=5.24", "streamlit>=1.40"]
+dynamic-allocation-analysis = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scipy>=1.11",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.4",
+]
+dynamic-allocation-ml = ["xgboost>=2.0", "lightgbm>=4.0"]
 ui-acceptance = ["Pillow>=10.0"]
 test = ["psycopg[binary]>=3.1", "baostock==0.9.1", "Pillow>=10.0"]
 
 [tool.unittest]
 test-directory = "tests"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

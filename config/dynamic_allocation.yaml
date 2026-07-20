@@ -1,0 +1,131 @@
+version: "1.0"
+
+boundary:
+  paper_only: true
+  live_execution_allowed: false
+  broker_connected: false
+
+universe:
+  phase_1: [SPY, QQQ, SGOV]
+  equity_split: {SPY: 0.70, QQQ: 0.30}
+
+# Series names are stable internal contracts. Providers map their public symbols
+# to these names and must preserve release/vintage metadata.
+series:
+  forward_pe: {source_id: governed-public-or-local, grain: monthly, max_staleness_days: 120, critical: true, timezone: America/New_York}
+  cape: {source_id: governed-public-or-local, grain: monthly, max_staleness_days: 400, critical: false, timezone: America/New_York}
+  earnings_yield: {source_id: governed-public-or-local, grain: monthly, max_staleness_days: 120, critical: true, timezone: America/New_York}
+  free_cash_flow_yield: {source_id: governed-public-or-local, grain: monthly, max_staleness_days: 120, critical: false, timezone: America/New_York}
+  equity_risk_premium: {source_id: governed-public-or-local, grain: monthly, max_staleness_days: 45, critical: true, timezone: America/New_York}
+  price_to_ma_50: {source_id: public-market-data, grain: daily, max_staleness_days: 7, critical: false, timezone: America/New_York}
+  price_to_ma_100: {source_id: public-market-data, grain: daily, max_staleness_days: 7, critical: false, timezone: America/New_York}
+  price_to_ma_200: {source_id: public-market-data, grain: daily, max_staleness_days: 7, critical: true, timezone: America/New_York}
+  return_3m: {source_id: public-market-data, grain: daily, max_staleness_days: 7, critical: false, timezone: America/New_York}
+  return_6m: {source_id: public-market-data, grain: daily, max_staleness_days: 7, critical: false, timezone: America/New_York}
+  return_12m: {source_id: public-market-data, grain: daily, max_staleness_days: 7, critical: true, timezone: America/New_York}
+  distance_from_high: {source_id: public-market-data, grain: daily, max_staleness_days: 7, critical: false, timezone: America/New_York}
+  vix_level: {source_id: cboe-public, grain: daily, max_staleness_days: 7, critical: true, timezone: America/Chicago}
+  vix_change_speed: {source_id: cboe-public, grain: daily, max_staleness_days: 7, critical: true, timezone: America/Chicago}
+  vix_term_structure: {source_id: cboe-public, grain: daily, max_staleness_days: 7, critical: true, timezone: America/Chicago}
+  high_yield_spread: {source_id: fred-public, grain: daily, max_staleness_days: 14, critical: true, timezone: America/New_York}
+  investment_grade_spread: {source_id: fred-public, grain: daily, max_staleness_days: 14, critical: false, timezone: America/New_York}
+  hyg_return: {source_id: public-market-data, grain: daily, max_staleness_days: 7, critical: true, timezone: America/New_York}
+  margin_debt_level: {source_id: finra-public, grain: monthly, max_staleness_days: 120, critical: false, timezone: America/New_York}
+  margin_debt_to_market_cap: {source_id: finra-public, grain: monthly, max_staleness_days: 120, critical: true, timezone: America/New_York}
+  margin_debt_growth: {source_id: finra-public, grain: monthly, max_staleness_days: 120, critical: false, timezone: America/New_York}
+  deleveraging_speed: {source_id: finra-public, grain: monthly, max_staleness_days: 120, critical: true, timezone: America/New_York}
+  unemployment_rate: {source_id: fred-public, grain: monthly, max_staleness_days: 60, critical: true, timezone: America/New_York}
+  initial_claims: {source_id: fred-public, grain: weekly, max_staleness_days: 21, critical: false, timezone: America/New_York}
+  payroll_growth: {source_id: fred-public, grain: monthly, max_staleness_days: 60, critical: true, timezone: America/New_York}
+  cpi: {source_id: fred-public, grain: monthly, max_staleness_days: 60, critical: false, timezone: America/New_York}
+  core_cpi: {source_id: fred-public, grain: monthly, max_staleness_days: 60, critical: false, timezone: America/New_York}
+  pce: {source_id: fred-public, grain: monthly, max_staleness_days: 90, critical: true, timezone: America/New_York}
+  pmi: {source_id: governed-public-or-local, grain: monthly, max_staleness_days: 60, critical: false, timezone: America/New_York}
+  ism: {source_id: ism-public, grain: monthly, max_staleness_days: 60, critical: true, timezone: America/New_York}
+  fed_balance_sheet: {source_id: fred-public, grain: weekly, max_staleness_days: 21, critical: true, timezone: America/New_York}
+  treasury_general_account: {source_id: fred-public, grain: weekly, max_staleness_days: 21, critical: false, timezone: America/New_York}
+  reverse_repo: {source_id: fred-public, grain: daily, max_staleness_days: 14, critical: false, timezone: America/New_York}
+  dollar_index: {source_id: public-market-data, grain: daily, max_staleness_days: 7, critical: false, timezone: America/New_York}
+  financial_conditions: {source_id: fred-public, grain: weekly, max_staleness_days: 21, critical: true, timezone: America/New_York}
+  stocks_above_200ma: {source_id: governed-public-or-local, grain: daily, max_staleness_days: 7, critical: true, timezone: America/New_York}
+  new_highs_lows: {source_id: governed-public-or-local, grain: daily, max_staleness_days: 7, critical: false, timezone: America/New_York}
+  advance_decline: {source_id: governed-public-or-local, grain: daily, max_staleness_days: 7, critical: true, timezone: America/New_York}
+
+factors:
+  valuation:
+    minimum_coverage: 0.65
+    components:
+      - {series_id: forward_pe, weight: 0.20, direction: low, critical: true, max_age_days: 120}
+      - {series_id: cape, weight: 0.20, direction: low, max_age_days: 400}
+      - {series_id: earnings_yield, weight: 0.20, direction: high, critical: true, max_age_days: 120}
+      - {series_id: free_cash_flow_yield, weight: 0.20, direction: high, max_age_days: 120}
+      - {series_id: equity_risk_premium, weight: 0.20, direction: high, critical: true, max_age_days: 45}
+  trend:
+    components:
+      - {series_id: price_to_ma_50, weight: 0.10, direction: high, max_age_days: 7}
+      - {series_id: price_to_ma_100, weight: 0.10, direction: high, max_age_days: 7}
+      - {series_id: price_to_ma_200, weight: 0.20, direction: high, critical: true, max_age_days: 7}
+      - {series_id: return_3m, weight: 0.10, direction: high, max_age_days: 7}
+      - {series_id: return_6m, weight: 0.15, direction: high, max_age_days: 7}
+      - {series_id: return_12m, weight: 0.20, direction: high, critical: true, max_age_days: 7}
+      - {series_id: distance_from_high, weight: 0.15, direction: high, max_age_days: 7}
+  volatility:
+    components:
+      - {series_id: vix_level, weight: 0.35, direction: low, critical: true, max_age_days: 7}
+      - {series_id: vix_change_speed, weight: 0.25, direction: low, critical: true, max_age_days: 7}
+      - {series_id: vix_term_structure, weight: 0.40, direction: high, critical: true, max_age_days: 7}
+  credit:
+    components:
+      - {series_id: high_yield_spread, weight: 0.40, direction: low, critical: true, max_age_days: 14}
+      - {series_id: investment_grade_spread, weight: 0.30, direction: low, max_age_days: 14}
+      - {series_id: hyg_return, weight: 0.30, direction: high, critical: true, max_age_days: 7}
+  leverage:
+    components:
+      - {series_id: margin_debt_level, weight: 0.20, direction: low, max_age_days: 120}
+      - {series_id: margin_debt_to_market_cap, weight: 0.30, direction: low, critical: true, max_age_days: 120}
+      - {series_id: margin_debt_growth, weight: 0.25, direction: low, max_age_days: 120}
+      - {series_id: deleveraging_speed, weight: 0.25, direction: low, critical: true, max_age_days: 120}
+  macro:
+    minimum_coverage: 0.70
+    components:
+      - {series_id: unemployment_rate, weight: 0.10, direction: low, critical: true, max_age_days: 60}
+      - {series_id: initial_claims, weight: 0.10, direction: low, max_age_days: 21}
+      - {series_id: payroll_growth, weight: 0.15, direction: high, critical: true, max_age_days: 60}
+      - {series_id: cpi, weight: 0.10, direction: target, target: 2.0, max_age_days: 60}
+      - {series_id: core_cpi, weight: 0.10, direction: target, target: 2.0, max_age_days: 60}
+      - {series_id: pce, weight: 0.15, direction: target, target: 2.0, critical: true, max_age_days: 60}
+      - {series_id: pmi, weight: 0.15, direction: high, max_age_days: 60}
+      - {series_id: ism, weight: 0.15, direction: high, critical: true, max_age_days: 60}
+  liquidity:
+    components:
+      - {series_id: fed_balance_sheet, weight: 0.25, direction: high, critical: true, max_age_days: 21}
+      - {series_id: treasury_general_account, weight: 0.15, direction: low, max_age_days: 21}
+      - {series_id: reverse_repo, weight: 0.15, direction: low, max_age_days: 14}
+      - {series_id: dollar_index, weight: 0.20, direction: low, max_age_days: 7}
+      - {series_id: financial_conditions, weight: 0.25, direction: low, critical: true, max_age_days: 21}
+  breadth:
+    components:
+      - {series_id: stocks_above_200ma, weight: 0.40, direction: high, critical: true, max_age_days: 7}
+      - {series_id: new_highs_lows, weight: 0.30, direction: high, max_age_days: 7}
+      - {series_id: advance_decline, weight: 0.30, direction: high, critical: true, max_age_days: 7}
+
+models:
+  regime: {minimum_residence_periods: 2, transition_margin: 5.0}
+  allocation:
+    weights: {valuation: 0.18, trend: 0.16, volatility: 0.12, credit: 0.12, leverage: 0.10, macro: 0.12, liquidity: 0.10, breadth: 0.10}
+    buckets: [0.10, 0.30, 0.50, 0.70, 0.90]
+    spy_share: 0.70
+    qqq_share: 0.30
+  kelly:
+    fraction: quarter
+    minimum_samples: 24
+    estimator:
+      enabled: true
+      series_id: return_3m
+      lookback_years: 10
+      confidence: 0.35
+      expected_return_floor: -0.10
+      expected_return_cap: 0.12
+      volatility_floor: 0.08
+  risk: {maximum_allocation: 0.90}
+  rebalance: {frequency: monthly, buffer: 0.10, maximum_step: 0.15}

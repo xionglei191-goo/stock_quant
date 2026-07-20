@@ -8,6 +8,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Callable
 
+from .market_data_storage import upsert_market_data_bar as upsert_typed_market_data_bar
+
 from .models import (
     AuditEvent,
     AlertNotification,
@@ -281,6 +283,7 @@ def _candidate_collections_for_resource(resource_type: str) -> list[str]:
         "alert_rule": "alert_rules",
         "system_alert": "system_alerts",
         "alert_notification": "alert_notifications",
+        "graph": "alert_notifications",
         "exception": "exceptions",
         "exception_item": "exceptions",
     }
@@ -602,6 +605,7 @@ class PostgreSQLStore(InMemoryStore):
         self._lazy_market_data_count = 0
         self._record_hashes: dict[tuple[str, str], str] = {}
         self._audit_hashes: dict[str, str] = {}
+        self._persisted_audit_ids: list[str] = []
         self._dirty_collections: set[str] = set()
         self._ensure_schema_if_needed()
         self._load()
@@ -698,6 +702,7 @@ class PostgreSQLStore(InMemoryStore):
             plain_payload = _json_payload(payload)
             event = _hydrate_audit_event(plain_payload)
             self.audit_log.append(event)
+            self._persisted_audit_ids.append(event.event_id)
             self._audit_hashes[event.event_id] = self._payload_hash(plain_payload)
 
     def _payload_hash(self, payload: Any) -> str:
@@ -759,10 +764,15 @@ class PostgreSQLStore(InMemoryStore):
                         for collection, item_id in sorted(deletable_previous_keys):
                             cursor.execute("DELETE FROM ai_quant.records WHERE collection = %s AND item_id = %s", (collection, item_id))
                             self._record_hashes.pop((collection, item_id), None)
-                    current_audit_ids: set[str] = set()
-                    for position, event in enumerate(self.audit_log):
+                    current_audit_ids = [event.event_id for event in self.audit_log]
+                    persisted_count = len(self._persisted_audit_ids)
+                    append_only = (
+                        len(current_audit_ids) >= persisted_count
+                        and current_audit_ids[:persisted_count] == self._persisted_audit_ids
+                    )
+                    audit_start = persisted_count if append_only else 0
+                    for position, event in enumerate(self.audit_log[audit_start:], start=audit_start):
                         event_payload = to_plain(event)
-                        current_audit_ids.add(event.event_id)
                         payload_hash = self._payload_hash(event_payload)
                         if self._audit_hashes.get(event.event_id) == payload_hash:
                             continue
@@ -816,9 +826,11 @@ class PostgreSQLStore(InMemoryStore):
                             ),
                         )
                         self._audit_hashes[event.event_id] = payload_hash
-                    for event_id in sorted(set(self._audit_hashes) - current_audit_ids):
-                        cursor.execute("DELETE FROM ai_quant.audit_log WHERE event_id = %s", (event_id,))
-                        self._audit_hashes.pop(event_id, None)
+                    if not append_only:
+                        for event_id in sorted(set(self._audit_hashes) - set(current_audit_ids)):
+                            cursor.execute("DELETE FROM ai_quant.audit_log WHERE event_id = %s", (event_id,))
+                            self._audit_hashes.pop(event_id, None)
+                    self._persisted_audit_ids = current_audit_ids
         self._dirty_collections.clear()
         if typed_market_data_available and typed_market_data_keys:
             for item_id in typed_market_data_keys:
@@ -834,71 +846,13 @@ class PostgreSQLStore(InMemoryStore):
 
     def upsert_market_data_bar(self, point: MarketDataPoint, *, cursor: Any | None = None, payload: dict[str, Any] | None = None) -> None:
         plain_payload = payload or to_plain(point)
-        rights_tag = plain_payload.get("rights_tag", {})
-        amount = float(plain_payload.get("amount", 0.0) or 0.0)
-        params = (
-            point.security_id,
-            point.source_id,
-            point.data_type,
-            point.as_of_date,
-            point.market,
-            point.currency,
-            point.open,
-            point.high,
-            point.low,
-            point.close,
-            point.adjusted_close,
-            point.volume,
-            amount,
-            point.data_id,
-            json.dumps(rights_tag, ensure_ascii=False, sort_keys=True),
-            json.dumps(plain_payload, ensure_ascii=False, sort_keys=True),
-            point.created_at,
-        )
-        sql = """
-            INSERT INTO ai_quant.market_data_bars (
-                security_id,
-                source_id,
-                data_type,
-                as_of_date,
-                market,
-                currency,
-                open,
-                high,
-                low,
-                close,
-                adjusted_close,
-                volume,
-                amount,
-                data_id,
-                rights_tag,
-                payload,
-                created_at
-            )
-            VALUES (%s, %s, %s, %s::date, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
-            ON CONFLICT (security_id, source_id, data_type, as_of_date)
-            DO UPDATE SET
-                market = EXCLUDED.market,
-                currency = EXCLUDED.currency,
-                open = EXCLUDED.open,
-                high = EXCLUDED.high,
-                low = EXCLUDED.low,
-                close = EXCLUDED.close,
-                adjusted_close = EXCLUDED.adjusted_close,
-                volume = EXCLUDED.volume,
-                amount = EXCLUDED.amount,
-                data_id = EXCLUDED.data_id,
-                rights_tag = EXCLUDED.rights_tag,
-                payload = EXCLUDED.payload,
-                updated_at = now()
-        """
         if cursor is not None:
-            cursor.execute(sql, params)
+            upsert_typed_market_data_bar(cursor, plain_payload)
             return
         with closing(self._connect()) as connection:
             with connection:
                 with connection.cursor() as local_cursor:
-                    local_cursor.execute(sql, params)
+                    upsert_typed_market_data_bar(local_cursor, plain_payload)
 
     def query_market_data_points(
         self,
@@ -982,9 +936,11 @@ class PostgreSQLStore(InMemoryStore):
                 b.adjusted_close,
                 b.volume,
                 b.amount,
-                b.rights_tag,
+                p.rights_tag,
                 b.created_at
             FROM ai_quant.market_data_bars AS b
+            JOIN ai_quant.market_data_rights_policies AS p
+              ON p.policy_id = b.rights_policy_id
             WHERE {' AND '.join(clauses)}
             ORDER BY b.as_of_date {order}, b.data_id {order}
             LIMIT %s

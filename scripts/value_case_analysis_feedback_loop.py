@@ -14,11 +14,19 @@ call on Ping An Bank (sz000001); the local price series then scores it as
 Everything is paper-only: the SimulationFeedback model hard-locks
 ``paper_only=True`` / ``live_execution_allowed=False`` / ``broker_connected=False``.
 No broker, no live execution, no order placement.
+
+Batch mode: pass ``--symbols sz000001,sh600519,...`` to run the full loop
+over several tickers in one shared store, deriving issuer/security ids per
+ticker. The artifact then carries a per-symbol list plus a rollup that
+counts realized/missed/mixed verdicts across the watchlist -- turning the
+single value case into a repeatable analysis-effectiveness batch.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,15 +38,45 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.services import SystemService  # noqa: E402
+from app.store import SQLiteStore  # noqa: E402
 from app.tdx_market_data import TDXVipdocAdapter  # noqa: E402
 
 
-def _build_service(db_path: str) -> SystemService:
-    if db_path:
-        import os
+SYMBOL_PATTERN = re.compile(r"^(sh|sz)\d{6}$")
+ARTIFACT_PRODUCER = "scripts/value_case_analysis_feedback_loop.py"
 
-        os.environ["AI_QUANT_DB"] = db_path
-    return SystemService()
+
+def _artifact_metadata() -> dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "producer": ARTIFACT_PRODUCER,
+        "classification": "local-only",
+        "acceptable_for_non_local_release_gate": False,
+    }
+
+
+def parse_tdx_symbols(value: str) -> list[str]:
+    """Normalize, validate, and order-dedupe a comma-separated symbol list."""
+    if not value.strip():
+        raise ValueError("symbols_empty")
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for raw_symbol in value.split(","):
+        symbol = raw_symbol.strip().lower()
+        if not symbol:
+            raise ValueError("symbol_empty")
+        if not SYMBOL_PATTERN.fullmatch(symbol):
+            raise ValueError("symbol_invalid")
+        if symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+    return symbols
+
+
+def _build_service(db_path: str) -> SystemService:
+    if not db_path:
+        return SystemService()
+    return SystemService(SQLiteStore(db_path))
 
 
 def _import_market_data(
@@ -108,7 +146,8 @@ def _import_market_data(
 
 def run_value_case(
     *,
-    db_path: str,
+    service: SystemService | None = None,
+    db_path: str = "",
     tdx_symbol: str,
     issuer_id: str,
     security_id: str,
@@ -118,7 +157,8 @@ def run_value_case(
     vipdoc_path: str,
     entry_hint: float,
 ) -> dict[str, Any]:
-    service = _build_service(db_path)
+    if service is None:
+        service = _build_service(db_path)
     import_summary = _import_market_data(
         service,
         tdx_symbol=tdx_symbol,
@@ -143,8 +183,9 @@ def run_value_case(
     observation_id = f"obs_valuecase_{security_id}"
     feedback_id = f"sf_valuecase_{security_id}"
 
-    service.create_analysis_conclusion(
-        {
+    if conclusion_id not in service.store.analysis_conclusions:
+        service.create_analysis_conclusion(
+            {
             "analysis_conclusion_id": conclusion_id,
             "issuer_id": issuer_id,
             "security_id": security_id,
@@ -155,11 +196,12 @@ def run_value_case(
             "forecasts": [f"预期 {security_id} 后续区间收益为正"],
             "confidence": 0.6,
             "status": "active",
-        },
-        actor="value-case",
-    )
-    service.register_observation_item(
-        {
+            },
+            actor="value-case",
+        )
+    if observation_id not in service.store.observation_items:
+        service.register_observation_item(
+            {
             "observation_id": observation_id,
             "issuer_id": issuer_id,
             "security_id": security_id,
@@ -167,11 +209,12 @@ def run_value_case(
             "observation_type": "price_realization",
             "related_conclusion_ids": [conclusion_id],
             "status": "open",
-        },
-        actor="value-case",
-    )
-    service.record_simulation_feedback(
-        {
+            },
+            actor="value-case",
+        )
+    if feedback_id not in service.store.simulation_feedback:
+        service.record_simulation_feedback(
+            {
             "simulation_feedback_id": feedback_id,
             "analysis_conclusion_id": conclusion_id,
             "issuer_id": issuer_id,
@@ -181,9 +224,9 @@ def run_value_case(
             "simulated_action": "watch",
             "start_at": entry_date,
             "entry_price": entry_price,
-        },
-        actor="value-case",
-    )
+            },
+            actor="value-case",
+        )
     update = service.update_simulation_feedback_performance(
         {"simulation_feedback_id": feedback_id, "execute": True, "dry_run": False},
         actor="value-case",
@@ -215,10 +258,97 @@ def run_value_case(
     }
 
 
+def _derive_ids(tdx_symbol: str) -> tuple[str, str, str, str]:
+    """Derive (issuer_id, security_id, source_id, code6) from a tdx symbol."""
+    code6 = tdx_symbol[-6:]
+    issuer_id = f"issuer_valuecase_{tdx_symbol}"
+    security_id = f"sec_valuecase_{tdx_symbol}"
+    source_id = "public_eod_market_data"
+    return issuer_id, security_id, source_id, code6
+
+
+def run_value_case_batch(
+    *,
+    db_path: str,
+    tdx_symbols: list[str],
+    start_date: str,
+    end_date: str,
+    vipdoc_path: str,
+) -> dict[str, Any]:
+    """Run the end-to-end value case over several tickers in one shared store."""
+    normalized_symbols = parse_tdx_symbols(",".join(tdx_symbols))
+    service = _build_service(db_path)
+    cases: list[dict[str, Any]] = []
+    for tdx_symbol in normalized_symbols:
+        issuer_id, security_id, source_id, _code6 = _derive_ids(tdx_symbol)
+        try:
+            case = run_value_case(
+                service=service,
+                tdx_symbol=tdx_symbol,
+                issuer_id=issuer_id,
+                security_id=security_id,
+                source_id=source_id,
+                start_date=start_date,
+                end_date=end_date,
+                vipdoc_path=vipdoc_path,
+                entry_hint=0.0,
+            )
+        except Exception as exc:  # keep the batch resilient without leaking exception text
+            case = {
+                "status": "failed",
+                "tdx_symbol": tdx_symbol,
+                "reason": "value_case_execution_error",
+                "error_type": type(exc).__name__,
+            }
+        case.setdefault("tdx_symbol", tdx_symbol)
+        cases.append(case)
+
+    rollup = {"realized": 0, "missed": 0, "mixed": 0, "pending": 0, "other": 0, "failed": 0}
+    returns: list[float] = []
+    for case in cases:
+        if case.get("status") != "passed":
+            rollup["failed"] += 1
+            continue
+        verdict = str((case.get("performance") or {}).get("realization_status", "")).strip().lower()
+        if verdict in rollup:
+            rollup[verdict] += 1
+        else:
+            rollup["other"] += 1
+        ret = (case.get("performance") or {}).get("event_window_return")
+        if isinstance(ret, (int, float)):
+            returns.append(float(ret))
+    passed = [c for c in cases if c.get("status") == "passed"]
+    avg_return = round(sum(returns) / len(returns), 6) if returns else None
+    if len(passed) == len(cases):
+        status = "passed"
+    elif passed:
+        status = "partial"
+    else:
+        status = "failed"
+    return {
+        "status": status,
+        **_artifact_metadata(),
+        "usage_boundary": "paper_only_analysis_feedback_value_case_no_broker_no_live_execution",
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "broker_connected": False,
+        "symbol_count": len(normalized_symbols),
+        "passed_count": len(passed),
+        "verdict_rollup": rollup,
+        "average_event_window_return": avg_return,
+        "interpretation": (
+            "batch scored analysis calls against real local prices; "
+            "verdict_rollup shows how many directional calls were realized vs missed"
+        ),
+        "cases": cases,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default="", help="SQLite state DB path for in-process mode (empty=in-memory)")
     parser.add_argument("--tdx-symbol", default="sz000001", help="e.g. sz000001 (Ping An Bank)")
+    parser.add_argument("--symbols", default=None, help="Comma-separated tdx symbols for batch mode, e.g. sz000001,sh600519")
     parser.add_argument("--issuer-id", default="issuer_valuecase_pingan")
     parser.add_argument("--security-id", default="sec_valuecase_000001")
     parser.add_argument("--source-id", default="public_eod_market_data")
@@ -229,21 +359,40 @@ def main() -> None:
     parser.add_argument("--output", default=str(ROOT / "artifacts" / "value-case" / "analysis-feedback-loop.json"))
     args = parser.parse_args()
 
-    result = run_value_case(
-        db_path=args.db,
-        tdx_symbol=args.tdx_symbol,
-        issuer_id=args.issuer_id,
-        security_id=args.security_id,
-        source_id=args.source_id,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        vipdoc_path=args.vipdoc_path,
-        entry_hint=args.entry_hint,
-    )
+    if args.symbols is not None:
+        try:
+            symbols = parse_tdx_symbols(args.symbols)
+        except ValueError as exc:
+            parser.error(str(exc))
+        result = run_value_case_batch(
+            db_path=args.db,
+            tdx_symbols=symbols,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            vipdoc_path=args.vipdoc_path,
+        )
+    else:
+        result = run_value_case(
+            db_path=args.db,
+            tdx_symbol=args.tdx_symbol,
+            issuer_id=args.issuer_id,
+            security_id=args.security_id,
+            source_id=args.source_id,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            vipdoc_path=args.vipdoc_path,
+            entry_hint=args.entry_hint,
+        )
+        result = {**result, **_artifact_metadata()}
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    print(json.dumps({"status": result.get("status"), "output": str(output_path)}, ensure_ascii=False))
+    summary = {"status": result.get("status"), "output": str(output_path)}
+    if "verdict_rollup" in result:
+        summary["verdict_rollup"] = result["verdict_rollup"]
+        summary["passed_count"] = result.get("passed_count")
+        summary["average_event_window_return"] = result.get("average_event_window_return")
+    print(json.dumps(summary, ensure_ascii=False))
 
 
 if __name__ == "__main__":

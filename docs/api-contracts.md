@@ -1,5 +1,12 @@
 # 接口契约
 
+- Status: active
+- Owner group: Platform and Quality
+- Last updated: 2026-07-17
+- Related tasks: T-581, T-582, T-583, T-584, T-585, T-586, T-587, T-588, T-589
+- Scope: HTTP API contracts, authorization boundaries, and paper-only research workflows
+- Non-goals: real broker connectivity, automatic order execution, or treating local evidence as non-local release evidence
+
 ## 1. 目标
 
 定义工程实现的最小接口边界，保证前后端、数据、研究和治理模块能够并行开发。
@@ -28,6 +35,25 @@
 ```
 
 ## 4. 核心接口
+
+### 4.0 动态资产配置研究 API
+
+以下接口统一返回 `paper_only=true`、`live_execution_allowed=false`、`broker_connected=false`。它们只生成研究仓位与纸面记录，不生成 execution intent、订单或券商调用。
+
+- `GET /api/dynamic-allocation/current`：按 `as_of` 读取当时可用 vintage，返回八因子、五状态、目标仓位、Kelly/风险上限、数据健康与解释。`kelly_input` 披露输入来自 `explicit` 或 `estimated`、方法、样本区间/数量、预期收益、波动率、置信收缩和 observation IDs；显式输入必须同时包含 `expected_return` 与 `volatility`，禁止与估计值拼接。关键因子缺失时返回 `ready=false` 和空目标仓位，不填充中性分。
+- `POST /api/dynamic-allocation/evaluate`：执行同一 PIT 评估并幂等保存决策。记录包含 observation IDs、factor contributions、config hash、模型版本、最终限制来源和 `PaperDecisionSnapshot`。
+- `GET /api/dynamic-allocation/history`：返回已保存决策；支持 `limit`。
+- `GET /api/dynamic-allocation/data-health`：返回 coverage、freshness、release/vintage 和质量阻断状态；支持 `as_of` 与 `series_ids`。
+- `POST /api/dynamic-allocation/observations`：接收配置注册过的 PIT observation；自然键不可变，重复写入幂等，冲突显式计数。
+- `POST /api/dynamic-allocation/backtests`：执行信号 `t` 在 `t+1` 生效的纸面回测并保存结果，输出 CAGR、年化收益、最大回撤、Sharpe、Sortino、Calmar、胜率、换手和四类基准。
+- `GET /api/dynamic-allocation/backtests`：列出可查看的回测运行摘要，Dashboard 默认选择最新运行；支持 `limit`。
+- `GET /api/dynamic-allocation/backtests/{run_id}`：读取已保存回测。
+
+写接口只允许系统、研究、数据、平台和风险角色；CEO 不能直接触发动态仓位写入。Dashboard 只通过这些 API 读取数据，不直连状态库。
+
+T-589 公开数据回填把 `source_uri` 和 `rights_tag` 写入 observation；决策快照中的当前数据行保留这些字段。`rights_tag` 至少包含 `vintage_method`、`release_date_method`、`backtest_eligible`、`proxy`、`formula`、`upstream` 和 `storage_sampling`。当前公开历史回填固定为 `backtest_eligible=false`，API 不得将其描述为真实历史 PIT 回测输入。即使因子分数可计算，关键 Data Health 缺失、过期或质量阻断也必须令 `ready=false`。
+
+未提供显式 Kelly 输入时，T-590 仅从截至 `as_of` 已可用的 SPY `return_3m` 中选择 3/6/9/12 月季度末记录，构造最近 10 年非重叠样本。默认至少 24 个样本、预期收益上限 12%、波动率下限 8%、置信收缩 35%、Quarter Kelly；参数全部位于 `config/dynamic_allocation.yaml`。当前修订版数据只允许支持当前纸面裁剪，不能据此声称历史样本外收益。
 
 ### 4.1 数据接入
 

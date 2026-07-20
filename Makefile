@@ -1,12 +1,24 @@
-.PHONY: local-ci check-handoffs
+PYTHON ?= python3
+
+.PHONY: local-ci check-handoffs check-doc-metadata artifact-audit milestone-candidate
 
 local-ci:
-	python3 -m py_compile app/*.py tests/*.py scripts/*.py
-	python3 -m unittest discover -s tests
-	python3 scripts/ui_static_check.py
-	python3 scripts/security_check.py .
-	python3 scripts/check_markdown_links.py
-	python3 scripts/check_handoffs.py
+	$(PYTHON) -m py_compile app/*.py tests/*.py scripts/*.py
+	$(PYTHON) -m unittest discover -s tests
+	$(PYTHON) scripts/ui_static_check.py
+	$(PYTHON) scripts/security_check.py .
+	$(PYTHON) scripts/check_markdown_links.py
+	$(PYTHON) scripts/check_handoffs.py
+	$(PYTHON) scripts/check_doc_metadata.py
 
 check-handoffs:
-	python3 scripts/check_handoffs.py
+	$(PYTHON) scripts/check_handoffs.py
+
+check-doc-metadata:
+	$(PYTHON) scripts/check_doc_metadata.py
+
+artifact-audit:
+	$(PYTHON) scripts/local_artifact_retention.py --target all --output /tmp/ai-quant-artifact-audit.json
+
+milestone-candidate:
+	$(PYTHON) scripts/local_milestone_candidate.py

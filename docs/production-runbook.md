@@ -66,6 +66,7 @@ python3 scripts/staging_vision_gate_acceptance.py http://127.0.0.1:8000 --record
 关键产物是每次运行目录里的 `daily-update-YYYY-MM-DD.json`：
 
 - `summary.market_data` 记录 A/U 最新日期、行数增量、typed-only K 线存储和旧 JSONB 记录数。
+- T-602 后 `ai_quant.market_data_bars` 只保存结构化行情、payload key mask、非重复扩展字段和权限策略引用；完整 `payload`/`rights_tag` 由 `ai_quant.market_data` 兼容视图重建。schema 迁移、停机、备份、回滚和 cleanup 命令见 `docs/postgresql-migrations.md`。
 - `summary.actionable_insight` 记录今日可读研究摘要、异动标的、研报证据公司数和质量门禁。
 - `summary.latency` 记录关键 API 的最慢 probe 和阈值。
 - `artifact_manifest` 列出本次所有 artifact 的存在性、状态和大小。
@@ -270,6 +271,7 @@ python3 scripts/production_closure.py https://staging.example.internal \
 ```
 
 `scripts/production_closure.py` 不生成或伪造生产证据，只消费真实 staging/production artifact URI。manifest 必须包含 9 个 readiness check 的外部归档 evidence URI、storage/security/observability/UI/deployment 报告 payload、已冻结的数据源类别，以及当前生产闭环实际使用的免费 A 股 connector；本机路径、样例 artifact、收费/商业授权数据源、未纳入冻结集合的 connector 会在回填前被拒绝。
+本机 `pg_dump/pg_restore` 演练按当前数据量运行，单步默认超时由 `AI_QUANT_BACKUP_RESTORE_TIMEOUT_SECONDS=1800` 控制；容器内外都有超时保护，失败路径会清理临时 dump 和临时恢复库。大库需要更长窗口时必须显式记录调整值，不能跳过恢复验证后回填通过状态。
 `scripts/production_task_closure_audit.py` 的 `blocked_external_evidence` 表示代码、路由、测试和验收脚本已存在，但仍缺真实外部 artifact；它不能替代 evidence package 校验，也不能作为发布签批证据。
 任务审计输出会给出 `needs_code_work_count`、`blocked_external_evidence_count`、`needs_code_work_task_ids` 和 `blocked_external_evidence_task_ids`，用于区分还要继续开发的任务与只等待真实证据归档的任务；目标完成审计输出会给出 `failed_requirement_ids`、`blocked_requirement_ids` 和 `open_requirement_ids`，用于发布门禁直接判断卡点。`blocked_requirement_ids` 中仍包含 `R3` 或 `R6` 时，说明缺真实 staging/production evidence、artifact inventory 或 release gate 通过结果，不能执行任务状态 finalize。
 发布门禁输出会给出 `stage_count`、`passed_stage_count`、`failed_stage_count` 和 `failed_stage_names`，用于 CI/签批系统直接定位失败阶段；`failed_stage_count>0` 时不要继续生成发布签批记录。
@@ -282,7 +284,7 @@ python3 scripts/production_closure.py https://staging.example.internal \
 bash scripts/local_staging_stack.sh
 ```
 
-个人本机长期使用建议直接跑本机生产入口。它会先设置一组不易冲突的宿主机端口，再调用完整 staging 验收，随后生成 `artifacts/local-production-audit.json`；若 `/api/health` 显示 LLM gateway 和 PaddleOCR-VL 均已配置，还会生成 `artifacts/local-ai-capability-acceptance.json`。该入口默认用 `AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS=5000` 和 `AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS=5000` 给本机冷启动和容器依赖初始化留余量；需要更严格时可在运行前显式导出更小阈值。需要跳过真实 AI smoke 时设置 `AI_QUANT_LOCAL_PRODUCTION_SKIP_AI_ACCEPTANCE=true`。
+个人本机长期使用建议直接跑本机生产入口。它会先设置一组不易冲突的宿主机端口，再调用完整 staging 验收，随后生成 `artifacts/local-production-audit.json`；若 `/api/health` 显示 LLM gateway 和 PaddleOCR-VL 均已配置，还会生成 `artifacts/local-ai-capability-acceptance.json`。该入口默认用 `AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS=5000` 和 `AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS=5000` 保护本机交互请求；仅对 Neo4j、Qdrant、OTel、OpenLineage 和 MLflow 的明确外部同步/导出端点使用 `AI_QUANT_STAGING_CAPACITY_BATCH_THRESHOLD_MS=60000`，并对 demo fixture、DAG、模型和 lineage 的验收初始化使用 `AI_QUANT_STAGING_CAPACITY_SETUP_THRESHOLD_MS=20000`。批处理和 setup 阈值不会覆盖搜索、图谱查询、健康检查或模拟执行；需要更严格时可分别调小对应阈值。需要跳过真实 AI smoke 时设置 `AI_QUANT_LOCAL_PRODUCTION_SKIP_AI_ACCEPTANCE=true`。
 
 ```bash
 bash scripts/local_production_stack.sh

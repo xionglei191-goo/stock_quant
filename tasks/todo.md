@@ -26,18 +26,262 @@
 
 项目经理口径：以下任务来自 2026-06-24 产品方向重定位，目标是把项目从组织/执行导向的旧叙事，调整为公司情报、市场综合分析、研报观点追踪、观察任务、分析结论和模拟反馈闭环。T-431 先完成文档重定位；T-432 至 T-436 已补齐最小可验收代码、API、UI 和测试闭环。
 
-- `TODO` T-572 修复 TDX 行情导入未提交落库
+- `DONE` T-572 修复 TDX 行情导入未提交落库
   - 对应：E3-US4；平台与质量
-  - 背景：`import_tdx_market_data` 只写内存 `store.market_data` dict，方法结尾缺少 `self.store.commit()`（库内其他数十个写方法均有 commit）。SQLite 落盘模式下，经该入口导入的 TDX 行情在进程结束后不落盘，导致复盘评分取不到行情、README 所述“TDX 行情已导入 SQLite”在落盘口径下不成立。
-  - 目标：在 `import_tdx_market_data` 非 dry-run 写入后显式 `self.store.commit()`；补一条单测验证导入后新进程可读回行情。
+  - 背景：审计确认 `import_tdx_market_data` 的行情注册和最终审计均经 `_audit()` 调用 `store.commit()`；实际持久化缺陷位于价值案例 CLI，`--db` 只设置未被 `SystemService()` 消费的环境变量，导致批量运行仍使用内存库。
+  - 目标：显式构造 `SystemService(SQLiteStore(db_path))`，并补充直接导入和真实 CLI 构造路径的 SQLite 重开回归，避免增加重复全库提交。
   - 验收：导入 sz000001 后重启进程 `store.market_data` 非空；`update_simulation_feedback_performance` 能取到该证券行情而非 `skipped_no_market_data`；全量单测通过。
+  - **已完成（本轮）**：两条 SQLite 重开回归通过；真实本地 TDX 运行落库 812 个行情点，独立重开后可读取 `missed` 反馈及复盘指标。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-572-tdx-value-case-closure.md`。
 
-- `TODO` T-573 端到端价值案例固化为可复跑脚本与 artifact
+- `DONE` T-573 端到端价值案例固化为可复跑脚本与 artifact
   - 对应：E5-US1, E6-US5, E8-US1；愿景扩展/生产化增强
   - 背景：2026-07-11 首次真正跑通完整闭环（分析结论 → 观察任务 → 纸面反馈 → 行情复盘评分），用真实通达信行情把“2023 年初看多平安银行”结论判定为 `missed`（区间收益 -13.36%、最大回撤 -23.5%），首次以真实行情证伪一个分析判断。但该闭环是在临时进程内脚本跑通的，跑完即丢，无留痕。
   - 目标：把该闭环固化为一个可复跑脚本（建主体/结论/观察/纸面反馈 → 触发 `performance/update` → 读回复盘结果），并导出 artifact（如 `artifacts/e2e-value-case/pingan-bull-2023.json`）作为“分析→反馈闭环真正产出验证结论”的实证；固定 paper-only、禁券商、禁实弹。
   - 依赖：T-572（行情需能落库，复盘才能取到数据）。
   - 验收：一条命令可复跑并产出带 `realization_status`、区间收益、最大回撤、复盘摘要的 artifact；结果可回链到结论/观察/反馈/行情；`live_execution_allowed=false`。
+  - **已完成（本轮）**：同一命令首次导入并持久化 812 个真实本地日线点，再次运行幂等通过；最新本地数据将该判断判定为 `missed`，区间收益 `-20.1888%`、最大回撤 `-40.396%`，并固定人工复盘动作及 paper-only/no-broker 边界。
+  - Artifact：`artifacts/value-case/analysis-feedback-loop.json`（local-only，不可用于非本机发布门）。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-572-tdx-value-case-closure.md`。
+
+- `DONE` T-574 端到端价值案例批量模式收口
+  - 对应：E5-US1, E6-US5, E8-US1；研究与 AI 工作流，平台与质量评审
+  - 目标：在 T-573 单标的价值案例基础上收口批量模式，固定股票代码校验、沪深 ID 隔离、部分失败状态、异常脱敏、本机 artifact 元数据和 paper-only 边界。
+  - 验收：聚焦测试覆盖全部成功、部分成功、全部失败、非法/重复代码、收益汇总、持久化重跑和 CLI 单标的兼容；完整本机质量门通过。
+  - **已完成（本轮）**：批量代码固定小写规范化、严格校验、顺序去重、沪深 ID 隔离、`passed/partial/failed` 汇总、异常脱敏和 local-only artifact 元数据；新增 9 项聚焦测试。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-574-value-case-batch-hardening.md`。
+
+- `DONE` T-575 维护风险与权威文档重基线
+  - 对应：E8-US2, E9-US2；项目经理 / 发布协调，治理与平台评审
+  - 目标：统一项目元数据、测试隔离说明、活动风险登记、文档索引和 SystemService 模块化 ADR；保留包名兼容性并分离本机产品风险与非本机外部证据依赖。
+  - 验收：TOML、Markdown 链接、handoff 校验和 `git diff --check` 通过；不改变 API、schema、UI 或 paper-only/no-broker 边界。
+  - **已完成（本轮）**：产品描述、测试隔离说明、权威文档元数据、活动风险/兼容风险/外部证据依赖分层和模块化 ADR 已统一；兼容包名保持不变。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-575-maintenance-risk-rebaseline.md`。
+
+- `DONE` T-576 workflow / orchestration 测试机械拆分
+  - 对应：E8-US2, E9-US2；平台与质量，研究与 AI 工作流评审
+  - 目标：把 workflow/orchestration 测试从 `tests/test_system.py` 迁入聚焦测试模块，保持测试名、发现数量、环境隔离和行为不变，为有状态领域提取建立独立回归面。
+  - 验收：聚焦模块和全量单测通过；拆分前后测试总数不减少；生产代码不变。
+  - **已完成（本轮）**：4 个连续 workflow/orchestration 测试迁入 `tests/test_workflow_service.py`，方法 AST 保持一致，原 319 项系统测试拆分为 315+4，另新增领域/facade 等价测试。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-576-workflow-test-split.md`。
+
+- `DONE` T-577 workflow reporting 有状态领域提取
+  - 对应：E8-US2, E9-US2；平台与质量，研究与 AI 工作流评审
+  - 依赖：T-576。
+  - 目标：新增显式 store 注入的 workflow reporting 领域模块，迁移只读 run/SLA/schedule/dependency/lineage/queue/backfill preview 逻辑，`SystemService` 保持兼容 facade。
+  - 验收：领域模块与 facade 等价回归、golden API 和完整本机质量门通过；handoff 包含 SystemService Growth Freeze Review。
+  - **已完成（本轮）**：新增显式 store 注入的 `workflow_reporting.py`，迁移只读 run/SLA/schedule/dependency/lineage/queue/backfill preview；执行、审计和 mutation 保持在 facade；`app/services.py` 从 33499 行降至 32282 行。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-577-workflow-reporting-extraction.md`。
+
+- `DONE` T-578 本机产物保留治理
+  - 对应：E8-US2, E9-US2；平台与质量，项目经理 / 发布协调评审
+  - 目标：把浏览器临时 profile 移出 `artifacts/`，新增默认 dry-run 的本机产物审计/保留工具和 `make artifact-audit`；保护 Git tracked、example、当前引用证据和持久数据。
+  - 验收：默认运行零删除，显式 execute 有安全护栏；本轮只生成候选清单，不删除现有约 2.3 GB 本机产物。
+  - **已完成（本轮）**：浏览器 profile 改用唯一临时目录并在退出时清理；新增 tracked/reference/symlink/保留期保护的 retention CLI 和 `make artifact-audit`。首次 dry-run 发现 601 个目录、547 个候选、删除 0。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-578-local-artifact-retention.md`。
+
+- `DONE` T-579 权威文档元数据门禁
+  - 对应：E8-US2, E9-US2；平台与质量，项目经理 / 发布协调评审
+  - 依赖：T-575。
+  - 目标：对少量权威文档校验标准元数据和合法状态，并接入 `make local-ci`，不批量改写历史材料。
+  - 验收：valid/missing/invalid 聚焦测试及完整本机质量门通过。
+  - **已完成（本轮）**：新增五份权威文档的标题、必填元数据和合法状态校验，接入 `make local-ci`，并覆盖 valid/missing/invalid 三类回归。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-579-doc-metadata-gate.md`。
+
+- `DONE` T-580 本机临时产物实际清理
+  - 对应：E8-US2, E9-US2；平台与质量，项目经理 / 发布协调评审
+  - 目标：在 T-578 dry-run 和安全护栏基础上，实际删除满足保留规则的 Chromium profile 与 staging UI 临时目录，不触碰 Git tracked、example、当前引用证据、符号链接或持久数据。
+  - **已完成（本轮）**：执行前发现 605 个目录、547 个符合条件；实际删除 547 个并回收 2280372239 bytes（约 2.12 GiB）。清理后发现 58 个受保护目录、可清理数为 0；`artifacts/` 约 285 MB，`data/artifacts/` 约 25 MB。
+  - 验收：执行报告 `status=passed`、`deleted_count=547`；清理后 dry-run `eligible_count=0`；Git tracked artifact 模板和工作区源文件状态保持不变。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-580-local-artifact-cleanup.md`。
+
+- `DONE` T-581 动态资产配置与风险控制系统架构
+  - 对应：E5-US1, E6-US5, E8-US1；愿景扩展/生产化增强
+  - 目标：把动态资产配置研究报告转成适配现有仓库的 PIT 数据、因子、状态识别、仓位、风险、回测、API 和 Streamlit 页面架构，固定 paper-only/no-broker 边界。
+  - 已完成：确定 `app/dynamic_allocation/` 领域包、typed time-series + records 存储拆分、`available_at`/vintage 查询语义、可解释模型契约、Streamlit API consumer 边界和 T-582 至 T-588 实施顺序。
+  - 验收：架构文档覆盖目录、数据库、核心类、开发路线和 Phase 1 计划；文档/handoff 校验通过。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-581-dynamic-allocation-architecture.md`。
+
+- `DONE` T-582 动态配置 Phase 1 point-in-time 数据底座
+  - 对应：E3-US4, E5-US1；数据与证据，平台与质量评审
+  - 目标：实现 YAML 配置、PIT observation DTO、SQLite/PostgreSQL typed repository、现有行情 adapter、fixture/provider 接口、数据健康与审计；不计算因子、不训练模型。
+  - 依赖：T-581。
+  - 验收：`available_at` 和 vintage 防穿越测试、幂等导入、SQLite/PostgreSQL contract、数据 freshness/coverage 输出和 paper-only 边界通过。
+  - 已完成：YAML 注册表、不可变 vintage、SQLite/PostgreSQL repository、fixture/行情 adapter、关键质量标记阻断和数据健康输出已落地。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-582-pit-data-foundation.md`。
+
+- `DONE` T-583 动态配置 Phase 2 八类可解释因子
+  - 对应：E5-US1, E6-US3；研究与 AI 工作流，数据与证据评审
+  - 目标：实现估值、趋势、波动、信用、杠杆、宏观、流动性和宽度因子，统一“高分支持股票风险”方向，输出 factor dataframe、贡献和覆盖率。
+  - 依赖：T-582。
+  - 验收：历史百分位仅用当时数据；关键缺失不静默填中性；因子结果可回链 observation/version/config。
+  - 已完成：八类因子统一为高分支持风险，组件权重、方向、时效和覆盖门槛进入版本化 YAML；输出贡献、来源 observation 和警告。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-583-explainable-factors.md`。
+
+- `DONE` T-584 动态配置 Phase 3 规则状态、五档仓位与首次回测
+  - 对应：E5-US1, E6-US5, E8-US1；研究与 AI 工作流，平台与质量评审
+  - 目标：实现五状态规则模型、10/30/50/70/90 仓位、调仓缓冲和 walk-forward 回测，并与四个基准比较。
+  - 依赖：T-583。
+  - 验收：输出完整收益/回撤/风险/换手指标，覆盖 2000/2008/2020/2022；ETF 上市前 proxy 明示且无未来函数。
+  - 已完成：五状态、滞后/驻留、五档仓位、月度调仓、信号下一期生效、完整指标、四基准与压力年份切片已实现。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-584-rule-backtest.md`。
+
+- `DONE` T-585 动态配置 Phase 4 机器学习对照
+  - 对应：E6-US3, E8-US1；研究与 AI 工作流，平台与质量评审
+  - 目标：加入 HMM/Markov switching、Ridge/Logistic 和 XGBoost/LightGBM 候选，与规则模型做固定 walk-forward 样本外对照和解释性检查。
+  - 依赖：T-584。
+  - 验收：复杂模型只有在跨窗口稳定提高风险调整收益时才可提升；否则规则模型保持默认。
+  - 已完成：Markov 状态近似、Ridge/Logistic、XGBoost/LightGBM 候选和严格扩展窗口晋级门已实现；默认仍为规则基线。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-585-ml-comparison.md`。
+
+- `DONE` T-586 动态配置 Phase 5 分数凯利与风险裁剪
+  - 对应：E6-US5, E8-US1；研究与 AI 工作流，治理安全合规评审
+  - 目标：实现 quarter/half Kelly、永久损失预算、资产/相关性上限和最终 min-cap 解释。
+  - 依赖：T-584；可与 T-585 解耦。
+  - 验收：禁止 full Kelly；输入分布不足时保守降级；最终仓位固定为 Kelly/risk/max cap 最小值。
+  - 已完成：Quarter/Half Kelly、永久损失/资产/相关性/质量上限和最终 min-cap 解释已实现；Full Kelly 被强制拒绝。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-586-fractional-kelly-risk.md`。
+
+- `DONE` T-587 动态配置 Phase 6 Streamlit 研究页面
+  - 对应：E5-US1, E8-US2；产品与 UI，平台与质量评审
+  - 目标：新增只消费 API 的 Streamlit 页面，并从现有 `/ui` 增加动态配置入口，展示当前状态、因子、目标仓位、历史、回测、回撤、数据 freshness 和风险警告。
+  - 依赖：T-584, T-586。
+  - 验收：真实 API 图表和明细表渲染、过滤/错误/空状态、窄屏、UI 静态与浏览器级验收通过。
+  - 已完成：API-only Streamlit 页面、最新回测选择、状态/因子/仓位/历史/回撤/数据质量/警告视图、加载/空/错误状态和 `/ui` 入口已实现。
+  - 浏览器验收：1440x1000 与 390x844 均为 4 个 Plotly、21 个表格、0 exception、0 横向溢出。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-587-streamlit-dashboard.md`。
+
+- `DONE` T-588 动态配置 Phase 7 纸面运行与复盘
+  - 对应：E6-US5, E8-US1；研究与 AI 工作流，治理安全合规评审
+  - 目标：定期生成目标仓位和决策快照，接入现有模拟反馈与审计，运行 6-12 个月后评估是否扩展 TLT/GLD；SQQQ 仍只允许战术研究。
+  - 依赖：T-587。
+  - 验收：每次决策可回查数据/因子/模型/风险/config；`paper_only=true`、`live_execution_allowed=false`、`broker_connected=false`，无券商和自动下单。
+  - 已完成：确定性 paper snapshot、PIT/因子回链、显式风险裁剪、JSONL 哈希链、幂等追加和防篡改回放已接入统一决策记录；CLI 默认 dry-run。
+  - 运营跟踪：6-12 个月真实纸面观察期从能力上线后开始积累，当前未伪造该时间证据；TLT/GLD 扩展评估仍须等观察窗口完成。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-588-paper-run.md`。
+
+- `DONE` T-589 动态配置公开数据接入与可运行闭环
+  - 对应：E3-US4, E5-US1, E8-US1；数据与证据，研究与 AI 工作流/平台与质量/治理安全合规评审
+  - 目标：接入免密官方公开宏观、信用、流动性、波动和杠杆数据，复用受治理的美国 EOD 行情，生成全部 38 个动态配置序列并完成当前纸面决策。
+  - 范围：公开数据 provider、显式代理派生、PIT/rights lineage、幂等回填 CLI、数据质量门、测试、运行证据和文档；不接券商、不下单、不将当前修订版回填冒充历史 vintage。
+  - 验收：38/38 序列有来源或代理披露，八因子均可解释且数据健康通过；当前决策可持久化并由 API/Streamlit 展示；网络失败可诊断；focused tests、`make local-ci`、Dashboard acceptance 和 handoff validation 通过。
+  - 已完成：FRED/Cboe/FINRA/Yahoo EOD 公开数据管道生成 38/38 序列，current-vintage/代理/公式/rights lineage 完整；同日缓存回填幂等且关键 Data Health 纳入决策门。2026-07-17 本机纸面状态为 `Late Cycle`，目标股票 50%（SPY 35%、QQQ 15%、SGOV 50%）。
+  - Handoff：`docs/agent-handoffs/2026-07-17-T-589-dynamic-allocation-public-data.md`。
+
+- `DONE` T-590 动态配置可审计 Kelly 输入与每日纸面运营
+  - 对应：E5-US1, E6-US5, E8-US1；研究与 AI 工作流，平台质量/治理安全/项目经理评审
+  - 目标：在显式输入缺失时，用非重叠 SPY 季度收益构造保守、配置化、可回链的 Kelly 输入；统一每日公开数据刷新、决策持久化、哈希账本和运营报告。
+  - 验收：显式 `expected_return`/`volatility` 必须成对且优先；估计至少 24 个样本并披露方法/区间/上限/下限/置信收缩；严格运行拒绝 missing/source error/conflict；桌面和移动端显示风险裁剪且无异常；完整本机门禁通过。
+  - **已完成（本轮）**：40 个非重叠季度样本得到 12% 封顶预期收益和 16.96% 年化波动，经 35% 收缩与 Quarter Kelly 形成 36.52% 股票上限；当前 Late Cycle 配置为 SPY 25.56%、QQQ 10.95%、SGOV 63.48%。真实每日命令两次运行均为 38/38 新鲜、11,902 条幂等、零冲突，第二次未重复追加账本。
+  - Artifact：`artifacts/dynamic-allocation/daily-run-latest.json`（local-only，不声称财务收益，不可用于非本机发布门）。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-590-kelly-daily-operation.md`。
+
+- `DONE` T-591 动态配置纵向纸面运营与阶段门禁
+  - 对应：E6-US5, E8-US1, E9-US2；研究与 AI 工作流，平台质量/治理安全/项目经理评审
+  - 目标：把 T-588/T-590 的 6-12 个月观察要求转成可持续运营流程，汇总每日纸面记录、数据健康、运行失败和阶段性绩效，并固定 3/6/12 个月复核门。
+  - 范围：本机只读运营汇总、显式执行入口、安全调度 handoff、阶段门禁、聚焦测试和 local-only 证据；不伪造已流逝时间，不宣称投资收益，不接券商或订单执行。
+  - 验收：少样本明确输出 `accumulating`；3/6/12 月门按真实时间跨度和有效记录判断；账本损坏、运行失败或数据缺口可见；默认命令只读；paper-only/no-broker 边界有回归。
+  - 已完成：新增只读纵向聚合、月度运行/数据健康、3/6/12 月门、严格失败脱敏归档和 print-only systemd user timer 模板；失败保持非零退出且不追加纸面账本。
+  - 当前证据：真实账本 1 条、完成日报 1 条、38/38 fresh，全部阶段门为 `awaiting_elapsed_time`，`efficacy_proven=false`；动态配置 75 tests 全通过。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-591-dynamic-allocation-longitudinal-operations.md`。
+
+- `DONE` T-592 `/ui` 前端真实运行时模块化（首个运行时 slice）
+  - 对应：E7-US1, E8-US2, E9-US2；产品与 UI，平台与质量评审
+  - 目标：在 T-498 scaffold 基础上完成首个有意义的运行时模块提取，减少 `app/static/index.html` 内联所有权，同时保持 `/ui` DOM、API、导航和浏览器行为兼容。
+  - 范围：ES module 真实加载、一个或多个连贯 helper/domain slice、静态契约和浏览器验收；不改变 API URL/payload 或个人研究主流程。
+  - 验收：manifest 不再是 `scaffold-only`；模块由浏览器实际 import；被迁移逻辑不在 inline runtime 重复维护；UI 静态检查与相关浏览器验收通过。
+  - 已完成：`helpers.mjs` 接管导航/工作区监听器，`/ui_modules/*.mjs` 以 JS MIME 安全提供；manifest 明确为 `runtime-partial`，剩余 dashboard/company/graph/market/admin 未虚报完成。
+  - 浏览器证据：隔离 SQLite 的 Chromium 桌面/移动矩阵 16/16 通过，module GET 200，DOM runtime marker 存在，console error 为 0。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-592-ui-runtime-modularization.md`。
+
+- `DONE` T-593 `tests/test_system.py` 领域测试继续拆分
+  - 对应：E8-US2, E9-US2；平台与质量，研究与 AI 工作流评审
+  - 目标：继续按领域机械迁移超大系统测试，降低定位和并行修改成本，不改变测试行为或生产代码。
+  - 范围：从当前 `tests/test_system.py` 迁出连贯领域测试到 focused modules，并保留方法、断言、发现数量和配置隔离。
+  - 验收：迁移前后方法等价；全量发现数量不低于当前 423；聚焦模块和完整单测通过；无生产代码 diff。
+  - 已完成：39 个 full-knowledge-graph、graph quality center 和 enrichment runner 测试及 1 个私有夹具机械迁入 `tests/test_graph_quality.py`；AST 等价、零重复，聚焦 39/39 通过，总发现数保持 423。
+  - 规模变化：`tests/test_system.py` 从 21,929 行/315 tests 降至 20,613 行/276 tests；新领域模块 1,334 行/39 tests。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-593-system-test-domain-split.md`。
+
+- `DONE` T-594 PM 里程碑收口与权威状态同步
+  - 对应：E8-US2, E9-US2；项目经理 / 发布协调，全组评审
+  - 目标：集成 T-591 至 T-593，修正路线图、风险登记、文档索引和完成度证据漂移，并把当前共享 dirty worktree 收敛成可提交的本机里程碑候选。
+  - 范围：任务状态、风险生命周期、文档导航、handoff、完成度审计和完整本机质量门；本轮不代表非本机组织级发布，不创建真实外部 artifact URI。
+  - 验收：所有子任务 handoff 可复验；风险状态与已完成任务一致；当前完成度 artifact 刷新；`make local-ci PYTHON=.venv/bin/python`、handoff 和 diff 检查通过；剩余外部阻塞项保持诚实。
+  - 已完成：T-591 至 T-601 全部收口；本机生产审计 `passed/ready_for_launch`；最终 450 tests、UI static、381 文件安全、237 链接、178 handoffs、5 canonical docs 全绿；17 个非本机外部证据项继续 BLOCKED。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-594-pm-milestone-closure.md`。
+
+- `DONE` T-595 `SystemService` 下一批有状态领域提取
+  - 对应：E8-US2, E9-US2；平台与质量，研究与 AI 工作流/治理安全评审
+  - 目标：按模块化 ADR 选择下一个高内聚、只读优先的 store-backed 领域，从 32k 行 facade 继续提取，并保留公共方法兼容。
+  - 依赖：T-593 提供更清晰的领域回归面。
+  - 验收：显式窄依赖注入；领域/facade 等价回归和 golden API 通过；handoff 包含完整 SystemService Growth Freeze Review；不混入 schema/UI/业务功能变更。
+  - 已完成：新增 store-only `graph_traceability.py`，`SystemService.graph_traceability_report()` 保持同签名单行 facade；4 个私有遍历 helper 迁出，`services.py` 从 32,282 降至 32,137 行。
+  - 回归：graph focused 40/40、facade parity/原 traceability API/golden API 3/3、迁移方法 AST 等价、安全/UI static/handoff/diff checks 通过。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-595-systemservice-stateful-extraction.md`。
+
+- `DONE` T-596 本机里程碑可重复集成门
+  - 对应：E8-US2, E9-US2；平台与质量，项目经理 / 发布协调评审
+  - 目标：把 `make local-ci`、当前完成度审计、artifact dry-run 和 dirty-worktree inventory 组合成一个无破坏、可重复的里程碑候选检查入口，避免任务状态先于可交付基线。
+  - 依赖：T-591 至 T-594。
+  - 验收：默认不提交、不推送、不删除；输出本机候选报告，明确 tracked/untracked、测试、handoff、文档、审计新鲜度和 non-local release 边界；失败可定位到具体 gate。
+  - 已完成：最终候选 `status=passed`、`ready_for_commit_review=true`、3/3 gates 通过；完成审计 achieved/local ready，retention dry-run 删除 0；清点 32 modified + 58 untracked，不执行 commit/push/delete。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-596-local-milestone-candidate-gate.md`。
+
+- `DONE` T-597 知识图谱真实数据密度与大图容量验证
+  - 对应：E3-US1, E5-US1, E7-US1, E8-US2；数据与证据，产品与 UI/平台质量评审
+  - 目标：承接 T-566 明确保留的真实文档/事件/观点/证据交叉链接缺口，并量化 SVG 继续使用或迁移 Canvas/WebGL/虚拟化的容量触发点。
+  - 验收：不以 seed/fixture 冒充真实数据；形成多主体真实层覆盖、跨层链接率和节点/边规模性能曲线；只有触发阈值被真实样本突破时才引入新的渲染技术。
+  - 已完成：只读审计确认 AAPL 2,375 条 governed + 9 条 fixture，真实层覆盖 2/9；DEMO 全为 fixture，000001 无层记录，当前不具备多主体真实大图容量证明。
+  - 决策：保留 SVG；250/500 启用裁剪或虚拟化，750/1500 或连续三次低于 45 FPS 才评估 Canvas，3000/6000 或 Canvas 失败才评估 WebGL。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-597-graph-density-capacity.md`。
+
+- `DONE` T-598 动态配置纸面 NAV 与绩效复核契约
+  - 对应：E6-US5, E8-US1；研究与 AI 工作流，数据与证据/治理安全评审
+  - 目标：在首个 3 个月门到期前定义可审计的纸面 NAV、基准收益、回撤、换手、费用假设和复核决定字段，使运营连续性与投资有效性证据严格分离。
+  - 依赖：T-591；真实评价仍必须等待阶段门实际到期。
+  - 验收：信号次期生效、现金/ETF 价格来源、缺失交易日、费用与再平衡规则版本化；输出不能回填或伪造未来表现；阶段门仅在时间、覆盖和绩效证据同时满足时允许进入人工复核。
+  - 已完成：新增 `dynamic-allocation-paper-performance/v1` 与 next-session adjusted-close 方法，固定 XNYS session、来源/rights lineage、SGOV 现金、turnover/5bps 成本、SPY/60-40 基准、NAV/回撤和人工复核字段。
+  - 当前边界：真实窗口尚未到期，performance 保持 `null/not_proven`、`efficacy_proven=false`；动态配置 82 tests、编译、安全、文档和 handoff 门通过。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-598-paper-nav-performance-contract.md`。
+
+- `DONE` T-599 `/ui` dashboard 运行时模块提取
+  - 对应：E7-US1, E8-US2, E9-US2；产品与 UI，平台与质量评审
+  - 目标：沿用 T-592 动态 import 兼容模式，把 dashboard 的加载/渲染连贯 slice 从 inline runtime 迁入 `dashboard.mjs`，继续减少 `index.html` 单体所有权。
+  - 依赖：T-592。
+  - 验收：dashboard 模块真实执行且不重复内联维护；现有全局调试/acceptance API 兼容；隔离 SQLite 的桌面/移动 Chromium 场景、静态契约、console 和 MIME 检查通过；manifest 继续准确列出未迁移域。
+  - 已完成：`dashboard.mjs` 接管 data-health 状态、动作、行/摘要渲染和加载五个函数；inline 仅保留兼容 wrapper，manifest runtime 为 dashboard/helpers。
+  - 浏览器证据：隔离 SQLite Chromium 桌面/移动 16/16、console 0、module GET 200、DOM marker `dashboard,helpers`；静态/Node/compile/focused/diff/handoff 通过。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-599-dashboard-runtime-module.md`。
+
+- `DONE` T-600 `/ui` latest-analysis dashboard slice 提取
+  - 对应：E7-US1, E8-US2, E9-US2；产品与 UI，平台与质量评审
+  - 目标：继续把 `renderLatestAnalysis` 及其稳定、内聚的展示 helper 迁入 `dashboard.mjs`，保留薄兼容 wrapper 和既有 DOM/API 行为。
+  - 依赖：T-599。
+  - 验收：实现所有权不在 inline 重复；fixture-driven render 和隔离 SQLite 浏览器矩阵通过；console 0、模块 MIME/marker/manifest 准确；不顺带迁移 company/graph/market/admin。
+  - 已完成：`renderLatestAnalysis` 164 行实现迁入 `dashboard.mjs`，inline 保留 3 行兼容 delegate；fixture 9/9、Chromium 桌面/移动 16/16、console 0、静态/MIME/marker/handoff 门通过。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-600-latest-analysis-runtime-slice.md`。
+
+- `DONE` T-601 本机 staging 幂等与容量门槛分层
+  - 对应：E8-US2, E9-US2；平台与质量，项目经理 / 发布协调、治理安全评审
+  - 目标：修复 PostgreSQL 大数据量下重复运行 demo full-flow 的冲突，并把交互请求与外部同步/导出批处理请求的容量阈值显式分离，使本机生产验收可重复且不会用放宽全局阈值掩盖交互回归。
+  - 范围：`seed_demo_full_flow` 的既有后端存在性查询、staging acceptance 容量阈值映射、本机 stack 参数、聚焦回归、运行手册和 handoff。
+  - 非目标：不优化或清理现有 2800 万行市场数据，不改变 schema，不连接真实 broker，不放开自动交易，不把本机证据冒充非本机发布证据。
+  - 验收：重复 demo seed 在 direct-query store 下不重复写市场数据；交互默认阈值保持不变，批处理阈值仅覆盖明确列出的同步/导出端点；聚焦测试、真实本机 staging 验收和 handoff 检查通过。
+  - 已完成：修复 PostgreSQL demo seed 幂等、审计日志全量重哈希、graph sync 重复全集合提交和产业关系重复扩展；交互/模拟 5 秒、setup 20 秒、明确 batch 60 秒分层。
+  - 真实证据：42GB/约 2,840 万行情数据下 staging acceptance 18/18、容量 breach 0；Neo4j 单端点优化到 2.24 秒；完整 pg_dump/restore 1,371.6 秒且 records/audit 数量一致；本机生产审计 `passed=true, ready_for_launch=true`，仍仅 local-only。
+  - Handoff：`docs/agent-handoffs/2026-07-18-T-601-staging-idempotency-capacity.md`。
+
+- `DONE` T-602 PostgreSQL 行情存储精简与完整迁移
+  - 对应：E8-US2, E9-US2；数据与证据，平台质量/治理安全/项目经理评审
+  - 目标：把约 2,836 万行情行的重复 `payload`/`rights_tag` 改为结构化列、扩展 payload 和不可变权限策略引用，移除经验证冗余的 security/date 索引，并保持 API、治理和 paper-only 运行契约兼容。
+  - 范围：精简 schema、共享行情读写 helper、可续跑迁移 runner、durable 备份、克隆演练、主库停机切换、存储审计、测试、运行文档和 local-only 证据。
+  - 非目标：不修改 `NUMERIC` 精度、不改变 HTTP/UI 契约、不接真实券商、不执行自动交易、不把本机迁移证据冒充非本机发布证据。
+  - 验收：新旧主键/标量/权限/payload 全量一致；优化后关系总大小不超过 22GB；核心查询计划和本机回归通过；删除旧表前存在 SHA-256 固定且完整恢复核对通过的 7 天备份。
+  - 已完成：恢复验证备份、全量克隆演练、主库 2,836 万行可续跑迁移、全量字段/权限/payload 一致性校验、原子切换、HTTP/存储/查询计划验收和旧表清理；定时器已恢复。
+  - 结果：关系总大小由 `45,041,180,672` bytes 降到 `16,853,549,056` bytes，减少 `28,187,631,616` bytes（62.6%，约 42GiB 到 16GiB）；五类核心查询均通过容量门槛，security history 热中位数由 0.471ms 改善到 0.432ms。
+  - 恢复点：`data/local/backups/postgres/ai_quant-20260719T015529Z.dump` 及 manifest 已完成真实 restore/count 核对，SHA-256 固定，保留至 2026-07-26；仅 local-only 且包含敏感数据库内容。
+  - Handoff：`docs/agent-handoffs/2026-07-19-T-602-market-data-storage-v2.md`。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
@@ -552,7 +796,7 @@
   - **已完成（本轮）**：调整为分类聚类、碰撞避让、软边界和更大安全边距，AAPL 验证结果为 29 节点、85 关系、0 重叠、0 贴边。
   - 验收：`python3 scripts/ui_static_check.py`；`python3 -m py_compile app/*.py tests/*.py scripts/*.py`；浏览器 AAPL 图谱布局量化检查。
 
-- `DONE` T-566 Obsidian 标准可探索知识网络升级
+- T-566 历史执行日志（最终状态与剩余边界见下方权威 T-566 条目）
   - 对应：E7-US1, E8-US2；愿景扩展/生产化增强
   - 背景：T-483/T-484/T-485 已有动态关系图谱，但用户反馈仍不像 Obsidian Graph View：AAPL 等中心公司仍容易呈放射状，默认裁剪和布局更像“公司中心视图”，不是可继续探索的知识网络。
   - 目标：把知识图谱从中心化可视化升级为 Obsidian 式可探索网络，支持社区化布局、边权驱动收敛、点击节点按需展开隐藏邻居、标签避让、隐藏邻居提示和更自然的全局/局部探索体验。

@@ -1,6 +1,6 @@
 {
-  "status": "scaffold-only",
-  "purpose": "T-498 frontend modularization map for future /ui extraction without changing current inline runtime behavior.",
+  "status": "runtime-partial",
+  "purpose": "T-599 incremental /ui runtime modularization while preserving existing DOM and API behavior.",
   "module_domains": [
     "dashboard",
     "company",
@@ -9,10 +9,20 @@
     "admin",
     "helpers"
   ],
-  "runtime_loaded": false,
+  "runtime_loaded": true,
+  "runtime_modules": [
+    "dashboard",
+    "helpers"
+  ],
+  "scaffold_modules": [
+    "company",
+    "graph",
+    "market",
+    "admin"
+  ],
   "preserve": {
     "ui_route": "/ui",
-    "dom_contract": "existing id/data-action attributes remain owned by app/static/index.html until extracted behind browser acceptance",
+    "dom_contract": "existing id/data-action attributes remain unchanged; helpers are imported by the main module script",
     "api_contract": "no API URL, method, or payload changes"
   }
 }

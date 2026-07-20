@@ -1,5 +1,12 @@
 # 公司情报与市场综合分析平台
 
+- Status: active
+- Owner group: PM / Release Coordination
+- Last updated: 2026-07-17
+- Related tasks: T-431, T-424, T-573, T-575, T-581, T-582, T-583, T-584, T-585, T-586, T-587, T-588, T-589, T-590, T-591, T-598
+- Scope: 产品定位、本机运行入口、数据边界与当前验收快照
+- Non-goals: 真实券商连接、自动下单、将本机证据声明为非本机生产发布证据
+
 本项目是一个本地优先的公司情报与市场综合分析平台。核心目标是为每只股票/公司建立结构化与非结构化结合的全天候数据库，支持公司画像、事件时间线、关系图谱、研报观点追踪、观察任务、分析结论记录和模拟反馈复盘。
 
 系统用于投资研究、证据整理和分析有效性验证，不连接真实券商，不做自动下单，也不是实时量化交易平台。既有的投委会、签批、执行意图和生产发布门禁能力保留为兼容/运维模块，但不再作为产品主叙事。
@@ -50,6 +57,77 @@ python3 -m py_compile app/*.py tests/*.py scripts/*.py
 make local-ci
 ```
 
+## 动态资产配置与风险控制
+
+该模块长期持有美国资产，但只输出 paper-only 目标仓位，不输出买卖指令。第一阶段资产池为 `SPY`、`QQQ`、`SGOV`，股票风险仓位限定为 `10%/30%/50%/70%/90%`。PIT 数据、八类因子、规则与 ML 对照、Fractional Kelly、walk-forward 回测和决策快照均保留解释与数据回链。
+
+安装研究与 Dashboard 依赖：
+
+```bash
+python3 -m pip install '.[dynamic-allocation-analysis,dynamic-allocation-ml,dynamic-allocation-dashboard]'
+```
+
+主 API 启动后，可单独启动 Streamlit 研究页面：
+
+```bash
+AI_QUANT_API_BASE_URL=http://127.0.0.1:8000 streamlit run app/dynamic_allocation/dashboard/app.py --server.port 8501
+```
+
+首次运行先接入官方免密公开数据并生成当前纸面决策：
+
+```bash
+python3 scripts/backfill_dynamic_allocation_public_data.py \
+  --market-start 2000-01-01 \
+  --persist-decision \
+  --output /tmp/dynamic-allocation-public-data.json
+```
+
+脚本接入 FRED、Cboe、FINRA 和项目已治理的 Yahoo EOD，要求 38/38 序列和关键 freshness 全部通过才返回成功。同一天重复运行读取本地原始响应缓存并保持幂等；缓存目录可用 `AI_QUANT_DYNAMIC_ALLOCATION_CACHE` 调整。免费源无法提供的历史 Forward PE、FCF Yield、专有 ISM 和 survivorship-safe 市场宽度使用明确命名的价格/工业生产代理，代理公式和 `backtest_eligible=false` 会进入 observation lineage。当前修订版回填只允许形成当前纸面决策，不能作为历史 walk-forward 的 PIT 证据。
+
+日常运行默认是只读预览；显式执行会刷新数据、持久化决策、追加 JSONL 哈希链并生成本机运营报告：
+
+```bash
+python3 scripts/dynamic_allocation_daily_run.py
+python3 scripts/dynamic_allocation_daily_run.py \
+  --execute \
+  --ledger data/local/dynamic-allocation-paper.jsonl \
+  --output artifacts/dynamic-allocation/daily-run-latest.json \
+  --history-dir artifacts/dynamic-allocation/daily-history
+```
+
+纵向运营报告默认只读，校验账本哈希链并按月汇总成功、失败和数据健康状态，同时显示 3/6/12 个月复核门；只有显式 `--execute --output` 才写盘：
+
+```bash
+python3 scripts/dynamic_allocation_operations_report.py \
+  --ledger data/local/dynamic-allocation-paper.jsonl \
+  --daily-report artifacts/dynamic-allocation/daily-run-latest.json \
+  --daily-reports artifacts/dynamic-allocation/daily-history \
+  --performance-input /absolute/path/to/forward-paper-performance.json
+```
+
+可选绩效输入必须符合 `dynamic-allocation-paper-performance/v1`，使用显式市场日历和 SPY/QQQ/SGOV adjusted-close 来源，仅计算决策发布后的次期纸面 NAV、基准、回撤、换手和费用。缺失开市日、缺价、未来数据或当前区间内才出现的信号都会阻断绩效门。即使绩效覆盖完整，仍需到期后的具名人工复核才能改变 `efficacy_proven`；当前记录不满足该条件。
+
+本机 systemd 用户级 timer 模板也默认只打印、不安装、不启用。必须提供绝对路径；显式 `--execute --install-dir` 只写 unit 文件，仍需人工审查后启用：
+
+```bash
+python3 scripts/dynamic_allocation_scheduler_template.py \
+  --project-root /absolute/path/to/sotck_quant \
+  --python /absolute/path/to/python \
+  --state-dir /absolute/path/to/sotck_quant/data/local \
+  --artifact-dir /absolute/path/to/sotck_quant/artifacts/dynamic-allocation
+```
+
+Kelly 输入优先使用调用方同时提供的 `expected_return` 与 `volatility`。未显式提供时，系统使用最近 10 年 SPY `return_3m` 的非重叠季度末样本；至少 24 个样本才可用，并披露收益上限、波动下限、置信收缩、样本区间和 observation lineage。该估计只用于当前纸面风险裁剪，不是收益保证，也不能替代真实历史 vintage 回测。
+
+已有决策快照也可单独校验或追加账本；只有显式 `--execute --output` 才写盘：
+
+```bash
+python3 scripts/dynamic_allocation_paper_run.py --input /path/to/decision.json
+python3 scripts/dynamic_allocation_paper_run.py --input /path/to/decision.json --execute --output data/local/dynamic-allocation-paper.jsonl
+```
+
+架构与接口说明见 `docs/dynamic-asset-allocation-architecture.md`、`docs/dynamic-allocation-operations.md` 和 `docs/api-contracts.md`。本机纸面记录不是非本机发布证据，且项目仍不连接券商、不自动下单。
+
 ## 公开基础信息回填
 
 本机生产闭环使用公开/本地来源补齐公司基础画像，不接真实券商、不做自动下单。全量回填行业、板块、估值快照和公司详情：
@@ -65,9 +143,9 @@ python3 scripts/company_basic_info_production_audit.py
 ```
 
 当前落库产物见 `artifacts/company-fundamentals-public-backfill-a.json`、`artifacts/company-fundamentals-public-backfill-u.json` 和 `artifacts/public-company-universe-scope.json`。A 股自动生产公司宇宙按当前公开公司信息命中结果收口；未命中的历史/异常 TDX 代码保留在证券目录，但退出自动产业链分析。
-A 股财务摘要已覆盖自动生产公司宇宙；美股 SEC companyfacts 已按 `missing-only` 批处理补齐到明确状态：`4945/5412` 个 US issuer 有财务摘要，`467/5412` 个明确标记为 SEC companyfacts 不可得或缺 CIK，未知缺口为 `0`。`company_basic_info_production_audit.py` 是本机生产基础信息门禁，当前输出 `ready_for_local_production_basic_info=true`。
+A 股财务摘要已覆盖自动生产公司宇宙；美股 SEC companyfacts 已按 `missing-only` 批处理补齐到明确状态。以下数量是 2026-07-17 对现有本机产物的文档重基线快照，不是实时指标：`4945/5412` 个 US issuer 有财务摘要，`467/5412` 个明确标记为 SEC companyfacts 不可得或缺 CIK，未知缺口为 `0`。复验来源为 `artifacts/company-fundamentals-public-backfill-u.json` 和 `scripts/company_basic_info_production_audit.py`；本机门禁当时输出 `ready_for_local_production_basic_info=true`。
 
-本机长期运行口径的最新闭环产物：
+本机长期运行口径的闭环产物快照（文档复核日期：2026-07-17；以产物内生成时间为实际新鲜度，不可作为非本机发布证据）：
 
 - `artifacts/source-governance-fill.json`：31 个来源治理覆盖率 `1.0`。
 - `artifacts/local-business-acceptance.json`：业务验收 `status=passed`、`failed_count=0`。

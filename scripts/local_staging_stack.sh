@@ -178,9 +178,12 @@ done
 python3 scripts/staging_acceptance.py \
   "$AI_QUANT_STAGING_URL" \
   --artifact-prefix "$AI_QUANT_STAGING_ARTIFACT_PREFIX" \
+  --timeout "${AI_QUANT_STAGING_ACCEPTANCE_TIMEOUT_SECONDS:-60}" \
   --cross-browser-matrix "$AI_QUANT_CROSS_BROWSER_MATRIX" \
   --capacity-default-threshold-ms "${AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS:-2000}" \
   --capacity-simulate-threshold-ms "${AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS:-2000}" \
+  --capacity-batch-threshold-ms "${AI_QUANT_STAGING_CAPACITY_BATCH_THRESHOLD_MS:-60000}" \
+  --capacity-setup-threshold-ms "${AI_QUANT_STAGING_CAPACITY_SETUP_THRESHOLD_MS:-20000}" \
   --record-readiness \
   --notify-missing
 
@@ -220,4 +223,5 @@ python3 scripts/staging_lineage_registry_acceptance.py \
 python3 scripts/staging_vision_gate_acceptance.py \
   "$AI_QUANT_STAGING_URL" \
   --artifact-prefix "$AI_QUANT_STAGING_ARTIFACT_PREFIX" \
+  --timeout "${AI_QUANT_STAGING_ACCEPTANCE_TIMEOUT_SECONDS:-60}" \
   --record-launch-checklist

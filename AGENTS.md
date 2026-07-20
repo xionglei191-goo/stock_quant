@@ -292,9 +292,9 @@ Equivalent single command:
 make local-ci
 ```
 
-Current caveat: until the configuration isolation task is completed, direct unit tests may be polluted by local `.env` values. If the machine has a production-like `.env`, use a clean local test environment and record the exact command in the handoff.
+T-424 completed configuration isolation: importing application modules no longer loads `.env`, and direct unit tests isolate machine-local `AI_QUANT_*` configuration by default. Use the clean-environment command below only when diagnosing environment drift or reproducing an older machine-specific failure, and record the exact command in the handoff.
 
-Suggested clean test pattern:
+Environment-drift diagnostic pattern:
 
 ```bash
 bash -lc 'while IFS= read -r key; do export "$key="; done < <(sed -n -E "s/^\s*(export\s+)?(AI_QUANT_[A-Z0-9_]+)=.*/\2/p" .env 2>/dev/null); export AI_QUANT_OBJECT_STORE_BACKEND=local; export AI_QUANT_OBJECT_STORE="/tmp/ai_quant_test_objects"; export AI_QUANT_SEARCH_BACKEND=local; export AI_QUANT_LLM_TIMEOUT_SECONDS=120; export AI_QUANT_ANTHROPIC_VERSION=2023-06-01; export AI_QUANT_PADDLEOCR_TIMEOUT_SECONDS=60; export AI_QUANT_PADDLEOCR_POLL_INTERVAL_SECONDS=0.01; export AI_QUANT_PADDLEOCR_MAX_POLLS=1; python3 -m unittest discover -s tests'

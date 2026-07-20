@@ -109,6 +109,9 @@ class _FakePostgresCursor:
         elif normalized.startswith("insert into ai_quant.market_data_bars"):
             self._upsert_market_data_bar(params)
             self._rows = []
+        elif normalized.startswith("with inserted_policy as") and "insert into ai_quant.market_data_bars" in normalized:
+            self._upsert_market_data_bar_v2(params)
+            self._rows = []
         elif normalized.startswith("insert into ai_quant.audit_log"):
             self.database.audit[params[0]] = {
                 "event_id": params[0],
@@ -188,6 +191,51 @@ class _FakePostgresCursor:
             "data_id": data_id,
             "rights_tag": json.loads(rights_tag) if isinstance(rights_tag, str) else rights_tag,
             "payload": json.loads(payload) if isinstance(payload, str) else payload,
+            "created_at": created_at,
+        }
+
+    def _upsert_market_data_bar_v2(self, params):
+        (
+            _policy_hash,
+            rights_json,
+            _resolved_policy_hash,
+            _resolved_rights_json,
+            security_id,
+            source_id,
+            data_type,
+            as_of_date,
+            market,
+            currency,
+            row_open,
+            high,
+            low,
+            close,
+            adjusted_close,
+            volume,
+            amount,
+            data_id,
+            _payload_key_mask,
+            extra_payload,
+            created_at,
+        ) = params
+        rights_tag = json.loads(rights_json) if isinstance(rights_json, str) else rights_json
+        self.database.market_data_bars[(security_id, source_id, data_type, as_of_date)] = {
+            "security_id": security_id,
+            "source_id": source_id,
+            "data_type": data_type,
+            "as_of_date": as_of_date,
+            "market": market,
+            "currency": currency,
+            "open": row_open,
+            "high": high,
+            "low": low,
+            "close": close,
+            "adjusted_close": adjusted_close,
+            "volume": volume,
+            "amount": amount,
+            "data_id": data_id,
+            "rights_tag": rights_tag,
+            "payload": json.loads(extra_payload) if isinstance(extra_payload, str) else extra_payload,
             "created_at": created_at,
         }
 

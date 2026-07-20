@@ -10,6 +10,7 @@ from .errors import AppError, ComplianceGateError, ConflictError, NotFoundError,
 from .services import SystemService
 from .api_routes import build_route_table
 from .utils import new_id, to_plain
+from .dynamic_allocation.application import DynamicAllocationApplication
 
 
 ROLE_ALIASES = {
@@ -40,6 +41,15 @@ CANONICAL_ROLES = [
 ]
 
 PERMISSION_POLICY_CATALOG: list[dict[str, Any]] = [
+    {
+        "rule_id": "dynamic_allocation_research",
+        "path_prefixes": ["/api/dynamic-allocation"],
+        "sample_paths": {"GET": "/api/dynamic-allocation/current", "POST": "/api/dynamic-allocation/evaluate"},
+        "methods": ["GET", "POST"],
+        "actions": {"GET": "read", "POST": "write"},
+        "data_domains": ["public_market_data", "paper_portfolio_research"],
+        "sensitivity": "yellow",
+    },
     {
         "rule_id": "system_health",
         "path_prefixes": ["/api/health", "/api/metrics"],
@@ -280,8 +290,15 @@ class ApiResponse:
 
 
 class ApiRouter:
-    def __init__(self, service: SystemService | None = None):
+    def __init__(self, service: SystemService | None = None, dynamic_allocation: DynamicAllocationApplication | None = None):
         self.service = service or SystemService()
+        self._dynamic_allocation_app = dynamic_allocation
+
+    @property
+    def dynamic_allocation(self) -> DynamicAllocationApplication:
+        if self._dynamic_allocation_app is None:
+            self._dynamic_allocation_app = DynamicAllocationApplication()
+        return self._dynamic_allocation_app
 
     def dispatch(self, method: str, path: str, body: dict[str, Any] | None = None, *, actor: str = "system", role: str = "system") -> ApiResponse:
         body = body or {}
@@ -349,6 +366,8 @@ class ApiRouter:
             return role in {"system", "CEO", "CIO", "平台负责人"}
         if path.startswith("/api/market-data"):
             return method == "GET" or role in {"system", "风险/合规", "平台负责人", "数据工程"}
+        if path.startswith("/api/dynamic-allocation"):
+            return method == "GET" or role in {"system", "CIO", "PM", "风险/合规", "平台负责人", "分析师", "数据工程", "NLP/ML 负责人", "海外研究负责人"}
         if path.startswith("/api/corporate-actions"):
             return method == "GET" or role in {"system", "风险/合规", "平台负责人", "数据工程"}
         if path.startswith("/api/13f"):
@@ -894,6 +913,43 @@ class ApiRouter:
 
     def _list_market_data(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.market_data_payload(body)
+
+    def _dynamic_allocation_current(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.dynamic_allocation.evaluate(body, persist=False)
+
+    def _dynamic_allocation_evaluate(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        try:
+            return self.dynamic_allocation.evaluate(body, persist=True)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def _dynamic_allocation_history(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.dynamic_allocation.history(body)
+
+    def _dynamic_allocation_data_health(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.dynamic_allocation.data_health(body)
+
+    def _dynamic_allocation_ingest(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        try:
+            return self.dynamic_allocation.ingest(body)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def _dynamic_allocation_backtest(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        try:
+            return self.dynamic_allocation.run_backtest(body)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def _dynamic_allocation_backtests(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.dynamic_allocation.backtests(body)
+
+    def _dynamic_allocation_backtest_get(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/dynamic-allocation/backtests/(?P<run_id>[^/]+)$", path)
+        record = self.dynamic_allocation.get_backtest(match["run_id"])
+        if record is None:
+            raise NotFoundError("dynamic allocation backtest not found")
+        return record
 
     def _register_corporate_action(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.register_corporate_action(body, actor=actor))

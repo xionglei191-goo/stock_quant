@@ -2,9 +2,9 @@
 
 - Status: active
 - Owner group: Platform and Quality
-- Last updated: 2026-05-28
-- Related tasks: T-427
-- Scope: `app/services.py` modularization strategy and first extraction batch
+- Last updated: 2026-07-17
+- Related tasks: T-427, T-500, T-503, T-570, T-571, T-575, T-577, T-595
+- Scope: `app/services.py` modularization strategy, completed extraction batches, and stateful module direction
 - Non-goals: Big-bang rewrite, API contract changes
 
 ## Context
@@ -56,6 +56,43 @@ Facade rule:
 - Extracted modules own deterministic domain calculations.
 - `SystemService` still owns store access, audit, permission context, and cross-domain orchestration.
 - No API URL, payload, database schema, UI behavior, or paper-only boundary changed.
+
+## Pure Helper Extraction Batches (T-570 and T-571)
+
+Status: completed through T-571 on 2026-07-10.
+
+- T-570 extracted 14 deterministic workflow scheduling and DAG-planning helpers to `app/service_modules/workflow_planning.py`; stateful workflow reads remained in the facade.
+- T-571 extracted 20 source-review escalation, LLM escalation, and portfolio analytics helpers to three domain modules.
+- Across both batches `app/services.py` decreased from 33,921 to 33,499 lines. This is a dated refactor metric, not a live size assertion.
+- Existing facade signatures and API, storage, UI, audit, permissions, paper-only, and no-broker boundaries remained unchanged; the full 332-test baseline passed at each recorded handoff.
+
+## Stateful Workflow Reporting Extraction (T-577)
+
+Status: first store-backed slice completed on 2026-07-17.
+
+- `app/service_modules/workflow_reporting.py` receives the narrow `store` dependency directly and owns read-only workflow run, SLA, schedule, dependency, definition, lineage, queue, and backfill-preview reporting.
+- `SystemService` keeps the existing method names as compatibility facades; execution, retry, incident creation, audit, OpenLineage export, and scheduler handoff mutations remain in the facade.
+- `app/services.py` decreased from 33,499 to 32,282 lines in this batch. This is a dated refactor metric, not a target by itself.
+- Focused facade/module parity and the golden API baseline protect query semantics. API, storage schema, UI, audit, permissions, paper-only, and no-broker boundaries are unchanged.
+
+Future stateful modules must continue explicit dependency injection: receive the narrow `store` dependency and only separately justified audit or policy dependencies, never the whole facade instance.
+
+## Stateful Graph Traceability Extraction (T-595)
+
+Status: completed on 2026-07-18.
+
+- `app/service_modules/graph_traceability.py` receives only the narrow `store`
+  dependency and owns read-only thesis, decision, and research-answer
+  traceability reporting.
+- `SystemService.graph_traceability_report()` retains its public signature as a
+  compatibility facade. The four private store traversal helpers moved with the
+  report and are no longer duplicated in the facade.
+- `app/services.py` decreased from 32,282 to 32,137 lines in this batch. This is
+  a dated refactor metric, not a target by itself.
+- Focused facade/module parity, the existing graph traceability integration
+  regression, and the golden API baseline protect query semantics. API, storage
+  schema, UI, audit, permissions, paper-only, and no-broker boundaries are
+  unchanged.
 
 ## Regression Checklist
 

@@ -244,6 +244,31 @@ def _load_cross_browser_matrix(path: str) -> dict[str, Any]:
     return load_and_validate_cross_browser_matrix(path)
 
 
+def _capacity_thresholds(
+    latency: dict[str, Any],
+    *,
+    simulate_threshold_ms: float,
+    batch_threshold_ms: float,
+    setup_threshold_ms: float,
+) -> dict[str, float]:
+    thresholds = {
+        "POST /api/execution-intents/intent_demo/simulate": simulate_threshold_ms,
+        "POST /api/graph/neo4j/sync": batch_threshold_ms,
+        "POST /api/search/qdrant/sync": batch_threshold_ms,
+        "POST /api/observability/otel/submit": batch_threshold_ms,
+        "POST /api/orchestration/openlineage/submit": batch_threshold_ms,
+        "POST /api/model-versions/mlflow/register": batch_threshold_ms,
+        "POST /api/demo/full-flow": setup_threshold_ms,
+        "POST /api/orchestration/dags": setup_threshold_ms,
+        "POST /api/model-versions": setup_threshold_ms,
+        "POST /api/lineage/events": setup_threshold_ms,
+    }
+    for metric in dict(latency.get("max_ms", {})):
+        if metric.startswith("POST /api/orchestration/dags/") and metric.endswith("/run"):
+            thresholds[metric] = setup_threshold_ms
+    return thresholds
+
+
 def run_staging_acceptance(
     *,
     base_url: str = DEFAULT_BASE_URL,
@@ -253,6 +278,8 @@ def run_staging_acceptance(
     timeout: float = 10.0,
     capacity_default_threshold_ms: float = 1000.0,
     capacity_simulate_threshold_ms: float = 2000.0,
+    capacity_batch_threshold_ms: float = 60000.0,
+    capacity_setup_threshold_ms: float = 20000.0,
     cross_browser_matrix: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -427,9 +454,12 @@ def run_staging_acceptance(
             "/api/readiness/capacity-baseline",
             {
                 "result": latency,
-                "thresholds": {
-                    "POST /api/execution-intents/intent_demo/simulate": capacity_simulate_threshold_ms,
-                },
+                "thresholds": _capacity_thresholds(
+                    latency,
+                    simulate_threshold_ms=capacity_simulate_threshold_ms,
+                    batch_threshold_ms=capacity_batch_threshold_ms,
+                    setup_threshold_ms=capacity_setup_threshold_ms,
+                ),
                 "default_threshold_ms": capacity_default_threshold_ms,
                 "evidence_uri": f"{artifact_prefix.rstrip('/')}/capacity-latency.json",
                 "notes": "HTTP staging latency baseline from acceptance script.",
@@ -604,6 +634,18 @@ def main() -> None:
         default=env_float("AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS", 2000.0, minimum=1.0),
         help="Max latency threshold for the simulated execution HTTP readiness check.",
     )
+    parser.add_argument(
+        "--capacity-batch-threshold-ms",
+        type=float,
+        default=env_float("AI_QUANT_STAGING_CAPACITY_BATCH_THRESHOLD_MS", 60000.0, minimum=1.0),
+        help="Max latency threshold for explicitly listed external sync/export batch checks.",
+    )
+    parser.add_argument(
+        "--capacity-setup-threshold-ms",
+        type=float,
+        default=env_float("AI_QUANT_STAGING_CAPACITY_SETUP_THRESHOLD_MS", 20000.0, minimum=1.0),
+        help="Max latency threshold for acceptance fixture and lineage setup operations.",
+    )
     args = parser.parse_args()
     result = run_staging_acceptance(
         base_url=args.base_url,
@@ -613,6 +655,8 @@ def main() -> None:
         timeout=args.timeout,
         capacity_default_threshold_ms=args.capacity_default_threshold_ms,
         capacity_simulate_threshold_ms=args.capacity_simulate_threshold_ms,
+        capacity_batch_threshold_ms=args.capacity_batch_threshold_ms,
+        capacity_setup_threshold_ms=args.capacity_setup_threshold_ms,
         cross_browser_matrix=_load_cross_browser_matrix(args.cross_browser_matrix),
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))

@@ -12,6 +12,8 @@ export AI_QUANT_STAGING_URL="${AI_QUANT_STAGING_URL:-http://127.0.0.1:8000}"
 export AI_QUANT_STAGING_ARTIFACT_PREFIX="${AI_QUANT_STAGING_ARTIFACT_PREFIX:-artifact://staging-local}"
 export AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS="${AI_QUANT_STAGING_CAPACITY_DEFAULT_THRESHOLD_MS:-5000}"
 export AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS="${AI_QUANT_STAGING_CAPACITY_SIMULATE_THRESHOLD_MS:-5000}"
+export AI_QUANT_STAGING_CAPACITY_BATCH_THRESHOLD_MS="${AI_QUANT_STAGING_CAPACITY_BATCH_THRESHOLD_MS:-60000}"
+export AI_QUANT_STAGING_CAPACITY_SETUP_THRESHOLD_MS="${AI_QUANT_STAGING_CAPACITY_SETUP_THRESHOLD_MS:-20000}"
 export AI_QUANT_POSTGRES_HOST_PORT="${AI_QUANT_POSTGRES_HOST_PORT:-15432}"
 export AI_QUANT_S3_HOST_PORT="${AI_QUANT_S3_HOST_PORT:-19000}"
 export AI_QUANT_S3_CONSOLE_HOST_PORT="${AI_QUANT_S3_CONSOLE_HOST_PORT:-19001}"
@@ -27,7 +29,30 @@ export AI_QUANT_OTEL_PROM_HOST_PORT="${AI_QUANT_OTEL_PROM_HOST_PORT:-18889}"
 export AI_QUANT_OPENLINEAGE_HOST_PORT="${AI_QUANT_OPENLINEAGE_HOST_PORT:-15001}"
 export AI_QUANT_MLFLOW_HOST_PORT="${AI_QUANT_MLFLOW_HOST_PORT:-15002}"
 
-bash scripts/local_staging_stack.sh
+ACTION="${1:-start}"
+if [ "$#" -gt 1 ]; then
+  echo "Usage: $0 [start|audit|status|stop]" >&2
+  exit 2
+fi
+case "$ACTION" in
+  status)
+    docker compose ps
+    exit 0
+    ;;
+  stop)
+    docker compose stop
+    exit 0
+    ;;
+  start)
+    bash scripts/local_staging_stack.sh
+    ;;
+  audit)
+    ;;
+  *)
+    echo "Usage: $0 [start|audit|status|stop]" >&2
+    exit 2
+    ;;
+esac
 
 PYTHON_BIN="${AI_QUANT_LOCAL_PYTHON:-python3}"
 if [ -x ".venv/bin/python" ]; then

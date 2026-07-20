@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -48,12 +49,9 @@ REQUIRED_TEXT = [
 ]
 
 
-def _launch_chrome(chrome: str, output: Path, *, timeout: float) -> tuple[subprocess.Popen[str], DevToolsClient]:
+def _launch_chrome(chrome: str, *, timeout: float) -> tuple[subprocess.Popen[str], DevToolsClient, Path]:
     port = _free_port()
-    user_data = output / "chrome-profile"
-    if user_data.exists():
-        shutil.rmtree(user_data)
-    user_data.mkdir(parents=True, exist_ok=True)
+    user_data = Path(tempfile.mkdtemp(prefix="ai-quant-ui-matrix-"))
     process = subprocess.Popen(
         [
             chrome,
@@ -75,10 +73,10 @@ def _launch_chrome(chrome: str, output: Path, *, timeout: float) -> tuple[subpro
     client = DevToolsClient(page["webSocketDebuggerUrl"], timeout=timeout)
     client.call("Runtime.enable")
     client.call("Page.enable")
-    return process, client
+    return process, client, user_data
 
 
-def _stop_chrome(process: subprocess.Popen[str], client: DevToolsClient | None) -> None:
+def _stop_chrome(process: subprocess.Popen[str], client: DevToolsClient | None, user_data: Path) -> None:
     if client:
         client.close()
     process.terminate()
@@ -86,6 +84,7 @@ def _stop_chrome(process: subprocess.Popen[str], client: DevToolsClient | None) 
         process.wait(timeout=3)
     except subprocess.TimeoutExpired:
         process.kill()
+    shutil.rmtree(user_data, ignore_errors=True)
 
 
 def _eval(client: DevToolsClient, expression: str) -> Any:
@@ -405,7 +404,7 @@ def run_research_workbench_matrix(
     chrome = _chrome_binary(chrome_bin)
     checks: list[dict[str, Any]] = []
     for viewport_name, viewport in VIEWPORTS.items():
-        process, client = _launch_chrome(chrome, output / viewport_name, timeout=timeout)
+        process, client, user_data = _launch_chrome(chrome, timeout=timeout)
         try:
             client.call("Emulation.setDeviceMetricsOverride", {
                 "width": viewport["width"],
@@ -419,7 +418,7 @@ def run_research_workbench_matrix(
             for check in _run_matrix_checks(client, timeout=timeout):
                 checks.append({**check, "viewport": viewport_name})
         finally:
-            _stop_chrome(process, client)
+            _stop_chrome(process, client, user_data)
 
     failures = [item for item in checks if item["status"] != "passed"]
     browser_matrix = [

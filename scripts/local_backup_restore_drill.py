@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -23,6 +24,11 @@ def _run(command: list[str], *, timeout: float = 120.0) -> subprocess.CompletedP
 
 def _compose_exec(compose: list[str], service: str, command: list[str], *, timeout: float = 120.0) -> subprocess.CompletedProcess[str]:
     return _run([*compose, "exec", "-T", service, *command], timeout=timeout)
+
+
+def _timed_postgres_command(command: list[str], *, timeout_seconds: float) -> list[str]:
+    timeout_value = max(1, int(timeout_seconds))
+    return ["timeout", "-s", "TERM", "-k", "10", str(timeout_value), *command]
 
 
 def _must(result: subprocess.CompletedProcess[str], step: str) -> None:
@@ -64,6 +70,7 @@ def run_backup_restore_drill(
     artifact_prefix: str = "artifact://staging-local",
     record_readiness_url: str = "",
     keep_restore_db: bool = False,
+    timeout_seconds: float = 1800.0,
 ) -> dict[str, Any]:
     compose = _compose_command()
     suffix = str(int(time.time()))
@@ -77,12 +84,31 @@ def run_backup_restore_drill(
         before_audit = int(_psql_scalar(compose, source_db, "select count(*) from ai_quant.audit_log;", db_user=db_user))
 
         _must(
-            _compose_exec(compose, "postgres", ["pg_dump", "-U", db_user, "-d", source_db, "-Fc", "-f", dump_path], timeout=180),
+            _compose_exec(
+                compose,
+                "postgres",
+                _timed_postgres_command(
+                    ["pg_dump", "-U", db_user, "-d", source_db, "-Fc", "-f", dump_path],
+                    timeout_seconds=timeout_seconds,
+                ),
+                timeout=timeout_seconds + 30,
+            ),
             "pg_dump",
         )
         _compose_exec(compose, "postgres", ["dropdb", "-U", db_user, "--if-exists", restore_db], timeout=60)
         _must(_compose_exec(compose, "postgres", ["createdb", "-U", db_user, restore_db], timeout=60), "createdb")
-        _must(_compose_exec(compose, "postgres", ["pg_restore", "-U", db_user, "-d", restore_db, dump_path], timeout=180), "pg_restore")
+        _must(
+            _compose_exec(
+                compose,
+                "postgres",
+                _timed_postgres_command(
+                    ["pg_restore", "-U", db_user, "-d", restore_db, dump_path],
+                    timeout_seconds=timeout_seconds,
+                ),
+                timeout=timeout_seconds + 30,
+            ),
+            "pg_restore",
+        )
 
         restored_records = int(_psql_scalar(compose, restore_db, "select count(*) from ai_quant.records;", db_user=db_user))
         restored_audit = int(_psql_scalar(compose, restore_db, "select count(*) from ai_quant.audit_log;", db_user=db_user))
@@ -138,6 +164,12 @@ def main() -> None:
     parser.add_argument("--artifact-prefix", default="artifact://staging-local")
     parser.add_argument("--record-readiness-url", default="")
     parser.add_argument("--keep-restore-db", action="store_true")
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=float(os.environ.get("AI_QUANT_BACKUP_RESTORE_TIMEOUT_SECONDS", "1800")),
+        help="Per-command pg_dump/pg_restore timeout; enforced inside the container and by the host process.",
+    )
     args = parser.parse_args()
     result = run_backup_restore_drill(
         db_user=args.db_user,
@@ -146,6 +178,7 @@ def main() -> None:
         artifact_prefix=args.artifact_prefix,
         record_readiness_url=args.record_readiness_url,
         keep_restore_db=args.keep_restore_db,
+        timeout_seconds=args.timeout_seconds,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     if result["status"] != "passed":

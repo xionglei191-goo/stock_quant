@@ -127,10 +127,26 @@ def build_market_data_storage_audit(
                     'idx_ai_quant_market_data_bars_data_id',
                     'idx_ai_quant_market_data_bars_market_date',
                     'idx_ai_quant_market_data_bars_source_date',
-                    'idx_ai_quant_market_data_bars_security_date',
                     'idx_ai_quant_market_data_bars_as_of_date'
                   )
                 ORDER BY indexname
+                """,
+            )
+            compact_schema = _fetch_one(
+                cursor,
+                """
+                SELECT
+                    to_regclass('ai_quant.market_data_rights_policies') IS NOT NULL,
+                    EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'ai_quant' AND table_name = 'market_data_bars'
+                          AND column_name = 'rights_policy_id'
+                    ),
+                    NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'ai_quant' AND table_name = 'market_data_bars'
+                          AND column_name IN ('rights_tag', 'payload')
+                    )
                 """,
             )
             size_rows = _fetch_all(
@@ -161,7 +177,6 @@ def build_market_data_storage_audit(
         "idx_ai_quant_market_data_bars_data_id",
         "idx_ai_quant_market_data_bars_market_date",
         "idx_ai_quant_market_data_bars_source_date",
-        "idx_ai_quant_market_data_bars_security_date",
         "idx_ai_quant_market_data_bars_as_of_date",
     }
     obsolete_indexes = {"idx_ai_quant_market_data_security_date", "idx_ai_quant_market_data_source"}
@@ -180,6 +195,7 @@ def build_market_data_storage_audit(
 
     expect(legacy_count == 0, "legacy_market_data_records", "records.collection='market_data' must be empty", value=legacy_count)
     expect(int(typed_count_estimate or 0) > 0, "typed_market_data_bars", "market_data_bars must contain K-line bars", value=int(typed_count_estimate or 0))
+    expect(all(bool(item) for item in compact_schema), "compact_market_data_schema", "market_data_bars must use v2 rights-policy and compact payload storage", value=list(compact_schema))
     expect(views == ["market_data"], "market_data_views", "only typed ai_quant.market_data view should remain", value=views)
     expect(required_indexes.issubset(set(indexes)), "typed_indexes", "required typed market_data_bars indexes are missing", missing=sorted(required_indexes - set(indexes)))
     expect(not (obsolete_indexes & set(indexes)), "obsolete_jsonb_indexes", "obsolete records market_data indexes must not exist", value=sorted(obsolete_indexes & set(indexes)))
@@ -201,6 +217,11 @@ def build_market_data_storage_audit(
             "estimated_count": int(typed_count_estimate or 0),
             "min_date": str(min_date or ""),
             "max_date": str(max_date or ""),
+        },
+        "compact_schema": {
+            "rights_policy_table": bool(compact_schema[0]),
+            "rights_policy_reference": bool(compact_schema[1]),
+            "duplicate_jsonb_columns_removed": bool(compact_schema[2]),
         },
         "views": views,
         "indexes": indexes,

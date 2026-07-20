@@ -6,6 +6,7 @@ import json
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -235,6 +236,7 @@ def _run_latest_analysis_chain_check(
 ) -> dict[str, Any]:
     chrome = _chrome_binary(chrome_bin)
     port = _free_port()
+    user_data = Path(tempfile.mkdtemp(prefix="ai-quant-ui-latest-analysis-"))
     process = subprocess.Popen(
         [
             chrome,
@@ -243,7 +245,7 @@ def _run_latest_analysis_chain_check(
             "--disable-gpu",
             "--disable-background-networking",
             f"--remote-debugging-port={port}",
-            "--user-data-dir=/tmp/ui-interaction-latest-analysis-chain-profile",
+            f"--user-data-dir={user_data}",
             "about:blank",
         ],
         stdout=subprocess.PIPE,
@@ -284,6 +286,7 @@ def _run_latest_analysis_chain_check(
             process.wait(timeout=3)
         except subprocess.TimeoutExpired:
             process.kill()
+        shutil.rmtree(user_data, ignore_errors=True)
 
 
 def run_ui_interaction_acceptance(
@@ -297,8 +300,7 @@ def run_ui_interaction_acceptance(
     output.mkdir(parents=True, exist_ok=True)
     chrome = _chrome_binary(chrome_bin)
     port = _free_port()
-    user_data = output / "chrome-profile"
-    user_data.mkdir(parents=True, exist_ok=True)
+    user_data = Path(tempfile.mkdtemp(prefix="ai-quant-ui-interaction-"))
     process = subprocess.Popen(
         [
             chrome,
@@ -707,6 +709,7 @@ def run_ui_interaction_acceptance(
             process.wait(timeout=3)
         except subprocess.TimeoutExpired:
             process.kill()
+        shutil.rmtree(user_data, ignore_errors=True)
 
     failures = [item for item in checks if item["status"] != "passed"]
     result = {

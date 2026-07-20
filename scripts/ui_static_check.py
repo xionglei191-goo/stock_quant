@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -710,12 +711,17 @@ REQUIRED_INTERACTION_MARKERS = [
 def validate_ui_html(path: str | Path = HTML_PATH, *, run_node: bool = True) -> dict[str, object]:
     html_path = Path(path)
     html = html_path.read_text(encoding="utf-8")
+    runtime_source = "\n".join(
+        (UI_MODULES_DIR / f"{module_name}.mjs").read_text(encoding="utf-8")
+        for module_name in REQUIRED_UI_MODULES
+        if (UI_MODULES_DIR / f"{module_name}.mjs").exists()
+    )
     missing_nav = [label for label in REQUIRED_NAV_LABELS if label not in html]
     missing_status = [label for label in REQUIRED_STATUS_LABELS if label not in html]
     missing_text = [snippet for snippet in REQUIRED_TEXT_SNIPPETS if snippet not in html]
     missing_ids = [item_id for item_id in REQUIRED_IDS if f'id="{item_id}"' not in html]
     missing_functions = [name for name in REQUIRED_JS_FUNCTIONS if f"function {name}(" not in html and f"async function {name}(" not in html]
-    missing_interactions = [marker for marker in REQUIRED_INTERACTION_MARKERS if marker not in html]
+    missing_interactions = [marker for marker in REQUIRED_INTERACTION_MARKERS if marker not in html and marker not in runtime_source]
     failures = {
         "nav": missing_nav,
         "status": missing_status,
@@ -751,9 +757,10 @@ def validate_ui_html(path: str | Path = HTML_PATH, *, run_node: bool = True) -> 
 
 
 def _extract_script(html: str) -> str:
-    start = html.index("<script>") + len("<script>")
-    end = html.index("</script>", start)
-    return html[start:end]
+    match = re.search(r'<script>(?P<script>.*?)</script>', html, re.DOTALL)
+    if not match:
+        raise AssertionError("/ui main runtime script is missing")
+    return match.group("script")
 
 
 def validate_ui_module_scaffold(*, run_node: bool = True) -> dict[str, object]:
@@ -770,13 +777,22 @@ def validate_ui_module_scaffold(*, run_node: bool = True) -> dict[str, object]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest_domains = manifest.get("module_domains", [])
     missing_domains = [module_name for module_name in REQUIRED_UI_MODULES if module_name not in manifest_domains]
-    if manifest.get("runtime_loaded") is not False or missing_domains:
+    runtime_modules = manifest.get("runtime_modules", [])
+    scaffold_modules = manifest.get("scaffold_modules", [])
+    invalid_partition = sorted(set(runtime_modules).intersection(scaffold_modules))
+    missing_partition = [module_name for module_name in REQUIRED_UI_MODULES if module_name not in runtime_modules + scaffold_modules]
+    required_runtime_modules = ["dashboard", "helpers"]
+    missing_runtime_modules = [module_name for module_name in required_runtime_modules if module_name not in runtime_modules]
+    if manifest.get("runtime_loaded") is not True or missing_runtime_modules or missing_domains or invalid_partition or missing_partition:
         raise AssertionError(
             json.dumps(
                 {
                     "ui_module_manifest": {
                         "runtime_loaded": manifest.get("runtime_loaded"),
                         "missing_domains": missing_domains,
+                        "missing_runtime_modules": missing_runtime_modules,
+                        "invalid_partition": invalid_partition,
+                        "missing_partition": missing_partition,
                     }
                 },
                 ensure_ascii=False,
@@ -795,10 +811,55 @@ def validate_ui_module_scaffold(*, run_node: bool = True) -> dict[str, object]:
             )
         module_node_check = "passed"
 
+    html = HTML_PATH.read_text(encoding="utf-8")
+    helper_import = 'import("/ui_modules/helpers.mjs")'
+    helper_source = (UI_MODULES_DIR / "helpers.mjs").read_text(encoding="utf-8")
+    dashboard_import = 'import("/ui_modules/dashboard.mjs")'
+    dashboard_source = (UI_MODULES_DIR / "dashboard.mjs").read_text(encoding="utf-8")
+    required_helper_exports = ["installNavigation"]
+    missing_helper_exports = [
+        name for name in required_helper_exports
+        if f"export function {name}(" not in helper_source and f"export const {name} =" not in helper_source
+    ]
+    navigation_selector = 'document.querySelectorAll("[data-open]").forEach((button) => {'
+    navigation_extracted = navigation_selector in helper_source and navigation_selector not in html
+    dashboard_functions = ["dataHealthStatusClass", "dataHealthNextActionLabel", "renderDataHealthRows", "renderDataHealthSummary", "loadDataHealthSummary", "renderLatestAnalysis"]
+    dashboard_extracted = all(f"function {name}(" in dashboard_source for name in dashboard_functions)
+    dashboard_wrappers = all(f"return dashboardRuntime.{name}(" in html for name in dashboard_functions if name != "loadDataHealthSummary")
+    dashboard_wrappers = dashboard_wrappers and "return runtime.loadDataHealthSummary();" in html
+    if (
+        helper_import not in html
+        or dashboard_import not in html
+        or missing_helper_exports
+        or "export const scaffoldOnly = false" not in helper_source
+        or "export const scaffoldOnly = false" not in dashboard_source
+        or not navigation_extracted
+        or not dashboard_extracted
+        or not dashboard_wrappers
+    ):
+        raise AssertionError(
+            json.dumps(
+                {
+                    "ui_module_runtime": {
+                        "helper_import": helper_import in html,
+                        "dashboard_import": dashboard_import in html,
+                        "missing_helper_exports": missing_helper_exports,
+                        "helpers_runtime": "export const scaffoldOnly = false" in helper_source,
+                        "navigation_extracted": navigation_extracted,
+                        "dashboard_extracted": dashboard_extracted,
+                        "dashboard_wrappers": dashboard_wrappers,
+                    }
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+
     return {
         "manifest": str(manifest_path.relative_to(ROOT)),
         "modules": len(REQUIRED_UI_MODULES),
         "runtime_loaded": manifest.get("runtime_loaded"),
+        "runtime_modules": runtime_modules,
         "node_check": module_node_check,
     }
 

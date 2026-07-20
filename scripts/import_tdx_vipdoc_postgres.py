@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.services import PUBLIC_EOD_MARKET_DATA_SOURCE_ID
+from app.market_data_storage import upsert_market_data_bar
 
 
 RECORD_SIZE = 32
@@ -118,49 +119,11 @@ def upsert_records(cursor: Any, rows: list[tuple[str, str, str]]) -> None:
         raise
 
 
-def upsert_market_data_bars(cursor: Any, rows: list[tuple[Any, ...]]) -> None:
+def upsert_market_data_bars(cursor: Any, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
-    cursor.executemany(
-        """
-        INSERT INTO ai_quant.market_data_bars (
-            security_id,
-            source_id,
-            data_type,
-            as_of_date,
-            market,
-            currency,
-            open,
-            high,
-            low,
-            close,
-            adjusted_close,
-            volume,
-            amount,
-            data_id,
-            rights_tag,
-            payload,
-            created_at
-        )
-        VALUES (%s, %s, %s, %s::date, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
-        ON CONFLICT (security_id, source_id, data_type, as_of_date)
-        DO UPDATE SET
-            market = EXCLUDED.market,
-            currency = EXCLUDED.currency,
-            open = EXCLUDED.open,
-            high = EXCLUDED.high,
-            low = EXCLUDED.low,
-            close = EXCLUDED.close,
-            adjusted_close = EXCLUDED.adjusted_close,
-            volume = EXCLUDED.volume,
-            amount = EXCLUDED.amount,
-            data_id = EXCLUDED.data_id,
-            rights_tag = EXCLUDED.rights_tag,
-            payload = EXCLUDED.payload,
-            updated_at = now()
-        """,
-        rows,
-    )
+    for payload in rows:
+        upsert_market_data_bar(cursor, payload)
 
 
 def import_vipdoc(args: argparse.Namespace) -> dict[str, Any]:
@@ -179,7 +142,7 @@ def import_vipdoc(args: argparse.Namespace) -> dict[str, Any]:
     failed_files: list[dict[str, str]] = []
     min_date = ""
     max_date = ""
-    bar_batch: list[tuple[Any, ...]] = []
+    bar_batch: list[dict[str, Any]] = []
     issuer_security_batch: list[tuple[str, str, str]] = []
     rights_tag = {
         "license_class": "public_eod_reference",
@@ -255,29 +218,7 @@ def import_vipdoc(args: argparse.Namespace) -> dict[str, Any]:
                         "rights_tag": rights_tag,
                         "created_at": now,
                     }
-                    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-                    rights_json = json.dumps(rights_tag, ensure_ascii=False, sort_keys=True)
-                    bar_batch.append(
-                        (
-                            security_id,
-                            args.source_id,
-                            args.data_type,
-                            trade_date,
-                            "A",
-                            "CNY",
-                            row["open"],
-                            row["high"],
-                            row["low"],
-                            row["close"],
-                            row["close"],
-                            row["volume"],
-                            row["amount"],
-                            data_id,
-                            rights_json,
-                            payload_json,
-                            now,
-                        )
-                    )
+                    bar_batch.append(payload)
                     if len(bar_batch) >= args.batch_size:
                         upsert_records(cursor, issuer_security_batch)
                         upsert_market_data_bars(cursor, bar_batch)

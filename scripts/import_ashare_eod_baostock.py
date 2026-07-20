@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.services import PUBLIC_EOD_MARKET_DATA_SOURCE_ID
+from app.market_data_storage import upsert_market_data_bar
 
 
 RIGHTS_TAG = {
@@ -104,64 +105,7 @@ def _upsert(cursor: Any, collection: str, item_id: str, payload: dict[str, Any],
 
 
 def _upsert_market_data_bar(cursor: Any, payload: dict[str, Any], *, amount: float = 0.0) -> None:
-    cursor.execute(
-        """
-        INSERT INTO ai_quant.market_data_bars (
-            security_id,
-            source_id,
-            data_type,
-            as_of_date,
-            market,
-            currency,
-            open,
-            high,
-            low,
-            close,
-            adjusted_close,
-            volume,
-            amount,
-            data_id,
-            rights_tag,
-            payload,
-            created_at
-        )
-        VALUES (%s, %s, %s, %s::date, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
-        ON CONFLICT (security_id, source_id, data_type, as_of_date)
-        DO UPDATE SET
-            market = EXCLUDED.market,
-            currency = EXCLUDED.currency,
-            open = EXCLUDED.open,
-            high = EXCLUDED.high,
-            low = EXCLUDED.low,
-            close = EXCLUDED.close,
-            adjusted_close = EXCLUDED.adjusted_close,
-            volume = EXCLUDED.volume,
-            amount = EXCLUDED.amount,
-            data_id = EXCLUDED.data_id,
-            rights_tag = EXCLUDED.rights_tag,
-            payload = EXCLUDED.payload,
-            updated_at = now()
-        """,
-        (
-            payload["security_id"],
-            payload["source_id"],
-            payload["data_type"],
-            payload["as_of_date"],
-            payload["market"],
-            payload.get("currency", ""),
-            payload.get("open", 0.0),
-            payload.get("high", 0.0),
-            payload.get("low", 0.0),
-            payload["close"],
-            payload.get("adjusted_close", payload["close"]),
-            payload.get("volume", 0.0),
-            amount,
-            payload["data_id"],
-            json.dumps(payload.get("rights_tag", {}), ensure_ascii=False, sort_keys=True),
-            json.dumps({**payload, "amount": amount}, ensure_ascii=False, sort_keys=True),
-            payload.get("created_at"),
-        ),
-    )
+    upsert_market_data_bar(cursor, payload, amount=amount)
 
 
 def _source_payload(source_id: str) -> dict[str, Any]:

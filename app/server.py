@@ -96,6 +96,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_ui_module(self, filename: str) -> None:
+        path = STATIC_DIR / "ui_modules" / filename
+        if path.suffix != ".mjs" or path.name != filename or not path.is_file():
+            self.send_error(404)
+            return
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _read_json(self) -> dict:
         content_length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(content_length) if content_length else b"{}"
@@ -116,6 +128,9 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed_url.path
         if path in {"/ui", "/ui/"}:
             self._send_html("index.html")
+            return
+        if path.startswith("/ui_modules/"):
+            self._send_ui_module(path.removeprefix("/ui_modules/"))
             return
         if path == "/favicon.ico":
             self.send_response(204)
@@ -138,6 +153,8 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/evidence/extract",
                         "/api/document-parsing/paddleocr",
                         "/api/market-data/tdx/preview",
+                        "/api/dynamic-allocation/current",
+                        "/api/dynamic-allocation/data-health",
                         "/api/research-reports",
                         "/api/thesis/create",
                     ],

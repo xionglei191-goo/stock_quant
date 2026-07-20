@@ -45,6 +45,14 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_documents_source
     ON ai_quant.records ((payload->>'source_id'), (payload->>'document_type'))
     WHERE collection = 'documents';
 
+CREATE TABLE IF NOT EXISTS ai_quant.market_data_rights_policies (
+    policy_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    policy_hash CHAR(64) NOT NULL UNIQUE,
+    rights_tag JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (length(policy_hash) = 64)
+);
+
 CREATE TABLE IF NOT EXISTS ai_quant.market_data_bars (
     security_id TEXT NOT NULL,
     source_id TEXT NOT NULL,
@@ -60,8 +68,9 @@ CREATE TABLE IF NOT EXISTS ai_quant.market_data_bars (
     volume NUMERIC NOT NULL DEFAULT 0,
     amount NUMERIC NOT NULL DEFAULT 0,
     data_id TEXT NOT NULL,
-    rights_tag JSONB NOT NULL DEFAULT '{}'::jsonb,
-    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    rights_policy_id BIGINT NOT NULL REFERENCES ai_quant.market_data_rights_policies(policy_id) ON DELETE RESTRICT,
+    payload_key_mask BIGINT NOT NULL DEFAULT 0,
+    extra_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (security_id, source_id, data_type, as_of_date)
@@ -76,11 +85,36 @@ CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_bars_market_date
 CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_bars_source_date
     ON ai_quant.market_data_bars (source_id, data_type, as_of_date DESC);
 
-CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_bars_security_date
-    ON ai_quant.market_data_bars (security_id, source_id, data_type, as_of_date DESC);
-
 CREATE INDEX IF NOT EXISTS idx_ai_quant_market_data_bars_as_of_date
     ON ai_quant.market_data_bars (as_of_date DESC, data_id DESC);
+
+CREATE TABLE IF NOT EXISTS ai_quant.economic_observations (
+    observation_id TEXT NOT NULL UNIQUE,
+    series_id TEXT NOT NULL,
+    observation_date DATE NOT NULL,
+    value DOUBLE PRECISION NOT NULL,
+    release_date DATE NOT NULL,
+    available_at TIMESTAMPTZ NOT NULL,
+    vintage_date DATE NOT NULL,
+    revision_seq INTEGER NOT NULL CHECK (revision_seq >= 0),
+    source_id TEXT NOT NULL,
+    source_uri TEXT NOT NULL DEFAULT '',
+    ingested_at TIMESTAMPTZ NOT NULL,
+    rights_tag JSONB NOT NULL DEFAULT '{}'::jsonb,
+    quality_flags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    payload_hash TEXT NOT NULL,
+    PRIMARY KEY (series_id, observation_date, vintage_date, revision_seq),
+    CHECK (available_at::date >= release_date),
+    CHECK (vintage_date >= release_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_economic_observations_pit
+    ON ai_quant.economic_observations
+    (series_id, available_at DESC, observation_date DESC, vintage_date DESC, revision_seq DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ai_quant_economic_observations_vintage
+    ON ai_quant.economic_observations
+    (series_id, observation_date, vintage_date, revision_seq);
 
 CREATE INDEX IF NOT EXISTS idx_ai_quant_corporate_actions_security
     ON ai_quant.records ((payload->>'security_id'), (payload->>'action_type'), (payload->>'ex_date'))
@@ -383,23 +417,42 @@ DROP VIEW IF EXISTS ai_quant.market_data;
 
 CREATE OR REPLACE VIEW ai_quant.market_data AS
 SELECT
-    data_id,
-    security_id,
-    source_id,
-    market,
-    as_of_date,
-    data_type,
-    open,
-    high,
-    low,
-    close,
-    adjusted_close,
-    volume,
-    amount,
-    rights_tag,
-    payload,
-    updated_at
-FROM ai_quant.market_data_bars;
+    b.data_id,
+    b.security_id,
+    b.source_id,
+    b.market,
+    b.as_of_date,
+    b.data_type,
+    b.open,
+    b.high,
+    b.low,
+    b.close,
+    b.adjusted_close,
+    b.volume,
+    b.amount,
+    p.rights_tag,
+    (
+        CASE WHEN (b.payload_key_mask & 1) <> 0 THEN jsonb_build_object('data_id', b.data_id) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 2) <> 0 THEN jsonb_build_object('security_id', b.security_id) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 4) <> 0 THEN jsonb_build_object('source_id', b.source_id) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 8) <> 0 THEN jsonb_build_object('market', b.market) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 16) <> 0 THEN jsonb_build_object('as_of_date', b.as_of_date) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 32) <> 0 THEN jsonb_build_object('data_type', b.data_type) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 64) <> 0 THEN jsonb_build_object('currency', b.currency) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 128) <> 0 THEN jsonb_build_object('open', b.open) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 256) <> 0 THEN jsonb_build_object('high', b.high) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 512) <> 0 THEN jsonb_build_object('low', b.low) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 1024) <> 0 THEN jsonb_build_object('close', b.close) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 2048) <> 0 THEN jsonb_build_object('adjusted_close', b.adjusted_close) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 4096) <> 0 THEN jsonb_build_object('volume', b.volume) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 8192) <> 0 THEN jsonb_build_object('amount', b.amount) ELSE '{}'::jsonb END
+        || CASE WHEN (b.payload_key_mask & 16384) <> 0 THEN jsonb_build_object('rights_tag', p.rights_tag) ELSE '{}'::jsonb END
+        || b.extra_payload
+    ) AS payload,
+    b.updated_at
+FROM ai_quant.market_data_bars AS b
+JOIN ai_quant.market_data_rights_policies AS p
+  ON p.policy_id = b.rights_policy_id;
 
 CREATE OR REPLACE VIEW ai_quant.corporate_actions AS
 SELECT

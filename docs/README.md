@@ -1,5 +1,12 @@
 # 项目文档索引
 
+- Status: active
+- Owner group: PM / Release Coordination
+- Last updated: 2026-07-18
+- Related tasks: T-431, T-503, T-570-T-601
+- Scope: 权威文档、运行手册、ADR、风险与交接记录入口
+- Non-goals: 替代 `tasks/todo.md` 的任务状态，或把本机 artifact 提升为非本机发布证据
+
 ## 主线入口
 
 - [logic-map.md](./logic-map.md): 逻辑总地图，作为四条主线的第一入口
@@ -14,7 +21,7 @@
 - [product-requirements-document.md](./product-requirements-document.md): 公司情报平台 PRD，定义产品定位、目标用户、主流程、研报边界和成功指标
 - [system-architecture.md](./system-architecture.md): 公司情报平台目标架构，主线为数据、实体、事件、关系、观点和反馈
 - [data-structure-design.md](./data-structure-design.md): 公司画像、画像字段抽取、画像字段级证据断言、字段断言冲突复核、本地公司材料 inbox、画像深字段覆盖审计、事件/关系质量归并、研报观点、观察任务、分析结论、模拟反馈、补库运行历史、公司包导入运行历史、retry/resume、覆盖率趋势和工作台操作数据结构
-- [../tasks/todo.md](../tasks/todo.md): 执行待办清单；T-431 至 T-491 记录公司情报平台重定位、公司数据库构建、事实事件层、关系候选抽取与审核、覆盖率审计、批量补库、模拟反馈表现更新、研报兑现复盘、工作台操作面板、细粒度披露事件抽取、空状态缺口诊断、补库运行历史、运行历史 UI、覆盖率趋势报告、补库断点续跑/失败重试、覆盖趋势 UI 接入、画像深字段覆盖审计、官方/IR 画像字段抽取、事件/关系质量归并、深字段/抽取/质量归并 UI 接入、画像字段级证据断言、本地公司材料 inbox、完整度总判断、字段断言冲突复核、字段冲突复核工作台、字段断言批量复核推荐增强、关系/事件复核工作台、闭环刷新、财务指标事实层、本地单标的 bootstrap、本地 watchlist / 公司包导入、公司包导入运行历史、导入历史工作台入口、材料 manifest 模板导出、闭环刷新历史、材料 URL 自动填充、待补材料队列、个人阅读视图、关注池自动闭环、知识图谱、K 线行情和全页面 UI 信息降噪；T-492 至 T-503 记录长效完善、数据健康、个人研究桌面、真实验收、结论兑现、事件/关系可信度、前后端模块化、非本机生产化准备和 `SystemService` 渐进式重构路线
+- [../tasks/todo.md](../tasks/todo.md): 唯一任务状态源；T-431 至 T-491 为公司情报主链、数据闭环和工作台建设；T-492 至 T-503 为长期治理、真实验收、模块化与增长冻结；T-504 至 T-569 为关系图谱、个人研究链、文档导航、质量中心和批量增厚；T-570 至 T-571 为 `SystemService` 纯助手提取；T-572 至 T-580 为价值案例、维护风险、workflow 模块化和本机治理；T-581 至 T-590 为动态资产配置架构、公开数据和每日纸面运行；T-591 至 T-594 为纵向运营、前端运行时模块化、测试拆分和 PM 里程碑收口；T-595 至 T-601 为 facade 提取、可重复集成门、真实图谱验证、纸面绩效契约、dashboard 运行时提取和本机 staging 性能/幂等收口
 - [chokepoint-research-module.md](./chokepoint-research-module.md): 瓶颈研究模块方向文档，包含 T-406C 本地质量包和版本化人工 review 基线
 - [transcript-research-citation-policy.md](./transcript-research-citation-policy.md): 电话会、转录稿、卖方研报引用和训练边界策略
 - [us-compliance-open-questions.md](./us-compliance-open-questions.md): Reg FD、Non-Display、投顾、券商、衍生品和跨境合规开放问题
@@ -40,6 +47,8 @@
 - [artifact-governance.md](./artifact-governance.md): 产物提交规则与本机 CI 质量门
 - [production-runbook.md](./production-runbook.md): 备份、恢复、部署和非本机发布运维附录
 - [portfolio-construction-spec.md](./portfolio-construction-spec.md): 纸面组合和风险诊断规格；后续归入模拟反馈附录
+- [dynamic-asset-allocation-architecture.md](./dynamic-asset-allocation-architecture.md): 动态资产配置的数据、因子、状态识别、风险、回测、公开数据、每日运行和纵向纸面验证架构（T-581 至 T-591）
+- [dynamic-allocation-operations.md](./dynamic-allocation-operations.md): 动态配置每日历史、月度健康、3/6/12 月门和本机 systemd handoff；运营连续性不等于投资有效性
 - [feast-kafka-decision-memo.md](./feast-kafka-decision-memo.md): Feast / Kafka 暂缓上线、触发阈值、迁移草案和 PoC 成本
 - [../artifacts/project-completion-audit.json](../artifacts/project-completion-audit.json): 本机目标完成审计输出
 

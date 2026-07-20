@@ -126,6 +126,8 @@ from .service_modules import knowledge_network_backfill
 from .service_modules import market_data as market_data_module
 from .service_modules import personal_research_loop
 from .service_modules import workflow_planning
+from .service_modules.workflow_reporting import WorkflowReporting
+from .service_modules.graph_traceability import GraphTraceabilityReporting
 from .service_modules import source_review_escalation
 from .service_modules import llm_escalation
 from .service_modules import portfolio_analytics
@@ -1895,89 +1897,10 @@ class SystemService:
         return retry
 
     def workflow_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        filters = filters or {}
-        dag_id = str(filters.get("dag_id", "")).strip()
-        status = str(filters.get("status", "")).strip()
-        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
-        runs = list(self.store.workflow_runs.values())
-        if dag_id:
-            runs = [item for item in runs if item.dag_id == dag_id]
-        if status:
-            runs = [item for item in runs if item.status == status]
-        runs = sorted(runs, key=lambda item: parse_datetime(item.started_at), reverse=True)[:limit]
-        return {"runs": [to_plain(item) for item in runs], "total": len(runs)}
+        return WorkflowReporting(self.store).workflow_runs_payload(filters)
 
     def workflow_sla_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        filters = filters or {}
-        dag_id = str(filters.get("dag_id", "")).strip()
-        status = str(filters.get("status", "")).strip()
-        as_of = parse_datetime(filters.get("as_of")) if filters.get("as_of") else utcnow()
-        default_sla_minutes = int(filters.get("default_sla_minutes", 60))
-        include_all = self._truthy(filters.get("include_all", False))
-        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
-        runs = list(self.store.workflow_runs.values())
-        if dag_id:
-            runs = [item for item in runs if item.dag_id == dag_id]
-        if status:
-            runs = [item for item in runs if item.status == status]
-        runs.sort(key=lambda item: parse_datetime(item.started_at), reverse=True)
-
-        rows: list[dict[str, Any]] = []
-        breach_count = 0
-        incident_needed_count = 0
-        for run in runs:
-            workflow = self.store.workflow_definitions.get(run.dag_id)
-            sla_minutes = self._workflow_sla_minutes(workflow, default_sla_minutes=default_sla_minutes)
-            started_at = parse_datetime(run.started_at)
-            elapsed_minutes = max(0.0, (as_of - started_at).total_seconds() / 60.0)
-            failed_tasks = sorted(task_id for task_id, task_status in run.task_statuses.items() if task_status in {"failed", "needs_review"})
-            breach_type = ""
-            if run.status == "failed":
-                breach_type = "failed_run"
-            elif run.status == "needs_review":
-                breach_type = "needs_review"
-            elif run.status in {"queued", "running"} and elapsed_minutes > sla_minutes:
-                breach_type = "runtime_sla_breach"
-            breached = bool(breach_type)
-            incident_report_id = f"ir_workflow_{run.run_id}"
-            incident_needed = breached and incident_report_id not in self.store.incident_reports
-            if breached:
-                breach_count += 1
-            if incident_needed:
-                incident_needed_count += 1
-            if not include_all and not breached:
-                continue
-            owner = self._workflow_run_owner(workflow, failed_tasks)
-            rows.append(
-                {
-                    "run_id": run.run_id,
-                    "dag_id": run.dag_id,
-                    "workflow_name": workflow.name if workflow else "",
-                    "status": run.status,
-                    "breached": breached,
-                    "breach_type": breach_type or "none",
-                    "sla_minutes": sla_minutes,
-                    "elapsed_minutes": round(elapsed_minutes, 2),
-                    "failed_tasks": failed_tasks,
-                    "owner": owner,
-                    "error": run.error,
-                    "started_at": to_plain(run.started_at),
-                    "completed_at": to_plain(run.completed_at),
-                    "incident_report_id": incident_report_id if incident_report_id in self.store.incident_reports else "",
-                    "incident_needed": incident_needed,
-                    "retry_available": run.status in {"failed", "needs_review"},
-                }
-            )
-            if len(rows) >= limit:
-                break
-        return {
-            "as_of": as_of.isoformat(),
-            "default_sla_minutes": default_sla_minutes,
-            "count": len(rows),
-            "breach_count": breach_count,
-            "incident_needed_count": incident_needed_count,
-            "runs": rows,
-        }
+        return WorkflowReporting(self.store).workflow_sla_report(filters)
 
     def create_workflow_incidents_from_sla(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}
@@ -2022,63 +1945,7 @@ class SystemService:
         }
 
     def workflow_schedule_calendar(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        filters = filters or {}
-        dag_id = str(filters.get("dag_id", "")).strip()
-        status = str(filters.get("status", "")).strip()
-        as_of = parse_datetime(filters.get("as_of")) if filters.get("as_of") else utcnow()
-        horizon_days = int(filters.get("horizon_days", 14))
-        per_workflow_limit = self._bounded_limit(filters.get("per_workflow_limit", 5), max_value=30)
-        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
-        include_manual = self._truthy(filters.get("include_manual", False))
-        include_paused = self._truthy(filters.get("include_paused", False))
-        workflows = list(self.store.workflow_definitions.values())
-        if dag_id:
-            workflows = [item for item in workflows if item.dag_id == dag_id]
-        if status:
-            workflows = [item for item in workflows if item.status == status]
-        if not include_paused:
-            workflows = [item for item in workflows if item.status == "active"]
-        rows: list[dict[str, Any]] = []
-        manual_count = 0
-        for workflow in sorted(workflows, key=lambda item: (item.cadence, item.dag_id)):
-            last_run = self._workflow_last_run(workflow.dag_id)
-            upcoming = self._workflow_upcoming_runs(workflow, as_of=as_of, horizon_days=horizon_days, limit=per_workflow_limit)
-            if not upcoming and workflow.cadence == "manual":
-                manual_count += 1
-                if not include_manual:
-                    continue
-            rows.append(
-                {
-                    "dag_id": workflow.dag_id,
-                    "name": workflow.name,
-                    "cadence": workflow.cadence,
-                    "status": workflow.status,
-                    "owner_role": workflow.owner_role,
-                    "task_count": len(workflow.tasks),
-                    "last_run_id": last_run.run_id if last_run else "",
-                    "last_run_status": last_run.status if last_run else "",
-                    "last_run_at": parse_datetime(last_run.started_at).isoformat() if last_run else "",
-                    "next_run_at": upcoming[0].isoformat() if upcoming else "",
-                    "upcoming_runs": [item.isoformat() for item in upcoming],
-                    "requires_external_scheduler": workflow.cadence not in {"manual", "hourly", "daily", "business_daily", "weekly", "monthly"},
-                }
-            )
-            if len(rows) >= limit:
-                break
-        scheduled_count = sum(1 for row in rows if row["upcoming_runs"])
-        return {
-            "as_of": as_of.isoformat(),
-            "horizon_days": horizon_days,
-            "count": len(rows),
-            "scheduled_count": scheduled_count,
-            "manual_count": manual_count,
-            "workflows": rows,
-            "adapter_recommendation": {
-                "current_phase": "lightweight_scheduler",
-                "production_choice": "keep built-in cadence preview until concurrency, retries, or external dependencies require Airflow/Dagster",
-                "airflow_dagster_trigger": "multiple cross-system DAGs, schedule backfills, task-level retries, or queue isolation requirements",
-            },
-        }
+        return WorkflowReporting(self.store).workflow_schedule_calendar(filters)
 
     def workflow_scheduler_handoff(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         filters = filters or {}
@@ -2310,59 +2177,7 @@ class SystemService:
         return report
 
     def workflow_dependency_graph(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        filters = filters or {}
-        dag_id = str(filters.get("dag_id", "")).strip()
-        status = str(filters.get("status", "")).strip()
-        include_paused = self._truthy(filters.get("include_paused", False))
-        include_runs = self._truthy(filters.get("include_runs", True))
-        include_lineage = self._truthy(filters.get("include_lineage", True))
-        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
-
-        workflows = list(self.store.workflow_definitions.values())
-        if dag_id:
-            workflows = [item for item in workflows if item.dag_id == dag_id]
-        if status:
-            workflows = [item for item in workflows if item.status == status]
-        if not include_paused:
-            workflows = [item for item in workflows if item.status == "active"]
-        workflows = sorted(workflows, key=lambda item: item.dag_id)[:limit]
-
-        graphs: list[dict[str, Any]] = []
-        unresolved_dependency_count = 0
-        cycle_count = 0
-        ready_task_count = 0
-        blocked_task_count = 0
-        run_status_counts: dict[str, int] = {}
-        for workflow in workflows:
-            graph = self._workflow_dependency_graph_row(workflow, include_runs=include_runs, include_lineage=include_lineage)
-            graphs.append(graph)
-            unresolved_dependency_count += len(graph["unresolved_dependencies"])
-            if graph["has_cycle"]:
-                cycle_count += 1
-            ready_task_count += len(graph["ready_task_ids"])
-            blocked_task_count += len(graph["blocked_task_ids"])
-            latest_status = graph["latest_run_status"]
-            if latest_status:
-                run_status_counts[latest_status] = run_status_counts.get(latest_status, 0) + 1
-
-        return {
-            "count": len(graphs),
-            "workflow_count": len(graphs),
-            "task_count": sum(len(item["nodes"]) for item in graphs),
-            "edge_count": sum(len(item["edges"]) for item in graphs),
-            "unresolved_dependency_count": unresolved_dependency_count,
-            "cycle_count": cycle_count,
-            "ready_task_count": ready_task_count,
-            "blocked_task_count": blocked_task_count,
-            "latest_run_status_counts": run_status_counts,
-            "usage_boundary": "dependency_graph_is_visualization_and_triage_only_not_a_production_scheduler",
-            "adapter_recommendation": {
-                "current_phase": "lightweight_dependency_visualization",
-                "production_choice": "keep built-in dependency graph until task-level retries, distributed workers, or external sensors require Airflow/Dagster",
-                "openlineage_adapter_trigger": "cross-system lineage export, external data catalog sync, or regulated model governance evidence",
-            },
-            "graphs": graphs,
-        }
+        return WorkflowReporting(self.store).workflow_dependency_graph(filters)
 
     def workflow_openlineage_export(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         filters = filters or {}
@@ -2508,14 +2323,7 @@ class SystemService:
         return {"changes": [to_plain(item) for item in changes[:limit]], "total": len(changes)}
 
     def workflow_definitions_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        filters = filters or {}
-        status = str(filters.get("status", "")).strip()
-        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
-        definitions = list(self.store.workflow_definitions.values())
-        if status:
-            definitions = [item for item in definitions if item.status == status]
-        definitions = sorted(definitions, key=lambda item: item.updated_at, reverse=True)[:limit]
-        return {"workflows": [to_plain(item) for item in definitions], "total": len(definitions)}
+        return WorkflowReporting(self.store).workflow_definitions_payload(filters)
 
     def record_lineage_event(self, payload: Mapping[str, Any], *, actor: str = "system") -> LineageEvent:
         job_run_id = str(payload["job_run_id"])
@@ -2538,17 +2346,7 @@ class SystemService:
         return event
 
     def lineage_events_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        filters = filters or {}
-        job_run_id = str(filters.get("job_run_id", "")).strip()
-        dataset = str(filters.get("dataset", "")).strip()
-        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
-        events = list(self.store.lineage_events.values())
-        if job_run_id:
-            events = [item for item in events if item.job_run_id == job_run_id]
-        if dataset:
-            events = [item for item in events if item.dataset == dataset]
-        events = sorted(events, key=lambda item: item.created_at, reverse=True)[:limit]
-        return {"lineage_events": [to_plain(item) for item in events], "total": len(events)}
+        return WorkflowReporting(self.store).lineage_events_payload(filters)
 
     def register_model_version(self, payload: Mapping[str, Any], *, actor: str = "system") -> ModelVersionRecord:
         record = ModelVersionRecord(
@@ -2982,88 +2780,12 @@ class SystemService:
         return workflow_planning.idempotency_key(workflow, inputs)
 
     def _workflow_last_run(self, dag_id: str) -> WorkflowRun | None:
-        runs = [item for item in self.store.workflow_runs.values() if item.dag_id == dag_id]
-        if not runs:
-            return None
-        runs.sort(key=lambda item: parse_datetime(item.started_at), reverse=True)
-        return runs[0]
+        return WorkflowReporting(self.store).last_run(dag_id)
 
     def _workflow_dependency_graph_row(self, workflow: WorkflowDefinition, *, include_runs: bool, include_lineage: bool) -> dict[str, Any]:
-        latest_run = self._workflow_last_run(workflow.dag_id) if include_runs else None
-        task_ids = [str(task.get("task_id", "")).strip() for task in workflow.tasks if str(task.get("task_id", "")).strip()]
-        task_id_set = set(task_ids)
-        dependency_map: dict[str, list[str]] = {}
-        dependents: dict[str, list[str]] = {task_id: [] for task_id in task_ids}
-        unresolved: list[dict[str, str]] = []
-        edges: list[dict[str, Any]] = []
-        nodes: list[dict[str, Any]] = []
-
-        for task in workflow.tasks:
-            task_id = str(task.get("task_id", "")).strip()
-            if not task_id:
-                continue
-            dependencies = self._workflow_task_dependencies(task)
-            dependency_map[task_id] = dependencies
-            for dependency in dependencies:
-                edge = {
-                    "from": dependency,
-                    "to": task_id,
-                    "status": "resolved" if dependency in task_id_set else "unresolved",
-                    "type": "task_dependency",
-                }
-                edges.append(edge)
-                if dependency in task_id_set:
-                    dependents.setdefault(dependency, []).append(task_id)
-                else:
-                    unresolved.append({"task_id": task_id, "missing_dependency": dependency})
-
-        for task in workflow.tasks:
-            task_id = str(task.get("task_id", "")).strip()
-            if not task_id:
-                continue
-            task_status = latest_run.task_statuses.get(task_id, "") if latest_run else ""
-            dependencies = dependency_map.get(task_id, [])
-            unresolved_for_task = [item["missing_dependency"] for item in unresolved if item["task_id"] == task_id]
-            nodes.append(
-                {
-                    "task_id": task_id,
-                    "label": str(task.get("name") or task.get("label") or task_id),
-                    "owner": str(task.get("owner", workflow.owner_role)),
-                    "task_type": str(task.get("task_type") or task.get("type") or "task"),
-                    "sla_minutes": self._workflow_task_sla_minutes(task),
-                    "depends_on": dependencies,
-                    "dependents": sorted(set(dependents.get(task_id, []))),
-                    "unresolved_dependencies": unresolved_for_task,
-                    "latest_status": task_status,
-                    "ready": not dependencies or all(latest_run and latest_run.task_statuses.get(dep) == "succeeded" for dep in dependencies if dep in task_id_set),
-                    "blocked": bool(unresolved_for_task) or any(latest_run and latest_run.task_statuses.get(dep) in {"failed", "needs_review"} for dep in dependencies if dep in task_id_set),
-                    "inputs": [str(item) for item in task.get("input_refs", [])],
-                    "outputs": [str(item) for item in task.get("output_refs", [])],
-                }
-            )
-
-        topological_order, has_cycle = self._workflow_topological_order(task_ids, dependency_map)
-        ready_task_ids = sorted(node["task_id"] for node in nodes if node["ready"] and not node["blocked"])
-        blocked_task_ids = sorted(node["task_id"] for node in nodes if node["blocked"])
-        lineage_summary = self._workflow_lineage_summary(workflow.dag_id, latest_run.run_id if latest_run else "") if include_lineage else {}
-        return {
-            "dag_id": workflow.dag_id,
-            "name": workflow.name,
-            "status": workflow.status,
-            "cadence": workflow.cadence,
-            "owner_role": workflow.owner_role,
-            "latest_run_id": latest_run.run_id if latest_run else "",
-            "latest_run_status": latest_run.status if latest_run else "",
-            "latest_run_started_at": parse_datetime(latest_run.started_at).isoformat() if latest_run else "",
-            "nodes": nodes,
-            "edges": edges,
-            "topological_order": topological_order,
-            "has_cycle": has_cycle,
-            "unresolved_dependencies": unresolved,
-            "ready_task_ids": ready_task_ids,
-            "blocked_task_ids": blocked_task_ids,
-            "lineage": lineage_summary,
-        }
+        return WorkflowReporting(self.store).dependency_graph_row(
+            workflow, include_runs=include_runs, include_lineage=include_lineage
+        )
 
     def _workflow_task_dependencies(self, task: Mapping[str, Any]) -> list[str]:
         return workflow_planning.task_dependencies(task)
@@ -3075,51 +2797,10 @@ class SystemService:
         return workflow_planning.topological_order(task_ids, dependency_map)
 
     def _workflow_lineage_summary(self, dag_id: str, latest_run_id: str = "") -> dict[str, Any]:
-        runs = [item.run_id for item in self.store.workflow_runs.values() if item.dag_id == dag_id]
-        run_ids = set(runs)
-        if latest_run_id:
-            run_ids.add(latest_run_id)
-        events = [item for item in self.store.lineage_events.values() if item.job_run_id in run_ids]
-        latest_events = [item for item in events if item.job_run_id == latest_run_id] if latest_run_id else []
-        datasets: dict[str, int] = {}
-        model_versions: set[str] = set()
-        prompt_versions: set[str] = set()
-        for event in events:
-            datasets[event.dataset] = datasets.get(event.dataset, 0) + 1
-            model_versions.update(event.model_versions)
-            prompt_versions.update(event.prompt_versions)
-        return {
-            "event_count": len(events),
-            "latest_run_event_count": len(latest_events),
-            "datasets": datasets,
-            "model_versions": sorted(model_versions),
-            "prompt_versions": sorted(prompt_versions),
-            "input_ref_count": sum(len(item.input_refs) for item in events),
-            "output_ref_count": sum(len(item.output_refs) for item in events),
-        }
+        return WorkflowReporting(self.store).lineage_summary(dag_id, latest_run_id)
 
     def _workflow_queue_plan(self, workflow: WorkflowDefinition) -> dict[str, dict[str, Any]]:
-        queues: dict[str, dict[str, Any]] = {}
-        for task in workflow.tasks:
-            queue = self._workflow_task_queue(task)
-            task_type = self._workflow_task_type(task)
-            row = queues.setdefault(
-                queue,
-                {
-                    "queue": queue,
-                    "worker_pool": f"wf_{queue}_pool",
-                    "task_count": 0,
-                    "task_ids": [],
-                    "task_types": [],
-                    "max_attempts": 1,
-                    "requires_external_worker_pool": queue != "default",
-                },
-            )
-            row["task_count"] += 1
-            row["task_ids"].append(str(task.get("task_id", "")).strip())
-            row["task_types"] = self._unique_strings([*row["task_types"], task_type])
-            row["max_attempts"] = max(row["max_attempts"], int(self._workflow_task_retry_policy(task).get("max_attempts", 1)))
-        return queues
+        return WorkflowReporting(self.store).queue_plan(workflow)
 
     def _workflow_scheduler_backfill_preview(
         self,
@@ -3129,48 +2810,12 @@ class SystemService:
         window_days: int,
         include_plan: bool,
     ) -> dict[str, Any]:
-        if workflow.cadence == "manual":
-            return {"candidate_count": 0, "planned_dates": [], "requires_backfill": False, "reason": "manual_workflow"}
-        last_logical_date = self._workflow_latest_logical_run_date(workflow)
-        start_date = last_logical_date + timedelta(days=1) if last_logical_date else as_of.date()
-        end_date = min(as_of.date(), start_date + timedelta(days=max(0, window_days - 1)))
-        if start_date > end_date:
-            return {"candidate_count": 0, "planned_dates": [], "requires_backfill": False, "reason": "no_gap_after_latest_run"}
-        dates = self._workflow_backfill_dates(
-            {
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-                "cadence": workflow.cadence,
-                "max_runs": window_days,
-            },
-            workflow=workflow,
+        return WorkflowReporting(self.store).scheduler_backfill_preview(
+            workflow, as_of=as_of, window_days=window_days, include_plan=include_plan
         )
-        planned_dates = [item.isoformat() for item in dates] if include_plan else []
-        return {
-            "candidate_count": len(dates),
-            "planned_dates": planned_dates,
-            "requires_backfill": bool(dates),
-            "reason": "latest_run_gap" if last_logical_date else "no_previous_run",
-            "preview_endpoint": f"/api/orchestration/dags/{workflow.dag_id}/backfill",
-        }
 
     def _workflow_latest_logical_run_date(self, workflow: WorkflowDefinition) -> date | None:
-        dates: list[date] = []
-        date_fields = self._unique_strings([*workflow.idempotency_key_fields, "as_of_date", "run_date", "date"])
-        for run in self.store.workflow_runs.values():
-            if run.dag_id != workflow.dag_id:
-                continue
-            backfill = run.inputs.get("backfill", {})
-            if isinstance(backfill, Mapping) and backfill.get("run_date"):
-                dates.append(self._workflow_backfill_date(backfill["run_date"]))
-                continue
-            for field in date_fields:
-                if run.inputs.get(field):
-                    dates.append(self._workflow_backfill_date(run.inputs[field]))
-                    break
-            else:
-                dates.append(parse_datetime(run.started_at).date())
-        return max(dates) if dates else None
+        return WorkflowReporting(self.store).latest_logical_run_date(workflow)
 
     def _workflow_cron_schedule(self, cadence: str) -> str:
         return workflow_planning.cron_schedule(cadence)
@@ -3191,59 +2836,12 @@ class SystemService:
         )
 
     def _workflow_upcoming_runs(self, workflow: WorkflowDefinition, *, as_of: Any, horizon_days: int, limit: int) -> list[Any]:
-        cadence = workflow.cadence.strip().lower()
-        if cadence == "manual":
-            return []
-        last_run = self._workflow_last_run(workflow.dag_id)
-        anchor = parse_datetime(last_run.started_at) if last_run else as_of
-        horizon_end = as_of + timedelta(days=max(0, horizon_days))
-        upcoming: list[Any] = []
-        candidate = anchor
-        guard = 0
-        while candidate <= as_of and guard < 1000:
-            candidate = self._advance_workflow_schedule(candidate, cadence)
-            guard += 1
-        while candidate <= horizon_end and len(upcoming) < limit and guard < 2000:
-            if cadence != "business_daily" or candidate.weekday() < 5:
-                upcoming.append(candidate)
-            candidate = self._advance_workflow_schedule(candidate, cadence)
-            guard += 1
-        return upcoming
+        return WorkflowReporting(self.store).upcoming_runs(
+            workflow, as_of=as_of, horizon_days=horizon_days, limit=limit
+        )
 
     def _workflow_backfill_dates(self, payload: Mapping[str, Any], *, workflow: WorkflowDefinition) -> list[date]:
-        raw_dates = payload.get("run_dates", payload.get("dates"))
-        dates: list[date] = []
-        if isinstance(raw_dates, str):
-            raw_values = [item for item in re.split(r"[,\s]+", raw_dates) if item]
-        elif isinstance(raw_dates, (list, tuple, set)):
-            raw_values = list(raw_dates)
-        elif raw_dates is None:
-            raw_values = []
-        else:
-            raw_values = [raw_dates]
-        for value in raw_values:
-            dates.append(self._workflow_backfill_date(value))
-        if dates:
-            return sorted(set(dates))
-
-        start_value = payload.get("start_date", payload.get("from_date"))
-        end_value = payload.get("end_date", payload.get("to_date", start_value))
-        if not start_value:
-            raise ValidationError("workflow backfill requires run_dates or start_date")
-        start_date = self._workflow_backfill_date(start_value)
-        end_date = self._workflow_backfill_date(end_value)
-        if start_date > end_date:
-            raise ValidationError("workflow backfill start_date must be on or before end_date")
-        cadence = str(payload.get("cadence", workflow.cadence)).strip().lower() or workflow.cadence.strip().lower()
-        max_runs = self._bounded_limit(payload.get("max_runs", 90), max_value=366)
-        current = start_date
-        guard = 0
-        while current <= end_date and len(dates) < max_runs and guard < 1000:
-            if cadence != "business_daily" or current.weekday() < 5:
-                dates.append(current)
-            current = self._advance_workflow_schedule_date(current, cadence)
-            guard += 1
-        return sorted(set(dates))
+        return WorkflowReporting(self.store).backfill_dates(payload, workflow=workflow)
 
     def _workflow_backfill_date(self, value: Any) -> date:
         return workflow_planning.backfill_date(value)
@@ -15170,7 +14768,12 @@ class SystemService:
                 },
                 actor=actor,
             )
-        if "md_demo_us_2026_05_14_eod" not in self.store.market_data:
+        if not self._market_data_point_exists(
+            "security_demo_us",
+            source_id=PUBLIC_EOD_MARKET_DATA_SOURCE_ID,
+            data_type="eod",
+            as_of_date="2026-05-14",
+        ):
             self.register_market_data_point(
                 {
                     "data_id": "md_demo_us_2026_05_14_eod",
@@ -17734,43 +17337,7 @@ class SystemService:
         return {"count": len(notifications), "notifications": [to_plain(item) for item in notifications]}
 
     def graph_traceability_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        filters = filters or {}
-        issuer_id = str(filters.get("issuer_id", "")).strip()
-        include_details = self._truthy(filters.get("include_details", True))
-        limit = self._bounded_limit(filters.get("limit", 100), 1000)
-        theses = [item for item in self.store.theses.values() if not issuer_id or item.issuer_id == issuer_id]
-        answers = [item for item in self.store.research_answers.values() if not issuer_id or item.issuer_id == issuer_id]
-        decisions = self._decisions_for_issuer(issuer_id) if issuer_id else list(self.store.decisions.values())
-        thesis_rows = [self._thesis_traceability_row(item) for item in sorted(theses, key=lambda row: row.thesis_id)]
-        decision_rows = [self._decision_traceability_row(item) for item in sorted(decisions, key=lambda row: row.decision_id)]
-        answer_rows = [self._answer_traceability_row(item) for item in sorted(answers, key=lambda row: row.answer_id)]
-
-        def rate(rows: list[dict[str, Any]]) -> float:
-            if not rows:
-                return 1.0
-            return round(sum(1 for row in rows if row["traceable"]) / len(rows), 4)
-
-        details = {
-            "theses": thesis_rows[:limit],
-            "decisions": decision_rows[:limit],
-            "research_answers": answer_rows[:limit],
-        } if include_details else {}
-        return {
-            "issuer_id": issuer_id,
-            "traceability_rate": rate(thesis_rows + decision_rows + answer_rows),
-            "thesis_traceability_rate": rate(thesis_rows),
-            "decision_traceability_rate": rate(decision_rows),
-            "research_answer_traceability_rate": rate(answer_rows),
-            "counts": {
-                "theses": len(thesis_rows),
-                "decisions": len(decision_rows),
-                "research_answers": len(answer_rows),
-                "untraceable_theses": sum(1 for row in thesis_rows if not row["traceable"]),
-                "untraceable_decisions": sum(1 for row in decision_rows if not row["traceable"]),
-                "untraceable_research_answers": sum(1 for row in answer_rows if not row["traceable"]),
-            },
-            "details": details,
-        }
+        return GraphTraceabilityReporting(self.store).graph_traceability_report(filters)
 
     def graph_edge_quality_report(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -17856,116 +17423,6 @@ class SystemService:
 
     def graph_enrichment_runner(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         return graph_enrichment_runner.graph_enrichment_runner(self, payload or {}, actor=actor)
-
-    def _decisions_for_issuer(self, issuer_id: str) -> list[DecisionPack]:
-        if not issuer_id:
-            return list(self.store.decisions.values())
-        decisions: list[DecisionPack] = []
-        for decision in self.store.decisions.values():
-            for signal_id in decision.signal_ids:
-                signal = self.store.signals.get(signal_id)
-                thesis = self.store.theses.get(signal.thesis_id) if signal else None
-                if thesis and thesis.issuer_id == issuer_id:
-                    decisions.append(decision)
-                    break
-        return decisions
-
-    def _thesis_traceability_row(self, thesis: ThesisCard) -> dict[str, Any]:
-        linked_evidence = [self.store.evidence[evidence_id] for evidence_id in thesis.evidence_ids if evidence_id in self.store.evidence]
-        document_ids = sorted({item.document_id for item in linked_evidence if item.document_id in self.store.documents})
-        missing_evidence_ids = [evidence_id for evidence_id in thesis.evidence_ids if evidence_id not in self.store.evidence]
-        missing_document_ids = sorted({item.document_id for item in linked_evidence if item.document_id not in self.store.documents})
-        issues: list[str] = []
-        if not thesis.evidence_ids:
-            issues.append("missing_evidence_ids")
-        if missing_evidence_ids:
-            issues.append("missing_evidence_records")
-        if missing_document_ids:
-            issues.append("missing_source_documents")
-        if not document_ids:
-            issues.append("missing_document_backlink")
-        return {
-            "resource_type": "thesis",
-            "resource_id": thesis.thesis_id,
-            "issuer_id": thesis.issuer_id,
-            "title": thesis.hypothesis,
-            "evidence_ids": list(thesis.evidence_ids),
-            "linked_evidence_ids": [item.evidence_id for item in linked_evidence],
-            "document_ids": document_ids,
-            "missing_evidence_ids": missing_evidence_ids,
-            "missing_document_ids": missing_document_ids,
-            "traceable": not issues,
-            "issues": issues,
-        }
-
-    def _decision_traceability_row(self, decision: DecisionPack) -> dict[str, Any]:
-        signal_ids = list(decision.signal_ids)
-        linked_signals = [self.store.signals[signal_id] for signal_id in signal_ids if signal_id in self.store.signals]
-        missing_signal_ids = [signal_id for signal_id in signal_ids if signal_id not in self.store.signals]
-        thesis_rows: list[dict[str, Any]] = []
-        missing_thesis_ids: list[str] = []
-        for signal in linked_signals:
-            thesis = self.store.theses.get(signal.thesis_id)
-            if thesis is None:
-                missing_thesis_ids.append(signal.thesis_id)
-                continue
-            thesis_rows.append(self._thesis_traceability_row(thesis))
-        evidence_ids = sorted({evidence_id for row in thesis_rows for evidence_id in row["linked_evidence_ids"]})
-        document_ids = sorted({document_id for row in thesis_rows for document_id in row["document_ids"]})
-        issues: list[str] = []
-        if not signal_ids:
-            issues.append("missing_signal_ids")
-        if missing_signal_ids:
-            issues.append("missing_signal_records")
-        if missing_thesis_ids:
-            issues.append("missing_thesis_records")
-        if not thesis_rows:
-            issues.append("missing_thesis_backlink")
-        if any(not row["traceable"] for row in thesis_rows):
-            issues.append("untraceable_thesis")
-        if not evidence_ids or not document_ids:
-            issues.append("missing_evidence_or_document_path")
-        return {
-            "resource_type": "decision",
-            "resource_id": decision.decision_id,
-            "approval_state": decision.approval_state,
-            "signal_ids": signal_ids,
-            "thesis_ids": [row["resource_id"] for row in thesis_rows],
-            "evidence_ids": evidence_ids,
-            "document_ids": document_ids,
-            "missing_signal_ids": missing_signal_ids,
-            "missing_thesis_ids": sorted(set(missing_thesis_ids)),
-            "traceable": not issues,
-            "issues": issues,
-        }
-
-    def _answer_traceability_row(self, answer: ResearchAnswer) -> dict[str, Any]:
-        evidence = [self.store.evidence[evidence_id] for evidence_id in answer.evidence_ids if evidence_id in self.store.evidence]
-        evidence_document_ids = {item.document_id for item in evidence}
-        missing_evidence_ids = [evidence_id for evidence_id in answer.evidence_ids if evidence_id not in self.store.evidence]
-        missing_document_ids = [document_id for document_id in answer.source_document_ids if document_id not in self.store.documents]
-        issues: list[str] = []
-        if not answer.evidence_ids or missing_evidence_ids:
-            issues.append("missing_evidence_records")
-        if not answer.source_document_ids or missing_document_ids:
-            issues.append("missing_source_documents")
-        if answer.source_document_ids and not set(answer.source_document_ids).issubset(evidence_document_ids):
-            issues.append("source_document_not_backed_by_evidence")
-        if not answer.english_source_text.strip():
-            issues.append("missing_english_source_text")
-        return {
-            "resource_type": "research_answer",
-            "resource_id": answer.answer_id,
-            "issuer_id": answer.issuer_id,
-            "question": answer.question,
-            "evidence_ids": list(answer.evidence_ids),
-            "linked_evidence_ids": [item.evidence_id for item in evidence],
-            "document_ids": list(answer.source_document_ids),
-            "missing_evidence_ids": missing_evidence_ids,
-            "missing_document_ids": missing_document_ids,
-            "traceable": not issues,
-            "issues": issues,
-        }
 
     def register_macro_theme(self, payload: Mapping[str, Any], *, actor: str = "system") -> MacroTheme:
         theme_id = str(payload.get("theme_id") or new_id("theme")).strip()
@@ -28157,12 +27614,22 @@ class SystemService:
                 position_in_scope=position_in_scope,
                 include_low_confidence_related=bool(relationship_type_filter),
             )
+            chain_nodes: dict[str, set[str]] = {}
+            chains: dict[str, IndustryChain] = {}
+            for plan in plans:
+                chain_id_value = plan.chain.chain_id
+                chains[chain_id_value] = plan.chain
+                chain_nodes.setdefault(chain_id_value, set()).update(
+                    set(plan.node_ids)
+                    | set(plan.focus_position.node_ids or [])
+                    | set(plan.related_node_ids or [])
+                )
+            for chain_id_value, plan_node_ids in chain_nodes.items():
+                add_chain_graph(chains[chain_id_value], only_node_ids=plan_node_ids)
             for plan in plans:
                 chain = plan.chain
                 focus_position = plan.focus_position
                 related_position = plan.related_position
-                plan_node_ids = set(plan.node_ids) | set(focus_position.node_ids or []) | set(plan.related_node_ids or [])
-                add_chain_graph(chain, only_node_ids=plan_node_ids)
                 related_issuer = self.store.issuers.get(related_position.issuer_id)
                 if related_issuer is not None:
                     add_node("issuers", related_issuer.issuer_id, related_issuer)
