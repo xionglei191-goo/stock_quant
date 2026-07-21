@@ -24,6 +24,7 @@ from urllib.request import urlopen
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SCHEMA_VERSION = "research-report-clone-segment-state-v1"
 QUIESCENCE_SCHEMA_VERSION = "research-report-clone-segment-quiescence-proof-v1"
+VACUUM_SCHEMA_VERSION = "research-report-clone-segment-vacuum-evidence-v1"
 REQUIRED_CHECKPOINT_COUNTS = (
     "records",
     "audit_log",
@@ -255,7 +256,34 @@ def load_restore_verified_backup(path: Path) -> dict[str, Any]:
         "manifest_sha256": file_sha256(path),
         "dump_sha256": expected_dump_sha,
         "counts": counts,
+        "generated_at": str(payload.get("generated_at") or ""),
     }
+
+
+def load_vacuum_evidence(path: Path, *, backup_manifest_path: Path, backup: Mapping[str, Any]) -> dict[str, str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SegmentStateRefused("vacuum evidence must be readable JSON") from exc
+    if not isinstance(payload, Mapping) or payload.get("schema_version") != VACUUM_SCHEMA_VERSION:
+        raise SegmentStateRefused("vacuum evidence schema is unsupported")
+    if payload.get("status") != "passed" or payload.get("vacuum_completed") is not True:
+        raise SegmentStateRefused("vacuum evidence is not completed")
+    if payload.get("target_scope") != "isolated_clone_only" or payload.get("primary_writes_allowed") is not False:
+        raise SegmentStateRefused("vacuum evidence target boundary is unsafe")
+    if payload.get("backup_manifest_sha256") != backup["manifest_sha256"] or payload.get("backup_dump_sha256") != backup["dump_sha256"]:
+        raise SegmentStateRefused("vacuum evidence is not bound to the restore-verified backup")
+    tables = payload.get("tables")
+    if not isinstance(tables, list) or not tables:
+        raise SegmentStateRefused("vacuum evidence must list affected tables")
+    try:
+        backup_time = datetime.fromisoformat(str(backup.get("generated_at") or "").replace("Z", "+00:00"))
+        vacuum_time = datetime.fromisoformat(str(payload.get("generated_at") or "").replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SegmentStateRefused("backup/vacuum timestamps are invalid") from exc
+    if vacuum_time < backup_time:
+        raise SegmentStateRefused("vacuum evidence predates the restore-verified backup")
+    return {"evidence_sha256": file_sha256(path), "generated_at": vacuum_time.isoformat()}
 
 
 def init_state(
@@ -302,6 +330,7 @@ def append_checkpoint(
     run1_path: Path,
     run2_path: Path,
     backup_manifest_path: Path | None = None,
+    vacuum_evidence_path: Path | None = None,
     counts: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     current = dict(state)
@@ -328,6 +357,9 @@ def append_checkpoint(
     if not run1_path.is_file() or not run2_path.is_file():
         raise SegmentStateRefused("run artifacts must exist")
     backup = load_restore_verified_backup(backup_manifest_path)
+    if vacuum_evidence_path is None:
+        raise SegmentStateRefused("vacuum evidence is required after the restore-verified backup")
+    vacuum = load_vacuum_evidence(vacuum_evidence_path, backup_manifest_path=backup_manifest_path, backup=backup)
     backup_counts = backup["counts"]
     if any(int(counts[key]) != int(backup_counts[key]) for key in REQUIRED_CHECKPOINT_COUNTS):
         raise SegmentStateRefused("checkpoint counts do not match the restore-verified backup")
@@ -364,6 +396,8 @@ def append_checkpoint(
         "prior_run_sha256": prior_run_sha256,
         "backup_manifest_sha256": backup["manifest_sha256"],
         "backup_dump_sha256": backup["dump_sha256"],
+        "vacuum_evidence_sha256": vacuum["evidence_sha256"],
+        "vacuum_completed_at": vacuum["generated_at"],
         "created_at": utc_iso(),
     }
     checkpoint = dict(checkpoint_core)
@@ -431,6 +465,7 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint.add_argument("--run1", type=Path, required=True)
     checkpoint.add_argument("--run2", type=Path, required=True)
     checkpoint.add_argument("--backup-manifest", type=Path, required=True)
+    checkpoint.add_argument("--vacuum-evidence", type=Path, required=True)
     checkpoint.add_argument("--counts-json")
     abort = sub.add_parser("abort")
     abort.add_argument("--state", type=Path, required=True)
@@ -477,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
             run1_path=args.run1,
             run2_path=args.run2,
             backup_manifest_path=args.backup_manifest,
+            vacuum_evidence_path=args.vacuum_evidence,
             counts=json.loads(args.counts_json) if args.counts_json else load_restore_verified_backup(args.backup_manifest)["counts"],
         )
         write_state(args.state, state)

@@ -45,7 +45,9 @@ class CloneSegmentStateTests(unittest.TestCase):
             dump = root / "clone.dump"
             dump.write_bytes(b"restore-verified")
             backup = root / "backup.manifest.json"
-            backup.write_text(json.dumps({"status": "passed", "restore_verified": True, "dump_path": str(dump), "dump_sha256": __import__("hashlib").sha256(dump.read_bytes()).hexdigest(), "source_counts": {"records": 1, "audit_log": 1, "market_data_bars": 1}, "restored_counts": {"records": 1, "audit_log": 1, "market_data_bars": 1}, "collection_counts": {key: 1 for key in counts if key not in {"records", "audit_log", "market_data_bars"}}, "restored_collection_counts": {key: 1 for key in counts if key not in {"records", "audit_log", "market_data_bars"}}}), encoding="utf-8")
+            backup.write_text(json.dumps({"status": "passed", "restore_verified": True, "generated_at": "2026-07-22T10:00:00+00:00", "dump_path": str(dump), "dump_sha256": __import__("hashlib").sha256(dump.read_bytes()).hexdigest(), "source_counts": {"records": 1, "audit_log": 1, "market_data_bars": 1}, "restored_counts": {"records": 1, "audit_log": 1, "market_data_bars": 1}, "collection_counts": {key: 1 for key in counts if key not in {"records", "audit_log", "market_data_bars"}}, "restored_collection_counts": {key: 1 for key in counts if key not in {"records", "audit_log", "market_data_bars"}}}), encoding="utf-8")
+            vacuum = root / "vacuum.json"
+            vacuum.write_text(json.dumps({"schema_version": "research-report-clone-segment-vacuum-evidence-v1", "status": "passed", "generated_at": "2026-07-22T10:05:00+00:00", "vacuum_completed": True, "target_scope": "isolated_clone_only", "primary_writes_allowed": False, "backup_manifest_sha256": __import__("hashlib").sha256(backup.read_bytes()).hexdigest(), "backup_dump_sha256": __import__("hashlib").sha256(dump.read_bytes()).hexdigest(), "tables": ["ai_quant.records"]}), encoding="utf-8")
             state = append_checkpoint(
                 self._state(),
                 batch_id="t613-batch-0005",
@@ -53,6 +55,7 @@ class CloneSegmentStateTests(unittest.TestCase):
                 run1_path=run1,
                 run2_path=run2,
                 backup_manifest_path=backup,
+                vacuum_evidence_path=vacuum,
                 counts=counts,
             )
             self.assertEqual(state["latest_checkpoint"], state["batches"][0]["checkpoint_sha256"])

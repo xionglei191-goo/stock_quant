@@ -49,6 +49,7 @@ An operator could run an isolated clone while a known primary scheduler was acti
 - Segment checkpoints now require all nine cumulative count fields and a run2 `prior_run_sha256` matching run1's artifact SHA.
 - The segment state CLI now supports explicit `resume` from the latest checkpoint after `abort`; stale or unknown checkpoints are rejected.
 - The clone executor validates an active segment state before API access. Checkpoint finalization is intentionally separate and occurs only after the restore-verified segment backup.
+- Checkpoint finalization also requires a hash-bound, clone-only vacuum evidence artifact timestamped after the backup.
 
 ## Proposed Work Plan
 
