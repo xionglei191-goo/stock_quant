@@ -47,6 +47,16 @@ class BatchPreparationRefused(RuntimeError):
     """Raised when immutable T-613 evidence is invalid or tampered."""
 
 
+def related_task_for_batch(batch_id: str) -> str:
+    if batch_id == "t613-batch-0001":
+        return "T-614"
+    if batch_id == "t613-batch-0002":
+        return "T-615"
+    if re.fullmatch(r"t613-batch-(?:000[3-9]|00[1-3][0-9]|004[0-4])", batch_id):
+        return "T-616"
+    raise BatchPreparationRefused("batch ID is outside the governed T-613 recovery range")
+
+
 def utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -426,7 +436,7 @@ def build_preflight(
         decision_generated_at=batch["decision_generated_at"],
         now=now,
     )
-    related_task = "T-614" if batch["batch_id"] == EXPECTED_BATCH_ID else "T-615"
+    related_task = related_task_for_batch(batch["batch_id"])
     plan_core = {
         "schema_version": "research-report-clone-batch-plan-v1",
         "related_task": related_task,

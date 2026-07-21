@@ -16,12 +16,21 @@ from scripts.prepare_research_report_clone_batch import (
     build_preflight,
     inspect_approval,
     inspect_backup,
+    related_task_for_batch,
     verify_decision_batch,
     verify_identity_manifest,
 )
 
 
 class ResearchReportCloneBatchPreparationTests(unittest.TestCase):
+    def test_later_batches_are_owned_by_t616(self) -> None:
+        self.assertEqual(related_task_for_batch("t613-batch-0001"), "T-614")
+        self.assertEqual(related_task_for_batch("t613-batch-0002"), "T-615")
+        self.assertEqual(related_task_for_batch("t613-batch-0003"), "T-616")
+        self.assertEqual(related_task_for_batch("t613-batch-0044"), "T-616")
+        with self.assertRaisesRegex(BatchPreparationRefused, "governed T-613 recovery range"):
+            related_task_for_batch("t613-batch-0045")
+
     def _fixture(self, root: Path) -> tuple[Path, dict[str, object], Path, dict[str, object], str, str]:
         raw = root / "raw"
         registry_root = Path("/data/local/research_reports")

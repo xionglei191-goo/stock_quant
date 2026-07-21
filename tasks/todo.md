@@ -20,7 +20,7 @@
 
 剩余关键缺口：后续主路线不再是强化组织级发布或实时交易，而是建立公司级数据库和分析反馈闭环。本机 production-like 栈仍可作为个人/单机长期使用口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。非本机组织级真实生产发布、外部密钥管理、生产级 artifact URI、灰度/回滚窗口和发布确认全部下沉为运维/非本机发布附录，不阻塞公司情报平台产品路线。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：T-603/T-615 已完成本机收口；下一步由 T-616 决定是否采用每 5 批 persistent-clone segment，并为 batch 0003 或首个 segment 生成全新的 SHA 绑定审批包，当前不自动执行任何剩余批次。主库保持当前 15 份受控切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须重新 dry-run、绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
+近期优先级：T-603/T-615 已完成本机收口；T-616 已完成 fresh clone 与 5 批 persistent clone 的首轮比较，当前选择 batch 0003 单批 fresh clone 作为下一审批单元，等待精确 SHA 绑定批准，不自动执行。主库保持当前 15 份受控切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须重新 dry-run、绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
 
 ## 项目经理整理 / 公司情报平台重定位路线
 
@@ -398,12 +398,17 @@
   - 容量与收口：run1 clone 从 `32319/35385/28365474` 增至 `34654/36145/28365474`，数据库增加 10027008 bytes；run2 三项计数和数据库字节数均为零增量，达到目标。dead tuple 1244/34654，未达到 vacuum 阈值。最终 clone 备份 `ai_quant_t615_clone_20260721-20260721T072013Z` 已恢复验证，dump SHA `fcfd04c15dc1a241bca5fd1ddc07301939df6b09c1c9dc9271ec855d5c8c127c`，保留至 2026-07-28；clone 资源已清理，主库始终保持 `32319/35385/28365474` 且无写入或删除。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-615-recovery-execution-architecture.md`。
 
-- `TODO` T-616 剩余 42 批研报恢复分段决策
+- `DOING` T-616 剩余 42 批研报恢复分段决策
   - 对应：E3-US3, E5-US1, E8-US2；项目经理协调，数据与证据/研究工作流/平台质量/治理安全评审
   - 依赖：T-615；不得复用 batch 0002 的批准、attestation、plan 或 clone，且当前没有 batch 0003 或 segment 执行授权。
   - 目标：基于 T-615 的只读 run2 实证，比较逐批 fresh clone 与最多 5 批 persistent-clone segment 的恢复成本、累计状态风险、备份频率和中止边界，生成下一执行单元的精确 SHA 绑定审批包。
   - 非目标：不自动执行 batch 0003-0044、不写主库、不删除 raw/重复别名/OpenSearch、不把研报升级为事实源或训练源。
   - 验收：明确下一执行单元和每批 SHA、fresh backup/attestation/容量阈值、segment 中止与恢复规则、最终 restore-verified 备份及 clone 清理策略；必须获得新的明确人工批准后才能执行。
+  - 首轮决策：T-615 实测外推显示 5 批 persistent clone 约 120.8 分钟，5 个 fresh clone 约 208.3 分钟，机械节省约 42.0%；但现有 attestation 只能绑定主库备份初始态，不能绑定累计批次状态，且 segment checkpoint/resume 尚不存在，按 dead tuple 线性外推第 5 批约 14.1% 又会超过维护阈值。因此暂不授权 persistent clone，先以单独 batch 0003 增加第二个优化架构样本。
+  - batch 0003 dry-run：250 PDF / 484140668 bytes；batch SHA `c029846b6596ff28e85e385e8eca2fe9c69fc8e31d37e01ef180ea8bd61a74c0`，raw identity SHA `47002ba169b0c836d146b29dd700be7e8a2cee8b2d2aa6b9cffacdee09d79d8f`，plan SHA `2393788a3e594310c1c1e04686092cf53e624bc887303f2dfee4a3167fb421c2`。当前仅 `exact_human_approval_verified` 和 `independent_clone_attestation_verified` 两门失败，`execution_performed=false`，未创建 clone、未写数据库。
+  - 契约修复：后续批次审批任务归属从错误的 T-615 修正为 T-616；回归覆盖 batch 0001/0002/0003/0044 及越界 0045 拒绝。
+  - Artifact：`artifacts/t616-research-recovery-segment/segment-strategy-decision.json`、`batch-0003-preflight.json` 和 `batch-0003-approval-request.json`，均为 local-only，不构成执行授权或非本机发布证据。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-616-recovery-segment-decision.md`。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
