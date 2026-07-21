@@ -20,7 +20,7 @@
 
 剩余关键缺口：后续主路线不再是强化组织级发布或实时交易，而是建立公司级数据库和分析反馈闭环。本机 production-like 栈仍可作为个人/单机长期使用口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。非本机组织级真实生产发布、外部密钥管理、生产级 artifact URI、灰度/回滚窗口和发布确认全部下沉为运维/非本机发布附录，不阻塞公司情报平台产品路线。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：T-603/T-616 已完成本机收口；下一步 T-617 先实现 persistent clone 的累计状态 attestation、逐批 checkpoint/resume/abort 和定时器 quiescence 证明，再决定 batch 0004 是否仍用 fresh clone 或扩大到小 segment，当前不自动执行。主库保持当前 15 份受控研报切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须重新 dry-run、绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
+近期优先级：T-603/T-616/T-617 已完成本机收口；T-617 的 persistent clone 累计状态、checkpoint/resume/abort、备份/vacuum 顺序和定时器 quiescence 证明已完成，batch 0006 及后续批次仍需独立批准后才能执行。主库保持当前 15 份受控研报切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须重新 dry-run、绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
 
 ## 项目经理整理 / 公司情报平台重定位路线
 
@@ -420,7 +420,7 @@
   - 非目标：不写主库、不删除 raw/重复别名/OpenSearch、不做主库 promotion；batch 0005-0044 仍不自动执行。
   - 验收：累计状态 manifest 绑定 records/audit/research 六集合和 prior-run SHA；任一批失败可停止并从最近 checkpoint 恢复；执行前证明 timer/service 不会在测量窗口写主库，或明确采用独立只读主库快照基线；通过 focused/full CI 后再生成下一精确审批包。
   - 当前进展：batch 0004、0005 已在精确批准的独立 clone 中完成双跑。batch 0005 为 250/250 成功，245 `text_indexed`、5 `manual_review`、1870 citation evidence，run2 `ingest_created=0` 且逐项一致。最终 clone `34695/36142/28365474`，数据库 `15511968791` bytes；备份 restore equality 已验证并保留至 2026-07-28，clone 资源已清理，主库健康与基线计数未变。segment state contract 已绑定 clone identity、plan/manifest、run1/run2、prior-run SHA、restore-verified backup、vacuum evidence、九项累计计数和 checkpoint/abort/resume；实际 executor 已接入 active state 校验、30 分钟 freshness、scheduler stopped、writer container stopped、writer sessions=0、primary unreachable 的 quiescence proof 门禁，并提供直接只读观测命令。`.venv` 下 full CI 545 tests 及 UI/安全/文档检查已通过。T-617 的架构与测试验收已完成；batch 0006 只读 preflight 仍被人工批准、独立 attestation 和 quiescent window 阻断，作为后续独立运维动作，不影响本任务代码闭环；当前 `ai-quant-daily-update.timer` 仍 active，batch 0006-0044 不执行。
-  - Handoff：`docs/agent-handoffs/2026-07-21-T-617-batch-0005-preflight.md`、`docs/agent-handoffs/2026-07-21-T-617-segment-state-contract.md`、`docs/agent-handoffs/2026-07-21-T-617-segment-quiescence-integration.md`、`docs/agent-handoffs/2026-07-21-T-617-batch-0006-preflight.md`。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-617-batch-0005-preflight.md`、`docs/agent-handoffs/2026-07-21-T-617-segment-state-contract.md`、`docs/agent-handoffs/2026-07-21-T-617-segment-quiescence-integration.md`、`docs/agent-handoffs/2026-07-21-T-617-batch-0006-preflight.md`、`docs/agent-handoffs/2026-07-22-T-617-architecture-closure.md`。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
@@ -2194,7 +2194,7 @@
     - 2026-05-18 实跑 `bash scripts/local_production_stack.sh` 退出码 0；`/api/health` 中 TDX、LLM gateway、PaddleOCR-VL 均已配置，capacity baseline 无 breach，`local-production-audit` 与 `local-ai-capability-acceptance` 均 `status=passed`
   - 已有：上线验收证据包接口和通知 outbox 可把 M6-M9 剩余真实环境验证项集中成审计 manifest，并明确当前证据包不是生产执行本身，必须回填真实 artifact URI 后才能通过闸门
   - 已有：`scripts/production_task_closure_audit.py` 可审计 `tasks/todo.md` 中剩余 `BLOCKED` / `DOING` 任务，逐项检查代码层 marker、readiness/report/验收脚本是否存在，并把剩余状态区分为 `blocked_external_evidence` 或 `needs_code_work`；当前 17 个开放项均为 `blocked_external_evidence`，不是继续缺代码脚手架
-  - **已完成（本轮本机完成审计）**：`scripts/project_completion_audit.py` 现按部署目标分流：默认仍按非本机组织级发布证据判断，显式传入 `--local-production-audit artifacts/local-production-audit.json --local-ai-acceptance artifacts/local-ai-capability-acceptance.json` 时按本机个人生产证据判断；2026-05-22 已刷新 `artifacts/project-completion-audit.json` 和 `artifacts/production-task-closure-audit.json`，当前输出 `status=achieved`、`achieved=true`、`target_mode=local_only_personal_production`、`local_production_ready=true`、`doing_task_count=0`、`needs_code_work_count=0`
+  - **已完成（本轮本机完成审计）**：`scripts/project_completion_audit.py` 现按部署目标分流：默认仍按非本机组织级发布证据判断，显式传入 `--local-production-audit artifacts/local-production-audit.json --local-ai-acceptance artifacts/local-ai-capability-acceptance.json` 时按本机个人生产证据判断；2026-07-22 已刷新 `artifacts/project-completion-audit.json` 和 `artifacts/production-task-closure-audit.json`，当前输出 `status=achieved`、`achieved=true`、`target_mode=local_only_personal_production`、`local_production_ready=true`、`doing_task_count=0`、`needs_code_work_count=0`
   - 已有：`scripts/production_evidence_plan_check.py --require-filled-uris` 会拒绝仍带 `<production-evidence-bucket>` / `<release-id>` 的采集计划，只有 owner 回填真实 staging/production artifact URI 后才允许进入 production closure manifest
   - 已有：`scripts/production_artifact_inventory_check.py` 可从 plan/package/manifest 生成 release artifact inventory 模板，并校验所有证据 URI 都有 sha256、size、environment、producer、owner、content type、retention 和 immutable/object lock 记录；提供 `--bundle-root` 时还能对本地导出的 evidence bundle 做文件存在、size 和 sha256 复验
   - 已有：`scripts/production_evidence_plan_to_manifest.py` 可把已回填 URI 的采集计划映射到 production closure manifest 的 task evidence、readiness checks、storage/security/observability/UI/deployment reports 和 A 股 connector 证据；默认拒绝占位符，且不自动设置 `ready_for_launch=true`
