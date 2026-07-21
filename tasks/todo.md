@@ -417,9 +417,9 @@
   - 对应：E3-US3, E5-US1, E8-US2；平台与质量，数据与证据/研究工作流/治理安全/项目经理评审
   - 依赖：T-616；batch 0004-0044 当前均无执行授权，不得复用 batch 0003 的批准、attestation、plan 或 clone。
   - 目标：实现可绑定前序批次状态的 clone attestation、逐批 checkpoint/resume/abort、segment 末尾备份/vacuum 顺序，以及执行窗口内每日 timer quiescence 或可审计外部写入隔离证明。
-  - 非目标：不自动执行 batch 0004、不写主库、不删除 raw/重复别名/OpenSearch、不做主库 promotion。
+  - 非目标：不写主库、不删除 raw/重复别名/OpenSearch、不做主库 promotion；batch 0005-0044 仍不自动执行。
   - 验收：累计状态 manifest 绑定 records/audit/research 六集合和 prior-run SHA；任一批失败可停止并从最近 checkpoint 恢复；执行前证明 timer/service 不会在测量窗口写主库，或明确采用独立只读主库快照基线；通过 focused/full CI 后再生成下一精确审批包。
-  - 当前进展：batch 0004 只读预检已生成，250 PDF / 535974264 bytes；batch SHA `ff585355bced141eaaced98f8463ab6d47d4d158d10937788c314fbce6a0b462`，raw identity SHA `3611924cf49340a956a259228d17863a209e434552d1e9513b05d97900b06e79`，plan SHA `c752b0f7a70698961c8b0768d3ce429f37efb102c21b1ac127be17fae4865849`。preflight SHA `f5a29944c189d8c057dbbb0d412d8da1ccf2cf052305d720e5f698bc6a960162`，approval request SHA `a1479d3900586666eadf282479cb26bcadf4141b074320894b2e4ec073c65f53`；当前未创建 clone、未写主库，等待精确批准和独立 attestation。
+  - 当前进展：batch 0004 已在精确批准的独立 clone 中完成双跑；250/250 成功，237 `text_indexed`、11 `manual_review`、1846 citation evidence，run2 `ingest_created=0` 且逐项一致。最终 clone `34677/36275/28365474`，数据库增加约 11.1 MB，最终备份已 restore equality 验证并保留至 2026-07-28；clone 资源已清理。T-617 的累计状态/checkpoint/quiescence 架构仍未完成，batch 0005-0044 继续阻断。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-617-batch-0004-preflight.md`。
 
 - `DONE` T-431 产品重定位与文档统一
