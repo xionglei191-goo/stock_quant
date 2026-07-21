@@ -422,6 +422,14 @@
   - 当前进展：batch 0004、0005 已在精确批准的独立 clone 中完成双跑。batch 0005 为 250/250 成功，245 `text_indexed`、5 `manual_review`、1870 citation evidence，run2 `ingest_created=0` 且逐项一致。最终 clone `34695/36142/28365474`，数据库 `15511968791` bytes；备份 restore equality 已验证并保留至 2026-07-28，clone 资源已清理，主库健康与基线计数未变。segment state contract 已绑定 clone identity、plan/manifest、run1/run2、prior-run SHA、restore-verified backup、vacuum evidence、九项累计计数和 checkpoint/abort/resume；实际 executor 已接入 active state 校验、30 分钟 freshness、scheduler stopped、writer container stopped、writer sessions=0、primary unreachable 的 quiescence proof 门禁，并提供直接只读观测命令。`.venv` 下 full CI 545 tests 及 UI/安全/文档检查已通过。T-617 的架构与测试验收已完成；batch 0006 只读 preflight 仍被人工批准、独立 attestation 和 quiescent window 阻断，作为后续独立运维动作，不影响本任务代码闭环；当前 `ai-quant-daily-update.timer` 仍 active，batch 0006-0044 不执行。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-617-batch-0005-preflight.md`、`docs/agent-handoffs/2026-07-21-T-617-segment-state-contract.md`、`docs/agent-handoffs/2026-07-21-T-617-segment-quiescence-integration.md`、`docs/agent-handoffs/2026-07-21-T-617-batch-0006-preflight.md`、`docs/agent-handoffs/2026-07-22-T-617-architecture-closure.md`。
 
+- `DONE` T-618 HTTP 客户端断开响应容错
+  - 对应：E8-US2；平台与质量，产品与 UI 评审
+  - 目标：浏览器验收或慢 API 请求超时导致客户端主动断开时，服务端忽略 `BrokenPipeError` / `ConnectionResetError`，避免产生误导性 traceback。
+  - 非目标：不改变 API 状态码、业务响应、数据写入策略或 paper-only/no-broker 边界。
+  - 已完成：`app/server.py` 的 JSON、HTML、UI module 响应统一经过断开容错写入；新增 focused regression；重启当前 Compose app 后主动断开 batch preview 请求，最近日志无断开异常。
+  - 验收：`.venv` 下 full CI 546 tests、UI static、安全、Markdown、handoff 和文档元数据检查全部通过；`/api/health` 返回 PostgreSQL/S3/OpenSearch healthy。
+  - Handoff：`docs/agent-handoffs/2026-07-22-T-618-http-client-disconnect-resilience.md`。
+
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
   - 目标：统一 README、PRD、系统架构、数据结构和文档索引，把主叙事改为“公司情报与市场综合分析平台”。

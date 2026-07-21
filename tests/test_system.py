@@ -20264,6 +20264,17 @@ class SystemServiceTests(SystemServiceTestBase):
         self.assertFalse(checks["simulated_trade_execution"]["evidence"]["live_execution_allowed"])
         self.assertEqual(checks["metrics_observability"]["evidence"]["simulated_executions"], 1)
 
+    def test_http_handler_ignores_client_disconnect_while_writing_response(self) -> None:
+        import app.server as server_module
+
+        class _ClosedWriter:
+            def write(self, _data: bytes) -> None:
+                raise BrokenPipeError("client disconnected")
+
+        handler = object.__new__(server_module.Handler)
+        handler.wfile = _ClosedWriter()
+        handler._write_body(b"response")
+
     def test_staging_acceptance_runs_against_http_server_and_records_readiness(self) -> None:
         import app.server as server_module
 

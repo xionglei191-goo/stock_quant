@@ -79,13 +79,20 @@ def get_router() -> ApiRouter:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _write_body(self, data: bytes) -> None:
+        # A browser acceptance timeout can close the socket while a slow response is finishing.
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _send_json(self, payload: dict, status: int = 200) -> None:
         data = json.dumps(to_plain(payload), ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        self._write_body(data)
 
     def _send_html(self, filename: str) -> None:
         path = STATIC_DIR / filename
@@ -94,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        self._write_body(data)
 
     def _send_ui_module(self, filename: str) -> None:
         path = STATIC_DIR / "ui_modules" / filename
@@ -106,7 +113,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/javascript; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        self._write_body(data)
 
     def _read_json(self) -> dict:
         content_length = int(self.headers.get("Content-Length", "0"))
