@@ -86,7 +86,7 @@ def validate_quiescence_proof(
         isinstance(proof.get("known_scheduler_units"), list) and bool(proof.get("known_scheduler_units")),
         proof.get("scheduler_units_stopped") is True,
         isinstance(proof.get("scheduler_observations"), list) and len(proof["scheduler_observations"]) == len(proof["known_scheduler_units"]),
-        isinstance(proof.get("writer_container_observations"), list),
+        isinstance(proof.get("writer_container_observations"), list) and bool(proof.get("writer_container_observations")),
         all(item.get("stopped") is True for item in proof.get("scheduler_observations", [])),
         all(item.get("running") is False and item.get("returncode") == 0 and bool(item.get("container_id")) for item in proof.get("writer_container_observations", [])),
         proof.get("active_writer_sessions") == 0,

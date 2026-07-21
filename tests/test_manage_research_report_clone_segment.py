@@ -10,6 +10,7 @@ from scripts.manage_research_report_clone_segment import (
     SegmentStateRefused,
     abort_state,
     append_checkpoint,
+    build_quiescence_proof,
     canonical_sha256,
     init_state,
     validate_quiescence_proof,
@@ -79,7 +80,7 @@ class CloneSegmentStateTests(unittest.TestCase):
                 "known_scheduler_units": ["ai-quant-daily-update.service"],
                 "scheduler_units_stopped": True,
                 "scheduler_observations": [{"unit": "ai-quant-daily-update.service", "state": "inactive", "stopped": True}],
-                "writer_container_observations": [],
+                "writer_container_observations": [{"container": "primary-app", "container_id": "abc", "running": False, "returncode": 0, "state": "exited"}],
                 "active_writer_sessions": 0,
                 "operator_boundary": "primary_writers_and_known_schedulers_stopped_for_clone_segment",
             }
@@ -100,13 +101,24 @@ class CloneSegmentStateTests(unittest.TestCase):
                 "known_scheduler_units": ["ai-quant-daily-update.service"],
                 "scheduler_units_stopped": False,
                 "scheduler_observations": [{"unit": "ai-quant-daily-update.service", "state": "active", "stopped": False}],
-                "writer_container_observations": [],
+                "writer_container_observations": [{"container": "primary-app", "container_id": "abc", "running": False, "returncode": 0, "state": "exited"}],
                 "active_writer_sessions": 0,
                 "operator_boundary": "primary_writers_and_known_schedulers_stopped_for_clone_segment",
             }
             path.write_text(json.dumps({**core, "status": "passed", "proof_sha256": canonical_sha256(core)}), encoding="utf-8")
             with self.assertRaises(SegmentStateRefused):
                 validate_quiescence_proof(path, plan_sha256="a" * 64, backup_dump_sha256="b" * 64, now=datetime(2026, 7, 21, 12, 5, tzinfo=timezone.utc))
+
+    def test_quiescence_builder_requires_observed_writer_container(self) -> None:
+        with self.assertRaises(SegmentStateRefused):
+            build_quiescence_proof(
+                plan_sha256="a" * 64,
+                backup_dump_sha256="b" * 64,
+                known_scheduler_units=["ai-quant-daily-update.service"],
+                scheduler_units_stopped=True,
+                active_writer_sessions=0,
+                primary_service_reachable=False,
+            )
 
 
 if __name__ == "__main__":

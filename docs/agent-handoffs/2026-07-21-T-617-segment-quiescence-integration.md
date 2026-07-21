@@ -91,7 +91,7 @@ make local-ci
 Result:
 
 - Passed: 11 focused tests, security scan (550 files), handoff validation, compile, diff check.
-- Passed: full CI with the declared `.venv` dependency set; 540 tests plus UI, security, links, handoffs, and metadata checks.
+- Passed: full CI with the declared `.venv` dependency set; 541 tests plus UI, security, links, handoffs, and metadata checks.
 - Not run: any real clone execution or database mutation.
 
 ## Evidence
@@ -106,7 +106,7 @@ Result:
 
 ## Risks and Open Questions
 
-- The direct observer still requires operator-supplied unit/container names; it does not stop services automatically.
+- The direct observer still requires operator-supplied unit/container names; it does not stop services automatically. Unknown systemd states and missing writer-container identities are rejected.
 
 ## Handoff Checklist
 
