@@ -426,9 +426,10 @@ def build_preflight(
         decision_generated_at=batch["decision_generated_at"],
         now=now,
     )
+    related_task = "T-614" if batch["batch_id"] == EXPECTED_BATCH_ID else "T-615"
     plan_core = {
         "schema_version": "research-report-clone-batch-plan-v1",
-        "related_task": "T-614",
+        "related_task": related_task,
         "manifest_sha256": manifest_verification["manifest_sha256"],
         "batch_id": batch["batch_id"],
         "batch_sha256": batch["batch_sha256"],
@@ -481,7 +482,7 @@ def build_preflight(
     execution_ready = all(bool(item["passed"]) for item in gates)
     return {
         "schema_version": "research-report-clone-batch-preflight-v1",
-        "related_task": "T-614",
+        "related_task": related_task,
         "generated_at": now.isoformat(),
         "mode": "read_only_preflight_no_execute_mode",
         "classification": "local-only",
@@ -531,9 +532,10 @@ def build_approval_request(preflight: Mapping[str, Any]) -> dict[str, Any]:
     manifest_sha256 = str(plan.get("manifest_sha256") or "")
     batch_id = str(summary.get("batch_id") or "")
     batch_sha256 = str(summary.get("batch_sha256") or "")
+    related_task = str(preflight.get("related_task") or "T-615")
     return {
         "schema_version": "research-report-clone-batch-approval-request-v1",
-        "related_task": "T-614",
+        "related_task": related_task,
         "generated_at": utc_iso(),
         "status": "pending_human_approval",
         "manifest_sha256": manifest_sha256,
@@ -544,7 +546,7 @@ def build_approval_request(preflight: Mapping[str, Any]) -> dict[str, Any]:
         "primary_writes_allowed": False,
         "delete_operations_allowed": False,
         "required_confirmation": (
-            f"批准 T-614 {batch_id} 仅在独立 clone 中双跑；"
+            f"批准 {related_task} {batch_id} 仅在独立 clone 中双跑；"
             f"manifest={manifest_sha256}；batch={batch_sha256}；禁止主库写入和删除。"
         ),
         "approval_record_template": {

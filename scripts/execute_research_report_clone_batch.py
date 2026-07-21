@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute one approved T-614 batch inside an independently attested clone.
+"""Execute one approved T-613 batch inside an independently attested clone.
 
 The command refuses primary/default URLs, non-clone runtimes, stale or
 unbound approvals, changed raw files, and plans that permit updates/deletes.
@@ -40,7 +40,7 @@ from scripts.recover_watchlist_research_reports import (
 from scripts.research_report_full_parse import ensure_fallback_issuer, redact_sensitive_contacts
 
 
-EXPECTED_BATCH_ID = "t613-batch-0001"
+EXPECTED_BATCH_ID_PATTERN = re.compile(r"^t613-batch-00(?:0[1-9]|[1-3][0-9]|4[0-4])$")
 FALLBACK_ISSUER_ID = "issuer_local_research_reference"
 SAFE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -90,7 +90,7 @@ def validate_execution_bundle(
     confirm_plan_sha256: str,
     confirm_batch_sha256: str,
     acknowledge_opinion_boundary: bool,
-    allow_full_registry_scan: bool,
+    confirm_targeted_registration: bool,
     confirm_clone_target: bool,
     now: datetime | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -130,8 +130,8 @@ def validate_execution_bundle(
         raise CloneBatchRefused("--confirm-plan-sha256 must match the ready preflight")
     batch_id = str(plan.get("batch_id") or "")
     batch_sha256 = str(plan.get("batch_sha256") or "")
-    if batch_id != EXPECTED_BATCH_ID or confirm_batch_sha256 != batch_sha256:
-        raise CloneBatchRefused("--confirm-batch-sha256 must match t613-batch-0001")
+    if not EXPECTED_BATCH_ID_PATTERN.fullmatch(batch_id) or confirm_batch_sha256 != batch_sha256:
+        raise CloneBatchRefused("batch ID must be one of the deterministic T-613 batches and SHA must match")
 
     write_contract = dict(plan.get("write_contract") or {})
     required_contract = {
@@ -149,7 +149,7 @@ def validate_execution_bundle(
     }
     if any(write_contract.get(key) != value for key, value in required_contract.items()):
         raise CloneBatchRefused("batch write contract changed")
-    if not acknowledge_opinion_boundary or not allow_full_registry_scan or not confirm_clone_target:
+    if not acknowledge_opinion_boundary or not confirm_targeted_registration or not confirm_clone_target:
         raise CloneBatchRefused("all clone-only execution acknowledgements are required")
 
     approval = inspect_approval(
@@ -297,25 +297,42 @@ def execute_batch(
         entries=entries,
     )
 
-    scan_started = time.monotonic()
-    scan = client.request(
-        "POST",
-        "/api/research-reports/scan",
-        {
-            "root_path": api_root,
-            "extensions": [".pdf"],
-            "limit": 50000,
-            "hash_files": False,
-            "per_broker_sources": True,
-        },
-    )
-    reports = scan.get("reports") if isinstance(scan.get("reports"), list) else []
-    registered_ids = {str(item.get("report_id") or "") for item in reports if isinstance(item, Mapping)}
-    missing = sorted(set(report_ids) - registered_ids)
-    if missing:
-        raise CloneBatchRefused("clone registry scan did not contain every approved report ID")
-    ensure_fallback_issuer(client, FALLBACK_ISSUER_ID)
-    registry_scan_seconds = round(time.monotonic() - scan_started, 3)
+    scan: dict[str, Any] = {}
+    registry_scan_seconds = 0.0
+    prior_state: dict[str, Mapping[str, Any]] = {}
+    if prior_run is None:
+        scan_started = time.monotonic()
+        relative_paths = [path.relative_to(filesystem_root.expanduser().resolve()).as_posix() for path in resolved.values()]
+        scan = client.request(
+            "POST",
+            "/api/research-reports/scan",
+            {
+                "root_path": api_root,
+                "relative_paths": relative_paths,
+                "extensions": [".pdf"],
+                "limit": len(relative_paths),
+                "hash_files": False,
+                "per_broker_sources": True,
+            },
+        )
+        reports = scan.get("reports") if isinstance(scan.get("reports"), list) else []
+        registered_ids = {str(item.get("report_id") or "") for item in reports if isinstance(item, Mapping)}
+        missing = sorted(set(report_ids) - registered_ids)
+        if missing:
+            raise CloneBatchRefused("targeted clone registry scan did not contain every approved report ID")
+        ensure_fallback_issuer(client, FALLBACK_ISSUER_ID)
+        registry_scan_seconds = round(time.monotonic() - scan_started, 3)
+    else:
+        state = client.request(
+            "GET",
+            "/api/research-reports/batch-state?report_ids=" + ",".join(report_ids),
+        )
+        if state.get("missing_report_ids"):
+            raise CloneBatchRefused("clone batch-state is missing an approved report ID")
+        rows = state.get("reports") if isinstance(state.get("reports"), list) else []
+        prior_state = {str(item.get("report_id") or ""): item for item in rows if isinstance(item, Mapping)}
+        if set(prior_state) != set(report_ids):
+            raise CloneBatchRefused("clone batch-state did not return every approved report ID")
 
     entries_by_id = {str(item["report_id"]): item for item in entries}
     results: list[dict[str, Any]] = []
@@ -325,28 +342,7 @@ def execute_batch(
         entry = entries_by_id[report_id]
         path = resolved[report_id]
         try:
-            ingest = client.request(
-                "POST",
-                f"/api/research-reports/{report_id}/ingest",
-                {
-                    "issuer_id": FALLBACK_ISSUER_ID,
-                    "security_id": "",
-                    "document_id": str(entry.get("document_id") or ""),
-                    "content_sha256": str(entry.get("content_sha256") or ""),
-                    "language": "zh",
-                    "version": "t614-clone-batch-pdftotext-v1",
-                },
-            )
-            report = ingest.get("report") if isinstance(ingest.get("report"), Mapping) else {}
-            document = ingest.get("document") if isinstance(ingest.get("document"), Mapping) else {}
             expected_content = str(entry.get("content_sha256") or "")
-            content_identity_verified = (
-                report.get("content_sha256") == expected_content
-                and document.get("content_sha256") == expected_content
-                and document.get("document_id") == entry.get("document_id")
-            )
-            if not content_identity_verified:
-                raise RuntimeError("persisted content identity mismatch")
             text, text_source = _extract_candidate_text(
                 path,
                 file_type=str(entry.get("file_type") or ""),
@@ -354,26 +350,68 @@ def execute_batch(
                 pdf_pages=pdf_pages,
                 pdftotext_timeout=pdftotext_timeout,
             )
-            extract_payload: dict[str, Any] = {
-                "citation_char_limit": citation_char_limit,
-                "parser_version": "t614-clone-batch-pdftotext-v1",
-            }
-            if text:
-                extract_payload["text"] = redact_sensitive_contacts(text)
-            extracted = client.request(
-                "POST",
-                f"/api/research-reports/{report_id}/extract",
-                extract_payload,
-            )
+            if prior_run is None:
+                ingest = client.request(
+                    "POST",
+                    f"/api/research-reports/{report_id}/ingest",
+                    {
+                        "issuer_id": FALLBACK_ISSUER_ID,
+                        "security_id": "",
+                        "document_id": str(entry.get("document_id") or ""),
+                        "content_sha256": expected_content,
+                        "language": "zh",
+                        "version": "t614-clone-batch-pdftotext-v1",
+                    },
+                )
+                report = ingest.get("report") if isinstance(ingest.get("report"), Mapping) else {}
+                document = ingest.get("document") if isinstance(ingest.get("document"), Mapping) else {}
+                content_identity_verified = (
+                    report.get("content_sha256") == expected_content
+                    and document.get("content_sha256") == expected_content
+                    and document.get("document_id") == entry.get("document_id")
+                )
+                if not content_identity_verified:
+                    raise RuntimeError("persisted content identity mismatch")
+                extract_payload: dict[str, Any] = {
+                    "citation_char_limit": citation_char_limit,
+                    "parser_version": "t614-clone-batch-pdftotext-v1",
+                }
+                if text:
+                    extract_payload["text"] = redact_sensitive_contacts(text)
+                extracted = client.request(
+                    "POST",
+                    f"/api/research-reports/{report_id}/extract",
+                    extract_payload,
+                )
+                persisted = {
+                    "document_id": document.get("document_id"),
+                    "content_sha256": document.get("content_sha256"),
+                    "status": extracted.get("status") or "unknown",
+                    "evidence_count": len(extracted.get("evidence") or []),
+                    "manual_review": bool(extracted.get("manual_review")),
+                }
+                content_identity_verified = True
+                ingest_created = bool(ingest.get("created"))
+            else:
+                persisted = dict(prior_state[report_id])
+                content_identity_verified = (
+                    persisted.get("report_id") == report_id
+                    and persisted.get("document_id") == entry.get("document_id")
+                    and persisted.get("content_sha256") == expected_content
+                    and persisted.get("document_content_sha256") == expected_content
+                )
+                if not content_identity_verified:
+                    raise RuntimeError("read-only persisted content identity mismatch")
+                ingest_created = False
             results.append(
                 {
                     "report_id": report_id,
                     "document_id": str(entry.get("document_id") or ""),
                     "content_sha256": expected_content,
-                    "ingest_created": bool(ingest.get("created")),
-                    "status": str(extracted.get("status") or "unknown"),
-                    "evidence_count": len(extracted.get("evidence") or []),
-                    "manual_review": bool(extracted.get("manual_review")),
+                    "ingest_created": ingest_created,
+                    "status": str(persisted.get("status") or "unknown"),
+                    "evidence_count": int(persisted.get("evidence_count") or 0),
+                    "manual_review": bool(persisted.get("manual_review")),
                     "text_source": _text_source_category(text_source),
                     "content_identity_verified": True,
                 }
@@ -401,7 +439,7 @@ def execute_batch(
     execution_seconds = round(time.monotonic() - started, 3)
     payload: dict[str, Any] = {
         "schema_version": "research-report-clone-batch-execution-v1",
-        "related_task": "T-614",
+        "related_task": str(plan.get("related_task") or "T-615"),
         "generated_at": utc_iso(),
         "environment": "operator_approved_independently_attested_clone",
         "plan_sha256": str(payload_sha256(plan)),
@@ -411,6 +449,7 @@ def execute_batch(
         "status": "passed" if not errors and len(results) == len(entries) else "completed_with_failures",
         "registry_indexed_count": int(scan.get("indexed_count") or 0),
         "registry_scan_seconds": registry_scan_seconds,
+        "registry_scan_mode": "targeted_relative_paths" if prior_run is None else "read_only_batch_state",
         "selected_report_count": len(entries),
         "processed_count": len(results),
         "failed_count": len(errors),
@@ -454,7 +493,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--confirm-plan-sha256", required=True)
     parser.add_argument("--confirm-batch-sha256", required=True)
     parser.add_argument("--acknowledge-opinion-boundary", action="store_true")
-    parser.add_argument("--allow-full-registry-scan", action="store_true")
+    parser.add_argument("--confirm-targeted-registration", action="store_true")
     parser.add_argument("--confirm-clone-target", action="store_true")
     parser.add_argument("--prior-run", type=Path)
     parser.add_argument("--citation-char-limit", type=int, default=1200)
@@ -481,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
             confirm_plan_sha256=args.confirm_plan_sha256,
             confirm_batch_sha256=args.confirm_batch_sha256,
             acknowledge_opinion_boundary=args.acknowledge_opinion_boundary,
-            allow_full_registry_scan=args.allow_full_registry_scan,
+            confirm_targeted_registration=args.confirm_targeted_registration,
             confirm_clone_target=args.confirm_clone_target,
         )
         validate_current_clone_runtime_identity(attestation)

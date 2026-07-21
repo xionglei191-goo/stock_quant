@@ -390,6 +390,12 @@
   - 目标：先审查 3 个 `needs_text_review` ID，确定 OCR/跳过/人工处理口径；消除或证明每批全量 registry 重扫的必要性；量化 run2 MVCC/audit 增量与 vacuum 策略；形成后续批次逐批或分段审批方案。
   - 非目标：不自动执行后续 43 批、不晋升主库、不删除原文件/重复别名/OpenSearch 索引，不扩展到券商或实盘。
   - 验收：输出 parser quality 决策、容量/耗时预算、targeted registration 或 persistent-clone 方案对比、主库 promotion 独立门禁和 batch 0002 的精确审批请求；没有新批准前保持 `TODO`。
+  - 已完成架构阶段：3 个 T-614 人工复核 ID 均经内容哈希绑定的只读诊断确认为未加密纯图片 PDF；前三页无文本/字体层但存在整页图像，本地 Tesseract 首页面均可提取文本，因此口径定为“仅在独立 clone 内本地 OCR，质量验收前继续人工复核”，禁止自动外部 OCR。证据为 local-only `artifacts/t615-research-recovery-decision/manual-review-audit.json`。
+  - 已完成扫描/幂等优化：`POST /api/research-reports/scan` 新增受限 `relative_paths`，首轮只登记精确批准的 250 个文件；新增无路径/文件名/正文的只读 `GET /api/research-reports/batch-state`，run2 重算本地文件身份并读取已持久化状态，不再重复 ingest/extract，也不写 audit 或 usage telemetry。聚焦回归证明 run2 只发出一个 GET。
+  - 容量决策：T-614 run2 的 254 条 audit 和约 22.2 MiB 增量来自写入式重放；新架构目标是 run2 audit delta `0`、逻辑 records delta `0`、数据库物理增量不超过 `1 MiB`。每批记录 `pg_database_size`、`n_live_tup`、`n_dead_tup`；仅当 dead tuple 比例超过 `10%` 或单表超过 `10000` 才在 clone 备份后运行普通 `VACUUM (ANALYZE)`，禁止自动 `VACUUM FULL`。
+  - 批次策略：batch 0002 先使用 fresh primary backup + fresh clone + 单批 SHA 批准验证新架构；通过后才评审每 5 批一个 persistent-clone segment，仍要求每批 SHA 绑定、逐批 preflight/attestation 和 segment 末尾 restore-verified 备份。任何主库 promotion 保持单独备份、差异、人工批准和回滚门禁。
+  - batch 0002 dry-run：250 PDF / 573286759 bytes；batch SHA `6f1b63257499f3325198a91cc692cc1e8d421ee20c7e04bbae17a1695dd641d1`，raw identity SHA `dae5a5a9ba73f5dcfbf2894e9ce596e7700dac80999225735986ab05e5b55529`。新主库备份 `ai_quant-20260721T060949Z` 已恢复验证，dump SHA `784300659b51110d8c9779c8af4dbab832d2f2b0239148a077ad5b2d4e1acb99`，绑定后的 plan SHA `0ec683ac993d4e6017f7ccecc67c659cecaa235e50e18f95215229f587441907`。当前仅因 exact human approval、independent clone attestation 两门禁失败而阻塞，`execution_performed=false`；审批请求为 local-only `artifacts/t615-research-recovery-decision/batch-0002-approval-request.json`。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-615-recovery-execution-architecture.md`。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强

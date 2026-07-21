@@ -1369,10 +1369,15 @@ T-589 公开数据回填把 `source_uri` 和 `rights_tag` 写入 observation；�
 - `limit`
 - `hash_files`
 - `per_broker_sources`
+- `relative_paths`：可选；精确登记相对 `root_path` 的文件清单。启用后拒绝绝对路径、目录穿越、符号链接、重复路径和扩展名不匹配，且 `limit` 必须覆盖完整清单；用于 SHA 批次恢复，避免递归扫描整个 registry。
 
 #### `GET /api/research-reports`
 
 按 broker、source、status 或关键词查询研报 manifest。
+
+#### `GET /api/research-reports/batch-state`
+
+按 `report_ids` 返回精确批次的只读状态快照，包含 report/document 内容哈希、状态、citation evidence 数量和是否存在开放人工复核项。响应不包含文件路径、文件名或正文。该路径不写 audit 或 usage telemetry，供独立 clone 的第二轮幂等核验使用；缺失 ID 会在 `missing_report_ids` 中显式返回。
 
 #### `POST /api/research-reports/{report_id}/ingest`
 

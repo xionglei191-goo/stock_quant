@@ -123,6 +123,21 @@ class _BlockingWriteRouter(ApiRouter):
 
 
 class UsageMetricsTests(SystemServiceTestBase):
+    def test_read_only_research_batch_state_does_not_write_usage_or_audit(self) -> None:
+        audit_count = len(self.service.store.audit_log)
+        response = self.router.dispatch(
+            "GET",
+            "/api/research-reports/batch-state",
+            {"report_ids": ["rr_missing"]},
+            role="analyst",
+            origin="scheduled",
+        )
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.data["missing_report_ids"], ["rr_missing"])
+        self.assertEqual(len(self.service.store.audit_log), audit_count)
+        self.assertNotIn("research_reports", self.service.store.usage_metrics)
+
     def test_dispatch_records_feature_usage(self) -> None:
         self.router.dispatch("GET", "/api/company-intelligence/DEMO", {"limit": 5}, role="analyst")
         self.router.dispatch("GET", "/api/observation-items", {}, role="analyst")

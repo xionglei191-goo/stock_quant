@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 from typing import Any, Mapping, Protocol
 
+from ..research_reports import iter_report_files
+
 
 class ResearchReportLike(Protocol):
     report_id: str
@@ -55,6 +57,97 @@ def verify_report_content_sha256(file_path: str, expected_sha256: str) -> str:
     if actual != expected:
         raise ValueError("content_sha256 does not match the registered research report file")
     return actual
+
+
+def select_research_report_files(
+    root: Path,
+    *,
+    extensions: set[str],
+    limit: int,
+    relative_paths: list[str] | None = None,
+) -> list[Path]:
+    """Select report files without allowing a batch request to widen its scope."""
+
+    resolved_root = root.expanduser().resolve()
+    if relative_paths is None:
+        return iter_report_files(resolved_root, extensions=extensions, limit=limit)
+    if not relative_paths:
+        raise ValueError("relative_paths must contain at least one file")
+    if len(relative_paths) > limit:
+        raise ValueError("relative_paths exceeds the scan limit")
+
+    selected: list[Path] = []
+    seen: set[str] = set()
+    for value in relative_paths:
+        raw = str(value)
+        relative = Path(raw)
+        normalized = relative.as_posix()
+        if (
+            not raw
+            or raw != normalized
+            or relative.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise ValueError("relative_paths must contain normalized relative paths")
+        if normalized in seen:
+            raise ValueError("relative_paths must be unique")
+        seen.add(normalized)
+        candidate = resolved_root / relative
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise ValueError("relative_paths contains an unavailable file") from exc
+        if resolved != candidate.absolute() or resolved_root not in resolved.parents:
+            raise ValueError("relative_paths cannot traverse symlinks or escape root_path")
+        if not resolved.is_file() or resolved.suffix.lower() not in extensions:
+            raise ValueError("relative_paths contains a non-report file")
+        selected.append(resolved)
+    return selected
+
+
+def research_report_batch_state(store: Any, report_ids: list[str]) -> dict[str, Any]:
+    """Return an opaque, read-only execution snapshot for an exact report batch."""
+
+    if not report_ids or len(report_ids) > 1000 or len(set(report_ids)) != len(report_ids):
+        raise ValueError("report_ids must contain 1-1000 unique IDs")
+    rows: list[dict[str, Any]] = []
+    missing: list[str] = []
+    reports: dict[str, Any] = {}
+    document_ids: set[str] = set()
+    for report_id in report_ids:
+        report = store.research_reports.get(report_id)
+        if report is None:
+            missing.append(report_id)
+            continue
+        reports[report_id] = report
+        if report.document_id:
+            document_ids.add(report.document_id)
+    evidence_counts = {document_id: 0 for document_id in document_ids}
+    for item in store.evidence.values():
+        if item.document_id in evidence_counts and item.section == "research_report_citation":
+            evidence_counts[item.document_id] += 1
+    manual_review_documents = {
+        item.document_id
+        for item in store.manual_reviews.values()
+        if item.document_id in document_ids and item.status in {"open", "in_review"}
+    }
+    for report_id in report_ids:
+        report = reports.get(report_id)
+        if report is None:
+            continue
+        document = store.documents.get(report.document_id) if report.document_id else None
+        rows.append(
+            {
+                "report_id": report.report_id,
+                "document_id": report.document_id,
+                "content_sha256": report.content_sha256,
+                "document_content_sha256": document.content_sha256 if document else "",
+                "status": report.status,
+                "evidence_count": evidence_counts.get(report.document_id, 0),
+                "manual_review": report.document_id in manual_review_documents,
+            }
+        )
+    return {"report_ids": report_ids, "missing_report_ids": missing, "reports": rows}
 
 
 def research_report_month_date(report: ResearchReportLike) -> date | None:

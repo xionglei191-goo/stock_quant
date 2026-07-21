@@ -145,6 +145,7 @@ def build_route_table(owner: Any) -> list[tuple[str, str, Callable[..., Any]]]:
             ("POST", r"^/api/scorecards$", owner._register_scorecard),
             ("POST", r"^/api/research-cards$", owner._create_research_card),
             ("POST", r"^/api/research-reports/scan$", owner._scan_research_reports),
+            ("GET", r"^/api/research-reports/batch-state$", owner._research_report_batch_state),
             ("GET", r"^/api/research-reports/extraction-queue$", owner._research_report_extraction_queue),
             ("POST", r"^/api/research-reports/extraction-queue$", owner._research_report_extraction_queue),
             ("POST", r"^/api/research-reports/incremental-schedule$", owner._research_report_incremental_schedule),

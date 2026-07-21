@@ -8138,7 +8138,18 @@ class SystemService:
         limit = self._bounded_limit(payload.get("limit", 1000), 50000)
         hash_files = bool(payload.get("hash_files", False))
         per_broker_sources = bool(payload.get("per_broker_sources", True))
-        files = iter_report_files(root, extensions={str(item).lower() for item in extensions}, limit=limit)
+        relative_paths = payload.get("relative_paths")
+        if relative_paths is not None and not isinstance(relative_paths, list):
+            raise ValidationError("relative_paths must be a list")
+        try:
+            files = research_report_module.select_research_report_files(
+                root,
+                extensions={str(item).lower() for item in extensions},
+                limit=limit,
+                relative_paths=[str(item) for item in relative_paths] if relative_paths is not None else None,
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         reports: list[ResearchReportAsset] = []
         for path in files:
             metadata = infer_report_metadata(path, root)
@@ -8188,7 +8199,12 @@ class SystemService:
             source="research_report_manifest",
             approval_state=f"indexed={len(reports)}",
         )
-        return {"root_path": str(root), "indexed_count": len(reports), "reports": [to_plain(item) for item in reports]}
+        return {
+            "root_path": str(root),
+            "indexed_count": len(reports),
+            "scan_mode": "targeted_relative_paths" if relative_paths is not None else "recursive_root",
+            "reports": [to_plain(item) for item in reports],
+        }
 
     def research_report_incremental_schedule(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
         """T-417: 研报大目录增量调度框架.
@@ -8480,6 +8496,20 @@ class SystemService:
             reports = [item for item in reports if query in f"{item.title} {item.file_name} {item.broker} {item.year} {item.month}".lower()]
         reports.sort(key=lambda item: (item.year, item.month, item.broker, item.file_name), reverse=True)
         return {"count": len(reports), "reports": [to_plain(item) for item in reports[:limit]]}
+
+    def research_report_batch_state(self, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        raw_ids = payload.get("report_ids", [])
+        if isinstance(raw_ids, str):
+            report_ids = [item.strip() for item in raw_ids.split(",") if item.strip()]
+        elif isinstance(raw_ids, list):
+            report_ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+        else:
+            raise ValidationError("report_ids must be a list or comma-separated string")
+        try:
+            return research_report_module.research_report_batch_state(self.store, report_ids)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
     def research_report_extraction_queue(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         payload = payload or {}

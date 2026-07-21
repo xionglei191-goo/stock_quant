@@ -79,6 +79,8 @@ def feature_for_path(path: Any) -> str:
     for skip in ("/api/health", "/api/metrics", "/api/usage-metrics"):
         if normalized.startswith(skip):
             return ""
+    if normalized == "/api/research-reports/batch-state":
+        return ""
     for prefix, feature in USAGE_FEATURE_MAP:
         if normalized.startswith(prefix):
             return feature

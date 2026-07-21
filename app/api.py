@@ -1177,6 +1177,9 @@ class ApiRouter:
     def _list_research_reports(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.research_reports_payload(body)
 
+    def _research_report_batch_state(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.research_report_batch_state(body)
+
     def _research_report_extraction_queue(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.research_report_extraction_queue(body, actor=actor)
 

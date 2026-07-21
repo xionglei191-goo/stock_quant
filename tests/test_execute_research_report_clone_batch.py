@@ -35,6 +35,30 @@ class FakeClient:
                 "indexed_count": len(self.report_ids),
                 "reports": [{"report_id": item} for item in self.report_ids],
             }
+        if path.startswith("/api/research-reports/batch-state?"):
+            return {
+                "missing_report_ids": [],
+                "reports": [
+                    {
+                        "report_id": report_id,
+                        "document_id": f"doc_{report_id}",
+                        "content_sha256": next(
+                            str(call_body.get("content_sha256") or "")
+                            for method, call_path, call_body in self.calls
+                            if method == "POST" and call_path == f"/api/research-reports/{report_id}/ingest"
+                        ),
+                        "document_content_sha256": next(
+                            str(call_body.get("content_sha256") or "")
+                            for method, call_path, call_body in self.calls
+                            if method == "POST" and call_path == f"/api/research-reports/{report_id}/ingest"
+                        ),
+                        "status": "text_indexed",
+                        "evidence_count": 1,
+                        "manual_review": False,
+                    }
+                    for report_id in self.report_ids
+                ],
+            }
         if path == "/api/issuers":
             return {"issuer_id": "issuer_local_research_reference"}
         if path.endswith("/ingest"):
@@ -267,7 +291,7 @@ class ResearchReportCloneBatchExecutionTests(unittest.TestCase):
                 confirm_plan_sha256=str(preflight["plan_sha256"]),
                 confirm_batch_sha256="b" * 64,
                 acknowledge_opinion_boundary=True,
-                allow_full_registry_scan=True,
+                confirm_targeted_registration=True,
                 confirm_clone_target=True,
             )
             self.assertEqual(plan["batch_id"], "t613-batch-0001")
@@ -285,7 +309,7 @@ class ResearchReportCloneBatchExecutionTests(unittest.TestCase):
                     confirm_plan_sha256=str(preflight["plan_sha256"]),
                     confirm_batch_sha256="b" * 64,
                     acknowledge_opinion_boundary=True,
-                    allow_full_registry_scan=True,
+                    confirm_targeted_registration=True,
                     confirm_clone_target=True,
                 )
 
@@ -342,11 +366,19 @@ class ResearchReportCloneBatchExecutionTests(unittest.TestCase):
         self.assertEqual(run1["ingest_created_count"], 2)
         self.assertEqual(run2["status"], "passed")
         self.assertEqual(run2["ingest_created_count"], 0)
+        self.assertEqual(run1["registry_scan_mode"], "targeted_relative_paths")
+        self.assertEqual(run2["registry_scan_mode"], "read_only_batch_state")
         self.assertTrue(run2["idempotency_comparison"]["passed"])
         self.assertEqual(compare_with_prior_run(run2, run1)["mismatch_count"], 0)
         rendered = json.dumps(run2)
         self.assertNotIn(temp_dir, rendered)
         self.assertNotIn("one.txt", rendered)
+        run2_calls = client.calls[len(client.calls) - 1 :]
+        self.assertEqual(run2_calls[0][0], "GET")
+        scan_body = next(body for method, path, body in client.calls if method == "POST" and path == "/api/research-reports/scan")
+        self.assertEqual(len(scan_body["relative_paths"]), 2)
+        self.assertEqual(scan_body["limit"], 2)
+        self.assertNotEqual(scan_body["limit"], 50000)
 
 
 if __name__ == "__main__":
