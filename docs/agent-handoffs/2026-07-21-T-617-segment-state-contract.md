@@ -42,9 +42,9 @@ Without a hash-bound state file, a later resume could use the wrong clone identi
 ## Current Findings
 
 - A checkpoint is rejected unless run 2 contains `idempotency_comparison.passed=true`.
-- A checkpoint stores SHA-256 hashes for both run artifacts, batch identity, counts, and its own canonical checkpoint hash.
+- A checkpoint stores SHA-256 hashes for both run artifacts, exact `prior_run_sha256`, all nine cumulative counts (`records`, `audit_log`, `market_data_bars`, and six research collections), and its own canonical checkpoint hash.
 - A segment can only transition `active -> aborted`; an aborted segment cannot accept later checkpoints.
-- The state explicitly records `primary_writes_allowed=false`, an empty delete list, and `local-only` classification.
+- The state explicitly records `primary_writes_allowed=false`, an empty delete list, `accumulated_counts`, and `local-only` classification.
 
 ## Proposed Work Plan
 
@@ -100,7 +100,7 @@ Result:
 
 ## Risks and Open Questions
 
-- The current tool does not itself verify database counts or backup restore equality; the future executor must supply those facts before writing a checkpoint.
+- The current tool validates the supplied cumulative counts but does not query PostgreSQL or verify backup restore equality; the future executor must supply those facts before writing a checkpoint.
 - Scheduler quiescence evidence is still a separate required gate and is not inferred from this state file.
 - No batch 0006 approval exists; this change does not authorize execution.
 

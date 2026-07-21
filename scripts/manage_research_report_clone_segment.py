@@ -24,6 +24,17 @@ from urllib.request import urlopen
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SCHEMA_VERSION = "research-report-clone-segment-state-v1"
 QUIESCENCE_SCHEMA_VERSION = "research-report-clone-segment-quiescence-proof-v1"
+REQUIRED_CHECKPOINT_COUNTS = (
+    "records",
+    "audit_log",
+    "market_data_bars",
+    "research_reports",
+    "research_documents",
+    "research_report_citation_evidence",
+    "structured_research_reports",
+    "report_viewpoints",
+    "report_forecasts",
+)
 
 
 class SegmentStateRefused(RuntimeError):
@@ -223,6 +234,7 @@ def init_state(
         "status": "active",
         "batches": [],
         "latest_checkpoint": None,
+        "accumulated_counts": None,
         "created_at": utc_iso(),
         "updated_at": utc_iso(),
         "primary_writes_allowed": False,
@@ -247,6 +259,18 @@ def append_checkpoint(
     if not re.fullmatch(r"t613-batch-00(?:0[1-9]|[1-3][0-9]|4[0-4])", batch_id):
         raise SegmentStateRefused("batch_id is outside the governed T-613 range")
     _required_sha(batch_sha256, "batch_sha256")
+    if any(key not in counts for key in REQUIRED_CHECKPOINT_COUNTS):
+        missing = sorted(set(REQUIRED_CHECKPOINT_COUNTS) - set(counts))
+        raise SegmentStateRefused(f"checkpoint counts are incomplete: {','.join(missing)}")
+    normalized_counts: dict[str, int] = {}
+    for key in REQUIRED_CHECKPOINT_COUNTS:
+        try:
+            value = int(counts[key])
+        except (TypeError, ValueError) as exc:
+            raise SegmentStateRefused(f"checkpoint count is not an integer: {key}") from exc
+        if value < 0:
+            raise SegmentStateRefused(f"checkpoint count cannot be negative: {key}")
+        normalized_counts[key] = value
     if not run1_path.is_file() or not run2_path.is_file():
         raise SegmentStateRefused("run artifacts must exist")
     batches = [dict(item) for item in current.get("batches", []) if isinstance(item, Mapping)]
@@ -269,12 +293,17 @@ def append_checkpoint(
     comparison = run2.get("idempotency_comparison") if isinstance(run2, Mapping) else None
     if not isinstance(comparison, Mapping) or comparison.get("passed") is not True:
         raise SegmentStateRefused("run2 idempotency gate must pass before checkpoint")
+    prior_run_sha256 = str(comparison.get("prior_run_sha256") or "")
+    _required_sha(prior_run_sha256, "prior_run_sha256")
+    if prior_run_sha256 != str(run1.get("artifact_sha256") or ""):
+        raise SegmentStateRefused("run2 prior-run SHA does not match run1 artifact")
     checkpoint_core = {
         "batch_id": batch_id,
         "batch_sha256": batch_sha256,
         "run1_artifact_sha256": run1_sha,
         "run2_artifact_sha256": run2_sha,
-        "counts": dict(counts),
+        "counts": normalized_counts,
+        "prior_run_sha256": prior_run_sha256,
         "created_at": utc_iso(),
     }
     checkpoint = dict(checkpoint_core)
@@ -282,6 +311,7 @@ def append_checkpoint(
     batches.append(checkpoint)
     current["batches"] = batches
     current["latest_checkpoint"] = checkpoint["checkpoint_sha256"]
+    current["accumulated_counts"] = normalized_counts
     current["updated_at"] = utc_iso()
     return current
 

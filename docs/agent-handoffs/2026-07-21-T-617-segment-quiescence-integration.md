@@ -46,6 +46,7 @@ An operator could run an isolated clone while a known primary scheduler was acti
 - Required proof values: `primary_service_reachable=false`, all known scheduler units stopped, known writer containers observed stopped, `active_writer_sessions=0`, and the exact operator boundary string.
 - `--quiescence-proof` is required by the real executor CLI and validated before any clone API request.
 - `observe-proof` reads systemd state, Docker container state, primary health reachability, and PostgreSQL sessions without stopping or mutating anything.
+- Segment checkpoints now require all nine cumulative count fields and a run2 `prior_run_sha256` matching run1's artifact SHA.
 
 ## Proposed Work Plan
 

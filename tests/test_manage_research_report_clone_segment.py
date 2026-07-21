@@ -37,15 +37,16 @@ class CloneSegmentStateTests(unittest.TestCase):
             run1 = root / "run1.json"
             run2 = root / "run2.json"
             binding = {"plan_sha256": "a" * 64, "manifest_sha256": "b" * 64, "batch_id": "t613-batch-0005", "batch_sha256": "d" * 64}
-            run1.write_text(json.dumps({**binding, "status": "passed"}), encoding="utf-8")
-            run2.write_text(json.dumps({**binding, "status": "passed", "idempotency_comparison": {"passed": True}}), encoding="utf-8")
+            run1.write_text(json.dumps({**binding, "status": "passed", "artifact_sha256": "e" * 64}), encoding="utf-8")
+            run2.write_text(json.dumps({**binding, "status": "passed", "idempotency_comparison": {"passed": True, "prior_run_sha256": "e" * 64}}), encoding="utf-8")
+            counts = {key: 1 for key in ("records", "audit_log", "market_data_bars", "research_reports", "research_documents", "research_report_citation_evidence", "structured_research_reports", "report_viewpoints", "report_forecasts")}
             state = append_checkpoint(
                 self._state(),
                 batch_id="t613-batch-0005",
                 batch_sha256="d" * 64,
                 run1_path=run1,
                 run2_path=run2,
-                counts={"records": 10, "audit_log": 20},
+                counts=counts,
             )
             self.assertEqual(state["latest_checkpoint"], state["batches"][0]["checkpoint_sha256"])
             self.assertEqual(state["batches"][0]["run2_artifact_sha256"], __import__("hashlib").sha256(run2.read_bytes()).hexdigest())
@@ -60,6 +61,17 @@ class CloneSegmentStateTests(unittest.TestCase):
             run2.write_text(json.dumps({**binding, "idempotency_comparison": {"passed": False}}), encoding="utf-8")
             with self.assertRaises(SegmentStateRefused):
                 append_checkpoint(self._state(), batch_id="t613-batch-0005", batch_sha256="d" * 64, run1_path=run1, run2_path=run2, counts={})
+
+    def test_checkpoint_rejects_incomplete_accumulated_counts(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            binding = {"plan_sha256": "a" * 64, "manifest_sha256": "b" * 64, "batch_id": "t613-batch-0005", "batch_sha256": "d" * 64}
+            run1 = root / "run1.json"
+            run2 = root / "run2.json"
+            run1.write_text(json.dumps({**binding, "artifact_sha256": "e" * 64}), encoding="utf-8")
+            run2.write_text(json.dumps({**binding, "idempotency_comparison": {"passed": True, "prior_run_sha256": "e" * 64}}), encoding="utf-8")
+            with self.assertRaisesRegex(SegmentStateRefused, "counts are incomplete"):
+                append_checkpoint(self._state(), batch_id="t613-batch-0005", batch_sha256="d" * 64, run1_path=run1, run2_path=run2, counts={"records": 1})
 
     def test_abort_is_terminal(self) -> None:
         aborted = abort_state(self._state(), reason="scheduler writer was not quiescent")
