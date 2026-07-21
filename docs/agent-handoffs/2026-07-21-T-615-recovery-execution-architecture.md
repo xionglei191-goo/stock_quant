@@ -2,7 +2,7 @@
 
 ## Metadata
 
-- Status: DOING
+- Status: DONE
 - Owner group: PM / Release Coordination
 - Reviewer groups: Data and Evidence; Research and AI Workflows; Platform and Quality; Governance, Security, and Compliance
 - Last updated: 2026-07-21
@@ -13,12 +13,12 @@
 
 ## Objective
 
-Resolve the T-614 parser, registry-scan, idempotency-write, and capacity questions; provide a safer execution architecture and an exact batch-0002 approval request without running batch 0002 or touching primary data.
+Resolve the T-614 parser, registry-scan, idempotency-write, and capacity questions; implement the safer execution architecture; and prove it with an operator-approved batch-0002 double run in a fresh isolated clone without primary writes or deletes.
 
 ## Scope
 
-- In scope: three manual-review PDFs, targeted batch registration, read-only run2 verification, MVCC/vacuum policy, later-batch approval units, batch-0002 dry-run, tests, contracts, and roadmap state.
-- Out of scope: batch-0002 execution, primary writes or promotion, raw/duplicate/OpenSearch deletion, automatic external OCR, fact/training promotion, brokers, and live trading.
+- In scope: three manual-review PDFs, targeted batch registration, read-only run2 verification, MVCC/vacuum policy, later-batch approval units, batch-0002 dry-run and exact approval, fresh clone restore/attestation, double run, final backup, clone cleanup, tests, contracts, and roadmap state.
+- Out of scope: primary writes or promotion, batches 0003-0044, raw/duplicate/OpenSearch deletion, automatic external OCR, fact/training promotion, brokers, and live trading.
 
 ## Background
 
@@ -38,10 +38,10 @@ The old executor made a logical idempotency proof through a second write workloa
 
 ## Current State
 
-- Completed: parser diagnosis, targeted registration, read-only batch-state API, executor update, focused regressions, API contract, capacity/vacuum decision, batch-0002 raw binding, and approval request generation.
-- In progress: final verification and commit/push.
-- Not started: approval, clone creation/attestation, and batch-0002 execution.
-- Blocked: batch 0002 requires new human authorization and a fresh clone attestation; T-614 approval and runtime evidence cannot be reused.
+- Completed: parser diagnosis, targeted registration, read-only batch-state API, executor update, focused regressions, API contract, capacity/vacuum decision, batch-0002 raw binding, exact approval, fresh clone restore and attestation, run1/run2, idempotency and capacity verification, final restore-verified clone backup, clone cleanup, primary verification, and roadmap closeout.
+- In progress: none.
+- Not started: T-616 decision and any batch 0003-0044 execution.
+- Blocked: none for T-615. Remaining batches require new plans, attestations, and explicit approvals under T-616.
 
 ## Current Findings
 
@@ -53,21 +53,32 @@ The old executor made a logical idempotency proof through a second write workloa
 - Primary currently has 21 dead `audit_log` tuples and 92 dead `records` tuples against 35,385 and 32,319 live rows. There is no current need for manual vacuum on primary.
 - Batch 0002 is 250 PDFs / 573,286,759 bytes. Batch SHA is `6f1b63257499f3325198a91cc692cc1e8d421ee20c7e04bbae17a1695dd641d1`; raw identity SHA is `dae5a5a9ba73f5dcfbf2894e9ce596e7700dac80999225735986ab05e5b55529`.
 - Fresh primary backup `ai_quant-20260721T060949Z` passed restore verification at `32319 records / 35385 audit / 28365474 market bars` and research state `15 / 15 / 112 / 15 / 15 / 3`. Dump SHA is `784300659b51110d8c9779c8af4dbab832d2f2b0239148a077ad5b2d4e1acb99`, retained through 2026-07-28.
-- The backup-bound batch-0002 plan SHA is `0ec683ac993d4e6017f7ccecc67c659cecaa235e50e18f95215229f587441907`. It remains blocked only on `exact_human_approval_verified` and `independent_clone_attestation_verified`; `execution_performed=false` and no clone was created.
+- The backup-bound batch-0002 plan SHA is `0ec683ac993d4e6017f7ccecc67c659cecaa235e50e18f95215229f587441907`. Exact approval bound manifest `e932f352047eb58b4e0df797215598b7ee0bdd25b920432bf6c89173a301fa5e` and batch `6f1b63257499f3325198a91cc692cc1e8d421ee20c7e04bbae17a1695dd641d1`; approval file SHA is `e30a4bda0508f02f4dfdbe227bd761adc2476c3d7aa51b505487683184e75fe5`.
+- Fresh clone `ai_quant_t615_clone_20260721` restored the approved backup at `32319 records / 35385 audit / 28365474 market bars`. Its independent attestation proved an internal two-member network, primary service unreachable, raw/evidence read-only, root filesystem read-only, local object/search backends, and exact database/plan identity. Attestation file SHA is `a7037d077c419c6e3c1a7d8f5701f26299757cfab890c48f23b74e2ac2cd9815`.
+- The final ready preflight passed all six gates. Its file SHA is `925f6d15793f4e77fa62b4cabee9f036e3391f1ecbfb99c559cab1db16c46542`.
+- Run1 passed 250/250: 242 text-indexed, 8 manual-review, 1,826 citation evidence, and 250 newly ingested reports in 1,179.372 seconds. It used `targeted_relative_paths`, verified all 250 content identities, performed no deletes, and preserved raw and the existing OpenSearch index.
+- Run1 changed only the clone: records `32319 -> 34654`, audit `35385 -> 36145`, market bars unchanged, research reports/documents `15 -> 265`, and research citation evidence `112 -> 1938`. Database size changed `15502007319 -> 15512034327` bytes, a 10,027,008-byte increase.
+- Run2 passed 250/250 through `read_only_batch_state` in 7.54 seconds. It created 0 ingests, its 250 outcomes matched run1 after excluding the expected `ingest_created` flag, and records/audit/market bars/database bytes all had zero delta.
+- Post-run dead tuples were 1,244/34,654 for `records` and 0/36,145 for `audit_log`; neither the 10% ratio nor 10,000-row threshold was reached, so no vacuum was run.
+- Final clone backup `ai_quant_t615_clone_20260721-20260721T072013Z` passed independent restore equality for all table and research collection counts. Dump SHA is `fcfd04c15dc1a241bca5fd1ddc07301939df6b09c1c9dc9271ec855d5c8c127c`, size 838,107,589 bytes, retained through 2026-07-28.
+- The exact clone application, clone database, and isolated network were removed after backup verification. Primary remained `32319/35385/28365474`, database size `17108941847`, and `/api/health` returned success.
 
 ## Proposed Work Plan
 
-1. Commit and deploy the targeted-registration/read-only-run2 architecture; keep batch 0002 blocked.
-2. If explicitly authorized with the exact manifest/batch confirmation, record approval against the current backup-bound plan and attest a fresh clone.
-3. Execute batch 0002 twice, measure audit/record/database-size deltas, and require the read-only-run2 thresholds before considering a five-batch persistent-clone segment.
-4. Keep any primary promotion behind a separate diff, backup, approval, rollback, and post-promotion verification gate.
+1. Committed and deployed the targeted-registration/read-only-run2 architecture while batch 0002 remained blocked.
+2. Recorded the exact operator approval, restored a fresh clone from the approved backup, and independently attested its runtime isolation.
+3. Executed batch 0002 twice and proved run2 zero audit, record, and database-size deltas with exact outcome equality.
+4. Created and restore-verified the final clone backup before removing only the clone resources.
+5. Kept primary promotion and batches 0003-0044 outside this authorization.
 
 ## Validation Plan
 
-- Run focused executor, preflight, manual-review, content-identity, routing, and usage telemetry tests.
-- Run `make local-ci PYTHON=.venv/bin/python` and `python3 scripts/check_handoffs.py`.
-- Verify batch-0002 preflight has exactly the two expected failed gates and no mutation.
-- Verify primary health/counts and that no T-615 clone container, network, or database exists.
+- Focused executor, preflight, manual-review, content-identity, routing, and usage telemetry tests passed during the architecture phase.
+- Pre-execution preflight passed all six approval, identity, backup, and clone gates.
+- Run1 and run2 passed; read-only run2 produced zero logical, audit, and physical database growth.
+- Final backup restore equality and retention metadata passed.
+- Primary health/counts passed and no T-615 clone container, network, or database remains.
+- Final `make local-ci PYTHON=.venv/bin/python` passed 534 tests, UI static validation, a 544-file security scan, 251 Markdown link checks, 192 handoff checks, and 5 canonical document metadata checks.
 
 ## Dependencies
 
@@ -77,7 +88,8 @@ The old executor made a logical idempotency proof through a second write workloa
 
 ## Blockers
 
-- The current batch-0002 plan cannot execute because it has no exact human approval or clone attestation. Generic continuation is not approval.
+- None for T-615.
+- T-616 and every remaining batch are unauthorized until a new exact execution unit, SHA-bound approval, fresh backup, and attestation are provided.
 
 ## Files Touched
 
@@ -120,24 +132,62 @@ The old executor made a logical idempotency proof through a second write workloa
   --source-db ai_quant --output-dir data/local/backups/postgres \
   --retention-days 7 --timeout-seconds 3600
 
+.venv/bin/python scripts/prepare_research_report_clone_batch.py \
+  --batch-id t613-batch-0002 \
+  --expected-batch-sha256 6f1b63257499f3325198a91cc692cc1e8d421ee20c7e04bbae17a1695dd641d1 \
+  --backup-manifest data/local/backups/postgres/ai_quant-20260721T060949Z.manifest.json \
+  --approval artifacts/t615-research-recovery-decision/batch-0002-approval.json \
+  --clone-attestation artifacts/t615-research-recovery-decision/batch-0002-clone-attestation.json \
+  --output artifacts/t615-research-recovery-decision/batch-0002-preflight-ready.json
+
+docker exec sotck_quant-t615-clone-app \
+  python /app/scripts/execute_research_report_clone_batch.py \
+  --preflight /evidence/batch-0002-preflight-ready.json \
+  --approval /evidence/batch-0002-approval.json \
+  --clone-attestation /evidence/batch-0002-clone-attestation.json \
+  --backup-manifest /data/local/backups/postgres/ai_quant-20260721T060949Z.manifest.json \
+  --base-url http://127.0.0.1:18003 \
+  --output /output/t615-clone-execution-1.json \
+  --confirm-plan-sha256 0ec683ac993d4e6017f7ccecc67c659cecaa235e50e18f95215229f587441907 \
+  --confirm-batch-sha256 6f1b63257499f3325198a91cc692cc1e8d421ee20c7e04bbae17a1695dd641d1 \
+  --execute --acknowledge-opinion-boundary \
+  --confirm-targeted-registration --confirm-clone-target
+
+# The second invocation used the same gates plus:
+--prior-run /output/t615-clone-execution-1.json \
+--output /output/t615-clone-execution-2.json
+
+.venv/bin/python scripts/postgres_durable_backup.py \
+  --source-db ai_quant_t615_clone_20260721 \
+  --output-dir data/local/backups/postgres \
+  --retention-days 7 --timeout-seconds 3600
+
 make local-ci PYTHON=.venv/bin/python
+python3 scripts/check_handoffs.py
 ```
 
 Result:
 
 - Passed: 26 focused tests.
-- Passed: repository-wide CI with 534 tests, UI static check, security scan of 541 files, 251 Markdown links, 192 handoffs, and 5 canonical document metadata checks.
+- Passed: architecture-phase repository-wide CI with 534 tests, UI static check, security scan of 541 files, 251 Markdown links, 192 handoffs, and 5 canonical document metadata checks.
 - Passed: all three manual-review files retained exact T-614 content identities and are locally OCR-extractable.
-- Passed: fresh primary backup and restore equality; batch-0002 manifest/batch/raw/backup gates; exact expected approval and attestation gates remained closed.
+- Passed: fresh primary backup and restore equality; batch-0002 manifest/batch/raw/backup/approval/attestation gates.
+- Passed: run1 250/250 and run2 250/250; 242 text-indexed, 8 manual-review, 1,826 evidence; run2 zero ingest, zero audit/record/database-size delta, and exact outcome equality.
+- Passed: final clone backup restore equality, clone cleanup, primary count/size preservation, main service health, and artifact redaction scan.
 - Failed: none.
-- Not run: batch-0002 execution, by design and without authorization.
+- Not run: vacuum, because the measured clone dead-tuple thresholds were not reached; primary promotion and remaining batches, because they were not authorized.
+- Passed: final post-documentation repository-wide CI with 534 tests, UI static check, security scan of 544 files, 251 Markdown links, 192 handoffs, and 5 canonical document metadata checks.
 
 ## Evidence
 
 - `artifacts/t615-research-recovery-decision/manual-review-audit.json`: produced by the manual-review audit script on 2026-07-21; local workstation; local-only; no path/name/text body; not valid for non-local release.
-- `artifacts/t615-research-recovery-decision/batch-0002-preflight.json`: produced by the preflight script on 2026-07-21; local workstation; local-only and sensitive because it contains opaque report identities; not valid for non-local release.
-- `artifacts/t615-research-recovery-decision/batch-0002-approval-request.json`: produced by the preflight script on 2026-07-21; local-only; no raw path/body; pending approval; not valid for non-local release.
+- `artifacts/t615-research-recovery-decision/batch-0002-approval.json`: recorded from the exact operator authorization on 2026-07-21; local-only; binds the manifest and batch SHA; not valid for non-local release.
+- `artifacts/t615-research-recovery-decision/batch-0002-clone-attestation.json`: produced by the runtime probe on 2026-07-21; local-only sensitive runtime identity; status passed; not valid for non-local release.
+- `artifacts/t615-research-recovery-decision/batch-0002-preflight-ready.json`: produced by the preflight script on 2026-07-21; local-only sensitive opaque identities; all six gates passed; not valid for non-local release.
+- `artifacts/t615-research-recovery-decision/runtime/t615-clone-execution-1.json`: produced by the clone executor at 2026-07-21T07:15:41Z; local-only and sensitive; file SHA `cee7f1e2067cccb8fff5dedfad1e35f7b8f7ff058052b140ddb32815f4b8af39`; not valid for non-local release.
+- `artifacts/t615-research-recovery-decision/runtime/t615-clone-execution-2.json`: produced by the clone executor at 2026-07-21T07:16:42Z; local-only and sensitive; file SHA `72740a4dda3b3f82ff77970b85dc1a29ec71dddb05e213c2f93e9ca2adb6ffdf`; not valid for non-local release.
 - `data/local/backups/postgres/ai_quant-20260721T060949Z.manifest.json`: produced by `postgres_durable_backup.py` on 2026-07-21; local Docker Compose; local-only sensitive backup metadata; restore verified; not valid for non-local release.
+- `data/local/backups/postgres/ai_quant_t615_clone_20260721-20260721T072013Z.manifest.json`: produced by `postgres_durable_backup.py` at 2026-07-21T07:20:13Z; local Docker Compose; local-only and sensitive; restore verified and retained through 2026-07-28; manifest SHA `21876c41b9e64023e6e7b618e297844b8d59370ab31dc056bf2a844aea5393c6`; not valid for non-local release.
 
 ## Decisions
 
@@ -149,10 +199,10 @@ Result:
 
 ## Risks and Open Questions
 
-- The backup is retained through 2026-07-28. Approval/attestation and any clone execution must occur while the backup freshness and retention gates remain valid.
-- Local OCR extractability does not prove citation quality. The three documents need text-quality sampling in the approved clone before closing their manual reviews.
-- The 1 MiB run2 physical-growth threshold has not yet been measured against a real PostgreSQL clone with the new executor.
-- Persistent clones reduce restore overhead but increase state-accumulation risk; do not enable them until batch 0002 meets all thresholds.
+- The source and final clone backups are retained through 2026-07-28. They are local-only recovery evidence and must not be presented as non-local release proof.
+- Eight batch-0002 documents remain in manual review. A successful batch does not assert that their citation text quality is acceptable.
+- Batch 0002 met the run2 thresholds, but one successful batch does not by itself authorize or fully de-risk a five-batch persistent clone.
+- Persistent clones reduce restore overhead but increase accumulated-state and partial-segment rollback risk; T-616 must decide and bind the next exact execution unit.
 
 ## Handoff Checklist
 
@@ -170,10 +220,10 @@ Result:
 
 ## Next Steps
 
-1. Finish full CI, update this handoff with exact results, commit, and push.
-2. Obtain exact SHA-bound human approval before creating or mutating any batch-0002 clone.
-3. After approval, create and independently attest the clone; do not reuse T-614 runtime evidence.
+1. Under T-616, compare one-batch fresh clones with at-most-five-batch persistent-clone segments and generate the next exact approval request.
+2. Do not create a batch-0003 clone or execute any remaining batch without new SHA-bound human authorization and fresh runtime evidence.
+3. Continue normal primary service and daily-timer observation independently of research recovery execution.
 
 ## Next Recommended Action
 
-Ask the human operator for the exact batch-0002 confirmation in the generated approval request; do not execute the batch from a generic “continue”.
+Prepare the T-616 decision package; keep all remaining 42 batches blocked until the operator approves an exact SHA-bound execution unit.

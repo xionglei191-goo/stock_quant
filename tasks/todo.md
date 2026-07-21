@@ -16,11 +16,11 @@
 
 当前能力：代码已经跑通本机 MVP 主链路，覆盖 A/H/U 公开披露接入、rights tag、证据切片、规则抽取、benchmark 阈值、Thesis/Signal/Decision 兼容对象、纸面执行意图兼容入口、模拟持仓 ledger、月报/回放、事故剧本、SQLite/PostgreSQL、本地/S3 对象存储、内置/OpenSearch 检索、`/ui` 静态页面、健康检查、烟测、LLM 中转站和 PaddleOCR-VL 文档解析备用接口。本轮产品方向调整后，这些能力应重新归类到公司画像、事件时间线、关系图谱、观点库、观察任务、分析结论和模拟反馈闭环。
 
-新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 曾在历史审计中完成 11702 份可处理文件登记、解析和 88515 条 citation evidence，证据见 `artifacts/research-report-completion-audit.json`，但该文件只代表生成时点；T-603/T-604/T-611/T-612 已完成 15 份受控主库切片恢复，T-613 又完成 11702/11702 全文件内容哈希对账，确认主库 15 份内容一致、OpenSearch 11702 个投影 ID 全覆盖、0 个 report ID 冲突，并识别 599 组重复内容/884 个重复别名。T-614 已在独立 clone 中完成首批 250 份双跑，247 份文本化、3 份进入人工复核、1937 条 citation evidence，run2 零新增且逐项一致；其余 43 批仍未获得执行授权，主库仍保持 15 份受控切片。`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
+新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 曾在历史审计中完成 11702 份可处理文件登记、解析和 88515 条 citation evidence，证据见 `artifacts/research-report-completion-audit.json`，但该文件只代表生成时点；T-603/T-604/T-611/T-612 已完成 15 份受控主库切片恢复，T-613 又完成 11702/11702 全文件内容哈希对账，确认主库 15 份内容一致、OpenSearch 11702 个投影 ID 全覆盖、0 个 report ID 冲突，并识别 599 组重复内容/884 个重复别名。T-614/T-615 已分别在独立 clone 中完成 batch 0001/0002 双跑：第二批 250 份全部成功，242 份文本化、8 份进入人工复核、1826 条 citation evidence，改造后的只读 run2 为零逻辑/审计/物理增量且逐项一致；剩余 42 批仍未获得执行授权，主库仍保持 15 份受控切片。`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
 
 剩余关键缺口：后续主路线不再是强化组织级发布或实时交易，而是建立公司级数据库和分析反馈闭环。本机 production-like 栈仍可作为个人/单机长期使用口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。非本机组织级真实生产发布、外部密钥管理、生产级 artifact URI、灰度/回滚窗口和发布确认全部下沉为运维/非本机发布附录，不阻塞公司情报平台产品路线。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：T-603/T-613/T-614 已完成本机收口；下一步是 T-615 对首批 3 份无文本人工复核项、全 registry 重复扫描、run2 MVCC/audit 增量和后续 43 批的独立审批策略做决策，不自动执行 batch 0002。主库保持当前 15 份受控切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须重新 dry-run、绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
+近期优先级：T-603/T-615 已完成本机收口；下一步由 T-616 决定是否采用每 5 批 persistent-clone segment，并为 batch 0003 或首个 segment 生成全新的 SHA 绑定审批包，当前不自动执行任何剩余批次。主库保持当前 15 份受控切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须重新 dry-run、绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
 
 ## 项目经理整理 / 公司情报平台重定位路线
 
@@ -384,18 +384,26 @@
   - 收口：post-run clone backup `ai_quant_t614_clone_20260721-20260721T045056Z` 已恢复验证，dump SHA `2ef3caf00e758f0da03f0a32f826576a5d29021f4c297c56218d1fa628a6eae1`，保留至 2026-07-28；clone 应用、数据库和内部网络均已清理。主库仍为 `32319/35385/28365474`，未发生写入或删除。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-614-clone-batch-preflight.md`。
 
-- `TODO` T-615 后续 43 批研报恢复决策与执行架构
+- `DONE` T-615 后续研报恢复决策与 batch 0002 执行架构
   - 对应：E3-US3, E5-US1, E8-US2；项目经理协调，数据与证据/研究工作流/平台质量/治理安全评审
   - 依赖：T-614；不得把 T-614 的批准、attestation 或 clone 备份复用于 batch 0002-0044。
   - 目标：先审查 3 个 `needs_text_review` ID，确定 OCR/跳过/人工处理口径；消除或证明每批全量 registry 重扫的必要性；量化 run2 MVCC/audit 增量与 vacuum 策略；形成后续批次逐批或分段审批方案。
-  - 非目标：不自动执行后续 43 批、不晋升主库、不删除原文件/重复别名/OpenSearch 索引，不扩展到券商或实盘。
-  - 验收：输出 parser quality 决策、容量/耗时预算、targeted registration 或 persistent-clone 方案对比、主库 promotion 独立门禁和 batch 0002 的精确审批请求；没有新批准前保持 `TODO`。
+  - 非目标：不自动执行后续批次、不晋升主库、不删除原文件/重复别名/OpenSearch 索引，不扩展到券商或实盘。
+  - 验收：输出 parser quality 决策、容量/耗时预算、targeted registration 或 persistent-clone 方案对比、主库 promotion 独立门禁和 batch 0002 的精确审批请求；获批后在新 clone 中证明只读 run2 的逻辑、审计和物理零增量。
   - 已完成架构阶段：3 个 T-614 人工复核 ID 均经内容哈希绑定的只读诊断确认为未加密纯图片 PDF；前三页无文本/字体层但存在整页图像，本地 Tesseract 首页面均可提取文本，因此口径定为“仅在独立 clone 内本地 OCR，质量验收前继续人工复核”，禁止自动外部 OCR。证据为 local-only `artifacts/t615-research-recovery-decision/manual-review-audit.json`。
   - 已完成扫描/幂等优化：`POST /api/research-reports/scan` 新增受限 `relative_paths`，首轮只登记精确批准的 250 个文件；新增无路径/文件名/正文的只读 `GET /api/research-reports/batch-state`，run2 重算本地文件身份并读取已持久化状态，不再重复 ingest/extract，也不写 audit 或 usage telemetry。聚焦回归证明 run2 只发出一个 GET。
   - 容量决策：T-614 run2 的 254 条 audit 和约 22.2 MiB 增量来自写入式重放；新架构目标是 run2 audit delta `0`、逻辑 records delta `0`、数据库物理增量不超过 `1 MiB`。每批记录 `pg_database_size`、`n_live_tup`、`n_dead_tup`；仅当 dead tuple 比例超过 `10%` 或单表超过 `10000` 才在 clone 备份后运行普通 `VACUUM (ANALYZE)`，禁止自动 `VACUUM FULL`。
   - 批次策略：batch 0002 先使用 fresh primary backup + fresh clone + 单批 SHA 批准验证新架构；通过后才评审每 5 批一个 persistent-clone segment，仍要求每批 SHA 绑定、逐批 preflight/attestation 和 segment 末尾 restore-verified 备份。任何主库 promotion 保持单独备份、差异、人工批准和回滚门禁。
-  - batch 0002 dry-run：250 PDF / 573286759 bytes；batch SHA `6f1b63257499f3325198a91cc692cc1e8d421ee20c7e04bbae17a1695dd641d1`，raw identity SHA `dae5a5a9ba73f5dcfbf2894e9ce596e7700dac80999225735986ab05e5b55529`。新主库备份 `ai_quant-20260721T060949Z` 已恢复验证，dump SHA `784300659b51110d8c9779c8af4dbab832d2f2b0239148a077ad5b2d4e1acb99`，绑定后的 plan SHA `0ec683ac993d4e6017f7ccecc67c659cecaa235e50e18f95215229f587441907`。当前仅因 exact human approval、independent clone attestation 两门禁失败而阻塞，`execution_performed=false`；审批请求为 local-only `artifacts/t615-research-recovery-decision/batch-0002-approval-request.json`。
+  - batch 0002 执行：人工批准精确绑定 manifest/batch SHA，fresh clone attestation 证明内部网络仅含 clone 应用与 PostgreSQL、raw/evidence 只读、根文件系统只读、本地 object/search 且主服务不可达。run1 为 250/250 成功、242 `text_indexed`、8 `manual_review`、1826 citation evidence、`ingest_created=250`，耗时 1179.372 秒；run2 使用只读 batch-state，250/250 逐项一致、`ingest_created=0`，耗时 7.54 秒。
+  - 容量与收口：run1 clone 从 `32319/35385/28365474` 增至 `34654/36145/28365474`，数据库增加 10027008 bytes；run2 三项计数和数据库字节数均为零增量，达到目标。dead tuple 1244/34654，未达到 vacuum 阈值。最终 clone 备份 `ai_quant_t615_clone_20260721-20260721T072013Z` 已恢复验证，dump SHA `fcfd04c15dc1a241bca5fd1ddc07301939df6b09c1c9dc9271ec855d5c8c127c`，保留至 2026-07-28；clone 资源已清理，主库始终保持 `32319/35385/28365474` 且无写入或删除。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-615-recovery-execution-architecture.md`。
+
+- `TODO` T-616 剩余 42 批研报恢复分段决策
+  - 对应：E3-US3, E5-US1, E8-US2；项目经理协调，数据与证据/研究工作流/平台质量/治理安全评审
+  - 依赖：T-615；不得复用 batch 0002 的批准、attestation、plan 或 clone，且当前没有 batch 0003 或 segment 执行授权。
+  - 目标：基于 T-615 的只读 run2 实证，比较逐批 fresh clone 与最多 5 批 persistent-clone segment 的恢复成本、累计状态风险、备份频率和中止边界，生成下一执行单元的精确 SHA 绑定审批包。
+  - 非目标：不自动执行 batch 0003-0044、不写主库、不删除 raw/重复别名/OpenSearch、不把研报升级为事实源或训练源。
+  - 验收：明确下一执行单元和每批 SHA、fresh backup/attestation/容量阈值、segment 中止与恢复规则、最终 restore-verified 备份及 clone 清理策略；必须获得新的明确人工批准后才能执行。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
