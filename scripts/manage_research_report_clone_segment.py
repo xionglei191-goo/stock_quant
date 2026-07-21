@@ -328,6 +328,25 @@ def abort_state(state: Mapping[str, Any], *, reason: str) -> dict[str, Any]:
     return current
 
 
+def resume_state(state: Mapping[str, Any], *, checkpoint_sha256: str) -> dict[str, Any]:
+    """Resume an aborted segment only from its latest verified checkpoint."""
+    current = dict(state)
+    if current.get("status") != "aborted":
+        raise SegmentStateRefused("only an aborted segment can be resumed")
+    _required_sha(checkpoint_sha256, "checkpoint_sha256")
+    batches = [dict(item) for item in current.get("batches", []) if isinstance(item, Mapping)]
+    known = {str(item.get("checkpoint_sha256") or "") for item in batches}
+    if checkpoint_sha256 not in known:
+        raise SegmentStateRefused("resume checkpoint is not present in segment state")
+    if checkpoint_sha256 != str(current.get("latest_checkpoint") or ""):
+        raise SegmentStateRefused("resume must start from the latest checkpoint")
+    current["status"] = "active"
+    current["resume_of"] = checkpoint_sha256
+    current["resumed_at"] = utc_iso()
+    current["updated_at"] = utc_iso()
+    return current
+
+
 def write_state(path: Path, state: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(dict(state), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -355,6 +374,9 @@ def main(argv: list[str] | None = None) -> int:
     abort = sub.add_parser("abort")
     abort.add_argument("--state", type=Path, required=True)
     abort.add_argument("--reason", required=True)
+    resume = sub.add_parser("resume")
+    resume.add_argument("--state", type=Path, required=True)
+    resume.add_argument("--checkpoint-sha256", required=True)
     proof = sub.add_parser("proof")
     proof.add_argument("--plan-sha256", required=True)
     proof.add_argument("--backup-dump-sha256", required=True)
@@ -398,6 +420,8 @@ def main(argv: list[str] | None = None) -> int:
         write_state(args.state, state)
     elif args.command == "abort":
         write_state(args.state, abort_state(load_state(args.state), reason=args.reason))
+    elif args.command == "resume":
+        write_state(args.state, resume_state(load_state(args.state), checkpoint_sha256=args.checkpoint_sha256))
     elif args.command == "proof":
         proof = build_quiescence_proof(
             plan_sha256=args.plan_sha256,

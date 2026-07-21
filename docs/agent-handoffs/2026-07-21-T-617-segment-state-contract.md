@@ -17,7 +17,7 @@ Add a machine-checkable local state contract for persistent research clone segme
 
 ## Scope
 
-- In scope: state initialization, append-only batch checkpoints, idempotence gating, terminal abort state, CLI and focused tests.
+- In scope: state initialization, append-only batch checkpoints, idempotence gating, abort/resume state transitions, CLI and focused tests.
 - Out of scope: PostgreSQL access, Docker lifecycle, primary writes/deletes, batch 0006 execution, promotion, and scheduler control.
 
 ## Background
@@ -43,14 +43,14 @@ Without a hash-bound state file, a later resume could use the wrong clone identi
 
 - A checkpoint is rejected unless run 2 contains `idempotency_comparison.passed=true`.
 - A checkpoint stores SHA-256 hashes for both run artifacts, exact `prior_run_sha256`, all nine cumulative counts (`records`, `audit_log`, `market_data_bars`, and six research collections), and its own canonical checkpoint hash.
-- A segment can only transition `active -> aborted`; an aborted segment cannot accept later checkpoints.
+- A segment can transition `active -> aborted -> active` only when resume names the latest existing checkpoint; an aborted segment cannot accept checkpoints until resumed.
 - The state explicitly records `primary_writes_allowed=false`, an empty delete list, `accumulated_counts`, and `local-only` classification.
 
 ## Proposed Work Plan
 
-1. Implement the standalone state contract and refuse unsafe transitions.
-2. Add focused regression tests and document the integration boundary.
-3. Integrate with the future executor only after restore and scheduler evidence are available.
+1. Implement the standalone state contract and refuse unsafe transitions. [done]
+2. Add focused regression tests and document the integration boundary. [done]
+3. Integrate with the future executor only after restore and scheduler evidence are available. [next]
 
 ## Validation Plan
 
@@ -66,12 +66,12 @@ Without a hash-bound state file, a later resume could use the wrong clone identi
 ## Blockers
 
 - No batch 0006 approval exists.
-- The state manager is not yet wired into the Docker/PostgreSQL executor.
+- The state manager is not yet wired into the Docker/PostgreSQL executor's automatic checkpoint call.
 
 ## Files Touched
 
 - `scripts/manage_research_report_clone_segment.py`: local-only state machine and CLI.
-- `tests/test_manage_research_report_clone_segment.py`: checkpoint, idempotence rejection, and terminal-abort coverage.
+- `tests/test_manage_research_report_clone_segment.py`: checkpoint, idempotence rejection, abort/resume, and terminal-state coverage.
 - `tasks/todo.md`: T-617 progress reference.
 
 ## Evidence
@@ -89,14 +89,14 @@ git diff --check
 
 Result:
 
-- Passed: compilation, 3 focused tests, whitespace validation.
+- Passed: compilation and 12 focused tests; full CI is rerun in the current T-617 integration handoff.
 - Not run: full local CI; no application or database behavior changed.
 
 ## Decisions
 
 - Keep segment state as a standalone JSON contract before wiring it into the long-running executor.
 - Refuse duplicate batch checkpoints and failed idempotence comparisons to prevent ambiguous resume state.
-- Treat abort as terminal; recovery must start from an explicitly selected prior checkpoint.
+- Treat abort as a stop boundary; recovery must explicitly name the latest verified checkpoint before resuming.
 
 ## Risks and Open Questions
 

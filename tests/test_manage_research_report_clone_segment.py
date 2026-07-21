@@ -13,6 +13,7 @@ from scripts.manage_research_report_clone_segment import (
     build_quiescence_proof,
     canonical_sha256,
     init_state,
+    resume_state,
     validate_quiescence_proof,
 )
 
@@ -78,6 +79,28 @@ class CloneSegmentStateTests(unittest.TestCase):
         self.assertEqual(aborted["status"], "aborted")
         with self.assertRaises(SegmentStateRefused):
             abort_state(aborted, reason="again")
+
+    def test_resume_requires_latest_checkpoint_after_abort(self) -> None:
+        state = self._state()
+        state["status"] = "aborted"
+        state["batches"] = [{"batch_id": "t613-batch-0005", "checkpoint_sha256": "d" * 64}]
+        state["latest_checkpoint"] = "d" * 64
+        resumed = resume_state(state, checkpoint_sha256="d" * 64)
+        self.assertEqual(resumed["status"], "active")
+        self.assertEqual(resumed["resume_of"], "d" * 64)
+
+    def test_resume_rejects_unknown_or_nonlatest_checkpoint(self) -> None:
+        state = self._state()
+        state["status"] = "aborted"
+        state["batches"] = [
+            {"checkpoint_sha256": "c" * 64},
+            {"checkpoint_sha256": "d" * 64},
+        ]
+        state["latest_checkpoint"] = "d" * 64
+        with self.assertRaises(SegmentStateRefused):
+            resume_state(state, checkpoint_sha256="c" * 64)
+        with self.assertRaises(SegmentStateRefused):
+            resume_state(state, checkpoint_sha256="e" * 64)
 
     def test_quiescence_proof_binds_plan_backup_and_stopped_writers(self) -> None:
         with TemporaryDirectory() as directory:
