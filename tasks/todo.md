@@ -20,7 +20,7 @@
 
 剩余关键缺口：后续主路线不再是强化组织级发布或实时交易，而是建立公司级数据库和分析反馈闭环。本机 production-like 栈仍可作为个人/单机长期使用口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。非本机组织级真实生产发布、外部密钥管理、生产级 artifact URI、灰度/回滚窗口和发布确认全部下沉为运维/非本机发布附录，不阻塞公司情报平台产品路线。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：T-603 个人研究闭环稳定化和 T-613 全量 registry 决策包均已完成本机收口；下一阶段是 T-614 首批 250 份 clone-only 重解析演练，但必须先取得绑定 manifest/batch SHA 的人工批准并生成新的 collection-aware 主库备份。未批准前保持当前 15 份主库切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何研报恢复必须 dry-run、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
+近期优先级：T-603 个人研究闭环稳定化和 T-613 全量 registry 决策包均已完成本机收口；T-614 首批 250 份 clone-only 重解析已完成清单/批次/原文件绑定和新的 collection-aware 主库恢复验证备份，当前只等待绑定 manifest/batch SHA 的明确人工批准，之后才能创建独立 clone 并生成 attestation。未批准前保持当前 15 份主库切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何研报恢复必须 dry-run、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
 
 ## 项目经理整理 / 公司情报平台重定位路线
 
@@ -370,15 +370,17 @@
   - Artifact：`artifacts/t613-full-registry/identity-manifest.json`（manifest SHA `e932f352047eb58b4e0df797215598b7ee0bdd25b920432bf6c89173a301fa5e`）和 `artifacts/t613-full-registry/recovery-decision.json`，均为敏感 local-only 证据，不可用于非本机发布。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-613-full-registry-decision.md`。
 
-- `TODO` T-614 首批全量研报 clone 重解析演练
+- `BLOCKED` T-614 首批全量研报 clone 重解析演练
   - 对应：E3-US3, E5-US1, E8-US2；数据与证据，研究工作流/平台质量/治理安全/项目经理评审
   - 依赖：T-613；只允许使用 identity manifest `e932f352047eb58b4e0df797215598b7ee0bdd25b920432bf6c89173a301fa5e` 和首批 batch SHA `2909ee8b964a24c9c47cecf2da04ddab4fc409ea1c7b40c3b461eab97838cd85`。
   - 目标：在新建、独立 attestation 的 PostgreSQL clone 中对首批 250 个唯一内容候选完成两次重解析，验证文档/引用完整性、内容身份、幂等性、耗时和存储增长，为是否继续后续 43 批提供人工决策证据。
   - 前置门禁：执行前生成新的 collection-aware 主库恢复验证备份；取得明确人工批准并绑定上述两个 SHA；证明 raw 只读、主库不可达、OpenSearch/对象存储使用隔离后端。
   - 非目标：不写主库、不批量执行其余 43 批、不删除重复原文件或现有索引、不把本地研报提升为事实源/训练源，不接券商或自动下单。
   - 验收：run1/run2 report/document/evidence 身份完全一致，run2 创建数为 0；解析失败和人工复核项逐条分类；输出容量/时间外推但不冒充全量完成；clone 备份恢复验证后清理临时运行资源。
-  - 当前状态：`TODO`，等待绑定 SHA 的人工批准；泛化的“继续”不作为 destructive/full-registry execute 确认。
-  - Handoff：待创建。
+  - 已完成准备：新增无 execute 模式的 batch preflight，对 T-613 manifest/entries/batch SHA、250 个原文件完整内容、严格 rights policy 和既有 clone attestation validator 做绑定；batch 为 250 个 PDF / 437754140 bytes，raw content identity SHA `ee5f59dffe7ae7c774408e417a75c3aa37712cc3f9fc8fe7c543c8ee081edf33`。
+  - 新备份：`ai_quant-20260721T023537Z` 已恢复验证通过，dump SHA `36279642e3e6501462aab1f45114a3dbe3ee586db8641a81e8e189c66efcaaaa`，总记录/审计/行情 `32319/35385/28365474`，研报六集合 `15/15/112/15/15/3`，保留至 2026-07-28；plan SHA `bf1010e92c1a5b193b7bea62e1d2df3f4087a84f2a489d4be8815e89055a8ece`。
+  - 当前状态：`BLOCKED`；清单、批次、raw 和新备份门均通过，`exact_human_approval_verified` 与 `independent_clone_attestation_verified` 仍失败，`execution_ready=false`、`execution_performed=false`。泛化的“继续/重试”不作为 destructive/full-registry execute 确认。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-614-clone-batch-preflight.md`。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
