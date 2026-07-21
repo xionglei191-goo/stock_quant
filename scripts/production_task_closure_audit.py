@@ -213,6 +213,11 @@ TASK_CODE_MARKERS = {
         ("app/api_routes.py", "/api/governance/security-readiness-report"),
         ("scripts/staging_security_acceptance.py", "def run_staging_security_acceptance("),
     ],
+    "T-617": [
+        ("scripts/manage_research_report_clone_segment.py", "def append_checkpoint("),
+        ("scripts/execute_research_report_clone_batch.py", "validate_active_state"),
+        ("tests/test_manage_research_report_clone_segment.py", "test_resume_requires_latest_checkpoint_after_abort"),
+    ],
 }
 
 TASK_EVIDENCE_COLLECTION_PLAN = {

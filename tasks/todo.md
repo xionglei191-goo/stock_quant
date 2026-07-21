@@ -413,13 +413,13 @@
   - Artifact：`artifacts/t616-research-recovery-segment/segment-strategy-decision.json`、batch 0003 approval/preflight/attestation/run1/run2，均为 local-only，不构成主库晋升或非本机发布证据。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-616-recovery-segment-decision.md`。
 
-- `DOING` T-617 persistent clone 累计状态与调度静默架构
+- `DONE` T-617 persistent clone 累计状态与调度静默架构
   - 对应：E3-US3, E5-US1, E8-US2；平台与质量，数据与证据/研究工作流/治理安全/项目经理评审
   - 依赖：T-616；batch 0004-0044 当前均无执行授权，不得复用 batch 0003 的批准、attestation、plan 或 clone。
   - 目标：实现可绑定前序批次状态的 clone attestation、逐批 checkpoint/resume/abort、segment 末尾备份/vacuum 顺序，以及执行窗口内每日 timer quiescence 或可审计外部写入隔离证明。
   - 非目标：不写主库、不删除 raw/重复别名/OpenSearch、不做主库 promotion；batch 0005-0044 仍不自动执行。
   - 验收：累计状态 manifest 绑定 records/audit/research 六集合和 prior-run SHA；任一批失败可停止并从最近 checkpoint 恢复；执行前证明 timer/service 不会在测量窗口写主库，或明确采用独立只读主库快照基线；通过 focused/full CI 后再生成下一精确审批包。
-  - 当前进展：batch 0004、0005 已在精确批准的独立 clone 中完成双跑。batch 0005 为 250/250 成功，245 `text_indexed`、5 `manual_review`、1870 citation evidence，run2 `ingest_created=0` 且逐项一致。最终 clone `34695/36142/28365474`，数据库 `15511968791` bytes；备份 restore equality 已验证并保留至 2026-07-28，clone 资源已清理，主库健康与基线计数未变。segment state contract 已绑定 clone identity、plan/manifest、run1/run2、prior-run SHA、restore-verified backup、vacuum evidence、九项累计计数和 checkpoint/abort/resume；实际 executor 已接入 active state 校验、30 分钟 freshness、scheduler stopped、writer container stopped、writer sessions=0、primary unreachable 的 quiescence proof 门禁，并提供直接只读观测命令。`.venv` 下 full CI 545 tests 及 UI/安全/文档检查已通过。batch 0006 只读 preflight 已生成但仍被人工批准、独立 attestation 和 quiescent window 阻断；当前 `ai-quant-daily-update.timer` 仍 active，batch 0006-0044 不执行。
+  - 当前进展：batch 0004、0005 已在精确批准的独立 clone 中完成双跑。batch 0005 为 250/250 成功，245 `text_indexed`、5 `manual_review`、1870 citation evidence，run2 `ingest_created=0` 且逐项一致。最终 clone `34695/36142/28365474`，数据库 `15511968791` bytes；备份 restore equality 已验证并保留至 2026-07-28，clone 资源已清理，主库健康与基线计数未变。segment state contract 已绑定 clone identity、plan/manifest、run1/run2、prior-run SHA、restore-verified backup、vacuum evidence、九项累计计数和 checkpoint/abort/resume；实际 executor 已接入 active state 校验、30 分钟 freshness、scheduler stopped、writer container stopped、writer sessions=0、primary unreachable 的 quiescence proof 门禁，并提供直接只读观测命令。`.venv` 下 full CI 545 tests 及 UI/安全/文档检查已通过。T-617 的架构与测试验收已完成；batch 0006 只读 preflight 仍被人工批准、独立 attestation 和 quiescent window 阻断，作为后续独立运维动作，不影响本任务代码闭环；当前 `ai-quant-daily-update.timer` 仍 active，batch 0006-0044 不执行。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-617-batch-0005-preflight.md`、`docs/agent-handoffs/2026-07-21-T-617-segment-state-contract.md`、`docs/agent-handoffs/2026-07-21-T-617-segment-quiescence-integration.md`、`docs/agent-handoffs/2026-07-21-T-617-batch-0006-preflight.md`。
 
 - `DONE` T-431 产品重定位与文档统一
