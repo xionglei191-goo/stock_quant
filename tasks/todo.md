@@ -16,11 +16,11 @@
 
 当前能力：代码已经跑通本机 MVP 主链路，覆盖 A/H/U 公开披露接入、rights tag、证据切片、规则抽取、benchmark 阈值、Thesis/Signal/Decision 兼容对象、纸面执行意图兼容入口、模拟持仓 ledger、月报/回放、事故剧本、SQLite/PostgreSQL、本地/S3 对象存储、内置/OpenSearch 检索、`/ui` 静态页面、健康检查、烟测、LLM 中转站和 PaddleOCR-VL 文档解析备用接口。本轮产品方向调整后，这些能力应重新归类到公司画像、事件时间线、关系图谱、观点库、观察任务、分析结论和模拟反馈闭环。
 
-新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 曾在历史审计中完成 11702 份可处理文件登记、解析和 88515 条 citation evidence，证据见 `artifacts/research-report-completion-audit.json`，但该文件只代表生成时点；T-603/T-604/T-611/T-612 已完成 15 份受控主库切片恢复，T-613 又完成 11702/11702 全文件内容哈希对账，确认主库 15 份内容一致、OpenSearch 11702 个投影 ID 全覆盖、0 个 report ID 冲突，并识别 599 组重复内容/884 个重复别名。T-614/T-615 已分别在独立 clone 中完成 batch 0001/0002 双跑：第二批 250 份全部成功，242 份文本化、8 份进入人工复核、1826 条 citation evidence，改造后的只读 run2 为零逻辑/审计/物理增量且逐项一致；剩余 42 批仍未获得执行授权，主库仍保持 15 份受控切片。`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
+新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 曾在历史审计中完成 11702 份可处理文件登记、解析和 88515 条 citation evidence，证据见 `artifacts/research-report-completion-audit.json`，但该文件只代表生成时点；T-603/T-604/T-611/T-612 已完成 15 份受控主库切片恢复，T-613 又完成 11702/11702 全文件内容哈希对账，确认主库 15 份内容一致、OpenSearch 11702 个投影 ID 全覆盖、0 个 report ID 冲突，并识别 599 组重复内容/884 个重复别名。T-614/T-615/T-616 已分别在独立 clone 中完成 batch 0001/0002/0003 双跑：第三批 250 份全部成功，237 份文本化、13 份进入人工复核、1810 条 citation evidence，改造后的只读 run2 再次证明零逻辑/审计/物理增量且逐项一致；剩余 41 批仍未获得执行授权，主库仍保持 15 份受控研报切片。`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
 
 剩余关键缺口：后续主路线不再是强化组织级发布或实时交易，而是建立公司级数据库和分析反馈闭环。本机 production-like 栈仍可作为个人/单机长期使用口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。非本机组织级真实生产发布、外部密钥管理、生产级 artifact URI、灰度/回滚窗口和发布确认全部下沉为运维/非本机发布附录，不阻塞公司情报平台产品路线。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：T-603/T-615 已完成本机收口；T-616 已完成 fresh clone 与 5 批 persistent clone 的首轮比较，当前选择 batch 0003 单批 fresh clone 作为下一审批单元，等待精确 SHA 绑定批准，不自动执行。主库保持当前 15 份受控切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须重新 dry-run、绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
+近期优先级：T-603/T-616 已完成本机收口；下一步 T-617 先实现 persistent clone 的累计状态 attestation、逐批 checkpoint/resume/abort 和定时器 quiescence 证明，再决定 batch 0004 是否仍用 fresh clone 或扩大到小 segment，当前不自动执行。主库保持当前 15 份受控研报切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须重新 dry-run、绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
 
 ## 项目经理整理 / 公司情报平台重定位路线
 
@@ -398,7 +398,7 @@
   - 容量与收口：run1 clone 从 `32319/35385/28365474` 增至 `34654/36145/28365474`，数据库增加 10027008 bytes；run2 三项计数和数据库字节数均为零增量，达到目标。dead tuple 1244/34654，未达到 vacuum 阈值。最终 clone 备份 `ai_quant_t615_clone_20260721-20260721T072013Z` 已恢复验证，dump SHA `fcfd04c15dc1a241bca5fd1ddc07301939df6b09c1c9dc9271ec855d5c8c127c`，保留至 2026-07-28；clone 资源已清理，主库始终保持 `32319/35385/28365474` 且无写入或删除。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-615-recovery-execution-architecture.md`。
 
-- `DOING` T-616 剩余 42 批研报恢复分段决策
+- `DONE` T-616 剩余研报恢复分段决策与 batch 0003 验证
   - 对应：E3-US3, E5-US1, E8-US2；项目经理协调，数据与证据/研究工作流/平台质量/治理安全评审
   - 依赖：T-615；不得复用 batch 0002 的批准、attestation、plan 或 clone，且当前没有 batch 0003 或 segment 执行授权。
   - 目标：基于 T-615 的只读 run2 实证，比较逐批 fresh clone 与最多 5 批 persistent-clone segment 的恢复成本、累计状态风险、备份频率和中止边界，生成下一执行单元的精确 SHA 绑定审批包。
@@ -407,8 +407,18 @@
   - 首轮决策：T-615 实测外推显示 5 批 persistent clone 约 120.8 分钟，5 个 fresh clone 约 208.3 分钟，机械节省约 42.0%；但现有 attestation 只能绑定主库备份初始态，不能绑定累计批次状态，且 segment checkpoint/resume 尚不存在，按 dead tuple 线性外推第 5 批约 14.1% 又会超过维护阈值。因此暂不授权 persistent clone，先以单独 batch 0003 增加第二个优化架构样本。
   - batch 0003 dry-run：250 PDF / 484140668 bytes；batch SHA `c029846b6596ff28e85e385e8eca2fe9c69fc8e31d37e01ef180ea8bd61a74c0`，raw identity SHA `47002ba169b0c836d146b29dd700be7e8a2cee8b2d2aa6b9cffacdee09d79d8f`，plan SHA `2393788a3e594310c1c1e04686092cf53e624bc887303f2dfee4a3167fb421c2`。当前仅 `exact_human_approval_verified` 和 `independent_clone_attestation_verified` 两门失败，`execution_performed=false`，未创建 clone、未写数据库。
   - 契约修复：后续批次审批任务归属从错误的 T-615 修正为 T-616；回归覆盖 batch 0001/0002/0003/0044 及越界 0045 拒绝。
-  - Artifact：`artifacts/t616-research-recovery-segment/segment-strategy-decision.json`、`batch-0003-preflight.json` 和 `batch-0003-approval-request.json`，均为 local-only，不构成执行授权或非本机发布证据。
+  - batch 0003 执行：精确人工批准与 fresh clone attestation 六门全过；run1 250/250 成功、237 `text_indexed`、13 `manual_review`、1810 citation evidence、`ingest_created=250`，耗时 1180.946 秒。run2 250/250 逐项一致、`ingest_created=0`，耗时 6.418 秒，clone records/audit/database bytes 均零增量。
+  - 容量与收口：run1 clone 从 `32319/35385/28365474` 增至 `34643/36150/28365474`，数据库增加 10076160 bytes；dead tuple 1239/34643，未达到 vacuum 阈值。最终 clone 备份 `ai_quant_t616_clone_20260721-20260721T110934Z` 已恢复验证，dump SHA `9e29de55a7ca5e966b4114c19f35cd173465d5d969cc068e4f0606ad62a789ae`，保留至 2026-07-28；clone 资源已清理。
+  - 主库并发事实：T-616 executor 只连接 clone，未执行主库写入或删除；但既有 `ai-quant-daily-update.service` 于 18:49:28-19:06:45 并发成功运行，使主库从 `32319/35385/28365474` 正常日更为 `32325/35405/28367250`。该外部增量有 API/connector audit 分组证据，不能表述为 T-616 写入，也不能宣称整个窗口主库零变化。
+  - Artifact：`artifacts/t616-research-recovery-segment/segment-strategy-decision.json`、batch 0003 approval/preflight/attestation/run1/run2，均为 local-only，不构成主库晋升或非本机发布证据。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-616-recovery-segment-decision.md`。
+
+- `TODO` T-617 persistent clone 累计状态与调度静默架构
+  - 对应：E3-US3, E5-US1, E8-US2；平台与质量，数据与证据/研究工作流/治理安全/项目经理评审
+  - 依赖：T-616；batch 0004-0044 当前均无执行授权，不得复用 batch 0003 的批准、attestation、plan 或 clone。
+  - 目标：实现可绑定前序批次状态的 clone attestation、逐批 checkpoint/resume/abort、segment 末尾备份/vacuum 顺序，以及执行窗口内每日 timer quiescence 或可审计外部写入隔离证明。
+  - 非目标：不自动执行 batch 0004、不写主库、不删除 raw/重复别名/OpenSearch、不做主库 promotion。
+  - 验收：累计状态 manifest 绑定 records/audit/research 六集合和 prior-run SHA；任一批失败可停止并从最近 checkpoint 恢复；执行前证明 timer/service 不会在测量窗口写主库，或明确采用独立只读主库快照基线；通过 focused/full CI 后再生成下一精确审批包。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
