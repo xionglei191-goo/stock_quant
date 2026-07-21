@@ -35,9 +35,9 @@ Without a hash-bound state file, a later resume could use the wrong clone identi
 
 ## Current State
 
-- Completed: `scripts/manage_research_report_clone_segment.py` and focused unit tests.
-- In progress: integration with a future persistent-clone executor and scheduler-quiescence proof.
-- Blocked: persistent segment execution remains unauthorized until those integrations are reviewed.
+- Completed: `scripts/manage_research_report_clone_segment.py`, focused unit tests, and executor state integration.
+- In progress: real persistent segment execution remains gated by approval and quiescence evidence.
+- Blocked: batch 0006 execution remains unauthorized.
 
 ## Current Findings
 
@@ -66,7 +66,7 @@ Without a hash-bound state file, a later resume could use the wrong clone identi
 ## Blockers
 
 - No batch 0006 approval exists.
-- The state manager is not yet wired into the Docker/PostgreSQL executor's automatic checkpoint call.
+- The executor accepts `--segment-state`; run 2 requires `--checkpoint-counts-json` and writes the checkpoint only after the execution artifact is persisted.
 
 ## Files Touched
 

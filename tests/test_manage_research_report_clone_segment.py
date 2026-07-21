@@ -14,6 +14,7 @@ from scripts.manage_research_report_clone_segment import (
     canonical_sha256,
     init_state,
     resume_state,
+    validate_active_state,
     validate_quiescence_proof,
 )
 
@@ -101,6 +102,12 @@ class CloneSegmentStateTests(unittest.TestCase):
             resume_state(state, checkpoint_sha256="c" * 64)
         with self.assertRaises(SegmentStateRefused):
             resume_state(state, checkpoint_sha256="e" * 64)
+
+    def test_active_state_binds_execution_plan_manifest_and_attestation(self) -> None:
+        state = self._state()
+        validate_active_state(state, plan_sha256="a" * 64, manifest_sha256="b" * 64, attestation_sha256="c" * 64)
+        with self.assertRaises(SegmentStateRefused):
+            validate_active_state(state, plan_sha256="f" * 64, manifest_sha256="b" * 64, attestation_sha256="c" * 64)
 
     def test_quiescence_proof_binds_plan_backup_and_stopped_writers(self) -> None:
         with TemporaryDirectory() as directory:

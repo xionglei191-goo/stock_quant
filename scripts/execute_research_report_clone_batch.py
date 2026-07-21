@@ -28,7 +28,15 @@ if str(ROOT) not in sys.path:
 
 from app.research_reports import content_sha256, report_id_for_path
 from scripts.build_research_report_registry_decision import payload_sha256
-from scripts.manage_research_report_clone_segment import SegmentStateRefused, validate_quiescence_proof
+from scripts.manage_research_report_clone_segment import (
+    SegmentStateRefused,
+    append_checkpoint,
+    file_sha256,
+    load_state,
+    validate_active_state,
+    validate_quiescence_proof,
+    write_state,
+)
 from scripts.prepare_research_report_clone_batch import inspect_approval
 from scripts.recover_watchlist_research_reports import (
     ApiClient,
@@ -512,6 +520,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--confirm-clone-target", action="store_true")
     parser.add_argument("--prior-run", type=Path)
     parser.add_argument("--quiescence-proof", type=Path, required=True)
+    parser.add_argument("--segment-state", type=Path)
+    parser.add_argument("--checkpoint-counts-json")
     parser.add_argument("--citation-char-limit", type=int, default=1200)
     parser.add_argument("--max-text-chars", type=int, default=50000)
     parser.add_argument("--pdf-pages", type=int, default=3)
@@ -542,6 +552,13 @@ def main(argv: list[str] | None = None) -> int:
             require_quiescence=True,
         )
         validate_current_clone_runtime_identity(attestation)
+        if args.segment_state:
+            validate_active_state(
+                load_state(args.segment_state),
+                plan_sha256=str(preflight.get("plan_sha256") or ""),
+                manifest_sha256=str(plan.get("manifest_sha256") or ""),
+                attestation_sha256=file_sha256(args.clone_attestation),
+            )
     except (CloneBatchRefused, RecoveryRefused, OSError, ValueError) as exc:
         raise SystemExit(f"execution refused before API access: {exc}") from exc
     prior = _load_json(args.prior_run, label="prior run") if args.prior_run else None
@@ -559,6 +576,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(execution, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.segment_state and args.prior_run:
+        if not args.checkpoint_counts_json:
+            raise SystemExit("segment checkpoint refused: --checkpoint-counts-json is required for run 2")
+        try:
+            state = append_checkpoint(
+                load_state(args.segment_state),
+                batch_id=str(plan.get("batch_id") or ""),
+                batch_sha256=str(plan.get("batch_sha256") or ""),
+                run1_path=args.prior_run,
+                run2_path=args.output,
+                counts=json.loads(args.checkpoint_counts_json),
+            )
+            write_state(args.segment_state, state)
+        except (SegmentStateRefused, OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"segment checkpoint refused after execution: {exc}") from exc
     print(
         json.dumps(
             {

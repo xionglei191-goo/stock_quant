@@ -201,6 +201,22 @@ def load_state(path: Path) -> dict[str, Any]:
     return payload
 
 
+def validate_active_state(
+    state: Mapping[str, Any],
+    *,
+    plan_sha256: str,
+    manifest_sha256: str,
+    attestation_sha256: str,
+) -> None:
+    if state.get("schema_version") != SCHEMA_VERSION or state.get("status") != "active":
+        raise SegmentStateRefused("segment state must be an active supported state")
+    if state.get("plan_sha256") != plan_sha256 or state.get("manifest_sha256") != manifest_sha256:
+        raise SegmentStateRefused("segment state does not match the execution plan/manifest")
+    identity = state.get("clone_identity") if isinstance(state.get("clone_identity"), Mapping) else {}
+    if identity.get("attestation_sha256") != attestation_sha256:
+        raise SegmentStateRefused("segment state does not match the clone attestation")
+
+
 def _required_sha(value: Any, label: str) -> str:
     result = str(value or "")
     if not SHA256.fullmatch(result):
