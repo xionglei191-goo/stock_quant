@@ -413,12 +413,14 @@
   - Artifact：`artifacts/t616-research-recovery-segment/segment-strategy-decision.json`、batch 0003 approval/preflight/attestation/run1/run2，均为 local-only，不构成主库晋升或非本机发布证据。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-616-recovery-segment-decision.md`。
 
-- `TODO` T-617 persistent clone 累计状态与调度静默架构
+- `DOING` T-617 persistent clone 累计状态与调度静默架构
   - 对应：E3-US3, E5-US1, E8-US2；平台与质量，数据与证据/研究工作流/治理安全/项目经理评审
   - 依赖：T-616；batch 0004-0044 当前均无执行授权，不得复用 batch 0003 的批准、attestation、plan 或 clone。
   - 目标：实现可绑定前序批次状态的 clone attestation、逐批 checkpoint/resume/abort、segment 末尾备份/vacuum 顺序，以及执行窗口内每日 timer quiescence 或可审计外部写入隔离证明。
   - 非目标：不自动执行 batch 0004、不写主库、不删除 raw/重复别名/OpenSearch、不做主库 promotion。
   - 验收：累计状态 manifest 绑定 records/audit/research 六集合和 prior-run SHA；任一批失败可停止并从最近 checkpoint 恢复；执行前证明 timer/service 不会在测量窗口写主库，或明确采用独立只读主库快照基线；通过 focused/full CI 后再生成下一精确审批包。
+  - 当前进展：batch 0004 只读预检已生成，250 PDF / 535974264 bytes；batch SHA `ff585355bced141eaaced98f8463ab6d47d4d158d10937788c314fbce6a0b462`，raw identity SHA `3611924cf49340a956a259228d17863a209e434552d1e9513b05d97900b06e79`，plan SHA `c752b0f7a70698961c8b0768d3ce429f37efb102c21b1ac127be17fae4865849`。preflight SHA `f5a29944c189d8c057dbbb0d412d8da1ccf2cf052305d720e5f698bc6a960162`，approval request SHA `a1479d3900586666eadf282479cb26bcadf4141b074320894b2e4ec073c65f53`；当前未创建 clone、未写主库，等待精确批准和独立 attestation。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-617-batch-0004-preflight.md`。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
