@@ -1,5 +1,12 @@
 # 生产部署 Runbook
 
+- Status: active
+- Owner group: Platform and Quality
+- Last updated: 2026-07-21
+- Related tasks: T-430, T-482, T-492, T-602, T-605, T-610, T-611
+- Scope: local production deployment, daily operations, backup, rollback, and release evidence
+- Non-goals: live broker connectivity, automatic order execution, or non-local release approval from local-only evidence
+
 ## 1. 环境变量
 
 | 变量 | 用途 | 生产建议 |
@@ -27,11 +34,14 @@
 
 1. 复制 `.env.example` 为环境配置模板，并通过部署系统注入真实密钥。
 2. PostgreSQL 执行 `docs/postgresql-schema.sql`；或启动服务时由 `PostgreSQLStore` 初始化 schema。
-3. 若从 SQLite 迁移，先停止写入，再执行：
+3. 若从 SQLite 迁移，先执行只读 preflight；正常写入路径只允许 target-wins 的 merge：
 
 ```bash
-python3 scripts/migrate_sqlite_to_postgres.py ./data/state.db postgresql://user:password@host:5432/ai_quant --replace
+python3 scripts/migrate_sqlite_to_postgres.py ./data/state.db "$AI_QUANT_POSTGRES_DSN"
+python3 scripts/migrate_sqlite_to_postgres.py ./data/state.db "$AI_QUANT_POSTGRES_DSN" --mode merge
 ```
+
+   `exact-replace` 只用于经过审阅的例外恢复，必须同时提供最新 preflight 的计数绑定确认令牌和仍在保留期内的恢复验证备份 manifest；详见 `docs/postgresql-migrations.md`。
 
 4. 配置对象存储 bucket、访问密钥、版本化和备份策略。
 5. 配置 OpenSearch endpoint、索引名、账号和 fallback。
@@ -40,6 +50,8 @@ python3 scripts/migrate_sqlite_to_postgres.py ./data/state.db postgresql://user:
 ```bash
 python3 -m app.server
 ```
+
+   Docker 镜像内必须保留 `poppler-utils`。本地研报 PDF 的受限文本提取调用 `pdftotext`；缺少该依赖时报告只能进入 `needs_text_review`，不得把空提取当成可引用证据。
 
 7. 运行上线前检查。
 
@@ -68,11 +80,13 @@ python3 scripts/staging_vision_gate_acceptance.py http://127.0.0.1:8000 --record
 - `summary.market_data` 记录 A/U 最新日期、行数增量、typed-only K 线存储和旧 JSONB 记录数。
 - T-602 后 `ai_quant.market_data_bars` 只保存结构化行情、payload key mask、非重复扩展字段和权限策略引用；完整 `payload`/`rights_tag` 由 `ai_quant.market_data` 兼容视图重建。schema 迁移、停机、备份、回滚和 cleanup 命令见 `docs/postgresql-migrations.md`。
 - `summary.actionable_insight` 记录今日可读研究摘要、异动标的、研报证据公司数和质量门禁。
+- 顶层及 `summary` 的 `status`/`passed` 保持兼容并代表执行健康，`execution_status` 显式返回同一执行结论；数据导入、存储、接口、脚本异常等阻断故障会使其为 `failed`。
+- `content_status` 独立返回 `ready`、`needs_evidence` 或 `unavailable`。研报直接证据不足时原始 daily insight 质量门仍保持失败并写入 `content_issues`，但只标记 `needs_evidence`，不会把已正常完成的 systemd 流水线误判为执行失败。
 - `summary.latency` 记录关键 API 的最慢 probe 和阈值。
 - `artifact_manifest` 列出本次所有 artifact 的存在性、状态和大小。
 - `operator_next_actions` 是第一优先级排障入口。
 
-公开源 scope 刷新默认有独立短超时 `AI_QUANT_DAILY_SCOPE_REFRESH_TIMEOUT_SECONDS=300`，不会占用 `AI_QUANT_DAILY_IMPORT_TIMEOUT_SECONDS` 的长导入窗口。`latest_analysis_run.py` 也受 `AI_QUANT_DAILY_ANALYSIS_TIMEOUT_SECONDS` 外层约束；超时或失败时会在目标 artifact 路径写入失败 JSON，随后继续执行 daily insight、latency audit 和本机生产审计。若需要把非阻断失败改成阻断，关闭对应 `ALLOW_*_FAILURE` 环境变量。
+公开源 scope 刷新默认有独立短超时 `AI_QUANT_DAILY_SCOPE_REFRESH_TIMEOUT_SECONDS=300`，不会占用 `AI_QUANT_DAILY_IMPORT_TIMEOUT_SECONDS` 的长导入窗口。`latest_analysis_run.py` 也受 `AI_QUANT_DAILY_ANALYSIS_TIMEOUT_SECONDS` 外层约束；超时或失败时会在目标 artifact 路径写入失败 JSON，随后继续执行 daily insight、latency audit 和本机生产审计。daily insight 能生成但证据门不足属于内容缺口，查看 `content_status`、`summary.content_issues` 和原始 insight artifact；生成过程抛错或 artifact 不可用属于执行故障。若需要把其他非阻断失败改成阻断，关闭对应 `ALLOW_*_FAILURE` 环境变量。
 
 日更调度验收：
 

@@ -3978,7 +3978,8 @@
       return {
         "Content-Type": "application/json",
         "X-Actor": formValue("actor", "demo_user"),
-        "X-Role": roleOverride || $("role").value
+        "X-Role": roleOverride || $("role").value,
+        "X-Client-Origin": navigator.webdriver ? "acceptance" : "ui"
       };
     }
 

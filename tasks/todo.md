@@ -16,11 +16,11 @@
 
 当前能力：代码已经跑通本机 MVP 主链路，覆盖 A/H/U 公开披露接入、rights tag、证据切片、规则抽取、benchmark 阈值、Thesis/Signal/Decision 兼容对象、纸面执行意图兼容入口、模拟持仓 ledger、月报/回放、事故剧本、SQLite/PostgreSQL、本地/S3 对象存储、内置/OpenSearch 检索、`/ui` 静态页面、健康检查、烟测、LLM 中转站和 PaddleOCR-VL 文档解析备用接口。本轮产品方向调整后，这些能力应重新归类到公司画像、事件时间线、关系图谱、观点库、观察任务、分析结论和模拟反馈闭环。
 
-新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 已完成全量入库和解析，源目录 11702 份可处理文件全部登记为 research report asset、全部关联 research document、全部进入 `text_indexed`，无 `indexed` / `ingested` / `needs_text_review` 残留，研报 citation evidence 共 88515 条，审计见 `artifacts/research-report-completion-audit.json`；`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
+新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 曾在历史审计中完成 11702 份可处理文件登记、解析和 88515 条 citation evidence，证据见 `artifacts/research-report-completion-audit.json`，但该文件只代表生成时点；2026-07-21 实时审计发现 PostgreSQL 研报集合为 0、OpenSearch 仍有约 2.4 万 live documents（其中 11702 个 `research_report` projection）、原始目录约 1.17 万文件；T-603/T-604/T-611/T-612 已完成 15 份受控切片恢复，但全量 identity drift 仍转入 T-613，不再把历史 artifact 当成当前完成状态。`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
 
 剩余关键缺口：后续主路线不再是强化组织级发布或实时交易，而是建立公司级数据库和分析反馈闭环。本机 production-like 栈仍可作为个人/单机长期使用口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。非本机组织级真实生产发布、外部密钥管理、生产级 artifact URI、灰度/回滚窗口和发布确认全部下沉为运维/非本机发布附录，不阻塞公司情报平台产品路线。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：先完成产品重定位、架构重写和数据结构统一，再拆实现任务。本机长期使用仍需保持 Compose 栈、备份恢复、本机证据包、LLM/OCR 冒烟、最新分析产物和 `local_production_audit` 可复验；日常启动建议使用 `scripts/local_production_stack.sh`。研报解析底座和研报接入业务分析/UI 看板已经全量收口，`artifacts/latest-analysis/latest-analysis.json` 已包含 A 股、美股、产业链、财报、行情和研报观点 evidence，`artifacts/latest-analysis/research-evidence-recall-audit.json` 已确认研报只进入观点/参考层，不进入事实源、训练源或真实交易信号。M6-M9 代码层已收口，剩余 `BLOCKED` 项保留为“非本机/组织级生产或大样本质量增强”证据缺口，不阻塞公司情报平台重定位。
+近期优先级：T-603 个人研究闭环稳定化已完成本机收口；下一阶段聚焦 T-613 的全量研报 registry 对账与受控恢复决策，同时持续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何研报恢复必须 dry-run、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
 
 ## 项目经理整理 / 公司情报平台重定位路线
 
@@ -282,6 +282,90 @@
   - 结果：关系总大小由 `45,041,180,672` bytes 降到 `16,853,549,056` bytes，减少 `28,187,631,616` bytes（62.6%，约 42GiB 到 16GiB）；五类核心查询均通过容量门槛，security history 热中位数由 0.471ms 改善到 0.432ms。
   - 恢复点：`data/local/backups/postgres/ai_quant-20260719T015529Z.dump` 及 manifest 已完成真实 restore/count 核对，SHA-256 固定，保留至 2026-07-26；仅 local-only 且包含敏感数据库内容。
   - Handoff：`docs/agent-handoffs/2026-07-19-T-602-market-data-storage-v2.md`。
+
+- `DONE` T-603 个人研究闭环稳定化与数据迁移收口
+  - 对应：E3-US3, E3-US4, E5-US1, E7-US1, E8-US2, E9-US2；项目经理 / 发布协调，数据与证据/平台质量/研究工作流/产品 UI/治理安全评审
+  - 目标：把 2026-07-21 PM 审计发现的实时状态漂移转成可恢复、可对账、可持续运行的个人研究闭环；保持现有 URL、数据边界和模拟反馈契约。
+  - 范围：Git 绿色基线、恢复验证备份、多存储研报对账、数据健康真值、最新分析读性能、每日任务双状态、五家公司证据闭环和真实产品使用指标。
+  - 非目标：不删除原始研报或现有索引，不接真实券商，不自动下单，不把本地研报当事实源/训练源，不伪造 7 天或 6-12 个月纵向结果。
+  - 已完成：T-602 基线已以 `0463630` 推送；多存储只读对账、数据健康 source-of-truth、最新分析物化热读、每日执行/内容双状态、产品使用来源分层、五家公司受控恢复和主库切片晋升均已闭环；最终 `make local-ci` 通过 516 个测试及全部 UI、安全、链接、handoff、文档元数据门。
+  - 真实证据：最终备份 `data/local/backups/postgres/ai_quant-20260721T001909Z.manifest.json` 为 `restore_verified=true`，主库 `records/audit_log/market_data_bars=32319/35385/28365474`，研报集合 `15/15/112/15/15/3`；受控日更 `t612-post-promotion-20260721T001207Z` 执行与内容均通过，调度审计 27/27 通过，timer 已启用且 active。
+  - 边界：原始目录约 11702 份与 PostgreSQL 15 份仍为已记录的全量 registry 漂移，不能宣称全量恢复；该问题转入 T-613，原始文件和 OpenSearch 保持不变。
+  - 验收：恢复验证备份通过；多存储 inventory 可重跑且恢复计划幂等；数据健康不全量物化 2800 万行情行且反映真实计数；最新分析热读 p95 < 2 秒；每日执行失败与证据缺口分开；五家公司完成度有可回链提升；产品 KPI 排除 scheduled/acceptance 流量；完整本机质量门通过。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-603-personal-research-stabilization.md`。
+
+- `DONE` T-604 研报多存储状态对账与恢复前门禁
+  - 对应：E3-US3, E8-US2, E9-US2；数据与证据，平台质量/治理安全评审
+  - 目标：只读盘点原始文件、PostgreSQL、OpenSearch 和 S3-compatible 对象存储，给出 source-of-truth 角色、漂移和安全恢复条件。
+  - 验收：默认 dry-run、无删除/重建/写回；连接失败可降级为明确 unknown；输出不包含密钥或签名 URL；真实本机 inventory 可复验。
+  - 依赖：T-603 恢复验证备份。
+  - 已完成：只读工具盘点 11702 份原始 PDF、PostgreSQL 研报集合 0、OpenSearch 研报投影 11702、MinIO 研报命名空间对象 0；识别 2 个 critical/2 个 high 漂移，明确禁止自动恢复、删除原文件、删除/重建索引或把 OpenSearch 当权威源；8 项聚焦测试和真实 Compose 审计通过。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-604-report-state-reconciliation.md`。
+
+- `DONE` T-605 每日研究状态语义与最新分析热读
+  - 对应：E5-US1, E7-US1, E8-US2；研究与 AI 工作流，平台质量/产品 UI 评审
+  - 目标：最新分析请求只读已物化公司情报，不再逐公司运行重计算；每日产物分别记录 `execution_status` 和 `content_status`，证据不足保持 `needs_evidence` 但不伪装为基础设施故障。
+  - 验收：兼容原 API/legacy 状态字段；命中物化数据时 company-intelligence 服务调用数为 0；热读 p95 < 2 秒；异常和存储/导入失败仍阻塞执行。
+  - 已完成：当前 9 公司物化快照热读不再调用 company-intelligence 服务；每日/调度审计拆分执行和内容状态并保留原质量失败；真实 HTTP 20 次 median 38ms、p95 42ms、max 51ms，相关 8+8+5+1 项聚焦回归通过。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-605-daily-latest-analysis.md`。
+
+- `DONE` T-606 数据健康 source-of-truth 修复
+  - 对应：E3-US4, E7-US1, E8-US2；平台与质量，数据与证据/产品 UI 评审
+  - 目标：数据健康接口使用 typed/lazy PostgreSQL 聚合路径，不再通过内存字典得出行情 0；新增来源和一致性元数据并保持旧字段兼容。
+  - 验收：PostgreSQL-like lazy store 回归返回非零真实计数，不全量物化行情；研报 registry 为 0 时如实报告并与跨存储 inventory 分开。
+  - 已完成：领域实现迁出 `SystemService`；真实只读 PostgreSQL 探针返回约 2836 万行、最新 2026-07-20、`lazy_typed_backend/consistent`，研报 registry 仍如实为 0/`not_reconciled`；3 项聚焦/原 API 回归通过。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-606-data-health-source-of-truth.md`。
+
+- `DONE` T-607 产品使用指标来源分层
+  - 对应：E7-US1, E8-US2；产品与 UI，平台质量/项目经理评审
+  - 目标：按 `ui|scheduled|acceptance|api` 标记本机功能访问，产品 KPI 排除自动调度和验收脚本流量，同时保留旧功能聚合字段。
+  - 验收：来源输入白名单、未知值安全归为 `api`；旧持久化记录兼容；API 返回 total 与 product/human 口径；UI 请求显式标记 `ui`。
+  - 已完成：来源聚合已进入独立领域模块，HTTP/UI/每日刷新/主要验收客户端已标记；12/12 聚焦回归（含 SQLite reopen）和最终 516 项完整 CI 通过，真实 HTTP 探针显示五次 acceptance 请求只增加 automation 口径、product 口径增量为 0；20 次 `/api/analysis/latest` 全部 200，median 44.5ms、p95 47.4ms、max 48.3ms。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-607-usage-origin-metrics.md`。
+
+- `DONE` T-608 五家公司证据闭环恢复与连续运营
+  - 对应：E3-US3, E5-US1, E6-US5, E7-US1；数据与证据，研究工作流/产品 UI/治理安全评审
+  - 目标：在 T-604 对账和幂等恢复门通过后，按 AAPL/NVDA/MSFT/300750/600519 优先补齐可用公开事实与本地观点证据，缺证据的市场异动进入调查队列而不是生成伪结论。
+  - 验收：五家公司逐项输出完整度、缺口、来源和下一步；事实/观点边界审计无违规；每日连续运行从真实日期开始累计，不伪造历史观察期。
+  - 依赖：T-604、T-605、T-606；数据恢复必须等恢复验证备份通过。
+  - 已完成：T-611 clone 双跑与 T-612 主库 insert-only 晋升完成，主库现有 15 份研报、15 份结构化研报、15 份观点和 3 份预测；五家公司各有 3 份研报/观点，完整度 0.8462，官方 `financial_snapshot`/`disclosure_events` 缺口仍明确列出，`ready_count=0` 不被伪装为完成。
+  - 真实证据：受控日更执行/内容状态均 `passed/ready`，直接研报证据公司数 5，调度审计 27/27 通过；最终恢复验证备份和跨存储 reconciliation 均保留为 local-only 证据，11702 对 15 的全量漂移转入 T-613。
+
+- `DONE` T-609 研报集合级恢复备份证据
+  - 对应：E3-US3, E8-US2, E9-US2；平台与质量，数据证据/治理安全/项目经理评审
+  - 目标：备份 manifest 同时核对源库与临时恢复库的研报 asset、研究文档、citation evidence、结构化研报、观点和预测计数，并保存有界 report ID 样本。
+  - 验收：任一集合计数或 ID 样本不一致则备份失败；样本不含路径、正文或密钥；当前 0 只证明可回滚到恢复前状态，不冒充历史 11702 份研报覆盖。
+  - 已完成：collection-aware manifest 对源库与临时恢复库做完整计数/有界 ID 样本相等校验；修复后克隆备份、晋升前主库备份、晋升后主库备份均通过 `restore_verified=true`。零状态与恢复后 15 份状态分别标明为当前点位证据，不冒充 11,702 份历史覆盖。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-609-collection-aware-backup.md`。
+
+- `DONE` T-610 SQLite/PostgreSQL 迁移安全门
+  - 对应：E8-US2, E9-US2；平台与质量，数据与证据/治理安全/项目经理评审
+  - 目标：阻止不完整 SQLite 快照覆盖更丰富的 PostgreSQL 状态；默认只读 preflight，正常写入只允许 target-wins merge，exact-replace 必须绑定精确确认和恢复验证备份。
+  - 已完成：新增 `preflight`、insert-only `merge`、backup/count/SHA 绑定的 `exact-replace` 门禁；缺失源文件、目标冲突、目标额外审计和 typed market-data 行均有保护，5 项聚焦 guard + 兼容回归通过。
+  - 非目标：不证明历史研报缺口由 SQLite 迁移造成，不执行真实 SQLite 迁移，不改变 paper-only/no-broker 边界。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-610-sqlite-postgres-migration-guard.md`。
+
+- `DONE` T-611 隔离克隆研报恢复演练
+  - 对应：E3-US3, E8-US2, E9-US2；平台与质量，数据与证据/治理安全/项目经理评审
+  - 目标：在非主库、内部网络、只读原始文件和本地对象/检索后端中验证五家公司研报恢复、内容哈希和幂等复跑。
+  - 已完成：修复镜像缺少 `pdftotext` 后从干净备份重建 clone；run1 选中 15/创建 15/证据 112，run2 创建 0/证据 112，15/15 内容哈希均验证，应用重启后查询仍可回链；主库保持不变。克隆库和内部网络在最终验证后清理，备份保留 7 天。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-611-clone-pilot-design.md`。
+
+- `DONE` T-612 主库研报切片晋升
+  - 对应：E3-US3, E5-US1, E8-US2, E9-US2；平台与质量，数据与证据/治理安全/项目经理评审
+  - 目标：将 T-611 已证明的五家公司最小研报切片安全写入主库，不复制全量 11,702 registry，不删除/更新任何目标行。
+  - 已完成：quiescence proof、只读 preflight、单 SERIALIZABLE insert-only 事务和提交后精确核验均通过；写入 1 source/15 reports/15 documents/112 evidence + 1 audit，切片 SHA `d2c1b3253de2ddb816eba708f91cd9b3e39a41cf9e3f330513f745eabf8b6b5b` 与 clone 一致；迁移后最终备份、受控日更、产品验收、27/27 调度审计和 516 项完整 CI 均通过。
+  - 边界：主库 PostgreSQL 现为 15 份应用研报 registry；原始文件/OpenSearch 仍为 11,702，跨存储全量对账作为独立后续任务，不冒充已完成。
+  - Handoff：`docs/agent-handoffs/2026-07-21-T-612-primary-research-promotion.md`。
+
+- `TODO` T-613 全量研报 registry 对账与受控恢复决策
+  - 对应：E3-US3, E5-US1, E8-US2；数据与证据，研究工作流/平台质量/治理安全/项目经理评审
+  - 目标：在不删除原始文件、不把 OpenSearch 当权威源的前提下，对约 11,702 份历史研报建立可审计 identity manifest，判断是否存在可恢复的历史 PostgreSQL 状态，并为分批恢复或保留现状给出人工批准的决策包。
+  - 前置条件：保留当前 15 份主库切片、最终 restore-verified 备份和现有 raw/OpenSearch forensic 输入；先完成 ID/内容哈希覆盖率、重复/冲突和 rights boundary 评估。
+  - 非目标：不自动恢复全量、不重建 OpenSearch、不删除 raw 文件、不把研报观点转成事实/训练数据、不接真实券商或自动下单。
+  - 验收：dry-run manifest 可重跑且不泄露正文/路径/密钥；恢复计划具备分批、幂等、冲突拒绝和回滚证据；任何 execute 前必须有独立 clone 双跑、人工批准和新的 collection-aware backup。
+  - 当前状态：`TODO`，T-603/T-604/T-608/T-611/T-612 只完成 15 份受控切片，不能推导全量 11,702 份已恢复。
+  - Handoff：待创建（由 Data and Evidence 牵头，Platform and Quality / Governance review）。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强

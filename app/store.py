@@ -523,6 +523,9 @@ class InMemoryStore:
     def commit(self) -> None:
         return None
 
+    def commit_all(self) -> None:
+        self.commit()
+
 
 class SQLiteStore(InMemoryStore):
     def __init__(self, path: str | Path):
@@ -711,14 +714,28 @@ class PostgreSQLStore(InMemoryStore):
     def mark_dirty_for_resource(self, resource_type: str) -> None:
         self._dirty_collections.update(_candidate_collections_for_resource(resource_type))
 
+    def commit_all(self) -> None:
+        pending = set(self._dirty_collections)
+        self._dirty_collections.clear()
+        try:
+            self.commit()
+        except Exception:
+            self._dirty_collections.update(pending)
+            raise
+
     def commit(self) -> None:
-        with closing(self._connect()) as connection:
-            with connection:
-                with connection.cursor() as cursor:
+        record_hashes_before = dict(self._record_hashes)
+        audit_hashes_before = dict(self._audit_hashes)
+        persisted_audit_ids_before = list(self._persisted_audit_ids)
+        typed_market_data_available = False
+        typed_market_data_keys: set[str] = set()
+        try:
+            with closing(self._connect()) as connection:
+                with connection:
+                    cursor = connection.cursor()
                     cursor.execute("SELECT to_regclass('ai_quant.market_data_bars') IS NOT NULL")
                     typed_market_data_available = bool(cursor.fetchone()[0])
                     current_keys: set[tuple[str, str]] = set()
-                    typed_market_data_keys: set[str] = set()
                     target_collections = set(self._dirty_collections)
                     if not target_collections:
                         target_collections = {collection for collection, _key_field, _model_type in COLLECTIONS}
@@ -831,6 +848,11 @@ class PostgreSQLStore(InMemoryStore):
                             cursor.execute("DELETE FROM ai_quant.audit_log WHERE event_id = %s", (event_id,))
                             self._audit_hashes.pop(event_id, None)
                     self._persisted_audit_ids = current_audit_ids
+        except Exception:
+            self._record_hashes = record_hashes_before
+            self._audit_hashes = audit_hashes_before
+            self._persisted_audit_ids = persisted_audit_ids_before
+            raise
         self._dirty_collections.clear()
         if typed_market_data_available and typed_market_data_keys:
             for item_id in typed_market_data_keys:

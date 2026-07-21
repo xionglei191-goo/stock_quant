@@ -98,7 +98,6 @@ from .models import (
     RightsTag,
     Security,
     SecretRotationRecord,
-    UsageMetric,
     SimulatedExecution,
     SimulationFeedback,
     ScorecardProfile,
@@ -124,6 +123,8 @@ from .service_modules import graph_seed
 from .service_modules import knowledge_graph_bulk
 from .service_modules import knowledge_network_backfill
 from .service_modules import market_data as market_data_module
+from .service_modules import data_health as data_health_module
+from .service_modules import usage_metrics as usage_metrics_module
 from .service_modules import personal_research_loop
 from .service_modules import workflow_planning
 from .service_modules.workflow_reporting import WorkflowReporting
@@ -8166,6 +8167,7 @@ class SystemService:
             )
             existing = self.store.research_reports.get(report.report_id)
             if existing:
+                report.content_sha256 = report.content_sha256 or existing.content_sha256
                 report.document_id = existing.document_id
                 report.issuer_id = existing.issuer_id
                 report.security_id = existing.security_id
@@ -8310,6 +8312,7 @@ class SystemService:
                     viewpoint=dict(metadata.get("viewpoint", {})),
                 )
                 if existing:
+                    report.content_sha256 = report.content_sha256 or existing.content_sha256
                     report.document_id = existing.document_id
                     report.issuer_id = existing.issuer_id
                     report.security_id = existing.security_id
@@ -8789,12 +8792,29 @@ class SystemService:
         report = self.store.research_reports.get(report_id)
         if report is None:
             raise NotFoundError(f"research report {report_id} not found")
+        supplied_content_sha256 = str(payload.get("content_sha256", "")).strip().lower()
+        if supplied_content_sha256:
+            if report.content_sha256 and report.content_sha256 != supplied_content_sha256:
+                raise ConflictError("research report content_sha256 conflicts with the registered identity")
+            try:
+                verified_content_sha256 = research_report_module.verify_report_content_sha256(
+                    report.file_path,
+                    supplied_content_sha256,
+                )
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+            report.content_sha256 = verified_content_sha256
         issuer_id = str(payload["issuer_id"])
         security_id = str(payload.get("security_id", ""))
         document_id = str(payload.get("document_id", f"doc_{report.report_id}"))
         if document_id in self.store.documents:
             report.document_id = document_id
             existing_document = self.store.documents[document_id]
+            if supplied_content_sha256:
+                if existing_document.content_sha256 and existing_document.content_sha256 != supplied_content_sha256:
+                    raise ConflictError("research report document content_sha256 conflicts with the verified identity")
+                existing_document.content_sha256 = supplied_content_sha256
+                self.store.documents[document_id] = existing_document
             report.issuer_id = existing_document.issuer_id
             report.security_id = existing_document.security_id
             report.industry = str(payload.get("industry", report.industry))
@@ -22307,173 +22327,22 @@ class SystemService:
             "usage_boundary": "data_health_run_summary_is_local_read_model_no_schema_migration_no_live_trading",
         }
 
-    def _source_health_row(
-        self,
-        *,
-        source_key: str,
-        domain: str,
-        label: str,
-        status: str,
-        latest_success_at: str = "",
-        latest_failure_at: str = "",
-        failure_count: int = 0,
-        pending_count: int = 0,
-        freshness_level: str = "unknown",
-        last_artifact: str = "",
-        next_actions: list[dict[str, Any]] | None = None,
-        evidence: Mapping[str, Any] | None = None,
-        usage_boundary: str = "",
-    ) -> dict[str, Any]:
-        return {
-            "source_key": source_key,
-            "domain": domain,
-            "label": label,
-            "status": status,
-            "latest_success_at": latest_success_at,
-            "latest_failure_at": latest_failure_at,
-            "failure_count": int(failure_count or 0),
-            "pending_count": int(pending_count or 0),
-            "freshness_level": freshness_level,
-            "last_artifact": last_artifact,
-            "next_actions": list(next_actions or []),
-            "evidence": dict(evidence or {}),
-            "usage_boundary": usage_boundary or "local_source_health_summary_no_live_trading",
-        }
-
     def data_health_summary(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         filters = filters or {}
         runs_payload = self.data_health_runs_summary({"limit": filters.get("run_limit", 200)}, actor=actor)
-        runs = list(runs_payload.get("runs", []))
-
-        def _runs_for(*families: str) -> list[dict[str, Any]]:
-            return [run for run in runs if run.get("run_family") in families]
-
-        def _latest_success(run_rows: list[dict[str, Any]]) -> str:
-            return max([str(row.get("completed_at") or row.get("updated_at") or "") for row in run_rows if row.get("normalized_status") == "success"] or [""])
-
-        def _latest_failure(run_rows: list[dict[str, Any]]) -> str:
-            return max([str(row.get("completed_at") or row.get("updated_at") or "") for row in run_rows if row.get("normalized_status") == "failed"] or [""])
-
-        def _failures(run_rows: list[dict[str, Any]]) -> int:
-            return sum(1 for row in run_rows if row.get("normalized_status") == "failed")
-
-        market_points = list(self.store.market_data.values())
-        latest_market = max([str(to_plain(item.as_of_date)) for item in market_points] or [""])
-        research_reports = list(self.store.research_reports.values())
-        structured_reports = list(self.store.structured_research_reports.values())
-        disclosure_count = len(self.store.disclosure_events)
         material_pending = self.company_material_inbox_pending({"limit": 200}, actor=actor)
-        build_runs = _runs_for("company_database_build_run")
-        package_runs = _runs_for("company_package_import_run")
-        cycle_runs = _runs_for("company_intelligence_cycle_run")
-        ingestion_runs = _runs_for("ingestion_job", "ingestion_schedule_run")
-        daily_runs = _runs_for("daily_data_update_pipeline")
-        personal_runs = _runs_for("personal_intelligence_refresh")
-
-        source_rows = [
-            self._source_health_row(
-                source_key="market_data",
-                domain="market_data",
-                label="公开行情",
-                status="healthy" if market_points else "missing",
-                latest_success_at=latest_market or _latest_success(daily_runs),
-                latest_failure_at=_latest_failure(daily_runs),
-                failure_count=_failures(daily_runs),
-                freshness_level="fresh" if market_points else "missing",
-                last_artifact=next((path for run in daily_runs for path in run.get("artifact_paths", []) if path), ""),
-                next_actions=[{"action": "import_market_data", "endpoint": "/api/market-data/batch"}] if not market_points else [{"action": "monitor_daily_update", "endpoint": "/api/data-health/runs/summary"}],
-                evidence={"market_data_count": len(market_points), "latest_as_of_date": latest_market},
-                usage_boundary="public_or_local_market_data_reference_no_live_trading",
-            ),
-            self._source_health_row(
-                source_key="research_reports",
-                domain="research_reports",
-                label="研报观点库",
-                status="healthy" if research_reports else "missing",
-                latest_success_at=_latest_success(package_runs + personal_runs),
-                latest_failure_at=_latest_failure(package_runs + personal_runs),
-                failure_count=_failures(package_runs + personal_runs),
-                freshness_level="available" if research_reports else "missing",
-                last_artifact=next((path for run in personal_runs for path in run.get("artifact_paths", []) if path), ""),
-                next_actions=[{"action": "ingest_research_reports", "endpoint": "/api/research-reports/inbox/schedule"}],
-                evidence={"research_report_assets": len(research_reports), "structured_reports": len(structured_reports)},
-                usage_boundary="local_research_reports_are_opinion_reference_not_fact_source_not_training",
-            ),
-            self._source_health_row(
-                source_key="official_disclosures",
-                domain="disclosures",
-                label="公告/披露",
-                status="healthy" if disclosure_count else ("pending" if ingestion_runs else "missing"),
-                latest_success_at=_latest_success(ingestion_runs),
-                latest_failure_at=_latest_failure(ingestion_runs),
-                failure_count=_failures(ingestion_runs),
-                freshness_level="available" if disclosure_count else "needs_ingestion",
-                next_actions=[{"action": "run_ingestion_schedule", "endpoint": "/api/ingestion/schedules/run"}],
-                evidence={"disclosure_events": disclosure_count, "ingestion_run_count": len(ingestion_runs)},
-                usage_boundary="official_public_disclosure_summary_no_restricted_training_no_live_trading",
-            ),
-            self._source_health_row(
-                source_key="company_materials",
-                domain="company_materials",
-                label="IR/官网材料",
-                status="pending" if material_pending.get("pending_count") else "healthy",
-                pending_count=int(material_pending.get("pending_count", 0) or 0),
-                freshness_level="needs_action" if material_pending.get("pending_count") else "ready",
-                next_actions=material_pending.get("next_actions", []),
-                evidence={"pending_count": material_pending.get("pending_count", 0), "status_counts": material_pending.get("status_counts", {})},
-                usage_boundary=str(material_pending.get("usage_boundary", "local_company_materials_summary_no_external_download_no_training_no_live_trading")),
-            ),
-            self._source_health_row(
-                source_key="company_database",
-                domain="company_database",
-                label="公司数据库补齐",
-                status="healthy" if any(row.get("normalized_status") == "success" for row in build_runs) else ("failed" if _failures(build_runs) else "pending"),
-                latest_success_at=_latest_success(build_runs),
-                latest_failure_at=_latest_failure(build_runs),
-                failure_count=_failures(build_runs),
-                freshness_level="available" if build_runs else "not_started",
-                next_actions=[{"action": "build_company_database", "endpoint": "/api/company-database/batch/build"}],
-                evidence={"build_run_count": len(build_runs), "company_profiles": len(self.store.company_profiles)},
-                usage_boundary="company_database_health_is_local_operations_summary_no_live_trading",
-            ),
-            self._source_health_row(
-                source_key="workflow_feedback",
-                domain="workflow_feedback",
-                label="闭环刷新与模拟反馈",
-                status="healthy" if any(row.get("normalized_status") == "success" for row in cycle_runs) else ("failed" if _failures(cycle_runs) else "pending"),
-                latest_success_at=_latest_success(cycle_runs),
-                latest_failure_at=_latest_failure(cycle_runs),
-                failure_count=_failures(cycle_runs),
-                freshness_level="available" if cycle_runs else "not_started",
-                next_actions=[{"action": "run_company_intelligence_cycle", "endpoint": "/api/company-intelligence/{symbol}/cycle/run"}],
-                evidence={"cycle_run_count": len(cycle_runs), "simulation_feedback_count": len(self.store.simulation_feedback)},
-                usage_boundary="workflow_feedback_is_paper_only_no_broker_no_auto_trading",
-            ),
-        ]
-        if filters.get("source_key"):
-            wanted = str(filters.get("source_key")).strip()
-            source_rows = [row for row in source_rows if row["source_key"] == wanted]
-        status_counts: dict[str, int] = {}
-        for row in source_rows:
-            status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
-        return {
-            "schema_id": "data-health-summary-v1",
-            "status": "ok",
-            "generated_at": to_plain(utcnow()),
-            "summary": {
-                "source_count": len(source_rows),
-                "status_counts": status_counts,
-                "failure_count": sum(row["failure_count"] for row in source_rows),
-                "pending_count": sum(row["pending_count"] for row in source_rows),
-                "next_action_count": sum(len(row["next_actions"]) for row in source_rows),
-            },
-            "sources": source_rows,
-            "run_summary": runs_payload.get("summary", {}),
-            "run_count": runs_payload.get("count", 0),
-            "local_only": True,
-            "acceptable_for_non_local_release": False,
-            "usage_boundary": "data_health_summary_is_local_read_model_no_schema_migration_no_live_trading",
-        }
+        return data_health_module.build_data_health_summary(
+            generated_at=to_plain(utcnow()),
+            filters=filters,
+            runs_payload=runs_payload,
+            market_snapshot=data_health_module.market_data_snapshot(self.store),
+            research_report_count=len(self.store.research_reports),
+            structured_report_count=len(self.store.structured_research_reports),
+            disclosure_count=len(self.store.disclosure_events),
+            material_pending=material_pending,
+            company_profile_count=len(self.store.company_profiles),
+            simulation_feedback_count=len(self.store.simulation_feedback),
+        )
 
     def personal_research_loop_overview(self, filters: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
         filters = filters or {}
@@ -30142,120 +30011,25 @@ class SystemService:
             "tdx_vipdoc": self.tdx_vipdoc.describe(),
         }
 
-    _USAGE_FEATURE_MAP = (
-        ("/api/company-intelligence", "company_intelligence"),
-        ("/api/company-profiles", "company_profile"),
-        ("/api/company-events", "company_events"),
-        ("/api/company-relationships", "company_relationships"),
-        ("/api/company-database", "company_database"),
-        ("/api/company-financial-metrics", "company_financials"),
-        ("/api/graph", "knowledge_graph"),
-        ("/api/hotspots", "hotspot_expansion"),
-        ("/api/hotspot-lexicons", "hotspot_expansion"),
-        ("/api/industry-chains", "industry_chain"),
-        ("/api/macro-themes", "macro_theme"),
-        ("/api/research/answers", "research_answers"),
-        ("/api/research/tasks", "research_tasks"),
-        ("/api/research-reports", "research_reports"),
-        ("/api/research-report-viewpoints", "research_viewpoints"),
-        ("/api/research-report-forecasts", "research_forecasts"),
-        ("/api/analyst-profiles", "analyst_reliability"),
-        ("/api/analyst-reliability-scores", "analyst_reliability"),
-        ("/api/observation-items", "observation_items"),
-        ("/api/analysis-conclusions", "analysis_conclusions"),
-        ("/api/simulation-feedback", "simulation_feedback"),
-        ("/api/market-data", "market_data"),
-        ("/api/13f", "institutional_holdings"),
-        ("/api/disclosure-events", "disclosure_events"),
-        ("/api/portfolio", "portfolio"),
-        ("/api/entity-mappings", "entity_mappings"),
-        ("/api/evidence", "evidence"),
-        ("/api/extractions", "evidence"),
-        ("/api/search", "search"),
-        ("/api/dashboard", "dashboard"),
-        ("/api/analysis/latest", "latest_analysis"),
-        ("/api/llm", "llm"),
-        ("/api/orchestration", "orchestration"),
-        ("/api/lineage", "orchestration"),
-        ("/api/model-versions", "orchestration"),
-        ("/api/governance", "governance"),
-        ("/api/observability", "observability"),
-        ("/api/readiness", "readiness"),
-        ("/api/benchmarks", "benchmarks"),
-        ("/api/document-parsing", "document_parsing"),
-        ("/api/ingestion", "ingestion"),
-        ("/api/connectors", "connectors"),
-        ("/api/decision-packs", "committee"),
-        ("/api/approvals", "committee"),
-        ("/api/execution-intents", "paper_execution"),
-        ("/api/simulated-executions", "paper_execution"),
-        ("/api/operating-reports", "operating_reports"),
-        ("/api/strategy-replays", "strategy_replays"),
-    )
+    _USAGE_FEATURE_MAP = usage_metrics_module.USAGE_FEATURE_MAP
 
     def _feature_for_path(self, path: str) -> str:
-        path = str(path)
-        for skip in ("/api/health", "/api/metrics", "/api/usage-metrics"):
-            if path.startswith(skip):
-                return ""
-        for prefix, feature in self._USAGE_FEATURE_MAP:
-            if path.startswith(prefix):
-                return feature
-        if path.startswith("/api/"):
-            return "other"
-        return ""
+        return usage_metrics_module.feature_for_path(path)
 
-    def record_usage(self, method: str, path: str, role: str = "") -> None:
+    def record_usage(self, method: str, path: str, role: str = "", origin: str = "api") -> None:
         """Best-effort local usage telemetry; never raises into the request path."""
         try:
-            feature = self._feature_for_path(path)
-            if not feature:
-                return
-            method = str(method or "").upper()
-            now = utcnow()
-            metric = self.store.usage_metrics.get(feature)
-            if metric is None:
-                metric = UsageMetric(feature=feature, first_seen_at=now)
-                self.store.usage_metrics[feature] = metric
-            metric.hit_count += 1
-            if method == "GET":
-                metric.read_count += 1
-            else:
-                metric.write_count += 1
-            metric.last_method = method
-            metric.last_path = str(path)
-            metric.last_role = str(role or "")
-            metric.last_seen_at = now
-            self.store.commit()
+            usage_metrics_module.record_usage(self.store, method, path, role=role, origin=origin)
         except Exception:
             return
 
     def usage_metrics_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
         limit = self._bounded_limit(filters.get("limit", 200), 1000)
-        metrics = sorted(
-            self.store.usage_metrics.values(),
-            key=lambda item: (item.hit_count, item.feature),
-            reverse=True,
-        )
-        rows = [to_plain(item) for item in metrics[:limit]]
-        total_hits = sum(int(item.hit_count) for item in self.store.usage_metrics.values())
-        return {
-            "features": rows,
-            "feature_count": len(self.store.usage_metrics),
-            "total_hits": total_hits,
-            "usage_boundary": "local_usage_telemetry_only_no_pii_no_external_transmission",
-        }
+        return usage_metrics_module.payload(self.store, filters, limit=limit)
 
     def usage_metrics_summary(self) -> dict[str, Any]:
-        metrics = list(self.store.usage_metrics.values())
-        total_hits = sum(int(item.hit_count) for item in metrics)
-        top = sorted(metrics, key=lambda item: item.hit_count, reverse=True)[:5]
-        return {
-            "feature_count": len(metrics),
-            "total_hits": total_hits,
-            "top_features": [{"feature": item.feature, "hit_count": item.hit_count} for item in top],
-        }
+        return usage_metrics_module.summary(self.store)
 
     def metrics(self) -> dict[str, Any]:
         dashboard = self.dashboard()

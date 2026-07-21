@@ -2,8 +2,8 @@
 
 - Status: active
 - Owner group: Platform and Quality
-- Last updated: 2026-07-17
-- Related tasks: T-581, T-582, T-583, T-584, T-585, T-586, T-587, T-588, T-589
+- Last updated: 2026-07-21
+- Related tasks: T-581, T-582, T-583, T-584, T-585, T-586, T-587, T-588, T-589, T-605, T-606, T-607, T-608
 - Scope: HTTP API contracts, authorization boundaries, and paper-only research workflows
 - Non-goals: real broker connectivity, automatic order execution, or treating local evidence as non-local release evidence
 
@@ -21,6 +21,7 @@
 - 所有“执行意图”均为纸面/模拟语义，只用于把研究决策转成模拟持仓和反馈分析输入
 - 所有可执行动作必须有审批状态；当前可执行动作只允许模拟成交、通知 outbox、缓存治理 handoff 等非交易动作
 - HTTP 调用可用 `X-Actor` 和 `X-Role` 请求头传入操作者与角色；`X-Role` 推荐使用 ASCII 别名：`ceo`、`cio`、`pm`、`risk_compliance`、`platform`、`analyst`、`data_engineer`、`nlp_ml`、`overseas_research`
+- 本机使用统计可用 `X-Client-Origin` 标记 `ui`、`scheduled`、`acceptance` 或 `api`；缺失/非法值安全归为 `api`，不得把未分类历史计数冒充为人工产品使用
 - GET 接口支持 query string 参数，例如 `/api/graph/query?issuer_id=issuer_001`
 
 ## 3. 基础响应格式
@@ -72,6 +73,12 @@ T-589 公开数据回填把 `source_uri` 和 `rights_tag` 写入 observation；�
 #### `GET /api/metrics`
 
 返回核心对象计数、审计事件数量、未处理例外、pending prompt 变更数量、对象存储 adapter 和检索 adapter。
+
+#### `GET /api/usage-metrics`
+
+返回本机功能访问聚合。兼容字段 `features[]`、`feature_count` 和 `total_hits` 保持不变；每条 feature 新增 `origin_counts`、`product_hit_count`、`automation_hit_count` 和 `unclassified_hit_count`，顶层新增 `origin_counts`、`product_hits`、`automation_hits`、`api_hits` 和 `unclassified_hits`。
+
+`product_hits` 只统计显式 `ui` 请求；`scheduled` 与 `acceptance` 进入自动化口径，旧记录或无法证明来源的记录进入 `unclassified`。该接口只保存本机聚合计数、最后路径/角色/来源，不采集请求正文、个人身份信息，也不向外部发送遥测。
 
 #### `GET|POST /api/observability/logs/export`
 
@@ -1367,6 +1374,19 @@ T-589 公开数据回填把 `source_uri` 和 `rights_tag` 写入 observation；�
 
 按 broker、source、status 或关键词查询研报 manifest。
 
+#### `POST /api/research-reports/{report_id}/ingest`
+
+把已扫描研报登记为受限本地参考 `Document`，并可绑定明确的 issuer/security。可选请求字段 `content_sha256` 必须是 64 位小写 SHA-256；提供后，服务会重新计算当前研报文件内容哈希并要求完全一致，否则返回 validation error 且不写入。通过校验的哈希同时持久化到研报资产和关联 Document，重复扫描或幂等 ingest 不得清空既有哈希。
+
+常用请求字段：
+
+- `document_id`：可选；默认 `doc_{report_id}`
+- `issuer_id` / `security_id`：已人工确认的主体与证券绑定
+- `industry` / `event_ids`：可选观点映射元数据
+- `content_sha256`：可选但恢复流程必须提供；绑定计划、原始文件、研报资产和 Document 的内容身份
+
+该接口不把本地研报提升为事实源或训练数据。研报与 Document 继续使用 `local_research_reference`、`training_allowed=false`、`redistribution_allowed=false` 和 restricted display/derived-use 边界。
+
 #### `GET /api/research-reports/governance-report`
 
 输出本地研报治理报告，用于“研报只能作为外部观点/本地参考”的边界控制。报告按 broker/source 统计集中度，按研报年月和 `as_of` 判断过期，按已登记 Document 回链 issuer/security，并返回 `stale_research_report`、`missing_document_link`、`single_broker_concentration_breach`、`single_source_concentration_breach` 等问题。支持 `issuer_id`、`security_id`、`broker`、`source_id`、`status`、`as_of`、`stale_after_days`、`max_single_source_share`、`limit`。
@@ -2112,7 +2132,7 @@ T-589 公开数据回填把 `source_uri` 和 `rights_tag` 写入 observation；�
 
 #### `GET /api/analysis/latest`
 
-读取本机最新分析产物，供 CEO Dashboard 和本地投研 UI 展示。接口优先读取 `artifacts/latest-analysis/latest-analysis.json`，兼容旧的 `artifacts/latest-analysis-ahu/latest-analysis.json`；如果尚未生成最新分析，会返回 `status=missing` 和空列表。该接口只展示投研分析、模拟组合和证据边界，不连接券商、不触发真实交易。
+读取本机最新分析产物，供 CEO Dashboard 和本地投研 UI 展示。接口优先读取 `artifacts/daily-update-local/latest-run.json` 指向的本次日更产物，再回退到 `artifacts/latest-analysis/latest-analysis.json` 和旧的 `artifacts/latest-analysis-ahu/latest-analysis.json`；如果尚未生成最新分析，会返回 `status=missing` 和空列表。该接口只展示投研分析、模拟组合和证据边界，不连接券商、不触发真实交易。
 
 主要返回字段：
 
@@ -2129,7 +2149,7 @@ T-589 公开数据回填把 `source_uri` 和 `rights_tag` 写入 observation；�
 - `source_summary`
 
 `research_evidence` 包含本地研报数量、`research_report_citation` 证据数量、语义检索召回状态、热点扩散召回状态和用途边界。研报 evidence 固定为观点/参考层，不能升级为事实真相源、训练源或真实交易信号。
-`company_intelligence` 是按本机资产列表补出的公司情报链路快照，返回 `schema_id=latest-analysis-company-intelligence-v1`、`company_count`、`ready_count`、`needs_attention_count`、`companies[]` 和 `usage_boundary`。每条 company 条目会带 `company_counts`、`relationship_summary`、`coverage_score`、`relationship_status`、`next_actions`、`completeness_verdict` 和 `data_quality`，用于把公司画像、产业链、关系、结论和模拟反馈串成一条可视化链路；它只使用本地已有公司情报，不下载外部资料，也不触发真实交易。
+`company_intelligence` 是 latest-analysis 生成阶段物化的公司情报链路快照，返回 `schema_id=latest-analysis-company-intelligence-v1`、`company_count`、`ready_count`、`needs_attention_count`、`companies[]` 和 `usage_boundary`。读取接口优先使用 `analysis.company_intelligence`，兼容早期顶层 `company_intelligence`；只有不含快照的旧产物才按原契约执行逐公司兜底。每条 company 条目会带 `company_counts`、`relationship_summary`、`coverage_score`、`relationship_status`、`next_actions`、`completeness_verdict` 和 `data_quality`，用于把公司画像、产业链、关系、结论和模拟反馈串成一条可视化链路；它只使用本地已有公司情报，不下载外部资料，也不触发真实交易。
 
 #### `GET /api/company-positions/schema`
 
@@ -2935,10 +2955,12 @@ python3 scripts/company_material_inbox_ingest.py --root-path /path/to/company_ma
 返回字段：
 
 - `schema_id`：当前为 `data-health-summary-v1`。
-- `summary`：来源数、状态分布、失败数、待处理数和下一步数量。
-- `sources[]`：来源健康行，包含 `source_key`、`domain`、`label`、`status`、最近成功/失败、失败数、待处理数、freshness、last artifact、下一步、证据和边界。
+- `summary`：来源数、状态分布、`consistency_counts`、失败数、待处理数和下一步数量。
+- `sources[]`：来源健康行，包含 `source_key`、`domain`、`label`、`status`、最近成功/失败、失败数、待处理数、freshness、last artifact、下一步、证据和边界；兼容新增 `source_of_truth` 与 `consistency_status`，用于区分存储权威来源和跨存储一致性状态。
 - `run_summary` / `run_count`：底层统一运行摘要概览。
 - `local_only=true` / `acceptable_for_non_local_release=false`。
+
+行情来源在 typed/lazy PostgreSQL 模式下使用后端统计计数和有界最新记录查询，不物化全量行情；`evidence.count_accuracy=estimated` 会明确区分统计估算与精确计数，统计异常且后端已有最新记录时才回退精确计数。研报行只统计应用 registry，并明确 `registry_scope=application_registry_only` 与 `consistency_status=not_reconciled`；本接口不会把文件系统或搜索索引数量冒充已入库研报数量。
 
 边界：该接口是本地数据健康和来源追溯视图，不下载外部数据，不训练，不生成交易信号，不连接券商。
 

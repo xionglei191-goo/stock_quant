@@ -119,6 +119,9 @@ class Handler(BaseHTTPRequestHandler):
     def _role(self) -> str:
         return self.headers.get("X-Role", "system")
 
+    def _client_origin(self) -> str:
+        return self.headers.get("X-Client-Origin", "api")
+
     def _query_body(self, query: str) -> dict:
         parsed = parse_qs(query, keep_blank_values=True)
         return {key: values if len(values) > 1 else values[0] for key, values in parsed.items()}
@@ -161,13 +164,27 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
-        response = get_router().dispatch("GET", path, self._query_body(parsed_url.query), actor=self._actor(), role=self._role())
+        response = get_router().dispatch(
+            "GET",
+            path,
+            self._query_body(parsed_url.query),
+            actor=self._actor(),
+            role=self._role(),
+            origin=self._client_origin(),
+        )
         self._send_json(response.to_dict(), response.status_code)
 
     def do_POST(self) -> None:  # noqa: N802
         body = self._read_json()
         parsed_url = urlparse(self.path)
-        response = get_router().dispatch("POST", parsed_url.path, body, actor=self._actor(), role=self._role())
+        response = get_router().dispatch(
+            "POST",
+            parsed_url.path,
+            body,
+            actor=self._actor(),
+            role=self._role(),
+            origin=self._client_origin(),
+        )
         self._send_json(response.to_dict(), response.status_code)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003

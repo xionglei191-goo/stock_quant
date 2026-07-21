@@ -13,6 +13,11 @@ ENV AI_QUANT_DB=/data/state.db
 ENV AI_QUANT_OBJECT_STORE=/data/objects
 ENV AI_QUANT_HOST=0.0.0.0
 
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN python -m pip install --no-cache-dir --retries 10 --timeout 120 ".[postgres,market-data]"
 
 EXPOSE 8000

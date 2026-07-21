@@ -8,6 +8,156 @@ from pathlib import Path
 import re
 import subprocess
 import time
+from typing import Any, Mapping
+
+
+RESEARCH_STATE_SAMPLE_LIMIT = 25
+RESEARCH_STATE_COUNT_KEYS = (
+    "research_reports",
+    "research_documents",
+    "research_report_citation_evidence",
+    "structured_research_reports",
+    "report_viewpoints",
+    "report_forecasts",
+)
+SAFE_POSTGRES_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
+SAFE_REPORT_ID = re.compile(r"^[A-Za-z0-9_.:-]+$")
+
+RESEARCH_STATE_SQL = f"""
+WITH report_assets AS (
+    SELECT
+        item_id AS report_id,
+        NULLIF(payload->>'document_id', '') AS document_id
+    FROM ai_quant.records
+    WHERE collection = 'research_reports'
+),
+research_documents AS (
+    SELECT
+        document.item_id AS document_id,
+        COALESCE(
+            NULLIF(
+                substring(
+                    COALESCE(document.payload->>'source_uri', '')
+                    FROM '^research-report://([A-Za-z0-9_.:-]+)$'
+                ),
+                ''
+            ),
+            (
+                SELECT MIN(asset.report_id)
+                FROM report_assets AS asset
+                WHERE asset.document_id = document.item_id
+            )
+        ) AS report_id
+    FROM ai_quant.records AS document
+    WHERE document.collection = 'documents'
+      AND (
+        document.payload->>'document_type' = 'research'
+        OR document.payload->>'source_uri' LIKE 'research-report://%'
+        OR document.payload->>'source_id' LIKE 'local_research_%'
+        OR document.payload->'rights_tag'->>'license_class' = 'local_research_reference'
+      )
+),
+research_citation_evidence AS (
+    SELECT
+        evidence.item_id AS evidence_id,
+        document.report_id
+    FROM ai_quant.records AS evidence
+    LEFT JOIN research_documents AS document
+      ON document.document_id = evidence.payload->>'document_id'
+    WHERE evidence.collection = 'evidence'
+      AND (
+        evidence.payload->>'section' = 'research_report_citation'
+        OR evidence.payload->>'bbox' LIKE 'research_report://%'
+      )
+),
+structured_reports AS (
+    SELECT COALESCE(NULLIF(payload->>'research_report_id', ''), item_id) AS report_id
+    FROM ai_quant.records
+    WHERE collection = 'structured_research_reports'
+),
+viewpoints AS (
+    SELECT NULLIF(payload->>'research_report_id', '') AS report_id
+    FROM ai_quant.records
+    WHERE collection = 'report_viewpoints'
+),
+forecasts AS (
+    SELECT NULLIF(payload->>'research_report_id', '') AS report_id
+    FROM ai_quant.records
+    WHERE collection = 'report_forecasts'
+)
+SELECT jsonb_build_object(
+    'counts', jsonb_build_object(
+        'research_reports', (SELECT COUNT(*) FROM report_assets),
+        'research_documents', (SELECT COUNT(*) FROM research_documents),
+        'research_report_citation_evidence', (SELECT COUNT(*) FROM research_citation_evidence),
+        'structured_research_reports', (SELECT COUNT(*) FROM structured_reports),
+        'report_viewpoints', (SELECT COUNT(*) FROM viewpoints),
+        'report_forecasts', (SELECT COUNT(*) FROM forecasts)
+    ),
+    'report_id_samples', jsonb_build_object(
+        'research_reports', (
+            SELECT COALESCE(jsonb_agg(report_id ORDER BY report_id), '[]'::jsonb)
+            FROM (
+                SELECT DISTINCT report_id
+                FROM report_assets
+                WHERE report_id ~ '^[A-Za-z0-9_.:-]+$'
+                ORDER BY report_id
+                LIMIT {RESEARCH_STATE_SAMPLE_LIMIT}
+            ) AS sample
+        ),
+        'research_documents', (
+            SELECT COALESCE(jsonb_agg(report_id ORDER BY report_id), '[]'::jsonb)
+            FROM (
+                SELECT DISTINCT report_id
+                FROM research_documents
+                WHERE report_id ~ '^[A-Za-z0-9_.:-]+$'
+                ORDER BY report_id
+                LIMIT {RESEARCH_STATE_SAMPLE_LIMIT}
+            ) AS sample
+        ),
+        'research_report_citation_evidence', (
+            SELECT COALESCE(jsonb_agg(report_id ORDER BY report_id), '[]'::jsonb)
+            FROM (
+                SELECT DISTINCT report_id
+                FROM research_citation_evidence
+                WHERE report_id ~ '^[A-Za-z0-9_.:-]+$'
+                ORDER BY report_id
+                LIMIT {RESEARCH_STATE_SAMPLE_LIMIT}
+            ) AS sample
+        ),
+        'structured_research_reports', (
+            SELECT COALESCE(jsonb_agg(report_id ORDER BY report_id), '[]'::jsonb)
+            FROM (
+                SELECT DISTINCT report_id
+                FROM structured_reports
+                WHERE report_id ~ '^[A-Za-z0-9_.:-]+$'
+                ORDER BY report_id
+                LIMIT {RESEARCH_STATE_SAMPLE_LIMIT}
+            ) AS sample
+        ),
+        'report_viewpoints', (
+            SELECT COALESCE(jsonb_agg(report_id ORDER BY report_id), '[]'::jsonb)
+            FROM (
+                SELECT DISTINCT report_id
+                FROM viewpoints
+                WHERE report_id ~ '^[A-Za-z0-9_.:-]+$'
+                ORDER BY report_id
+                LIMIT {RESEARCH_STATE_SAMPLE_LIMIT}
+            ) AS sample
+        ),
+        'report_forecasts', (
+            SELECT COALESCE(jsonb_agg(report_id ORDER BY report_id), '[]'::jsonb)
+            FROM (
+                SELECT DISTINCT report_id
+                FROM forecasts
+                WHERE report_id ~ '^[A-Za-z0-9_.:-]+$'
+                ORDER BY report_id
+                LIMIT {RESEARCH_STATE_SAMPLE_LIMIT}
+            ) AS sample
+        )
+    )
+)::text
+"""
 
 
 def _run(command: list[str], *, timeout: float, capture: bool = True) -> subprocess.CompletedProcess[str]:
@@ -39,6 +189,83 @@ def _scalar(database: str, sql: str, *, db_user: str, timeout: float) -> str:
     return result.stdout.strip()
 
 
+def _validate_postgres_identifier(value: str, *, field_name: str) -> str:
+    if not SAFE_POSTGRES_IDENTIFIER.fullmatch(value):
+        raise ValueError(f"{field_name} must match {SAFE_POSTGRES_IDENTIFIER.pattern}")
+    return value
+
+
+def _normalize_research_state(payload: Mapping[str, Any]) -> dict[str, object]:
+    raw_counts = payload.get("counts")
+    raw_samples = payload.get("report_id_samples")
+    if not isinstance(raw_counts, Mapping) or not isinstance(raw_samples, Mapping):
+        raise RuntimeError("research-state query returned an incomplete manifest")
+
+    counts: dict[str, int] = {}
+    samples: dict[str, list[str]] = {}
+    for key in RESEARCH_STATE_COUNT_KEYS:
+        if key not in raw_counts or key not in raw_samples:
+            raise RuntimeError(f"research-state query omitted {key}")
+        count = int(raw_counts[key])
+        if count < 0:
+            raise RuntimeError(f"research-state count cannot be negative: {key}")
+        if not isinstance(raw_samples[key], list):
+            raise RuntimeError(f"research-state report-ID sample must be a list: {key}")
+        counts[key] = count
+        samples[key] = sorted(
+            {
+                str(item)
+                for item in raw_samples[key]
+                if SAFE_REPORT_ID.fullmatch(str(item))
+            }
+        )[:RESEARCH_STATE_SAMPLE_LIMIT]
+
+    return {
+        "schema_id": "postgres-research-state-manifest-v1",
+        "counts": counts,
+        "report_id_samples": samples,
+        "sample_limit": RESEARCH_STATE_SAMPLE_LIMIT,
+        "sample_policy": "sorted_unique_safe_report_ids_only_no_paths_or_content",
+        "count_definitions": {
+            "research_reports": "collection=research_reports",
+            "research_documents": "research-linked subset of collection=documents",
+            "research_report_citation_evidence": "research-citation subset of collection=evidence",
+            "structured_research_reports": "collection=structured_research_reports",
+            "report_viewpoints": "collection=report_viewpoints",
+            "report_forecasts": "collection=report_forecasts",
+        },
+        "coverage_limitation": (
+            "This point-in-time count/sample manifest protects the current database state; "
+            "it does not prove historical research-state coverage or every unsampled identity."
+        ),
+    }
+
+
+def _research_state_manifest(database: str, *, db_user: str, timeout: float) -> dict[str, object]:
+    raw = _scalar(database, RESEARCH_STATE_SQL, db_user=db_user, timeout=timeout)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("research-state query did not return valid JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise RuntimeError("research-state query did not return a JSON object")
+    return _normalize_research_state(payload)
+
+
+def _database_manifest(database: str, *, db_user: str, timeout: float) -> dict[str, object]:
+    table_counts = {
+        "records": int(_scalar(database, "SELECT COUNT(*) FROM ai_quant.records", db_user=db_user, timeout=timeout)),
+        "audit_log": int(_scalar(database, "SELECT COUNT(*) FROM ai_quant.audit_log", db_user=db_user, timeout=timeout)),
+        "market_data_bars": int(
+            _scalar(database, "SELECT COUNT(*) FROM ai_quant.market_data_bars", db_user=db_user, timeout=timeout)
+        ),
+    }
+    return {
+        "table_counts": table_counts,
+        "research_state": _research_state_manifest(database, db_user=db_user, timeout=timeout),
+    }
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -55,6 +282,8 @@ def create_durable_backup(
     retention_days: int = 7,
     timeout_seconds: float = 3600.0,
 ) -> dict[str, object]:
+    source_db = _validate_postgres_identifier(source_db, field_name="source_db")
+    db_user = _validate_postgres_identifier(db_user, field_name="db_user")
     started = time.perf_counter()
     timestamp = datetime.now(timezone.utc)
     suffix = timestamp.strftime("%Y%m%dT%H%M%SZ")
@@ -70,13 +299,9 @@ def create_durable_backup(
     if not container_id:
         raise RuntimeError("docker compose postgres service is not running")
 
-    before = {
-        "records": int(_scalar(source_db, "SELECT COUNT(*) FROM ai_quant.records", db_user=db_user, timeout=timeout_seconds)),
-        "audit_log": int(_scalar(source_db, "SELECT COUNT(*) FROM ai_quant.audit_log", db_user=db_user, timeout=timeout_seconds)),
-        "market_data_bars": int(_scalar(source_db, "SELECT COUNT(*) FROM ai_quant.market_data_bars", db_user=db_user, timeout=timeout_seconds)),
-    }
+    before = _database_manifest(source_db, db_user=db_user, timeout=timeout_seconds)
     restore_verified = False
-    restored: dict[str, int] = {}
+    restored: dict[str, object] = {}
     try:
         _compose(
             "exec",
@@ -107,14 +332,11 @@ def create_durable_backup(
             container_dump,
             timeout=timeout_seconds,
         )
-        restored = {
-            "records": int(_scalar(restore_db, "SELECT COUNT(*) FROM ai_quant.records", db_user=db_user, timeout=timeout_seconds)),
-            "audit_log": int(_scalar(restore_db, "SELECT COUNT(*) FROM ai_quant.audit_log", db_user=db_user, timeout=timeout_seconds)),
-            "market_data_bars": int(_scalar(restore_db, "SELECT COUNT(*) FROM ai_quant.market_data_bars", db_user=db_user, timeout=timeout_seconds)),
-        }
+        restored = _database_manifest(restore_db, db_user=db_user, timeout=timeout_seconds)
         restore_verified = restored == before
         if not restore_verified:
-            raise RuntimeError(f"restored counts differ: source={before} restored={restored}")
+            mismatches = sorted(key for key in before if before.get(key) != restored.get(key))
+            raise RuntimeError(f"restored database manifest differs in: {', '.join(mismatches)}")
     finally:
         _compose("exec", "-T", "postgres", "dropdb", "-U", db_user, "--if-exists", restore_db, timeout=60)
         _compose("exec", "-T", "postgres", "rm", "-f", container_dump, timeout=60)
@@ -128,8 +350,13 @@ def create_durable_backup(
         "dump_size_bytes": dump_path.stat().st_size,
         "dump_sha256": _sha256(dump_path),
         "restore_verified": restore_verified,
-        "source_counts": before,
-        "restored_counts": restored,
+        "source_counts": before["table_counts"],
+        "restored_counts": restored["table_counts"],
+        "collection_counts": before["research_state"]["counts"],
+        "restored_collection_counts": restored["research_state"]["counts"],
+        "source_database_manifest": before,
+        "restored_database_manifest": restored,
+        "research_state_coverage": "current_point_in_time_only_not_historical_coverage_proof",
         "elapsed_seconds": round(time.perf_counter() - started, 3),
         "environment": "local-docker-compose-postgresql",
         "owner_group": "Platform and Quality",

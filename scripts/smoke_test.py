@@ -21,6 +21,7 @@ def request(method: str, path: str, body: dict | None = None, *, role: str = "sy
             "Content-Type": "application/json",
             "X-Role": role,
             "X-Actor": actor,
+            "X-Client-Origin": "acceptance",
         },
     )
     try:

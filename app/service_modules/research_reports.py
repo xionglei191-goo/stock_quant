@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
+import hashlib
+from pathlib import Path
+import re
 from typing import Any, Mapping, Protocol
 
 
@@ -31,6 +34,27 @@ class DisclosureEventLike(Protocol):
     issuer_id: str
     security_id: str
     document_id: str
+
+
+def verify_report_content_sha256(file_path: str, expected_sha256: str) -> str:
+    """Verify an operator-supplied content identity against the local report."""
+
+    expected = str(expected_sha256 or "").strip().lower()
+    if not expected:
+        return ""
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ValueError("content_sha256 must be a lowercase SHA-256 digest")
+    path = Path(file_path)
+    if not path.is_file():
+        raise ValueError("research report file is unavailable for content identity verification")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual != expected:
+        raise ValueError("content_sha256 does not match the registered research report file")
+    return actual
 
 
 def research_report_month_date(report: ResearchReportLike) -> date | None:

@@ -29,7 +29,7 @@ class LocalApiClient:
             f"{self.base_url}{path}",
             data=data,
             method=method,
-            headers={"Content-Type": "application/json", "X-Role": role, "X-Actor": actor},
+            headers={"Content-Type": "application/json", "X-Role": role, "X-Actor": actor, "X-Client-Origin": "acceptance"},
         )
         try:
             with urlopen(request, timeout=self.timeout) as response:

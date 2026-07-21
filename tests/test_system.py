@@ -4443,7 +4443,7 @@ class SystemServiceTests(SystemServiceTestBase):
 
             response = self.router.dispatch("GET", "/api/analysis/latest", {}, role="CEO")
 
-        self.assertTrue(response.success)
+        self.assertTrue(response.success, response.error)
         self.assertEqual(response.data["latest_market_date"], "2026-05-15")
         self.assertEqual(len(response.data["returns"]), 2)
         self.assertEqual(response.data["returns"][0]["total_return_pct"], -2.5)
@@ -4491,13 +4491,30 @@ class SystemServiceTests(SystemServiceTestBase):
                             "assets": [{"label": "AAPL", "security_id": "security_aapl_us", "market": "U", "source_id": "yahoo_chart_us_eod"}],
                             "returns": {"AAPL": {"total_return": 0.02, "return_count": 2}},
                             "decision_summary": {"headline": "daily latest headline"},
+                            "company_intelligence": {
+                                "schema_id": "latest-analysis-company-intelligence-v1",
+                                "status": "watch",
+                                "company_count": 1,
+                                "ready_count": 0,
+                                "needs_attention_count": 1,
+                                "companies": [{"symbol": "AAPL", "status": "watch", "company_counts": {}}],
+                                "usage_boundary": "latest_analysis_company_intelligence_overview_is_local_research_only_no_broker_execution",
+                            },
                         },
                     }
                 ),
                 encoding="utf-8",
             )
             (run_dir / "daily-update-2026-05-25.json").write_text(
-                json.dumps({"status": "passed", "run_date": "2026-05-25", "effective_end_dates": {"A": "2026-05-25", "U": "2026-05-25"}}),
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "execution_status": "passed",
+                        "content_status": "needs_evidence",
+                        "run_date": "2026-05-25",
+                        "effective_end_dates": {"A": "2026-05-25", "U": "2026-05-25"},
+                    }
+                ),
                 encoding="utf-8",
             )
             (run_dir / "daily-insight-json-2026-05-25.json").write_text(
@@ -4547,16 +4564,28 @@ class SystemServiceTests(SystemServiceTestBase):
                 encoding="utf-8",
             )
 
-            response = self.router.dispatch("GET", "/api/analysis/latest", {}, role="CEO")
+            company_intelligence_calls = []
+            original_company_intelligence = self.service.company_intelligence
+            try:
+                def unexpected_company_intelligence_call(payload):
+                    company_intelligence_calls.append(payload)
+                    raise AssertionError("materialized company intelligence must not be recomputed during latest-analysis reads")
 
-        self.assertTrue(response.success)
+                self.service.company_intelligence = unexpected_company_intelligence_call  # type: ignore[method-assign]
+                response = self.router.dispatch("GET", "/api/analysis/latest", {}, role="CEO")
+            finally:
+                self.service.company_intelligence = original_company_intelligence  # type: ignore[method-assign]
+
+        self.assertTrue(response.success, response.error)
         self.assertEqual(response.data["artifact_path"], "artifacts/daily-update-local/runs/2026-05-25-183000/latest-analysis-2026-05-25/latest-analysis.json")
         self.assertEqual(response.data["latest_market_date"], "2026-05-25")
         self.assertTrue(response.data["daily_insight"]["actionable_research_summary"]["headline"].startswith("直接研报证据优先:"))
         self.assertEqual(response.data["daily_insight"]["quality_gates"]["direct_report_evidence_company_count"], 1)
         self.assertEqual(response.data["company_intelligence"]["schema_id"], "latest-analysis-company-intelligence-v1")
-        self.assertGreaterEqual(response.data["company_intelligence"]["company_count"], 1)
-        self.assertIn("companies", response.data["company_intelligence"])
+        self.assertEqual(response.data["company_intelligence"]["companies"][0]["symbol"], "AAPL")
+        self.assertEqual(company_intelligence_calls, [])
+        self.assertEqual(response.data["daily_insight"]["pipeline_execution_status"], "passed")
+        self.assertEqual(response.data["daily_insight"]["pipeline_content_status"], "needs_evidence")
 
     def test_latest_analysis_cross_market_date_mismatch_is_warning_not_blocker(self) -> None:
         analysis = {
@@ -16155,8 +16184,9 @@ class SystemServiceTests(SystemServiceTestBase):
             database = _FakePostgresDatabase()
             dsn = "postgresql://user:secret@example.invalid/ai_quant"
 
-            with self.assertRaises(ValueError):
-                migrate_sqlite_to_postgres(sqlite_path, dsn, connect=database.connect)
+            preflight = migrate_sqlite_to_postgres(sqlite_path, dsn, connect=database.connect)
+            self.assertEqual(preflight["mode"], "preflight")
+            self.assertFalse(preflight["executed"])
 
             summary = migrate_sqlite_to_postgres(sqlite_path, dsn, replace=True, connect=database.connect)
             self.assertEqual(summary["postgres_dsn"], "postgresql://user:***@example.invalid/ai_quant")
@@ -17140,6 +17170,10 @@ class SystemServiceTests(SystemServiceTestBase):
             daily_data_update_pipeline_script._latency_audit = original_latency  # type: ignore[assignment]
 
         self.assertTrue(result["passed"])
+        self.assertEqual(result["execution_status"], "passed")
+        self.assertEqual(result["content_status"], "ready")
+        self.assertEqual(result["summary"]["execution_status"], "passed")
+        self.assertEqual(result["summary"]["content_status"], "ready")
         self.assertEqual(result["summary"]["market_data"]["latest_by_market"]["A"], "2026-05-25")
         self.assertTrue(result["summary"]["market_data"]["typed_storage_only"])
         self.assertEqual(result["summary"]["market_data"]["typed_table_rows_estimate"], 155)
@@ -17198,6 +17232,54 @@ class SystemServiceTests(SystemServiceTestBase):
 
         self.assertIn("Review non-blocking step ashare_current_universe_scope", actions[0])
         self.assertIn("artifacts/scope.json", actions[0])
+
+    def test_daily_pipeline_separates_execution_health_from_content_readiness(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            insight_path = Path(temp_dir) / "daily-insight.json"
+            insight_path.write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "passed": False,
+                        "quality_gates": {
+                            "failure_count": 1,
+                            "failures": [{"check": "direct_report_evidence", "message": "no direct evidence"}],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = daily_data_update_pipeline_script._daily_summary(  # type: ignore[attr-defined]
+                run_date="2026-05-25",
+                requested_end_date="2026-05-25",
+                effective_end_dates={"A": "2026-05-25", "U": "2026-05-22"},
+                db_before={"status": "passed", "sources": []},
+                db_after={"status": "passed", "sources": []},
+                steps=[
+                    {
+                        "name": "daily_market_insight",
+                        "status": "passed",
+                        "execution_status": "passed",
+                        "content_status": "needs_evidence",
+                        "content_gate_status": "failed",
+                        "blocking": False,
+                        "artifact": str(insight_path),
+                    }
+                ],
+                artifacts={"daily-insight-json": str(insight_path)},
+                blocking_failures=[],
+            )
+
+        self.assertEqual(summary["status"], "passed")
+        self.assertTrue(summary["passed"])
+        self.assertEqual(summary["execution_status"], "passed")
+        self.assertEqual(summary["content_status"], "needs_evidence")
+        self.assertEqual(summary["actionable_insight"]["content_status"], "needs_evidence")
+        self.assertEqual(summary["content_issue_count"], 1)
+        self.assertEqual(summary["content_issues"][0]["check"], "direct_report_evidence")
+        legacy_fields = daily_data_update_pipeline_script._pipeline_status_fields([], content_status="needs_evidence")  # type: ignore[attr-defined]
+        self.assertEqual(legacy_fields["status"], "passed")
+        self.assertTrue(legacy_fields["passed"])
 
     def test_daily_pipeline_passes_bounded_semantic_timeout_to_latest_analysis(self) -> None:
         commands = []
@@ -17385,16 +17467,22 @@ class SystemServiceTests(SystemServiceTestBase):
                 json.dumps(
                     {
                         "status": "passed",
+                        "passed": True,
+                        "execution_status": "passed",
+                        "content_status": "needs_evidence",
                         "summary": {
+                            "execution_status": "passed",
+                            "content_status": "needs_evidence",
                             "market_data": {
                                 "typed_storage_only": True,
                                 "latest_by_market": {"A": "2026-05-25", "U": "2026-05-22"},
                                 "typed_table_rows_estimate": 28352527,
                             },
                             "actionable_insight": {
-                                "status": "passed",
-                                "headline": "直接研报证据优先: ok",
-                                "direct_report_evidence_company_count": 1,
+                                "status": "failed",
+                                "content_status": "needs_evidence",
+                                "headline": "直接研报证据不足，进入补证队列",
+                                "direct_report_evidence_company_count": 0,
                             },
                             "latency": {"status": "passed", "slowest_probe": "dashboard_ceo"},
                         },
@@ -17406,7 +17494,13 @@ class SystemServiceTests(SystemServiceTestBase):
                         },
                         "steps": [
                             {"name": "market_data_storage_audit", "status": "passed"},
-                            {"name": "daily_market_insight", "status": "passed"},
+                            {
+                                "name": "daily_market_insight",
+                                "status": "passed",
+                                "execution_status": "passed",
+                                "content_status": "needs_evidence",
+                                "content_gate_status": "failed",
+                            },
                         ],
                     }
                 ),
@@ -17415,7 +17509,10 @@ class SystemServiceTests(SystemServiceTestBase):
             latest_dir = run_dir / "latest-analysis-2026-05-25"
             latest_dir.mkdir()
             (latest_dir / "latest-analysis.json").write_text(json.dumps({"status": "passed", "analysis": {"latest_market_date": "2026-05-25"}}), encoding="utf-8")
-            (run_dir / "daily-insight-json-2026-05-25.json").write_text(json.dumps({"status": "passed", "actionable_research_summary": {"headline": "ok"}}), encoding="utf-8")
+            (run_dir / "daily-insight-json-2026-05-25.json").write_text(
+                json.dumps({"status": "failed", "passed": False, "actionable_research_summary": {"headline": "needs evidence"}}),
+                encoding="utf-8",
+            )
 
             audit = audit_daily_update_schedule_script.build_daily_update_schedule_audit(
                 repo_root=root,
@@ -17428,6 +17525,8 @@ class SystemServiceTests(SystemServiceTestBase):
 
         self.assertTrue(audit["passed"])
         self.assertEqual(audit["failure_count"], 0)
+        self.assertEqual(audit["latest_pipeline_execution_status"], "passed")
+        self.assertEqual(audit["latest_pipeline_content_status"], "needs_evidence")
         gates = {item["check"]: item["passed"] for item in audit["gates"]}
         self.assertTrue(gates["service_uses_compose_runner"])
         self.assertTrue(gates["service_uses_user_writable_output_base"])
@@ -18490,8 +18589,20 @@ class SystemServiceTests(SystemServiceTestBase):
             closure_result = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(closure_result["status"], "failed")
 
+    def _external_evidence_todo_path(self) -> Path:
+        """Build the historical external-evidence-only roadmap used by audit tests."""
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        todo_path = Path(temp_dir.name) / "todo_external_evidence.md"
+        todo_path.write_text(
+            "\n".join(f"- `BLOCKED` {task_id} external evidence fixture" for task_id in TASKS_WITH_EXTERNAL_EVIDENCE) + "\n",
+            encoding="utf-8",
+        )
+        return todo_path
+
     def test_production_task_closure_audit_separates_external_evidence_blockers(self) -> None:
-        audit = audit_production_tasks()
+        todo_path = self._external_evidence_todo_path()
+        audit = audit_production_tasks(todo_path=todo_path)
         self.assertEqual(audit["status"], "passed")
         self.assertEqual(audit["doing_task_count"], 0)
         self.assertEqual(audit["blocked_task_count"], 17)
@@ -18569,6 +18680,7 @@ class SystemServiceTests(SystemServiceTestBase):
                 encoding="utf-8",
             )
             local_audit = audit_production_tasks(
+                todo_path=todo_path,
                 local_benchmark_quality_package_path=quality_path,
                 local_data_unblock_audit_path=data_unblock_path,
             )
@@ -18589,6 +18701,8 @@ class SystemServiceTests(SystemServiceTestBase):
                 [
                     sys.executable,
                     "scripts/production_task_closure_audit.py",
+                    "--todo",
+                    str(todo_path),
                     "--output",
                     str(output_audit),
                     "--output-plan",
@@ -18853,7 +18967,8 @@ class SystemServiceTests(SystemServiceTestBase):
             self.assertFalse((output_md.parent / f".{output_md.name}.tmp").exists())
 
     def test_project_completion_audit_maps_objective_to_real_evidence(self) -> None:
-        completion = build_completion_audit()
+        todo_path = self._external_evidence_todo_path()
+        completion = build_completion_audit(todo_path=todo_path)
         self.assertFalse(completion["achieved"])
         self.assertEqual(completion["status"], "not_achieved")
         self.assertEqual(completion["summary"]["doing_task_count"], 0)
@@ -18885,6 +19000,8 @@ class SystemServiceTests(SystemServiceTestBase):
                 [
                     sys.executable,
                     "scripts/project_completion_audit.py",
+                    "--todo",
+                    str(todo_path),
                     "--output",
                     str(output_path),
                 ],
@@ -18918,6 +19035,7 @@ class SystemServiceTests(SystemServiceTestBase):
         }
         with TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
+            todo_path = self._external_evidence_todo_path()
             local_path = tmp_path / "local-production-audit.json"
             ai_path = tmp_path / "local-ai-capability-acceptance.json"
             output_path = tmp_path / "project-completion-audit.json"
@@ -18925,6 +19043,7 @@ class SystemServiceTests(SystemServiceTestBase):
             ai_path.write_text(json.dumps(ai_acceptance), encoding="utf-8")
 
             completion = build_completion_audit(
+                todo_path=todo_path,
                 local_production_audit_path=local_path,
                 local_ai_acceptance_path=ai_path,
             )
@@ -18941,6 +19060,8 @@ class SystemServiceTests(SystemServiceTestBase):
                 [
                     sys.executable,
                     "scripts/project_completion_audit.py",
+                    "--todo",
+                    str(todo_path),
                     "--local-production-audit",
                     str(local_path),
                     "--local-ai-acceptance",
@@ -18958,6 +19079,19 @@ class SystemServiceTests(SystemServiceTestBase):
             output = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertTrue(output["achieved"])
             self.assertEqual(output["local_production_evidence"]["target_mode"], "local_only_personal_production")
+
+            doing_todo_path = tmp_path / "todo_with_active_code_work.md"
+            doing_todo_path.write_text(
+                todo_path.read_text(encoding="utf-8") + "- `DOING` T-603 active code fixture\n",
+                encoding="utf-8",
+            )
+            blocked_by_code = build_completion_audit(
+                todo_path=doing_todo_path,
+                local_production_audit_path=local_path,
+                local_ai_acceptance_path=ai_path,
+            )
+            self.assertFalse(blocked_by_code["achieved"])
+            self.assertEqual(blocked_by_code["failed_requirement_ids"], ["R1", "R2"])
 
     def test_project_completion_audit_requires_release_gate_even_when_tasks_are_done(self) -> None:
         with TemporaryDirectory() as tmpdir:

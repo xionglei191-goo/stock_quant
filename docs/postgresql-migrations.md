@@ -2,9 +2,9 @@
 
 - Status: active
 - Owner group: Platform and Quality
-- Last updated: 2026-07-19
-- Related tasks: T-404, T-424, T-601, T-602
-- Scope: PostgreSQL baseline, explicit schema changes, backup, rollback, and market-data storage migration
+- Last updated: 2026-07-21
+- Related tasks: T-404, T-424, T-601, T-602, T-609, T-610, T-612
+- Scope: PostgreSQL baseline, explicit schema changes, backup, rollback, SQLite migration safety, bounded recovery promotion, and market-data storage migration
 - Non-goals: broker integration, automatic order execution, or non-local release evidence
 
 ## Scope
@@ -29,6 +29,40 @@ The script applies the schema and records `0001_baseline_jsonb_records` in `ai_q
 
 Production K-lines now use `ai_quant.market_data_bars` as the only runtime source of truth. New TDX, baostock, Yahoo, and API market-data writes go directly to the typed table instead of creating one `ai_quant.records` row per bar. `ai_quant.records` is still used for issuer/security/source metadata and audit-adjacent objects, but it must not contain runtime `collection='market_data'` rows after migration cleanup. The `ai_quant.market_data` view exposes typed bars only.
 
+## SQLite State Migration Safety
+
+`scripts/migrate_sqlite_to_postgres.py` is read-only by default. It rejects a missing SQLite path, reports per-collection source/target counts, prospective deletes/overwrites, audit differences, and an exact-replacement confirmation token without changing PostgreSQL:
+
+```bash
+python3 scripts/migrate_sqlite_to_postgres.py \
+  ./data/state.db "$AI_QUANT_POSTGRES_DSN" \
+  > /tmp/sqlite-postgres-preflight.json
+```
+
+The normal write path is insert-only, target-wins merge. It inserts source IDs that are absent from PostgreSQL, preserves unequal target conflicts and target-only rows, and appends only missing audit IDs:
+
+```bash
+python3 scripts/migrate_sqlite_to_postgres.py \
+  ./data/state.db "$AI_QUANT_POSTGRES_DSN" \
+  --mode merge
+```
+
+Intentional exact replacement is exceptional. Supply the exact token from a newly reviewed preflight and a fresh restore-verified backup of the same DSN target:
+
+```bash
+python3 scripts/migrate_sqlite_to_postgres.py \
+  ./data/state.db "$AI_QUANT_POSTGRES_DSN" \
+  --mode exact-replace \
+  --confirm-exact-replace 'EXACT_REPLACE:DELETE_RECORDS=<n>:OVERWRITE_RECORDS=<n>:DELETE_AUDIT=<n>:OVERWRITE_AUDIT=<n>' \
+  --backup-manifest data/local/backups/postgres/<backup>.manifest.json
+```
+
+The destructive gate requires `status=passed`, `restore_verified=true`, equal source/restored manifests, an existing dump with matching size and SHA-256, unexpired retention, `source_db` equal to the DSN database, and backup table/research counts exactly equal to the current target snapshot. Larger or unrelated backups cannot authorize replacement. Compatibility option `--replace` maps to this guarded mode; it is not a bypass. Typed market-data bars remain merge-only and are never deleted by this script.
+
+## Bounded Clone-To-Primary Recovery
+
+T-612 uses `scripts/promote_research_report_clone_to_primary.py` for a separately reviewed, insert-only PostgreSQL-to-PostgreSQL recovery slice. Its default mode is read-only preflight; promotion requires fresh restored backups for both databases, distinct database identities in the same cluster, stopped primary writers, a recent quiescence proof, canonical plan plus double-run clone evidence, and the exact preflight confirmation. The allowed collections are only `sources`, selected `research_reports`, linked `documents`, and linked citation `evidence`; the transaction has no delete/update path. This operator tool is not a general database merge and does not authorize copying the clone's full registry.
+
 ## Compact Market-Data Storage Migration
 
 T-602 replaces duplicated row-level `payload` and `rights_tag` JSONB with structured columns, `extra_payload`, a payload key mask, and an immutable rights-policy reference. `NUMERIC` columns and the `MarketDataPoint`/HTTP contracts remain unchanged. The public SQL compatibility surface is `ai_quant.market_data`; direct access to physical JSONB columns on `ai_quant.market_data_bars` is no longer supported.
@@ -41,6 +75,10 @@ python3 scripts/postgres_durable_backup.py \
   --retention-days 7 \
   --timeout-seconds 3600
 ```
+
+The restore gate compares both the table-level counts and a collection-aware research-state manifest. The research manifest records counts for report assets, linked research documents, citation evidence, structured reports, viewpoints, and forecasts, plus at most 25 sorted report IDs per category. Samples contain IDs only, never report text or local paths. Source and restored manifests must match exactly for `restore_verified=true`.
+
+This evidence covers the database state observed when that backup was created. A backup with zero research-report collections is valid rollback evidence for that zero-state only; it does not prove recovery of an earlier historical report registry. After any authorized research-state recovery, create and restore-verify a new backup before using it as the recovery rollback gate.
 
 Run each phase with one stable run ID. `copy` commits resumable keyset batches.
 

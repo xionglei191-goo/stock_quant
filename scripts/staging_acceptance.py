@@ -44,6 +44,7 @@ class StagingClient:
                 "Content-Type": "application/json",
                 "X-Role": role,
                 "X-Actor": actor,
+                "X-Client-Origin": "acceptance",
             },
         )
         started = time.perf_counter()
@@ -78,6 +79,7 @@ class StagingClient:
                 "Content-Type": "application/json",
                 "X-Role": role,
                 "X-Actor": actor,
+                "X-Client-Origin": "acceptance",
             },
         )
         started = time.perf_counter()

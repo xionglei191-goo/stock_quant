@@ -1673,9 +1673,11 @@ class UsageMetric:
     hit_count: int = 0
     read_count: int = 0
     write_count: int = 0
+    origin_counts: dict[str, int] = field(default_factory=dict)
     last_method: str = ""
     last_path: str = ""
     last_role: str = ""
+    last_origin: str = ""
     first_seen_at: Any = field(default_factory=utcnow)
     last_seen_at: Any = field(default_factory=utcnow)
 

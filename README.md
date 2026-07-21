@@ -241,11 +241,14 @@ A 股增量脚本依赖 `baostock` + `psycopg`，可单独安装：
 python3 -m pip install '.[market-data]'
 ```
 
-从 SQLite 状态库迁移到 PostgreSQL 时，使用显式迁移脚本。`--replace` 会重写目标 PostgreSQL 的 `ai_quant.records` 和 `ai_quant.audit_log`：
+从 SQLite 状态库迁移到 PostgreSQL 时，先运行默认的只读 preflight；正常迁移使用 target-wins 的 insert-only `merge`，保留 PostgreSQL 中已有记录和审计：
 
 ```bash
-python3 scripts/migrate_sqlite_to_postgres.py ./data/state.db postgresql://user:password@localhost:5432/ai_quant --replace
+python3 scripts/migrate_sqlite_to_postgres.py ./data/state.db "$AI_QUANT_POSTGRES_DSN"
+python3 scripts/migrate_sqlite_to_postgres.py ./data/state.db "$AI_QUANT_POSTGRES_DSN" --mode merge
 ```
+
+`exact-replace` 仅用于经过审阅的例外恢复，必须提供最新 preflight 的计数绑定确认令牌和与当前目标库精确匹配、仍在保留期内的恢复验证备份；详见 `docs/postgresql-migrations.md`。兼容参数 `--replace` 也受同一门禁约束。
 
 文档入湖会把原文保存到对象存储。默认是本地目录 `./data/objects`，也可以用 `AI_QUANT_OBJECT_STORE` 指定。仓库里的 `data/objects` 主要保留演示/测试样例；本地运行建议改用未纳管目录，例如 `./data/local/objects`：
 

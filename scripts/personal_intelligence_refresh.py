@@ -39,6 +39,7 @@ def request_json(
             "Content-Type": "application/json",
             "X-Role": role,
             "X-Actor": "personal_intelligence_refresh",
+            "X-Client-Origin": "scheduled",
         },
     )
     try:

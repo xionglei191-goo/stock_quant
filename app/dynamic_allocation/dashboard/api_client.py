@@ -109,6 +109,7 @@ class DynamicAllocationApiClient:
             "User-Agent": "ai-quant-dynamic-allocation-dashboard/0.1",
             "X-Actor": self.actor,
             "X-Role": self.role,
+            "X-Client-Origin": "ui",
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"

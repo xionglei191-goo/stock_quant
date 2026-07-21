@@ -52,6 +52,7 @@ def _record_readiness(base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
             "Content-Type": "application/json",
             "X-Role": "platform",
             "X-Actor": "platform_backup_drill",
+            "X-Client-Origin": "acceptance",
         },
     )
     with urlopen(request, timeout=10) as response:

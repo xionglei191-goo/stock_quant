@@ -2,8 +2,8 @@
 
 - Status: active
 - Owner group: PM / Release Coordination
-- Last updated: 2026-07-18
-- Related tasks: T-431, T-503, T-570-T-601
+- Last updated: 2026-07-21
+- Related tasks: T-431, T-503, T-570-T-613
 - Scope: 权威文档、运行手册、ADR、风险与交接记录入口
 - Non-goals: 替代 `tasks/todo.md` 的任务状态，或把本机 artifact 提升为非本机发布证据
 
@@ -21,7 +21,7 @@
 - [product-requirements-document.md](./product-requirements-document.md): 公司情报平台 PRD，定义产品定位、目标用户、主流程、研报边界和成功指标
 - [system-architecture.md](./system-architecture.md): 公司情报平台目标架构，主线为数据、实体、事件、关系、观点和反馈
 - [data-structure-design.md](./data-structure-design.md): 公司画像、画像字段抽取、画像字段级证据断言、字段断言冲突复核、本地公司材料 inbox、画像深字段覆盖审计、事件/关系质量归并、研报观点、观察任务、分析结论、模拟反馈、补库运行历史、公司包导入运行历史、retry/resume、覆盖率趋势和工作台操作数据结构
-- [../tasks/todo.md](../tasks/todo.md): 唯一任务状态源；T-431 至 T-491 为公司情报主链、数据闭环和工作台建设；T-492 至 T-503 为长期治理、真实验收、模块化与增长冻结；T-504 至 T-569 为关系图谱、个人研究链、文档导航、质量中心和批量增厚；T-570 至 T-571 为 `SystemService` 纯助手提取；T-572 至 T-580 为价值案例、维护风险、workflow 模块化和本机治理；T-581 至 T-590 为动态资产配置架构、公开数据和每日纸面运行；T-591 至 T-594 为纵向运营、前端运行时模块化、测试拆分和 PM 里程碑收口；T-595 至 T-601 为 facade 提取、可重复集成门、真实图谱验证、纸面绩效契约、dashboard 运行时提取和本机 staging 性能/幂等收口
+- [../tasks/todo.md](../tasks/todo.md): 唯一任务状态源；T-431 至 T-491 为公司情报主链、数据闭环和工作台建设；T-492 至 T-503 为长期治理、真实验收、模块化与增长冻结；T-504 至 T-569 为关系图谱、个人研究链、文档导航、质量中心和批量增厚；T-570 至 T-571 为 `SystemService` 纯助手提取；T-572 至 T-580 为价值案例、维护风险、workflow 模块化和本机治理；T-581 至 T-590 为动态资产配置架构、公开数据和每日纸面运行；T-591 至 T-594 为纵向运营、前端运行时模块化、测试拆分和 PM 里程碑收口；T-595 至 T-601 为 facade 提取、可重复集成门、真实图谱验证、纸面绩效契约、dashboard 运行时提取和本机 staging 性能/幂等收口；T-602 为 PostgreSQL 行情存储精简；T-603 至 T-612 为个人研究闭环稳定化、研报恢复、备份、迁移安全和主库切片晋升；T-613 为全量研报 registry 对账与受控恢复决策
 - [chokepoint-research-module.md](./chokepoint-research-module.md): 瓶颈研究模块方向文档，包含 T-406C 本地质量包和版本化人工 review 基线
 - [transcript-research-citation-policy.md](./transcript-research-citation-policy.md): 电话会、转录稿、卖方研报引用和训练边界策略
 - [us-compliance-open-questions.md](./us-compliance-open-questions.md): Reg FD、Non-Display、投顾、券商、衍生品和跨境合规开放问题

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from typing import Any, Callable
 import json
 import re
@@ -293,6 +294,7 @@ class ApiRouter:
     def __init__(self, service: SystemService | None = None, dynamic_allocation: DynamicAllocationApplication | None = None):
         self.service = service or SystemService()
         self._dynamic_allocation_app = dynamic_allocation
+        self._dispatch_lock = RLock()
 
     @property
     def dynamic_allocation(self) -> DynamicAllocationApplication:
@@ -300,7 +302,29 @@ class ApiRouter:
             self._dynamic_allocation_app = DynamicAllocationApplication()
         return self._dynamic_allocation_app
 
-    def dispatch(self, method: str, path: str, body: dict[str, Any] | None = None, *, actor: str = "system", role: str = "system") -> ApiResponse:
+    def dispatch(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        actor: str = "system",
+        role: str = "system",
+        origin: str = "api",
+    ) -> ApiResponse:
+        with self._dispatch_lock:
+            return self._dispatch_locked(method, path, body, actor=actor, role=role, origin=origin)
+
+    def _dispatch_locked(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        actor: str = "system",
+        role: str = "system",
+        origin: str = "api",
+    ) -> ApiResponse:
         body = body or {}
         trace_id = new_id("trace")
         role = self._normalize_role(role)
@@ -313,7 +337,11 @@ class ApiRouter:
                 self.service.record_permission_denied(method.upper(), path, role=role, actor=actor)
                 raise PermissionDenied(f"role {role} is not allowed for {method} {path}")
             data = handler(path, body, actor=actor)
-            self.service.record_usage(method.upper(), path, role=role)
+            # Some domain methods rely on the request boundary for persistence.
+            # Flush business mutations before usage telemetry narrows the dirty scope.
+            if method.upper() != "GET":
+                self.service.store.commit_all()
+            self.service.record_usage(method.upper(), path, role=role, origin=origin)
             return ApiResponse(success=True, data=data, error=None, status_code=200, trace_id=trace_id)
         except ValidationError as exc:
             return self._error(422, "validation_error", str(exc), trace_id)
@@ -737,7 +765,10 @@ class ApiRouter:
         daily_insight = daily_run.get("daily_insight") if isinstance(daily_run.get("daily_insight"), dict) else {}
         personal_intelligence = daily_run.get("personal_intelligence") if isinstance(daily_run.get("personal_intelligence"), dict) else {}
         pipeline = daily_run.get("pipeline") if isinstance(daily_run.get("pipeline"), dict) else {}
-        company_intelligence = payload.get("company_intelligence") if isinstance(payload.get("company_intelligence"), dict) else {}
+        materialized_company_intelligence = analysis.get("company_intelligence")
+        if not isinstance(materialized_company_intelligence, dict):
+            materialized_company_intelligence = payload.get("company_intelligence")
+        company_intelligence = materialized_company_intelligence if isinstance(materialized_company_intelligence, dict) else {}
         if not company_intelligence:
             overview_assets = analysis.get("assets") or []
             if isinstance(overview_assets, list) and overview_assets:
@@ -855,6 +886,8 @@ class ApiRouter:
                 "research_and_events": daily_insight.get("research_and_events") or {},
                 "production_boundary": daily_insight.get("production_boundary") or "",
                 "pipeline_status": pipeline.get("status") or "",
+                "pipeline_execution_status": pipeline.get("execution_status") or pipeline.get("status") or "",
+                "pipeline_content_status": pipeline.get("content_status") or "",
                 "pipeline_effective_end_dates": pipeline.get("effective_end_dates") or {},
             },
             "company_intelligence": company_intelligence,

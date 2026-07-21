@@ -173,7 +173,12 @@ def _fetch_json(base_url: str, path: str, *, method: str = "GET", body: dict[str
         base_url.rstrip("/") + path,
         data=data,
         method=method,
-        headers={"Content-Type": "application/json", "X-Role": role, "X-Actor": "daily_data_update_pipeline"},
+        headers={
+            "Content-Type": "application/json",
+            "X-Role": role,
+            "X-Actor": "daily_data_update_pipeline",
+            "X-Client-Origin": "scheduled",
+        },
     )
     with urlopen(request, timeout=timeout) as response:
         payload = json.loads(response.read().decode("utf-8"))
@@ -416,6 +421,24 @@ def _artifact_payloads(artifacts: Mapping[str, str]) -> dict[str, dict[str, Any]
     return {name: _load_json_artifact(path) for name, path in artifacts.items() if str(path).lower().endswith(".json")}
 
 
+def _daily_insight_content_status(insight: Mapping[str, Any]) -> str:
+    if not insight:
+        return "unavailable"
+    if insight.get("passed") is True or str(insight.get("status") or "") == "passed":
+        return "ready"
+    return "needs_evidence"
+
+
+def _pipeline_status_fields(blocking_failures: list[dict[str, Any]], *, content_status: str) -> dict[str, Any]:
+    execution_status = "passed" if not blocking_failures else "failed"
+    return {
+        "status": execution_status,
+        "passed": execution_status == "passed",
+        "execution_status": execution_status,
+        "content_status": content_status,
+    }
+
+
 def _daily_summary(
     *,
     run_date: str,
@@ -449,6 +472,8 @@ def _daily_summary(
 
     action_summary = insight.get("actionable_research_summary") if isinstance(insight.get("actionable_research_summary"), Mapping) else {}
     quality_gates = insight.get("quality_gates") if isinstance(insight.get("quality_gates"), Mapping) else {}
+    content_status = _daily_insight_content_status(insight)
+    content_issues = quality_gates.get("failures") if isinstance(quality_gates.get("failures"), list) else []
     analysis = latest_analysis.get("analysis") if isinstance(latest_analysis.get("analysis"), Mapping) else {}
     probes = latency.get("probes") if isinstance(latency.get("probes"), list) else []
     slowest_probe = max((probe for probe in probes if isinstance(probe, Mapping)), key=lambda item: _float_value(item.get("elapsed_ms")), default={})
@@ -461,7 +486,7 @@ def _daily_summary(
     )
 
     return {
-        "status": "passed" if not blocking_failures else "failed",
+        **_pipeline_status_fields(blocking_failures, content_status=content_status),
         "run_date": run_date,
         "requested_end_date": requested_end_date,
         "effective_end_dates": dict(effective_end_dates),
@@ -481,6 +506,7 @@ def _daily_summary(
         },
         "actionable_insight": {
             "status": str(insight.get("status") or ""),
+            "content_status": content_status,
             "headline": str(action_summary.get("headline") or ""),
             "abnormal_headline": str(action_summary.get("abnormal_headline") or ""),
             "direct_report_evidence_company_count": _int_value(action_summary.get("direct_report_evidence_company_count") or quality_gates.get("direct_report_evidence_company_count")),
@@ -515,6 +541,8 @@ def _daily_summary(
         },
         "step_count": len(steps),
         "failure_count": len(blocking_failures),
+        "content_issue_count": len(content_issues),
+        "content_issues": content_issues[:10],
         "nonblocking_issue_count": len(nonblocking_issues),
         "nonblocking_issues": nonblocking_issues[:10],
         "first_failure": {
@@ -993,11 +1021,14 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         steps.append(
             {
                 "name": "daily_market_insight",
-                "status": insight["status"],
+                "status": "passed",
+                "execution_status": "passed",
+                "content_status": _daily_insight_content_status(insight),
+                "content_gate_status": str(insight.get("status") or ""),
                 "artifact": str(insight_output),
                 "markdown_artifact": str(insight_md_output),
                 "elapsed_seconds": round((datetime.now(timezone.utc) - insight_started).total_seconds(), 3),
-                "blocking": not insight.get("passed"),
+                "blocking": False,
             }
         )
     except Exception as exc:
@@ -1005,6 +1036,8 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             {
                 "name": "daily_market_insight",
                 "status": "failed",
+                "execution_status": "failed",
+                "content_status": "unavailable",
                 "artifact": str(insight_output),
                 "error": str(exc),
                 "error_type": type(exc).__name__,
@@ -1066,13 +1099,13 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         artifacts=artifacts,
         blocking_failures=blocking_failures,
     )
+    pipeline_status = _pipeline_status_fields(blocking_failures, content_status=str(summary.get("content_status") or "unavailable"))
     artifact_manifest = {
         "artifact_count": len(artifacts),
         "artifacts": [_artifact_manifest_entry(name, path) for name, path in sorted(artifacts.items())],
     }
     result = {
-        "status": "passed" if not blocking_failures else "failed",
-        "passed": not blocking_failures,
+        **pipeline_status,
         "started_at": started_at.isoformat(),
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "run_date": run_date,
