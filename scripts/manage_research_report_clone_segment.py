@@ -9,7 +9,7 @@ can prove which accumulated state it is resuming from.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -19,6 +19,7 @@ from typing import Any, Mapping
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SCHEMA_VERSION = "research-report-clone-segment-state-v1"
+QUIESCENCE_SCHEMA_VERSION = "research-report-clone-segment-quiescence-proof-v1"
 
 
 class SegmentStateRefused(RuntimeError):
@@ -40,6 +41,81 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def validate_quiescence_proof(
+    proof_path: Path,
+    *,
+    plan_sha256: str,
+    backup_dump_sha256: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Validate a fresh, hash-bound proof that known primary writers are quiet."""
+    try:
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SegmentStateRefused("quiescence proof must be readable JSON") from exc
+    if not isinstance(proof, dict) or proof.get("schema_version") != QUIESCENCE_SCHEMA_VERSION:
+        raise SegmentStateRefused("quiescence proof schema is unsupported")
+    if proof.get("status") != "passed" or proof.get("producer") != "scripts/manage_research_report_clone_segment.py":
+        raise SegmentStateRefused("quiescence proof status or producer is invalid")
+    try:
+        generated = datetime.fromisoformat(str(proof.get("generated_at") or "").replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SegmentStateRefused("quiescence proof timestamp is invalid") from exc
+    generated = generated.astimezone(timezone.utc)
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if generated > current + timedelta(minutes=2) or current - generated > timedelta(minutes=30):
+        raise SegmentStateRefused("quiescence proof is stale")
+    core_keys = (
+        "schema_version", "producer", "generated_at", "plan_sha256", "backup_dump_sha256",
+        "primary_service_reachable", "known_scheduler_units", "scheduler_units_stopped",
+        "active_writer_sessions", "operator_boundary",
+    )
+    core = {key: proof.get(key) for key in core_keys}
+    if proof.get("proof_sha256") != canonical_sha256(core):
+        raise SegmentStateRefused("quiescence proof hash is invalid")
+    checks = (
+        proof.get("plan_sha256") == plan_sha256,
+        proof.get("backup_dump_sha256") == backup_dump_sha256,
+        proof.get("primary_service_reachable") is False,
+        isinstance(proof.get("known_scheduler_units"), list) and bool(proof.get("known_scheduler_units")),
+        proof.get("scheduler_units_stopped") is True,
+        proof.get("active_writer_sessions") == 0,
+        proof.get("operator_boundary") == "primary_writers_and_known_schedulers_stopped_for_clone_segment",
+    )
+    if not all(checks):
+        raise SegmentStateRefused("quiescence proof does not satisfy clone segment gates")
+    return {"proof_sha256": str(proof["proof_sha256"]), "generated_at": generated.isoformat()}
+
+
+def build_quiescence_proof(
+    *,
+    plan_sha256: str,
+    backup_dump_sha256: str,
+    known_scheduler_units: list[str],
+    scheduler_units_stopped: bool,
+    active_writer_sessions: int,
+    primary_service_reachable: bool,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if not known_scheduler_units or any(not str(item).strip() for item in known_scheduler_units):
+        raise SegmentStateRefused("at least one known scheduler unit is required")
+    if not scheduler_units_stopped or active_writer_sessions != 0 or primary_service_reachable:
+        raise SegmentStateRefused("quiescence proof requires stopped schedulers, zero writers, and unreachable primary")
+    core = {
+        "schema_version": QUIESCENCE_SCHEMA_VERSION,
+        "producer": "scripts/manage_research_report_clone_segment.py",
+        "generated_at": (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
+        "plan_sha256": _required_sha(plan_sha256, "plan_sha256"),
+        "backup_dump_sha256": _required_sha(backup_dump_sha256, "backup_dump_sha256"),
+        "primary_service_reachable": False,
+        "known_scheduler_units": sorted(set(known_scheduler_units)),
+        "scheduler_units_stopped": True,
+        "active_writer_sessions": 0,
+        "operator_boundary": "primary_writers_and_known_schedulers_stopped_for_clone_segment",
+    }
+    return {**core, "status": "passed", "proof_sha256": canonical_sha256(core), "classification": "local-only", "acceptable_for_non_local_release": False}
 
 
 def load_state(path: Path) -> dict[str, Any]:
@@ -116,7 +192,18 @@ def append_checkpoint(
         raise SegmentStateRefused("batch checkpoint already exists")
     run1_sha = file_sha256(run1_path)
     run2_sha = file_sha256(run2_path)
-    run2 = json.loads(run2_path.read_text(encoding="utf-8"))
+    try:
+        run1 = json.loads(run1_path.read_text(encoding="utf-8"))
+        run2 = json.loads(run2_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SegmentStateRefused("run artifacts must be valid JSON") from exc
+    for run, label in ((run1, "run1"), (run2, "run2")):
+        if not isinstance(run, Mapping):
+            raise SegmentStateRefused(f"{label} artifact must be a JSON object")
+        if run.get("plan_sha256") != current.get("plan_sha256") or run.get("manifest_sha256") != current.get("manifest_sha256"):
+            raise SegmentStateRefused(f"{label} artifact is not bound to segment plan/manifest")
+        if run.get("batch_id") != batch_id or run.get("batch_sha256") != batch_sha256:
+            raise SegmentStateRefused(f"{label} artifact is not bound to the checkpoint batch")
     comparison = run2.get("idempotency_comparison") if isinstance(run2, Mapping) else None
     if not isinstance(comparison, Mapping) or comparison.get("passed") is not True:
         raise SegmentStateRefused("run2 idempotency gate must pass before checkpoint")
@@ -176,6 +263,14 @@ def main(argv: list[str] | None = None) -> int:
     abort = sub.add_parser("abort")
     abort.add_argument("--state", type=Path, required=True)
     abort.add_argument("--reason", required=True)
+    proof = sub.add_parser("proof")
+    proof.add_argument("--plan-sha256", required=True)
+    proof.add_argument("--backup-dump-sha256", required=True)
+    proof.add_argument("--scheduler-unit", action="append", required=True)
+    proof.add_argument("--active-writer-sessions", type=int, default=0)
+    proof.add_argument("--primary-service-reachable", action="store_true")
+    proof.add_argument("--confirm-schedulers-stopped", action="store_true")
+    proof.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "init":
         state = init_state(
@@ -200,8 +295,18 @@ def main(argv: list[str] | None = None) -> int:
             counts=json.loads(args.counts_json),
         )
         write_state(args.state, state)
-    else:
+    elif args.command == "abort":
         write_state(args.state, abort_state(load_state(args.state), reason=args.reason))
+    else:
+        proof = build_quiescence_proof(
+            plan_sha256=args.plan_sha256,
+            backup_dump_sha256=args.backup_dump_sha256,
+            known_scheduler_units=args.scheduler_unit,
+            scheduler_units_stopped=args.confirm_schedulers_stopped,
+            active_writer_sessions=args.active_writer_sessions,
+            primary_service_reachable=args.primary_service_reachable,
+        )
+        write_state(args.output, proof)
     return 0
 
 

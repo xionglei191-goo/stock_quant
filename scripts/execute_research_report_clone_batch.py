@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
 
 from app.research_reports import content_sha256, report_id_for_path
 from scripts.build_research_report_registry_decision import payload_sha256
+from scripts.manage_research_report_clone_segment import SegmentStateRefused, validate_quiescence_proof
 from scripts.prepare_research_report_clone_batch import inspect_approval
 from scripts.recover_watchlist_research_reports import (
     ApiClient,
@@ -92,6 +93,8 @@ def validate_execution_bundle(
     acknowledge_opinion_boundary: bool,
     confirm_targeted_registration: bool,
     confirm_clone_target: bool,
+    quiescence_proof_path: Path | None = None,
+    require_quiescence: bool = False,
     now: datetime | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     now = now or datetime.now(timezone.utc)
@@ -185,6 +188,18 @@ def validate_execution_bundle(
         raise CloneBatchRefused("backup dump no longer matches the ready preflight")
     if str(backup_manifest.get("dump_sha256") or "") != expected_dump_sha:
         raise CloneBatchRefused("backup manifest does not bind the ready preflight")
+    if require_quiescence:
+        if quiescence_proof_path is None:
+            raise CloneBatchRefused("fresh scheduler quiescence proof is required")
+        try:
+            validate_quiescence_proof(
+                quiescence_proof_path,
+                plan_sha256=plan_sha256,
+                backup_dump_sha256=expected_dump_sha,
+                now=now,
+            )
+        except SegmentStateRefused as exc:
+            raise CloneBatchRefused(str(exc)) from exc
     return plan, attestation
 
 
@@ -496,6 +511,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--confirm-targeted-registration", action="store_true")
     parser.add_argument("--confirm-clone-target", action="store_true")
     parser.add_argument("--prior-run", type=Path)
+    parser.add_argument("--quiescence-proof", type=Path, required=True)
     parser.add_argument("--citation-char-limit", type=int, default=1200)
     parser.add_argument("--max-text-chars", type=int, default=50000)
     parser.add_argument("--pdf-pages", type=int, default=3)
@@ -522,6 +538,8 @@ def main(argv: list[str] | None = None) -> int:
             acknowledge_opinion_boundary=args.acknowledge_opinion_boundary,
             confirm_targeted_registration=args.confirm_targeted_registration,
             confirm_clone_target=args.confirm_clone_target,
+            quiescence_proof_path=args.quiescence_proof,
+            require_quiescence=True,
         )
         validate_current_clone_runtime_identity(attestation)
     except (CloneBatchRefused, RecoveryRefused, OSError, ValueError) as exc:
