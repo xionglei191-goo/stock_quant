@@ -36,29 +36,29 @@ An operator could run an isolated clone while a known primary scheduler was acti
 
 ## Current State
 
-- Completed: quiescence proof contract and executor integration.
+- Completed: quiescence proof contract, direct read-only observation command, and executor integration.
 - Completed: checkpoint plan/manifest/batch binding.
 - Blocked: batch 0006 remains unauthorized; service stopping and observation collection remain operator-controlled.
 
 ## Current Findings
 
 - Proof freshness is limited to 30 minutes with a two-minute future-skew allowance.
-- Required proof values: `primary_service_reachable=false`, all known scheduler units stopped, `active_writer_sessions=0`, and the exact operator boundary string.
+- Required proof values: `primary_service_reachable=false`, all known scheduler units stopped, known writer containers observed stopped, `active_writer_sessions=0`, and the exact operator boundary string.
 - `--quiescence-proof` is required by the real executor CLI and validated before any clone API request.
-- Full `make local-ci` is not green in the current environment because `PyYAML` is unavailable for pre-existing dynamic allocation tests; focused clone/state tests pass.
+- `observe-proof` reads systemd state, Docker container state, primary health reachability, and PostgreSQL sessions without stopping or mutating anything.
 
 ## Proposed Work Plan
 
 1. Keep the proof and state contracts local-only and hash-bound.
 2. Collect proof observations by an operator-controlled stop/inspect procedure before any future batch.
-3. Add executor integration tests using a synthetic proof, then request a fresh batch approval only after full CI dependencies are restored.
+3. Request a fresh batch approval only after a direct observation proof and full CI pass.
 
 ## Validation Plan
 
 - `python3 -m py_compile` for modified scripts/tests.
 - Focused clone executor, runtime probe, segment state, and quiescence tests.
 - `scripts/security_check.py .`, `scripts/check_handoffs.py`, and `git diff --check`.
-- Full `make local-ci`, recording the existing dependency failure.
+- `PATH=.venv/bin:$PATH make local-ci`.
 
 ## Dependencies
 
@@ -91,7 +91,7 @@ make local-ci
 Result:
 
 - Passed: 11 focused tests, security scan (550 files), handoff validation, compile, diff check.
-- Failed: full CI due missing `yaml`/PyYAML in the environment; failures are in pre-existing `tests/dynamic_allocation/test_application.py` setup.
+- Passed: full CI with the declared `.venv` dependency set; 540 tests plus UI, security, links, handoffs, and metadata checks.
 - Not run: any real clone execution or database mutation.
 
 ## Evidence
@@ -106,8 +106,7 @@ Result:
 
 ## Risks and Open Questions
 
-- The proof builder accepts operator-supplied observations; a future hardening step should collect systemd/container/session observations directly and hash them.
-- Full CI dependency drift must be corrected before the next approval package.
+- The direct observer still requires operator-supplied unit/container names; it does not stop services automatically.
 
 ## Handoff Checklist
 
@@ -118,10 +117,10 @@ Result:
 
 ## Next Steps
 
-1. Restore the declared Python test dependencies and make `make local-ci` green.
-2. Add direct observation collection for scheduler/container/database writer state.
-3. Prepare a new batch 0006 preflight only after a fresh quiescence proof and human approval.
+1. Run `observe-proof` during a controlled quiescent window with the actual scheduler and writer container names.
+2. Prepare a new batch 0006 preflight only after a fresh quiescence proof and human approval.
+3. Keep the primary baseline and no-broker boundary unchanged.
 
 ## Next Recommended Action
 
-Repair the environment dependency (`PyYAML`) and rerun full local CI before any new batch approval.
+Generate a direct quiescence proof in a controlled window before preparing any batch 0006 approval.

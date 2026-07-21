@@ -78,6 +78,8 @@ class CloneSegmentStateTests(unittest.TestCase):
                 "primary_service_reachable": False,
                 "known_scheduler_units": ["ai-quant-daily-update.service"],
                 "scheduler_units_stopped": True,
+                "scheduler_observations": [{"unit": "ai-quant-daily-update.service", "state": "inactive", "stopped": True}],
+                "writer_container_observations": [],
                 "active_writer_sessions": 0,
                 "operator_boundary": "primary_writers_and_known_schedulers_stopped_for_clone_segment",
             }
@@ -97,6 +99,8 @@ class CloneSegmentStateTests(unittest.TestCase):
                 "primary_service_reachable": False,
                 "known_scheduler_units": ["ai-quant-daily-update.service"],
                 "scheduler_units_stopped": False,
+                "scheduler_observations": [{"unit": "ai-quant-daily-update.service", "state": "active", "stopped": False}],
+                "writer_container_observations": [],
                 "active_writer_sessions": 0,
                 "operator_boundary": "primary_writers_and_known_schedulers_stopped_for_clone_segment",
             }

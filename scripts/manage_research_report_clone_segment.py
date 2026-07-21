@@ -14,7 +14,11 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
 from typing import Any, Mapping
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -70,7 +74,7 @@ def validate_quiescence_proof(
     core_keys = (
         "schema_version", "producer", "generated_at", "plan_sha256", "backup_dump_sha256",
         "primary_service_reachable", "known_scheduler_units", "scheduler_units_stopped",
-        "active_writer_sessions", "operator_boundary",
+        "scheduler_observations", "writer_container_observations", "active_writer_sessions", "operator_boundary",
     )
     core = {key: proof.get(key) for key in core_keys}
     if proof.get("proof_sha256") != canonical_sha256(core):
@@ -81,12 +85,62 @@ def validate_quiescence_proof(
         proof.get("primary_service_reachable") is False,
         isinstance(proof.get("known_scheduler_units"), list) and bool(proof.get("known_scheduler_units")),
         proof.get("scheduler_units_stopped") is True,
+        isinstance(proof.get("scheduler_observations"), list) and len(proof["scheduler_observations"]) == len(proof["known_scheduler_units"]),
+        isinstance(proof.get("writer_container_observations"), list),
+        all(item.get("stopped") is True for item in proof.get("scheduler_observations", [])),
+        all(item.get("running") is False and item.get("returncode") == 0 and bool(item.get("container_id")) for item in proof.get("writer_container_observations", [])),
         proof.get("active_writer_sessions") == 0,
         proof.get("operator_boundary") == "primary_writers_and_known_schedulers_stopped_for_clone_segment",
     )
     if not all(checks):
         raise SegmentStateRefused("quiescence proof does not satisfy clone segment gates")
     return {"proof_sha256": str(proof["proof_sha256"]), "generated_at": generated.isoformat()}
+
+
+def collect_quiescence_observations(
+    *,
+    scheduler_units: list[str],
+    writer_containers: list[str],
+    primary_url: str,
+    dsn: str,
+) -> dict[str, Any]:
+    """Collect read-only scheduler, container, URL, and PostgreSQL observations."""
+    if not shutil.which("systemctl") or not shutil.which("docker") or not shutil.which("psql"):
+        raise SegmentStateRefused("systemctl, docker, and psql are required for direct quiescence observation")
+    scheduler_observations: list[dict[str, Any]] = []
+    for unit in scheduler_units:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", unit], text=True, capture_output=True, check=False, timeout=15
+        )
+        state = (result.stdout or result.stderr).strip() or "unknown"
+        scheduler_observations.append({"unit": unit, "state": state, "stopped": state in {"inactive", "failed"}, "returncode": result.returncode})
+    writer_observations: list[dict[str, Any]] = []
+    for container in writer_containers:
+        result = subprocess.run(["docker", "inspect", "--format", "{{.Id}}|{{.State.Status}}|{{.State.Running}}", container], text=True, capture_output=True, check=False, timeout=15)
+        raw = (result.stdout or "").strip()
+        parts = raw.split("|", 2)
+        writer_observations.append({"container": container, "container_id": parts[0] if len(parts) > 0 else "", "state": parts[1] if len(parts) > 1 else "missing", "running": parts[2].lower() == "true" if len(parts) > 2 else False, "returncode": result.returncode})
+    primary_reachable = False
+    try:
+        with urlopen(primary_url.rstrip("/") + "/api/health", timeout=5) as response:
+            response.read(1)
+            primary_reachable = True
+    except (HTTPError, URLError, OSError, TimeoutError):
+        primary_reachable = False
+    result = subprocess.run(
+        ["psql", dsn, "-X", "-q", "-t", "-A", "-c", "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid();"],
+        text=True, capture_output=True, check=False, timeout=15,
+    )
+    if result.returncode != 0 or not (result.stdout or "").strip().isdigit():
+        raise SegmentStateRefused("could not read active PostgreSQL sessions")
+    active_sessions = int(result.stdout.strip())
+    return {
+        "scheduler_observations": scheduler_observations,
+        "writer_container_observations": writer_observations,
+        "scheduler_units_stopped": bool(scheduler_observations) and all(item["stopped"] for item in scheduler_observations),
+        "active_writer_sessions": active_sessions,
+        "primary_service_reachable": primary_reachable,
+    }
 
 
 def build_quiescence_proof(
@@ -97,12 +151,18 @@ def build_quiescence_proof(
     scheduler_units_stopped: bool,
     active_writer_sessions: int,
     primary_service_reachable: bool,
+    scheduler_observations: list[Mapping[str, Any]] | None = None,
+    writer_container_observations: list[Mapping[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     if not known_scheduler_units or any(not str(item).strip() for item in known_scheduler_units):
         raise SegmentStateRefused("at least one known scheduler unit is required")
     if not scheduler_units_stopped or active_writer_sessions != 0 or primary_service_reachable:
         raise SegmentStateRefused("quiescence proof requires stopped schedulers, zero writers, and unreachable primary")
+    scheduler_rows = [dict(item) for item in (scheduler_observations or [{"unit": item, "state": "inactive", "stopped": True} for item in known_scheduler_units])]
+    writer_rows = [dict(item) for item in (writer_container_observations or [])]
+    if not writer_rows or not all(item.get("stopped") is True for item in scheduler_rows) or not all(item.get("running") is False and item.get("returncode") == 0 and bool(item.get("container_id")) for item in writer_rows):
+        raise SegmentStateRefused("quiescence observations contain a running scheduler or writer")
     core = {
         "schema_version": QUIESCENCE_SCHEMA_VERSION,
         "producer": "scripts/manage_research_report_clone_segment.py",
@@ -112,6 +172,8 @@ def build_quiescence_proof(
         "primary_service_reachable": False,
         "known_scheduler_units": sorted(set(known_scheduler_units)),
         "scheduler_units_stopped": True,
+        "scheduler_observations": scheduler_rows,
+        "writer_container_observations": writer_rows,
         "active_writer_sessions": 0,
         "operator_boundary": "primary_writers_and_known_schedulers_stopped_for_clone_segment",
     }
@@ -267,10 +329,19 @@ def main(argv: list[str] | None = None) -> int:
     proof.add_argument("--plan-sha256", required=True)
     proof.add_argument("--backup-dump-sha256", required=True)
     proof.add_argument("--scheduler-unit", action="append", required=True)
+    proof.add_argument("--writer-container", action="append", required=True)
     proof.add_argument("--active-writer-sessions", type=int, default=0)
     proof.add_argument("--primary-service-reachable", action="store_true")
     proof.add_argument("--confirm-schedulers-stopped", action="store_true")
     proof.add_argument("--output", type=Path, required=True)
+    observe = sub.add_parser("observe-proof")
+    observe.add_argument("--plan-sha256", required=True)
+    observe.add_argument("--backup-dump-sha256", required=True)
+    observe.add_argument("--scheduler-unit", action="append", required=True)
+    observe.add_argument("--writer-container", action="append", default=[])
+    observe.add_argument("--primary-url", required=True)
+    observe.add_argument("--dsn", required=True)
+    observe.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "init":
         state = init_state(
@@ -297,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         write_state(args.state, state)
     elif args.command == "abort":
         write_state(args.state, abort_state(load_state(args.state), reason=args.reason))
-    else:
+    elif args.command == "proof":
         proof = build_quiescence_proof(
             plan_sha256=args.plan_sha256,
             backup_dump_sha256=args.backup_dump_sha256,
@@ -305,6 +376,25 @@ def main(argv: list[str] | None = None) -> int:
             scheduler_units_stopped=args.confirm_schedulers_stopped,
             active_writer_sessions=args.active_writer_sessions,
             primary_service_reachable=args.primary_service_reachable,
+            writer_container_observations=[{"container": item, "container_id": "operator-supplied", "running": False, "returncode": 0, "state": "exited"} for item in args.writer_container],
+        )
+        write_state(args.output, proof)
+    else:
+        observations = collect_quiescence_observations(
+            scheduler_units=args.scheduler_unit,
+            writer_containers=args.writer_container,
+            primary_url=args.primary_url,
+            dsn=args.dsn,
+        )
+        proof = build_quiescence_proof(
+            plan_sha256=args.plan_sha256,
+            backup_dump_sha256=args.backup_dump_sha256,
+            known_scheduler_units=args.scheduler_unit,
+            scheduler_units_stopped=bool(observations["scheduler_units_stopped"]),
+            active_writer_sessions=int(observations["active_writer_sessions"]),
+            primary_service_reachable=bool(observations["primary_service_reachable"]),
+            scheduler_observations=observations["scheduler_observations"],
+            writer_container_observations=observations["writer_container_observations"],
         )
         write_state(args.output, proof)
     return 0
