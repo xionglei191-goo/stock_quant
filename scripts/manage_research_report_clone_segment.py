@@ -224,6 +224,40 @@ def _required_sha(value: Any, label: str) -> str:
     return result
 
 
+def load_restore_verified_backup(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SegmentStateRefused("backup manifest must be readable JSON") from exc
+    if not isinstance(payload, Mapping) or payload.get("status") != "passed" or payload.get("restore_verified") is not True:
+        raise SegmentStateRefused("backup manifest is not restore-verified")
+    dump_path = Path(str(payload.get("dump_path") or ""))
+    if not dump_path.is_file() and dump_path.name:
+        sibling = path.parent / dump_path.name
+        if sibling.is_file():
+            dump_path = sibling
+    expected_dump_sha = str(payload.get("dump_sha256") or "")
+    _required_sha(expected_dump_sha, "backup dump SHA")
+    if not dump_path.is_file() or file_sha256(dump_path) != expected_dump_sha:
+        raise SegmentStateRefused("backup dump does not match its manifest")
+    source_counts = dict(payload.get("source_counts") or {})
+    restored_counts = dict(payload.get("restored_counts") or {})
+    source_research = dict(payload.get("collection_counts") or {})
+    restored_research = dict(payload.get("restored_collection_counts") or {})
+    counts: dict[str, int] = {}
+    for key in REQUIRED_CHECKPOINT_COUNTS:
+        source = source_counts.get(key, source_research.get(key))
+        restored = restored_counts.get(key, restored_research.get(key))
+        if source is None or restored is None or int(source) != int(restored) or int(restored) < 0:
+            raise SegmentStateRefused(f"backup restore equality is incomplete for {key}")
+        counts[key] = int(restored)
+    return {
+        "manifest_sha256": file_sha256(path),
+        "dump_sha256": expected_dump_sha,
+        "counts": counts,
+    }
+
+
 def init_state(
     *,
     segment_id: str,
@@ -267,9 +301,11 @@ def append_checkpoint(
     batch_sha256: str,
     run1_path: Path,
     run2_path: Path,
-    counts: Mapping[str, Any],
+    backup_manifest_path: Path | None = None,
+    counts: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     current = dict(state)
+    counts = counts or {}
     if current.get("status") != "active":
         raise SegmentStateRefused("only an active segment can accept a checkpoint")
     if not re.fullmatch(r"t613-batch-00(?:0[1-9]|[1-3][0-9]|4[0-4])", batch_id):
@@ -287,8 +323,14 @@ def append_checkpoint(
         if value < 0:
             raise SegmentStateRefused(f"checkpoint count cannot be negative: {key}")
         normalized_counts[key] = value
+    if backup_manifest_path is None:
+        raise SegmentStateRefused("restore-verified backup manifest is required before checkpoint")
     if not run1_path.is_file() or not run2_path.is_file():
         raise SegmentStateRefused("run artifacts must exist")
+    backup = load_restore_verified_backup(backup_manifest_path)
+    backup_counts = backup["counts"]
+    if any(int(counts[key]) != int(backup_counts[key]) for key in REQUIRED_CHECKPOINT_COUNTS):
+        raise SegmentStateRefused("checkpoint counts do not match the restore-verified backup")
     batches = [dict(item) for item in current.get("batches", []) if isinstance(item, Mapping)]
     if any(item.get("batch_id") == batch_id for item in batches):
         raise SegmentStateRefused("batch checkpoint already exists")
@@ -320,6 +362,8 @@ def append_checkpoint(
         "run2_artifact_sha256": run2_sha,
         "counts": normalized_counts,
         "prior_run_sha256": prior_run_sha256,
+        "backup_manifest_sha256": backup["manifest_sha256"],
+        "backup_dump_sha256": backup["dump_sha256"],
         "created_at": utc_iso(),
     }
     checkpoint = dict(checkpoint_core)
@@ -386,7 +430,8 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint.add_argument("--batch-sha256", required=True)
     checkpoint.add_argument("--run1", type=Path, required=True)
     checkpoint.add_argument("--run2", type=Path, required=True)
-    checkpoint.add_argument("--counts-json", required=True)
+    checkpoint.add_argument("--backup-manifest", type=Path, required=True)
+    checkpoint.add_argument("--counts-json")
     abort = sub.add_parser("abort")
     abort.add_argument("--state", type=Path, required=True)
     abort.add_argument("--reason", required=True)
@@ -431,7 +476,8 @@ def main(argv: list[str] | None = None) -> int:
             batch_sha256=args.batch_sha256,
             run1_path=args.run1,
             run2_path=args.run2,
-            counts=json.loads(args.counts_json),
+            backup_manifest_path=args.backup_manifest,
+            counts=json.loads(args.counts_json) if args.counts_json else load_restore_verified_backup(args.backup_manifest)["counts"],
         )
         write_state(args.state, state)
     elif args.command == "abort":

@@ -42,7 +42,7 @@ Without a hash-bound state file, a later resume could use the wrong clone identi
 ## Current Findings
 
 - A checkpoint is rejected unless run 2 contains `idempotency_comparison.passed=true`.
-- A checkpoint stores SHA-256 hashes for both run artifacts, exact `prior_run_sha256`, all nine cumulative counts (`records`, `audit_log`, `market_data_bars`, and six research collections), and its own canonical checkpoint hash.
+- A checkpoint stores SHA-256 hashes for both run artifacts, exact `prior_run_sha256`, restore-verified backup manifest/dump SHA, all nine cumulative counts (`records`, `audit_log`, `market_data_bars`, and six research collections), and its own canonical checkpoint hash.
 - A segment can transition `active -> aborted -> active` only when resume names the latest existing checkpoint; an aborted segment cannot accept checkpoints until resumed.
 - The state explicitly records `primary_writes_allowed=false`, an empty delete list, `accumulated_counts`, and `local-only` classification.
 
@@ -66,7 +66,7 @@ Without a hash-bound state file, a later resume could use the wrong clone identi
 ## Blockers
 
 - No batch 0006 approval exists.
-- The executor accepts `--segment-state`; run 2 requires `--checkpoint-counts-json` and writes the checkpoint only after the execution artifact is persisted.
+- The executor accepts `--segment-state` for pre-execution state validation. Checkpoint finalization is a separate `checkpoint` command and requires a restore-verified backup manifest, so the segment-end backup precedes the state write.
 
 ## Files Touched
 
@@ -100,7 +100,7 @@ Result:
 
 ## Risks and Open Questions
 
-- The current tool validates the supplied cumulative counts but does not query PostgreSQL or verify backup restore equality; the future executor must supply those facts before writing a checkpoint.
+- The checkpoint command validates cumulative counts and backup restore equality but does not query PostgreSQL itself; the backup producer supplies the restore evidence before the state write.
 - Scheduler quiescence evidence is still a separate required gate and is not inferred from this state file.
 - No batch 0006 approval exists; this change does not authorize execution.
 

@@ -42,12 +42,17 @@ class CloneSegmentStateTests(unittest.TestCase):
             run1.write_text(json.dumps({**binding, "status": "passed", "artifact_sha256": "e" * 64}), encoding="utf-8")
             run2.write_text(json.dumps({**binding, "status": "passed", "idempotency_comparison": {"passed": True, "prior_run_sha256": "e" * 64}}), encoding="utf-8")
             counts = {key: 1 for key in ("records", "audit_log", "market_data_bars", "research_reports", "research_documents", "research_report_citation_evidence", "structured_research_reports", "report_viewpoints", "report_forecasts")}
+            dump = root / "clone.dump"
+            dump.write_bytes(b"restore-verified")
+            backup = root / "backup.manifest.json"
+            backup.write_text(json.dumps({"status": "passed", "restore_verified": True, "dump_path": str(dump), "dump_sha256": __import__("hashlib").sha256(dump.read_bytes()).hexdigest(), "source_counts": {"records": 1, "audit_log": 1, "market_data_bars": 1}, "restored_counts": {"records": 1, "audit_log": 1, "market_data_bars": 1}, "collection_counts": {key: 1 for key in counts if key not in {"records", "audit_log", "market_data_bars"}}, "restored_collection_counts": {key: 1 for key in counts if key not in {"records", "audit_log", "market_data_bars"}}}), encoding="utf-8")
             state = append_checkpoint(
                 self._state(),
                 batch_id="t613-batch-0005",
                 batch_sha256="d" * 64,
                 run1_path=run1,
                 run2_path=run2,
+                backup_manifest_path=backup,
                 counts=counts,
             )
             self.assertEqual(state["latest_checkpoint"], state["batches"][0]["checkpoint_sha256"])
