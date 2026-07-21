@@ -16,11 +16,11 @@
 
 当前能力：代码已经跑通本机 MVP 主链路，覆盖 A/H/U 公开披露接入、rights tag、证据切片、规则抽取、benchmark 阈值、Thesis/Signal/Decision 兼容对象、纸面执行意图兼容入口、模拟持仓 ledger、月报/回放、事故剧本、SQLite/PostgreSQL、本地/S3 对象存储、内置/OpenSearch 检索、`/ui` 静态页面、健康检查、烟测、LLM 中转站和 PaddleOCR-VL 文档解析备用接口。本轮产品方向调整后，这些能力应重新归类到公司画像、事件时间线、关系图谱、观点库、观察任务、分析结论和模拟反馈闭环。
 
-新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 曾在历史审计中完成 11702 份可处理文件登记、解析和 88515 条 citation evidence，证据见 `artifacts/research-report-completion-audit.json`，但该文件只代表生成时点；T-603/T-604/T-611/T-612 已完成 15 份受控切片恢复，T-613 又完成 11702/11702 全文件内容哈希对账，确认主库 15 份内容一致、OpenSearch 11702 个投影 ID 全覆盖、0 个 report ID 冲突，并识别 599 组重复内容/884 个重复别名。历史完整 PostgreSQL 文档/引用备份仍不存在，因此全量重解析只形成 44 个 clone-only 候选批次，未获得执行授权。`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
+新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 曾在历史审计中完成 11702 份可处理文件登记、解析和 88515 条 citation evidence，证据见 `artifacts/research-report-completion-audit.json`，但该文件只代表生成时点；T-603/T-604/T-611/T-612 已完成 15 份受控主库切片恢复，T-613 又完成 11702/11702 全文件内容哈希对账，确认主库 15 份内容一致、OpenSearch 11702 个投影 ID 全覆盖、0 个 report ID 冲突，并识别 599 组重复内容/884 个重复别名。T-614 已在独立 clone 中完成首批 250 份双跑，247 份文本化、3 份进入人工复核、1937 条 citation evidence，run2 零新增且逐项一致；其余 43 批仍未获得执行授权，主库仍保持 15 份受控切片。`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
 
 剩余关键缺口：后续主路线不再是强化组织级发布或实时交易，而是建立公司级数据库和分析反馈闭环。本机 production-like 栈仍可作为个人/单机长期使用口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。非本机组织级真实生产发布、外部密钥管理、生产级 artifact URI、灰度/回滚窗口和发布确认全部下沉为运维/非本机发布附录，不阻塞公司情报平台产品路线。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：T-603 个人研究闭环稳定化和 T-613 全量 registry 决策包均已完成本机收口；T-614 首批 250 份 clone-only 重解析已完成清单/批次/原文件绑定和新的 collection-aware 主库恢复验证备份，当前只等待绑定 manifest/batch SHA 的明确人工批准，之后才能创建独立 clone 并生成 attestation。未批准前保持当前 15 份主库切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何研报恢复必须 dry-run、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
+近期优先级：T-603/T-613/T-614 已完成本机收口；下一步是 T-615 对首批 3 份无文本人工复核项、全 registry 重复扫描、run2 MVCC/audit 增量和后续 43 批的独立审批策略做决策，不自动执行 batch 0002。主库保持当前 15 份受控切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须重新 dry-run、绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
 
 ## 项目经理整理 / 公司情报平台重定位路线
 
@@ -370,7 +370,7 @@
   - Artifact：`artifacts/t613-full-registry/identity-manifest.json`（manifest SHA `e932f352047eb58b4e0df797215598b7ee0bdd25b920432bf6c89173a301fa5e`）和 `artifacts/t613-full-registry/recovery-decision.json`，均为敏感 local-only 证据，不可用于非本机发布。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-613-full-registry-decision.md`。
 
-- `BLOCKED` T-614 首批全量研报 clone 重解析演练
+- `DONE` T-614 首批全量研报 clone 重解析演练
   - 对应：E3-US3, E5-US1, E8-US2；数据与证据，研究工作流/平台质量/治理安全/项目经理评审
   - 依赖：T-613；只允许使用 identity manifest `e932f352047eb58b4e0df797215598b7ee0bdd25b920432bf6c89173a301fa5e` 和首批 batch SHA `2909ee8b964a24c9c47cecf2da04ddab4fc409ea1c7b40c3b461eab97838cd85`。
   - 目标：在新建、独立 attestation 的 PostgreSQL clone 中对首批 250 个唯一内容候选完成两次重解析，验证文档/引用完整性、内容身份、幂等性、耗时和存储增长，为是否继续后续 43 批提供人工决策证据。
@@ -379,8 +379,17 @@
   - 验收：run1/run2 report/document/evidence 身份完全一致，run2 创建数为 0；解析失败和人工复核项逐条分类；输出容量/时间外推但不冒充全量完成；clone 备份恢复验证后清理临时运行资源。
   - 已完成准备：新增无 execute 模式的 batch preflight，对 T-613 manifest/entries/batch SHA、250 个原文件完整内容、严格 rights policy 和既有 clone attestation validator 做绑定；batch 为 250 个 PDF / 437754140 bytes，raw content identity SHA `ee5f59dffe7ae7c774408e417a75c3aa37712cc3f9fc8fe7c543c8ee081edf33`。
   - 新备份：`ai_quant-20260721T023537Z` 已恢复验证通过，dump SHA `36279642e3e6501462aab1f45114a3dbe3ee586db8641a81e8e189c66efcaaaa`，总记录/审计/行情 `32319/35385/28365474`，研报六集合 `15/15/112/15/15/3`，保留至 2026-07-28；plan SHA `bf1010e92c1a5b193b7bea62e1d2df3f4087a84f2a489d4be8815e89055a8ece`。
-  - 当前状态：`BLOCKED`；清单、批次、raw 和新备份门均通过，`exact_human_approval_verified` 与 `independent_clone_attestation_verified` 仍失败，`execution_ready=false`、`execution_performed=false`。泛化的“继续/重试”不作为 destructive/full-registry execute 确认。
+  - 执行结果：人工批准精确绑定 manifest/batch SHA；独立 clone attestation 证明数据库、容器、内部网络、只读 raw、只读根文件系统、本地 object/search 后端和主服务不可达。run1/run2 均为 250/250 成功、247 `text_indexed`、3 `needs_text_review`、1937 citation evidence；run1 `ingest_created=250`，run2 `ingest_created=0`，250 个 report/document/content/status/evidence/manual-review 逐项一致且 mismatch 为 0。
+  - 容量/耗时：run1 2144.972 秒，run2 2705.687 秒；clone 数据库从 15502007319 bytes 增至 run1 的 15541189655 bytes，再增至 run2 的 15564430359 bytes。run2 逻辑 records 保持 46197，仅 audit 从 36140 增至 36394，物理增量主要是 MVCC/audit；其余 43 批串行双跑机械外推约 57.9 小时，不构成执行授权。
+  - 收口：post-run clone backup `ai_quant_t614_clone_20260721-20260721T045056Z` 已恢复验证，dump SHA `2ef3caf00e758f0da03f0a32f826576a5d29021f4c297c56218d1fa628a6eae1`，保留至 2026-07-28；clone 应用、数据库和内部网络均已清理。主库仍为 `32319/35385/28365474`，未发生写入或删除。
   - Handoff：`docs/agent-handoffs/2026-07-21-T-614-clone-batch-preflight.md`。
+
+- `TODO` T-615 后续 43 批研报恢复决策与执行架构
+  - 对应：E3-US3, E5-US1, E8-US2；项目经理协调，数据与证据/研究工作流/平台质量/治理安全评审
+  - 依赖：T-614；不得把 T-614 的批准、attestation 或 clone 备份复用于 batch 0002-0044。
+  - 目标：先审查 3 个 `needs_text_review` ID，确定 OCR/跳过/人工处理口径；消除或证明每批全量 registry 重扫的必要性；量化 run2 MVCC/audit 增量与 vacuum 策略；形成后续批次逐批或分段审批方案。
+  - 非目标：不自动执行后续 43 批、不晋升主库、不删除原文件/重复别名/OpenSearch 索引，不扩展到券商或实盘。
+  - 验收：输出 parser quality 决策、容量/耗时预算、targeted registration 或 persistent-clone 方案对比、主库 promotion 独立门禁和 batch 0002 的精确审批请求；没有新批准前保持 `TODO`。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
