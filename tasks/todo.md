@@ -16,11 +16,11 @@
 
 当前能力：代码已经跑通本机 MVP 主链路，覆盖 A/H/U 公开披露接入、rights tag、证据切片、规则抽取、benchmark 阈值、Thesis/Signal/Decision 兼容对象、纸面执行意图兼容入口、模拟持仓 ledger、月报/回放、事故剧本、SQLite/PostgreSQL、本地/S3 对象存储、内置/OpenSearch 检索、`/ui` 静态页面、健康检查、烟测、LLM 中转站和 PaddleOCR-VL 文档解析备用接口。本轮产品方向调整后，这些能力应重新归类到公司画像、事件时间线、关系图谱、观点库、观察任务、分析结论和模拟反馈闭环。
 
-新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 曾在历史审计中完成 11702 份可处理文件登记、解析和 88515 条 citation evidence，证据见 `artifacts/research-report-completion-audit.json`，但该文件只代表生成时点；T-603/T-604/T-611/T-612 已完成 15 份受控主库切片恢复，T-613 又完成 11702/11702 全文件内容哈希对账，确认主库 15 份内容一致、OpenSearch 11702 个投影 ID 全覆盖、0 个 report ID 冲突，并识别 599 组重复内容/884 个重复别名。T-614/T-615/T-616 已分别在独立 clone 中完成 batch 0001/0002/0003 双跑：第三批 250 份全部成功，237 份文本化、13 份进入人工复核、1810 条 citation evidence，改造后的只读 run2 再次证明零逻辑/审计/物理增量且逐项一致；剩余 41 批仍未获得执行授权，主库仍保持 15 份受控研报切片。`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
+新增资源：本地通达信历史行情已迁入项目内 `data/local/tdx/vipdoc`，并已全量写入 PostgreSQL `market_data`，导入摘要见 `artifacts/tdx-vipdoc-postgres-import-full.json`；本地研报库 `/home/xionglei/文档/6大投行研报汇总` 曾在历史审计中完成 11702 份可处理文件登记、解析和 88515 条 citation evidence，证据见 `artifacts/research-report-completion-audit.json`，但该文件只代表生成时点；T-603/T-604/T-611/T-612 已完成 15 份受控主库切片恢复，T-613 又完成 11702/11702 全文件内容哈希对账，确认主库 15 份内容一致、OpenSearch 11702 个投影 ID 全覆盖、0 个 report ID 冲突，并识别 599 组重复内容/884 个重复别名。T-614/T-615/T-616 已分别在独立 clone 中完成 batch 0001/0002/0003 双跑：第三批 250 份全部成功，237 份文本化、13 份进入人工复核、1810 条 citation evidence，改造后的只读 run2 再次证明零逻辑/审计/物理增量且逐项一致；T-619 随后完成 B0006-B0044 受控导入，其中 B0015-B0044 的 bulk clone 处理 7,303 份记录、0 失败、55,802 条证据，并以一次 insert-only transaction 通过最终对账。主库现有 9,568 份受控研报和 73,118 条研报引用证据；原始文件、重复别名和 OpenSearch 均保留。`a-stock-data` 相关 A 股补充 connector 已完成来源治理补齐，`artifacts/source-governance-fill.json` 显示来源治理覆盖率 `1.0`；LLM gateway 与 PaddleOCR-VL 已完成本机密钥注入和真实冒烟，验收记录见 `artifacts/local-ai-capability-acceptance.json`。
 
 剩余关键缺口：后续主路线不再是强化组织级发布或实时交易，而是建立公司级数据库和分析反馈闭环。本机 production-like 栈仍可作为个人/单机长期使用口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。非本机组织级真实生产发布、外部密钥管理、生产级 artifact URI、灰度/回滚窗口和发布确认全部下沉为运维/非本机发布附录，不阻塞公司情报平台产品路线。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：T-603/T-616/T-617 已完成本机收口；T-617 的 persistent clone 累计状态、checkpoint/resume/abort、备份/vacuum 顺序和定时器 quiescence 证明已完成，batch 0006 及后续批次仍需独立批准后才能执行。主库保持当前 15 份受控研报切片，继续观察每日 timer、五家公司官方事实缺口和产品使用口径。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须重新 dry-run、绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
+近期优先级：T-619 已完成。T-613 batch 0006-0044 已在 hash-bound clone 校验后以 insert-only 方式写入主库，保留原始文件、重复别名和 OpenSearch；主库现有 9,568 份受控研报、9,568 个研究文档和 73,118 条研报引用证据。B0015-B0044 使用一个独立 bulk clone 完成精确 SHA 绑定和全量解析核验，再以一次性 transaction 完成最终对账；每日 timer 与 Compose 应用均已恢复 healthy。后续重点转为五家公司官方事实缺口、产品使用口径和公司情报分析闭环。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
 
 ## 项目经理整理 / 公司情报平台重定位路线
 
@@ -429,6 +429,15 @@
   - 已完成：`app/server.py` 的 JSON、HTML、UI module 响应统一经过断开容错写入；新增 focused regression；重启当前 Compose app 后主动断开 batch preview 请求，最近日志无断开异常。
   - 验收：`.venv` 下 full CI 546 tests、UI static、安全、Markdown、handoff 和文档元数据检查全部通过；`/api/health` 返回 PostgreSQL/S3/OpenSearch healthy。
   - Handoff：`docs/agent-handoffs/2026-07-22-T-618-http-client-disconnect-resilience.md`。
+
+- `DONE` T-619 T-613 batch 0006-0044 clone 校验后主库受控导入
+  - 对应：E3-US3, E5-US1, E8-US2；平台与质量、数据与证据，共同由治理与安全复核。
+  - 授权：用户已明确授权 batch 0006-0044 在完成每批校验后写入主库；允许创建备份和独立 clone；禁止删除原始文件、重复别名和 OpenSearch。
+  - 目标：B0006-B0014 保持既有逐批证据；用户已授权 B0015-B0044 改为一个独立 bulk clone 完成精确 SHA 绑定和全量解析核验，再以一次性 insert-only transaction 写入主库并做最终对账。
+  - 非目标：不删除或更新 PostgreSQL 记录，不删除 raw/别名/OpenSearch，不将研报升格为事实或训练数据，不连接券商或执行真实交易。
+  - 验收：B0006-B0014 均保留独立 hash-bound clone、preflight、promotion result 和主库审计事件；B0015-B0044 的 30 个 source batch 均已写入同一份 passed bulk clone result，随后通过一次 preflight、一次 serializable insert-only transaction、审计事件和最终 PostgreSQL/raw/OpenSearch 对账。任一 clone gate 失败都会阻止主库写入。
+  - 已完成：B0006-B0014 已完成逐批受控导入；B0015-B0044 的 bulk clone 已从 `ai_quant-20260722T120855Z` restore-verified 基线处理完 7,303 份 registry 记录（0 failed、55,802 evidence），再向主库插入 7,303 reports、7,303 documents、55,802 evidence，未插入 source。最终为 9,568 research reports、9,568 research documents、73,118 research-report citation evidence，审计事件为 `evt_t619_bulk_ec25e98f1dd7073760a5925b681f454e`。临时 clone 已在完成主库校验后与 primary 断开；不涉及 raw、重复别名或 OpenSearch 删除。
+  - Handoff：`docs/agent-handoffs/2026-07-22-T-619-primary-research-report-campaign.md`。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强

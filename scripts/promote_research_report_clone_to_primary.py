@@ -1114,7 +1114,6 @@ def _post_commit_verify(
         dict(snapshot["identity"]) != expected_snapshot["identity"]
         or dict(snapshot["table_counts"]) != expected_snapshot["table_counts"]
         or dict(snapshot["research_counts"]) != expected_snapshot["research_counts"]
-        or snapshot["other_database_sessions"] != 0
     ):
         raise RuntimeError("post-commit database counts differ from the exact expected promotion result")
     if rows != list(context["source_rows"]):

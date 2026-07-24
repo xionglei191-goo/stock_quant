@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -22,6 +23,8 @@ RESEARCH_STATE_COUNT_KEYS = (
 )
 SAFE_POSTGRES_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
 SAFE_REPORT_ID = re.compile(r"^[A-Za-z0-9_.:-]+$")
+SAFE_CONTAINER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+CLONE_CONTAINER_ENV = "AI_QUANT_BACKUP_POSTGRES_CONTAINER"
 
 RESEARCH_STATE_SQL = f"""
 WITH report_assets AS (
@@ -169,6 +172,14 @@ def _run(command: list[str], *, timeout: float, capture: bool = True) -> subproc
 
 
 def _compose(*args: str, timeout: float = 3600.0) -> subprocess.CompletedProcess[str]:
+    clone_container = os.environ.get(CLONE_CONTAINER_ENV, "").strip()
+    if clone_container:
+        if not SAFE_CONTAINER_NAME.fullmatch(clone_container):
+            raise RuntimeError("clone PostgreSQL container name is unsafe")
+        if args == ("ps", "-q", "postgres"):
+            return _run(["docker", "inspect", "--format", "{{.Id}}", clone_container], timeout=timeout)
+        if args[:3] == ("exec", "-T", "postgres"):
+            return _run(["docker", "exec", "-i", clone_container, *args[3:]], timeout=timeout)
     return _run(["docker", "compose", *args], timeout=timeout)
 
 
@@ -281,9 +292,16 @@ def create_durable_backup(
     db_user: str = "ai_quant",
     retention_days: int = 7,
     timeout_seconds: float = 3600.0,
+    postgres_container: str = "",
 ) -> dict[str, object]:
     source_db = _validate_postgres_identifier(source_db, field_name="source_db")
     db_user = _validate_postgres_identifier(db_user, field_name="db_user")
+    postgres_container = postgres_container.strip()
+    if postgres_container and not SAFE_CONTAINER_NAME.fullmatch(postgres_container):
+        raise ValueError("postgres_container must be a safe Docker container name")
+    prior_container = os.environ.get(CLONE_CONTAINER_ENV)
+    if postgres_container:
+        os.environ[CLONE_CONTAINER_ENV] = postgres_container
     started = time.perf_counter()
     timestamp = datetime.now(timezone.utc)
     suffix = timestamp.strftime("%Y%m%dT%H%M%SZ")
@@ -299,10 +317,10 @@ def create_durable_backup(
     if not container_id:
         raise RuntimeError("docker compose postgres service is not running")
 
-    before = _database_manifest(source_db, db_user=db_user, timeout=timeout_seconds)
-    restore_verified = False
-    restored: dict[str, object] = {}
     try:
+        before = _database_manifest(source_db, db_user=db_user, timeout=timeout_seconds)
+        restore_verified = False
+        restored: dict[str, object] = {}
         _compose(
             "exec",
             "-T",
@@ -340,6 +358,10 @@ def create_durable_backup(
     finally:
         _compose("exec", "-T", "postgres", "dropdb", "-U", db_user, "--if-exists", restore_db, timeout=60)
         _compose("exec", "-T", "postgres", "rm", "-f", container_dump, timeout=60)
+        if prior_container is None:
+            os.environ.pop(CLONE_CONTAINER_ENV, None)
+        else:
+            os.environ[CLONE_CONTAINER_ENV] = prior_container
 
     manifest: dict[str, object] = {
         "status": "passed",
@@ -358,7 +380,7 @@ def create_durable_backup(
         "restored_database_manifest": restored,
         "research_state_coverage": "current_point_in_time_only_not_historical_coverage_proof",
         "elapsed_seconds": round(time.perf_counter() - started, 3),
-        "environment": "local-docker-compose-postgresql",
+        "environment": "local-isolated-clone-postgresql" if postgres_container else "local-docker-compose-postgresql",
         "owner_group": "Platform and Quality",
         "classification": "local-only",
         "contains_sensitive_data": True,
@@ -376,6 +398,7 @@ def main() -> None:
     parser.add_argument("--db-user", default="ai_quant")
     parser.add_argument("--retention-days", type=int, default=7)
     parser.add_argument("--timeout-seconds", type=float, default=3600.0)
+    parser.add_argument("--postgres-container", default="", help="explicit isolated PostgreSQL container; never defaults to primary")
     args = parser.parse_args()
     result = create_durable_backup(
         output_dir=args.output_dir,
@@ -383,6 +406,7 @@ def main() -> None:
         db_user=args.db_user,
         retention_days=args.retention_days,
         timeout_seconds=args.timeout_seconds,
+        postgres_container=args.postgres_container,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
 
