@@ -2,8 +2,8 @@
 
 - Status: active
 - Owner group: Platform and Quality
-- Last updated: 2026-07-21
-- Related tasks: T-430, T-482, T-492, T-602, T-605, T-610, T-611
+- Last updated: 2026-07-30
+- Related tasks: T-430, T-482, T-492, T-602, T-605, T-610, T-611, T-625, T-626
 - Scope: local production deployment, daily operations, backup, rollback, and release evidence
 - Non-goals: live broker connectivity, automatic order execution, or non-local release approval from local-only evidence
 
@@ -26,6 +26,9 @@
 | `AI_QUANT_OPENSEARCH_INDEX` | 检索索引名 | 每环境独立命名 |
 | `AI_QUANT_OPENSEARCH_USERNAME` | OpenSearch 用户 | 通过密钥管理注入 |
 | `AI_QUANT_OPENSEARCH_PASSWORD` | OpenSearch 密码 | 通过密钥管理注入 |
+| `AI_QUANT_DYNAMIC_ALLOCATION_DB` | 动态配置领域 SQLite 路径 | Compose 使用 `/data/local/dynamic_allocation.sqlite`，纳入现有 `./data:/data` 持久卷 |
+| `AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_HOST_PORT` | Streamlit Dashboard 宿主机端口 | 默认 `8501`；需与防火墙和入口跳转配置一致 |
+| `AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_URL` | Dashboard 完整外部地址覆盖 | 有反向代理时填写 HTTPS 地址；本机留空并按请求 host 生成 |
 | `AI_QUANT_SEC_USER_AGENT` | SEC EDGAR 请求标识 | 必须包含团队或联系邮箱 |
 | `AI_QUANT_ASHARE_USER_AGENT` | A 股公告请求标识 | 使用统一生产标识 |
 | `AI_QUANT_HKEX_USER_AGENT` | HKEX 请求标识 | 使用统一生产标识 |
@@ -45,13 +48,16 @@ python3 scripts/migrate_sqlite_to_postgres.py ./data/state.db "$AI_QUANT_POSTGRE
 
 4. 配置对象存储 bucket、访问密钥、版本化和备份策略。
 5. 配置 OpenSearch endpoint、索引名、账号和 fallback。
-6. 启动服务：
+6. 启动主服务与动态配置 Dashboard：
 
 ```bash
-python3 -m app.server
+docker compose up -d ai-quant-org dynamic-allocation-dashboard
+curl -fsS http://127.0.0.1:8000/api/health
+curl -fsS http://127.0.0.1:8501/_stcore/health
+curl -I http://127.0.0.1:8000/dynamic-allocation
 ```
 
-   Docker 镜像内必须保留 `poppler-utils`。本地研报 PDF 的受限文本提取调用 `pdftotext`；缺少该依赖时报告只能进入 `needs_text_review`，不得把空提取当成可引用证据。
+   `/dynamic-allocation` 应返回 HTTP 302，默认指向同一访问主机的 8501 端口。Docker 镜像内必须保留 `poppler-utils`、Streamlit、Plotly 和 `config/dynamic_allocation.yaml`。本地研报 PDF 的受限文本提取调用 `pdftotext`；缺少该依赖时报告只能进入 `needs_text_review`，不得把空提取当成可引用证据。
 
 7. 运行上线前检查。
 
@@ -313,7 +319,7 @@ python3 scripts/audit_daily_update_schedule.py \
   --output artifacts/daily-update-local/daily-update-schedule-audit.json
 ```
 
-该 timer 默认在用户级 systemd 下安装 `ai-quant-daily-update.timer`，工作日 07:00 和 18:30 后触发 `scripts/run_daily_data_update.sh`。早上用于补美股上一交易日，晚上用于补 A 股当日可取 EOD；`scripts/daily_data_update_pipeline.py` 在未显式传 `--end-date` 时，会按市场时区和 ready window 选择目标日期：A 股默认 Asia/Shanghai 18:00 后才请求当天，美股默认 America/New_York 18:00 后才请求当天，否则回退到上一工作日。包装脚本会拉起 Compose 本机生产栈，调用 `scripts/daily_data_update_pipeline.py`，先把 A 股证券目录按当前 baostock active common-stock universe 刷成 `in_scope/reference_only`，再按 `AI_QUANT_DAILY_ASHARE_BATCH_SIZE=300`、美股 Yahoo 按 `AI_QUANT_DAILY_RUN_US_SCOPE_REFRESH=true` 刷新 `market_data_refresh_scope`，只让一个 common-equity active refresh record per ticker 进入 `AI_QUANT_DAILY_US_TICKERS_FROM_DB=true` 与 `AI_QUANT_DAILY_US_BATCH_SIZE=300` 的 PostgreSQL securities universe 分批续跑；preferred/重复/特殊 ticker 和已判定 stale 的 Yahoo ticker 保留历史 K 线但不再计入 active refresh 覆盖率。进度都记录在 `artifacts/daily-update-local/state.json`，并记录每批实际写入行数，便于区分新增写入和 `skipped_current`；latest analysis 仍只使用 `AI_QUANT_DAILY_US_TICKERS`/`--us-tickers` 指定的重点标的，语义检索由 `AI_QUANT_DAILY_LATEST_ANALYSIS_SEMANTIC_TIMEOUT_SECONDS` 做短超时降级，避免全量行情批次或慢检索拖慢分析闭环。TDX 默认只做 `audit_tdx_vipdoc_postgres_coverage.py` 覆盖审计，只有显式设置 `AI_QUANT_DAILY_TDX_INCREMENTAL=true` 才会导入本地 `.day` 文件。研报资产绑定、daily insight、K 线 typed-only 审计、延迟审计和本机生产审计都会产出按 run id 隔离的 artifact，并更新 `artifacts/daily-update-local/latest-run.json`。K 线只写 PostgreSQL typed 表 `ai_quant.market_data_bars`，`ai_quant.records(collection='market_data')` 必须保持为 0；不会 JSON/数据库双写，不接真实券商，也不会自动下单。`artifacts/daily-update-local` 是宿主用户可写目录，避免旧容器 root-owned artifact 影响 timer。
+该 timer 默认在用户级 systemd 下安装 `ai-quant-daily-update.timer`，工作日 07:00 和 18:30 后触发 `scripts/run_daily_data_update.sh`。早上用于补美股上一交易日，晚上用于补 A 股当日可取 EOD；`scripts/daily_data_update_pipeline.py` 在未显式传 `--end-date` 时，会按市场时区和 ready window 选择目标日期：A 股默认 Asia/Shanghai 18:00 后才请求当天，美股默认 America/New_York 18:00 后才请求当天，否则回退到上一工作日。包装脚本会拉起 Compose 本机生产栈，调用 `scripts/daily_data_update_pipeline.py`，先把 A 股证券目录按当前 baostock active common-stock universe 刷成 `in_scope/reference_only`，再按 `AI_QUANT_DAILY_ASHARE_BATCH_SIZE=300`、美股 Yahoo 按 `AI_QUANT_DAILY_RUN_US_SCOPE_REFRESH=true` 刷新 `market_data_refresh_scope`，只让一个 common-equity active refresh record per ticker 进入 `AI_QUANT_DAILY_US_TICKERS_FROM_DB=true` 与 `AI_QUANT_DAILY_US_BATCH_SIZE=300` 的 PostgreSQL securities universe 分批续跑；preferred/重复/特殊 ticker 和已判定 stale 的 Yahoo ticker 保留历史 K 线但不再计入 active refresh 覆盖率。动态配置严格刷新也默认启用：它先校验全部 38 个公开序列，来源不完整时整批不写入，完整批次才更新不可变 observation revision、纸面决策和哈希链账本。进度都记录在 `artifacts/daily-update-local/state.json`，并记录每批实际写入行数，便于区分新增写入和 `skipped_current`；latest analysis 仍只使用 `AI_QUANT_DAILY_US_TICKERS`/`--us-tickers` 指定的重点标的，语义检索由 `AI_QUANT_DAILY_LATEST_ANALYSIS_SEMANTIC_TIMEOUT_SECONDS` 做短超时降级，避免全量行情批次或慢检索拖慢分析闭环。TDX 默认只做 `audit_tdx_vipdoc_postgres_coverage.py` 覆盖审计，只有显式设置 `AI_QUANT_DAILY_TDX_INCREMENTAL=true` 才会导入本地 `.day` 文件。研报资产绑定、daily insight、K 线 typed-only 审计、延迟审计和本机生产审计都会产出按 run id 隔离的 artifact，并更新 `artifacts/daily-update-local/latest-run.json`。K 线只写 PostgreSQL typed 表 `ai_quant.market_data_bars`，`ai_quant.records(collection='market_data')` 必须保持为 0；不会 JSON/数据库双写，不接真实券商，也不会自动下单。`artifacts/daily-update-local` 是宿主用户可写目录，避免旧容器 root-owned artifact 影响 timer。
 
 本地 compose 默认挂载当前工作区的 `app/`、`scripts/`、`docs/`、`tasks/`，所以日常修复脚本或页面后只需 `docker compose up -d ai-quant-org` 重启服务，不依赖重新构建镜像。需要从零构建依赖镜像时显式设置 `AI_QUANT_STACK_REBUILD=true bash scripts/local_production_stack.sh` 或 `AI_QUANT_DAILY_REBUILD=true bash scripts/run_daily_data_update.sh`。
 
@@ -348,6 +354,9 @@ bash scripts/run_daily_data_update.sh
 - `AI_QUANT_DAILY_ASHARE_OFFSET=600`：从指定 A 股 universe offset 续跑。
 - `AI_QUANT_DAILY_RUN_US_SCOPE_REFRESH=true`：先刷新美股 Yahoo active refresh universe，过滤 preferred/重复/特殊 ticker。
 - `AI_QUANT_DAILY_TDX_INCREMENTAL=true`：在覆盖审计外追加本地 TDX `.day` 增量导入。
+- `AI_QUANT_DAILY_RUN_DYNAMIC_ALLOCATION=true`：运行 38 序列严格刷新、当前纸面决策与账本追加；正式 timer 默认 true。
+- `AI_QUANT_DAILY_ALLOW_DYNAMIC_ALLOCATION_FAILURE=false`：动态配置刷新失败时是否允许其余每日链路继续；正式 timer 默认 false，避免长期保留过期的 4/8 因子状态。
+- `AI_QUANT_DAILY_DYNAMIC_ALLOCATION_TIMEOUT_SECONDS=1800`：动态配置公开源刷新单步超时。
 - `AI_QUANT_DAILY_LATEST_ANALYSIS_SEMANTIC_TIMEOUT_SECONDS=8`：限制 latest analysis 内部每次语义检索时长，超时降级为 `needs_review`，不阻塞后续 daily insight 和审计。
 - `AI_QUANT_DAILY_SKIP_RESEARCH_BINDING=true`、`AI_QUANT_DAILY_SKIP_LATEST_ANALYSIS=true`、`AI_QUANT_DAILY_SKIP_LOCAL_PRODUCTION_AUDIT=true`：仅用于轻量 smoke，正式 timer 保持默认 false。
 - `AI_QUANT_DAILY_MIN_DIRECT_EVIDENCE_COMPANIES=7`：daily insight 至少要求多少家公司有直接研报证据。

@@ -11,6 +11,11 @@
 - Artifact classification: local-only
 - Related tasks: T-613, T-617, T-619
 
+## Operational Retention Update
+
+- On 2026-07-24, the user authorized removal of the historical local PostgreSQL backup set after a fresh current-state backup passed restore verification. All historical backup paths listed below are retained as historical campaign references only; their files no longer exist.
+- The current local recovery point is `data/local/backups/postgres/ai_quant-20260724T122027Z.dump` with manifest `data/local/backups/postgres/ai_quant-20260724T122027Z.manifest.json`. See `docs/agent-handoffs/2026-07-24-T-619-backup-retention-cleanup.md` for the exact deletion scope and verification.
+
 ## Objective
 
 Import each authorized T-613 batch into PostgreSQL only after an isolated clone has passed two hash-bound runs and a fresh primary backup, quiescence proof, conflict preflight, and single-transaction insert-only promotion all pass.

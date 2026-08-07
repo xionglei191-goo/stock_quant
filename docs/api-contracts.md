@@ -2,8 +2,8 @@
 
 - Status: active
 - Owner group: Platform and Quality
-- Last updated: 2026-07-21
-- Related tasks: T-581, T-582, T-583, T-584, T-585, T-586, T-587, T-588, T-589, T-605, T-606, T-607, T-608
+- Last updated: 2026-07-30
+- Related tasks: T-581, T-582, T-583, T-584, T-585, T-586, T-587, T-588, T-589, T-605, T-606, T-607, T-608, T-620, T-621, T-622, T-624, T-625, T-626, T-627
 - Scope: HTTP API contracts, authorization boundaries, and paper-only research workflows
 - Non-goals: real broker connectivity, automatic order execution, or treating local evidence as non-local release evidence
 
@@ -52,9 +52,34 @@
 
 写接口只允许系统、研究、数据、平台和风险角色；CEO 不能直接触发动态仓位写入。Dashboard 只通过这些 API 读取数据，不直连状态库。
 
+运行时可达性契约：
+
+- `GET /dynamic-allocation` 不承载业务数据，返回到独立 Streamlit Dashboard 的 HTTP 302。默认使用当前请求的 host 与 `AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_PORT` 生成地址；`AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_URL` 可覆盖为完整反向代理地址，因此局域网访问不会固定跳转到客户端自己的 `127.0.0.1`。
+- Compose 服务名为 `dynamic-allocation-dashboard`，容器内只通过 `http://ai-quant-org:8000` 消费上述 API，不直接读取主状态库。`AI_QUANT_DYNAMIC_ALLOCATION_DB` 只供主 API 的动态配置领域仓库使用。
+- `/api/health` 是无副作用的锁外读路径；`/api/dynamic-allocation/*` 使用独立的领域串行锁。每日主线等长任务占用主 `SystemService` dispatch 锁时，健康探针与动态配置读接口不得随之排队。动态配置内部仍保持单路串行，避免同一 SQLite 领域仓库发生并发写冲突。
+- 所有动态配置响应继续固定 `paper_only=true`、`live_execution_allowed=false`、`broker_connected=false`；运行拓扑调整不改变模型、配置或交易边界。
+
 T-589 公开数据回填把 `source_uri` 和 `rights_tag` 写入 observation；决策快照中的当前数据行保留这些字段。`rights_tag` 至少包含 `vintage_method`、`release_date_method`、`backtest_eligible`、`proxy`、`formula`、`upstream` 和 `storage_sampling`。当前公开历史回填固定为 `backtest_eligible=false`，API 不得将其描述为真实历史 PIT 回测输入。即使因子分数可计算，关键 Data Health 缺失、过期或质量阻断也必须令 `ready=false`。
 
 未提供显式 Kelly 输入时，T-590 仅从截至 `as_of` 已可用的 SPY `return_3m` 中选择 3/6/9/12 月季度末记录，构造最近 10 年非重叠样本。默认至少 24 个样本、预期收益上限 12%、波动率下限 8%、置信收缩 35%、Quarter Kelly；参数全部位于 `config/dynamic_allocation.yaml`。当前修订版数据只允许支持当前纸面裁剪，不能据此声称历史样本外收益。
+
+每日公开数据刷新采用严格批次语义：先完成 38 个配置序列的采集与来源校验，缺少任一序列或来源请求失败时整批不写入 observation，也不基于旧数据持久化新决策或追加账本；完整批次才持久化并评估纸面决策。自然键和值完全相同的记录继续幂等；同一 `series_id + observation_date + vintage_date` 的上游值修订以递增 `revision_seq` 追加，不覆盖既有 observation。该修订语义只用于当前动态配置 SQLite 领域仓库，不改变通用状态库存储 schema。
+
+### 4.0.1 每日研究主线 API
+
+以下接口共享 `SystemService.run_daily_mainline` 与同一持久化读模型。所有响应固定 `paper_only=true`、`live_execution_allowed=false`，不会创建真实订单或调用券商。
+
+- `POST /api/daily-mainline/run`：运行市场异动扫描、候选池、自动尽调和清单生成。可选字段为 `as_of_date`、`timeout_seconds`、`candidate_limit`、`market_quota`、`diligence_limit`、`artifact_dir`。
+- `GET|POST /api/daily-mainline/queue`：按 `run_id` 或 `as_of_date` 读取最近清单；支持 `limit`。
+- `GET|POST /api/daily-mainline/runs`：按 `run_id`、`as_of_date`、`status` 查询运行历史；支持 `limit`。
+- `POST /api/daily-mainline/queue/{item_id}/watchlist`：把清单条目加入既有本地公司关注池，并保留来源 `run_id`、`item_id`、入选理由和加入时间。
+- `POST /api/daily-mainline/viewpoints/{item_id}/review`：把观点复核状态设为 `pending`、`accepted` 或 `rejected`，并同步关联 `research_answers`。
+
+清单响应 `schema_id="daily-mainline-queue-v1"`。顶层至少包含 `status`、`run_id`、`as_of_date`、`generated_at`、`progress`、`stages`、`items`、`pending_evidence_items`、`next_actions` 和边界字段。主清单条目至少包含排名、入选理由、触发指标、统一完整度状态、证据引用、关注池动作、观点复核状态和分区。没有可绑定证据的候选进入 `pending_evidence_items`；阶段或整体失败保留已完成结果，并返回原因码和可执行下一步。
+
+`timeout_seconds` 是扫市、候选、自动尽调和清单持久化共享的总预算，不是每个 LLM 调用的独立预算。默认值为 600 秒、20 个候选、前 4 个候选自动尽调；未自动尽调的候选仍进入清单并标记 `diligence_budget_exhausted`。自动尽调按实时剩余预算、所有剩余候选的上下文成本和剩余模型调用数重新分配单次调用超时，并为公司上下文读取、LLM 运行记录/审计和最终清单持久化预留时间。单个候选出现 `llm_timeout` 时保留候选及原因码，`build_daily_queue` 仍应执行；只有扫市或其他非 LLM 工作本身耗尽总预算时，后续阶段才可返回 `timeout_budget_exceeded`。
+
+内置尽调模板由既有 `POST /api/llm/task-templates/seed` 一并幂等写入，状态为 `approved`，prompt 版本为 `daily-mainline-v1`。LLM 运行 lineage 继续使用既有 `llm_task_runs` 字段；本接口不改变 `LLMTaskRun.output` 的既有持久化语义。
 
 ### 4.1 数据接入
 
@@ -927,6 +952,8 @@ T-589 公开数据回填把 `source_uri` 和 `rights_tag` 写入 observation；�
 #### `GET|POST /api/market-data/backfill/coverage-report`
 
 检查 A/U 已入库 K 线覆盖情况，返回各市场证券数、已覆盖数、最新行情日期、缺失样本、滞后样本和 source governance 缺口。该接口不导入行情。
+
+每个市场条目额外输出 `data_type`、`lagging_count` 和 `lagging_samples[]`：取数键 `(market, source_id, data_type)` 由 `app/service_modules/market_data.market_eod_key` 解析，与每日摘要 `market_freshness` 同源；`ashare_source_id` / `us_source_id` / `source_id` 仍作为显式覆盖并按 `SOURCE_ID_ALIASES` 归一。`lagging_samples[]` 表示该证券最新本地 EOD 日期早于同键的市场 EOD 日期，含 `latest_as_of_date`、`market_eod_date`、`lag_days`、`reason_code`、`reason_label`、`is_lagging`；`reason_code` 取 `security_not_in_latest_eod_batch` / `security_suspended_or_delisted` / `source_partial_coverage`。既有 `stale_count` / `stale_samples` 仍按 `as_of_date - latest_as_of_date > stale_after_days` 口径，不受影响。
 
 请求字段：
 
@@ -2154,7 +2181,7 @@ T-589 公开数据回填把 `source_uri` 和 `rights_tag` 写入 observation；�
 - `source_summary`
 
 `research_evidence` 包含本地研报数量、`research_report_citation` 证据数量、语义检索召回状态、热点扩散召回状态和用途边界。研报 evidence 固定为观点/参考层，不能升级为事实真相源、训练源或真实交易信号。
-`company_intelligence` 是 latest-analysis 生成阶段物化的公司情报链路快照，返回 `schema_id=latest-analysis-company-intelligence-v1`、`company_count`、`ready_count`、`needs_attention_count`、`companies[]` 和 `usage_boundary`。读取接口优先使用 `analysis.company_intelligence`，兼容早期顶层 `company_intelligence`；只有不含快照的旧产物才按原契约执行逐公司兜底。每条 company 条目会带 `company_counts`、`relationship_summary`、`coverage_score`、`relationship_status`、`next_actions`、`completeness_verdict` 和 `data_quality`，用于把公司画像、产业链、关系、结论和模拟反馈串成一条可视化链路；它只使用本地已有公司情报，不下载外部资料，也不触发真实交易。
+`company_intelligence` 是 latest-analysis 生成阶段物化的公司情报链路快照，返回 `schema_id=latest-analysis-company-intelligence-v1`、`company_count`、`ready_count`、`needs_attention_count`、`companies[]` 和 `usage_boundary`。读取接口优先使用 `analysis.company_intelligence`，兼容早期顶层 `company_intelligence`；只有不含快照的旧产物才按原契约执行逐公司兜底。每条 company 条目会带 `company_counts`、`relationship_summary`、`coverage_score`、`relationship_status`、`next_actions`、`completeness_verdict` 和 `data_quality`，用于把公司画像、产业链、关系、结论和模拟反馈串成一条可视化链路；它只使用本地已有公司情报，不下载外部资料，也不触发真实交易。物化快照（`scripts/latest_analysis_run.py`）与逐公司兜底路径（`app/api.py`）都会透传 `market_freshness`，取自 `/api/company-intelligence/{symbol}` 的 `facts_and_events.latest_market_freshness`，与 `daily_insight.market_freshness` 同键，避免公司最新行情日期与市场 EOD 日期并列却无解释。`ready_count` 与 `needs_attention_count` 按每条 `completeness_verdict.is_complete` 统计；该字段口径已随完整度取值域收敛收紧（缺失事实字段或任一覆盖度低于 0.9 一律 `false`），因此本机深度覆盖公司的 `ready_count` 会低于收敛前取值、`needs_attention_count` 相应升高，字段名与统计方式未变。
 
 #### `GET /api/company-positions/schema`
 
@@ -3277,8 +3304,8 @@ python3 scripts/import_company_ownership_tables.py --root-path /path/to/ownershi
 - `status`：`available` 或 `not_found`。
 - `resolution`：匹配到的 `issuer_ids`、`security_ids`、`mapping_ids`。
 - `company_profile`：主体、证券、映射和覆盖摘要。
-- `facts_and_events`：行情、公司行动、资料、证据和披露事件。
-- `relationships`：公司关系、公司定位、13F/crowding、`relationship_context` 和 `/api/graph/query` 聚合图谱。`relationship_context` 是只读派生视图，按公司中心汇总产业链位置、同类公司、上游公司、下游公司、股东/持有人、股东关联公司、关系类型分组和动态图谱展开建议；它复用本地 `CompanyRelationship`、`CompanyPosition`、`IndustryChain`、`InstitutionalHolding` 和图谱边，不要求重建数据库。`relationship_context.summary.industry_related_companies_total` 是同类、上游和下游公司的合计，`relationship_context.ownership.approved_relationships` 放已批准且 active 的事实股权/控制/参股关系，且每条会输出 `holder_key` / `holder_name` 供同一事实股东网络展开；`relationship_context.ownership.relationship_candidates` 只放仍需复核的股权候选，`relationship_context.ownership.relationships` 保留全部 ownership 关系聚合，`relationship_context.ownership.approved_shareholder_related_companies` 用已批准事实股权关系按同一股东/持有人反推“该股东还关联哪些公司”，`relationship_context.ownership.shareholder_related_companies` 继续表示 13F/持仓记录推导的同一持有人网络；`relationship_context.summary.shareholder_related_companies_total` 是两者合计，公司情报 UI 顶部“股东关联”计数会显示该合计并拆出“事实 / 持仓”分项。`relationship_context.coverage_diagnostics` 按产业链位置、同类公司、上游、下游、股权/控制、`shareholder_network`（13F/持仓同一持有人网络）、`approved_shareholder_network`（已批准事实股东网络）和动态图谱边输出 `coverage_score`、`status`、`missing_required_layers`、`missing_optional_layers`、`diagnostics`、`industry_network_summary`、`shareholder_network_summary`、`next_actions` 与 `enhancement_actions`，用于判断多维关系链条还缺哪一层和下一步该补什么数据；其中 `next_actions` 覆盖全部 `missing_required_layers`，不是示例列表或截断列表；`enhancement_actions` 覆盖全部 `missing_optional_layers`，用于 13F/持仓同一持有人网络和已批准事实股东网络等增强层的机器可读补齐建议。每条 action 都包含 `target` 块，声明 `target_type`、`endpoint`、`method`、`ui_action`、`default_execute=false` 和 `usage_boundary`；股权相关层还包含 `review_endpoint` 和 `manifest_endpoint`，动态图谱层指向 `/api/graph/query`。`industry_network_summary` 汇总 `total`、`peers`、`upstream`、`downstream`、`chain_nodes`、`available` 和来源层，公司情报 UI 会把该汇总写入“同类/上游/下游”计数的 `data-network-total`、`data-network-part`、`data-chain-nodes` 和 title 追溯；`shareholder_network_summary` 汇总 `total`、`fact_network`、`holding_network`、`available` 和来源层，两个分项诊断仍保留各自 provenance，公司情报 UI 会把该汇总写入“股东关联”计数的 `data-network-total`、`data-fact-network`、`data-holding-network` 和 title 追溯。每条 `diagnostics[]` 都包含 `evidence` 来源口径，公司情报 UI 的关系链缺口行会展示全部未覆盖层、该来源口径，并把同 layer 的 `next_actions` 或 `enhancement_actions` 合并为按钮 target；因此必补层和增强层都会写入 `data-target-ui-action` 与 `data-evidence` 供追溯。`relationship_context.dynamic_graph.recommended_filters` 固定声明可用于动态图谱探索的过滤键，包括 `issuer_id`、`security_id`、`relationship_type`、`chain_id`、`chain_node_id`、`industry_direction`、`ownership_holder_key` 和 `institutional_holder_key`；`dynamic_graph.recommended_queries[]` 进一步给出可直接传给 `/api/graph/query` 的 `{label, query, reason}` 建议，包括公司中心图、产业链节点、关系类型和同一事实股东网络入口，公司情报 UI 会把前几条建议渲染为“图谱推荐入口”并复用 `open-relationship-graph` 点击机制。
+- `facts_and_events`：行情、公司行动、资料、证据和披露事件。其中 `latest_market_freshness` 用与每日摘要 `market_freshness` 相同的 `(market, source_id, data_type)` 键取公司最新 EOD 日期，并输出 `company_as_of_date`、`market_eod_date`、`lag_days`、`reason_code`、`reason_label`、`is_lagging`；公司日期不早于市场 EOD 日期时 `lag_days=0`、`reason_code` 与 `reason_label` 为空串。
+- `relationships`：公司关系、公司定位、13F/crowding、`relationship_context` 和 `/api/graph/query` 聚合图谱。`relationship_context` 是只读派生视图，按公司中心汇总产业链位置、同类公司、上游公司、下游公司、股东/持有人、股东关联公司、关系类型分组和动态图谱展开建议；它复用本地 `CompanyRelationship`、`CompanyPosition`、`IndustryChain`、`InstitutionalHolding` 和图谱边，不要求重建数据库。`relationship_context.summary.industry_related_companies_total` 是同类、上游和下游公司的合计，`relationship_context.ownership.approved_relationships` 放已批准且 active 的事实股权/控制/参股关系，且每条会输出 `holder_key` / `holder_name` 供同一事实股东网络展开；`relationship_context.ownership.relationship_candidates` 只放仍需复核的股权候选，`relationship_context.ownership.relationships` 保留全部 ownership 关系聚合，`relationship_context.ownership.approved_shareholder_related_companies` 用已批准事实股权关系按同一股东/持有人反推“该股东还关联哪些公司”，并按 `related_issuer_id + holder_key` 统计唯一关联公司，避免同一事实由多个来源或多个 relationship ID 重复放大网络计数；底层 `CompanyRelationship` 与 `/api/graph/query` 仍保留全部事实记录供审计追溯。`relationship_context.ownership.shareholder_related_companies` 继续表示 13F/持仓记录推导的同一持有人网络；`relationship_context.summary.shareholder_related_companies_total` 是两者合计，公司情报 UI 顶部“股东关联”计数会显示该合计并拆出“事实 / 持仓”分项。`relationship_context.coverage_diagnostics` 按产业链位置、同类公司、上游、下游、股权/控制、`shareholder_network`（13F/持仓同一持有人网络）、`approved_shareholder_network`（已批准事实股东网络）和动态图谱边输出 `coverage_score`、`status`、`missing_required_layers`、`missing_optional_layers`、`diagnostics`、`industry_network_summary`、`shareholder_network_summary`、`next_actions` 与 `enhancement_actions`，用于判断多维关系链条还缺哪一层和下一步该补什么数据；其中 `next_actions` 覆盖全部 `missing_required_layers`，不是示例列表或截断列表；`enhancement_actions` 覆盖全部 `missing_optional_layers`，用于 13F/持仓同一持有人网络和已批准事实股东网络等增强层的机器可读补齐建议。每条 action 都包含 `target` 块，声明 `target_type`、`endpoint`、`method`、`ui_action`、`default_execute=false` 和 `usage_boundary`；股权相关层还包含 `review_endpoint` 和 `manifest_endpoint`，动态图谱层指向 `/api/graph/query`。`industry_network_summary` 汇总 `total`、`peers`、`upstream`、`downstream`、`chain_nodes`、`available` 和来源层，公司情报 UI 会把该汇总写入“同类/上游/下游”计数的 `data-network-total`、`data-network-part`、`data-chain-nodes` 和 title 追溯；`shareholder_network_summary` 汇总 `total`、`fact_network`、`holding_network`、`available` 和来源层，两个分项诊断仍保留各自 provenance，公司情报 UI 会把该汇总写入“股东关联”计数的 `data-network-total`、`data-fact-network`、`data-holding-network` 和 title 追溯。每条 `diagnostics[]` 都包含 `evidence` 来源口径，公司情报 UI 的关系链缺口行会展示全部未覆盖层、该来源口径，并把同 layer 的 `next_actions` 或 `enhancement_actions` 合并为按钮 target；因此必补层和增强层都会写入 `data-target-ui-action` 与 `data-evidence` 供追溯。`relationship_context.dynamic_graph.recommended_filters` 固定声明可用于动态图谱探索的过滤键，包括 `issuer_id`、`security_id`、`relationship_type`、`chain_id`、`chain_node_id`、`industry_direction`、`ownership_holder_key` 和 `institutional_holder_key`；`dynamic_graph.recommended_queries[]` 进一步给出可直接传给 `/api/graph/query` 的 `{label, query, reason}` 建议，包括公司中心图、产业链节点、关系类型和同一事实股东网络入口，公司情报 UI 会把前几条建议渲染为“图谱推荐入口”并复用 `open-relationship-graph` 点击机制。
 - 关系类型显示：公司情报 UI 的“多维关系”、“关键事实”、“关系候选审核”、“知识图谱关系边”和图谱 inspector 相邻关系主表会把常见 `relationship_type` 显示为中文标签，例如 `industry_peer` -> “同类关系”、`upstream_of` -> “上游关系”、`shareholder` -> “事实股东”、`controller_candidate` -> “实控候选”、`customer_candidate` -> “客户候选”；raw 枚举仍保留在行级 `data-relationship-type`、`data-industry-relationship`、`data-filter-raw-value`、title 和高级 trace JSON 中，供动态图谱过滤、脚本验收和审计追溯使用。知识图谱画布边 label、关系边表的主题/发现文本和 inspector 相邻关系使用中文关系名，但 link `type`、`relationship_type` 和 raw graph payload 不改写。
 - 产业链行级追溯：公司情报 UI 的“产业链位置 / 同类公司 / 上游公司 / 下游公司”行会额外写入 `data-industry-relationship`、`data-industry-direction`、`data-chain-id`、`data-chain-node-id`、`data-chain-node-ids`、`data-chain-node-label` 和 `data-position-id`，用于追溯每条产业链关系来自哪个链条、节点和方向，并与 `/api/graph/query` 的 `chain_id` / `chain_node_id` 过滤保持一致。点击这些行进入知识图谱时，UI 会把 `data-industry-direction` 保留为可见的 `industryDirection` 过滤 chip，明确当前图谱来自“同类 / 上游 / 下游 / 产业链位置”哪一类展开；chip 对用户显示中文方向，但 `data-filter-raw-value` 和 title 保留 `peer` / `upstream` / `downstream` / `position` 原始枚举。该字段是 UI 追溯状态，不改变后端查询语义。
 - 产业链推荐入口：`relationship_context.dynamic_graph.recommended_filters` 会声明 `industry_direction`，`recommended_queries[]` 在存在同类、上游或下游关系时，会额外生成方向级产业链推荐，`query.industry_direction` 取值为 `peer` / `upstream` / `downstream`，并与 `relationship_type`、`chain_id`、`chain_node_id` 一起由公司情报 UI 渲染为“图谱推荐入口”。点击后 UI 会保留同一个 `industryDirection` chip；`industry_direction` 仍是 UI 追溯状态，不作为 `/api/graph/query` 新过滤参数。
@@ -3290,6 +3317,7 @@ python3 scripts/import_company_ownership_tables.py --root-path /path/to/ownershi
 - `simulation_feedback`：一等 `SimulationFeedback` 记录和旧纸面执行意图、模拟成交、模拟流水兼容对象，固定 `live_execution_allowed=false`。
 - `data_quality`：画像、行情、事件、关系、研究结果和模拟反馈的可用性与缺口。
 - `next_actions`：缺口对应的下一步入口。
+- `completeness_verdict`：完整度判定，`status` / `is_complete` / `missing_layers` / `next_actions` 由 `app/service_modules/completeness_policy.py` 的统一口径产出（`status_source=completeness_policy.resolve_status`）。取值域自 2026-07-28 收敛为 `complete`（label `完整`）、`partial`（label `部分完整`）、`not_found`（label `未建档`）三值，收敛前的 `usable_with_gaps` 与 `incomplete` 已归并入 `partial`，对应旧 label（`可复盘` / `可分析` / `事实层可用` / `可用但有缺口` / `需要补库`）不再返回；该收敛属破坏性取值域变更，已获批准。`is_complete` 同步收紧：`missing_fact_fields` 非空或 `profile_field_coverage_score` / `database_coverage_score` / `relationship_coverage_score` 任一低于 0.9 时一律为 `false`，因此不会再出现 `status=complete` 与数十项缺失字段并列。`missing_layers` 在原有分节缺口与证据回链层之外追加 `profile_field_coverage` / `database_coverage` / `relationship_coverage` / `profile_fact_fields`；只想看分节缺口时读新增的 `section_gap_layers`。其余新增键为 `relationship_coverage_score`、`status_source` 与 verdict 内的 `next_actions`（每条含 `target_field`、`source_type` 以及 `command` 或 `endpoint`）；`level`（`complete` / `near_complete` / `partial` / `sparse`）、`score`、`sections`、`blocking_gaps`、`warning_gaps`、`ready_for_*` 与 `recommended_next_action` 语义不变。
 
 研报字段只作为观点/关注度/可靠性复盘来源；事实仍需回链公告、财报、监管披露、公司 IR 或可信公开来源。返回的模拟反馈只用于验证分析结论有效性，不代表真实订单或投资建议。
 

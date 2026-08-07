@@ -20,7 +20,7 @@
 
 剩余关键缺口：后续主路线不再是强化组织级发布或实时交易，而是建立公司级数据库和分析反馈闭环。本机 production-like 栈仍可作为个人/单机长期使用口径运行，并由 `scripts/local_production_audit.py`、`scripts/local_ai_capability_acceptance.py` 和 `scripts/project_completion_audit.py` 单独审计。非本机组织级真实生产发布、外部密钥管理、生产级 artifact URI、灰度/回滚窗口和发布确认全部下沉为运维/非本机发布附录，不阻塞公司情报平台产品路线。长期能力仍需继续补强真实 bbox 和版面定位、大样本真实标注集、非本机 Neo4j/Qdrant/OpenLineage/MLflow/OTel 证据、真实外部通道和生产运维记录。
 
-近期优先级：T-619 已完成。T-613 batch 0006-0044 已在 hash-bound clone 校验后以 insert-only 方式写入主库，保留原始文件、重复别名和 OpenSearch；主库现有 9,568 份受控研报、9,568 个研究文档和 73,118 条研报引用证据。B0015-B0044 使用一个独立 bulk clone 完成精确 SHA 绑定和全量解析核验，再以一次性 transaction 完成最终对账；每日 timer 与 Compose 应用均已恢复 healthy。后续重点转为五家公司官方事实缺口、产品使用口径和公司情报分析闭环。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
+近期优先级：T-619 与 T-620 至 T-627 已完成。每日研究主线可从 `/ui` 首屏、HTTP 或 CLI 运行，统一输出扫市、候选、自动尽调、待研究清单、失败阶段和 `local-only` 审计产物；动态配置 Dashboard 由 Compose 常驻，工作日定时链路默认执行严格公开数据刷新；完整 UI 点击验收默认使用临时 SQLite/local-adapter 隔离状态。本机完整门禁为 788 个测试全绿。后续重点转为五家公司官方事实缺口与公司情报分析反馈闭环。本机 Compose 栈、LLM/OCR、paper-only/no-broker 边界继续保持；任何后续研报恢复必须绑定批次 SHA、幂等且不得把本地研报提升为事实源或训练源。M6-M9 的 17 个非本机证据项继续作为运维附录 `BLOCKED`，不与本机产品稳定化混算。
 
 ## 项目经理整理 / 公司情报平台重定位路线
 
@@ -438,6 +438,67 @@
   - 验收：B0006-B0014 均保留独立 hash-bound clone、preflight、promotion result 和主库审计事件；B0015-B0044 的 30 个 source batch 均已写入同一份 passed bulk clone result，随后通过一次 preflight、一次 serializable insert-only transaction、审计事件和最终 PostgreSQL/raw/OpenSearch 对账。任一 clone gate 失败都会阻止主库写入。
   - 已完成：B0006-B0014 已完成逐批受控导入；B0015-B0044 的 bulk clone 已从 `ai_quant-20260722T120855Z` restore-verified 基线处理完 7,303 份 registry 记录（0 failed、55,802 evidence），再向主库插入 7,303 reports、7,303 documents、55,802 evidence，未插入 source。最终为 9,568 research reports、9,568 research documents、73,118 research-report citation evidence，审计事件为 `evt_t619_bulk_ec25e98f1dd7073760a5925b681f454e`。临时 clone 已在完成主库校验后与 primary 断开；不涉及 raw、重复别名或 OpenSearch 删除。
   - Handoff：`docs/agent-handoffs/2026-07-22-T-619-primary-research-report-campaign.md`。
+
+- `DONE` T-620 每日研究主线编排与双入口
+  - 对应：E2-US4, E3-US3, E5-US1, E7-US1；产品与 UI owner，研究与 AI 工作流、平台与质量、治理安全与合规、项目经理 / 发布协调评审。
+  - 目标：以同一 `SystemService.run_daily_mainline` 完成扫市扰动、候选池、自动尽调和今日研究清单，并同时提供 HTTP 与 CLI 入口。
+  - 非目标：不扩大公司覆盖面，不改变既有 LLM 运行记录语义，不连接券商，不自动下单。
+  - 验收：`.venv/bin/python -m unittest tests.test_daily_mainline tests.test_daily_mainline_properties`、黄金路由快照子集回归、`make daily-mainline` 和 `POST /api/daily-mainline/run` 命中同一 facade。
+  - Handoff：`docs/agent-handoffs/2026-07-28-T-620-daily-mainline-usability.md`。
+
+- `DONE` T-621 每日主线 AI 模板、运行记录与观点复核
+  - 对应：E3-US3, E5-US1, E6-US3, E8-US1；产品与 UI owner，研究与 AI 工作流、平台与质量、治理安全与合规、项目经理 / 发布协调评审。
+  - 目标：幂等写入三类已批准内置模板，沿用 `run_llm_task` 记录模型与 prompt lineage，把有证据观点写入研究答案并支持人工复核。
+  - 非目标：不绕过 prompt 审批，不把研报写入事实字段，不保存新增的凭据或完整上游响应副本。
+  - 验收：Properties 3-5、11-14 与 facade 聚焦回归通过；失败候选保留原因码，无证据候选进入 `pending_evidence`。
+  - Handoff：`docs/agent-handoffs/2026-07-28-T-620-daily-mainline-usability.md`。
+
+- `DONE` T-622 公司完整度与行情新鲜度口径统一
+  - 对应：E2-US4, E3-US3, E5-US1；产品与 UI owner，研究与 AI 工作流、平台与质量、治理安全与合规、项目经理 / 发布协调评审。
+  - 目标：公司情报与当日清单共用 `completeness_policy`，市场摘要与公司视图共用 EOD 三元键并输出精确滞后标注。
+  - 非目标：不改行情来源边界，不把未知数据填成完整，不回填旧物化产物。
+  - 验收：`.venv/bin/python -m unittest tests.test_completeness_policy tests.test_market_eod_freshness tests.test_market_eod_freshness_wiring` 与 Properties 15-19 通过；完整度取值域固定为 `complete|partial|not_found`。
+  - Handoff：`docs/agent-handoffs/2026-07-28-T-620-daily-mainline-usability.md`。
+
+- `DONE` T-623 首屏“今天看什么”与导航收敛
+  - 对应：E7-US1；产品与 UI owner，研究与 AI 工作流、平台与质量、治理安全与合规、项目经理 / 发布协调评审。
+  - 目标：个人研究总览首屏展示主清单、待补证据、阶段进度与失败原因；维护态入口深链先切换工作台模式再打开视图。
+  - 非目标：不删除后台能力，不重写单页前端框架，不改变角色权限语义。
+  - 验收：`.venv/bin/python scripts/ui_static_check.py`、`node scripts/ui_dashboard_module_check.mjs`、`scripts/ui_interaction_acceptance.py` 的全部维护 tab 与失败态检查通过。
+  - Handoff：`docs/agent-handoffs/2026-07-28-T-620-daily-mainline-usability.md`。
+
+- `DONE` T-624 本机每日主线证据与门禁收尾
+  - 对应：E1-US3, E6-US4, E7-US1；产品与 UI owner，研究与 AI 工作流、平台与质量、治理安全与合规、项目经理 / 发布协调评审。
+  - 目标：按 `run_id` 固化脱敏的 `daily-mainline-run-artifact-v1`，接入本机延迟探针，并同步契约、路线图与 handoff。
+  - 非目标：不把本机 artifact 声明为外部 staging/production 证据，不改 `scripts/staging_acceptance.py`，不自动清理历史运行。
+  - 验收：`make local-ci`、`python3 scripts/check_handoffs.py`、`node scripts/ui_dashboard_module_check.mjs` 通过；artifact 恒为 `local-only`、`production_release_gate_eligible=false`。
+  - Handoff：`docs/agent-handoffs/2026-07-28-T-620-daily-mainline-usability.md`。
+
+- `DONE` T-625 动态配置 Dashboard 常驻运行与入口可达性修复
+  - 对应：T-587, T-588；平台与质量 owner，产品与 UI、项目经理 / 发布协调评审。
+  - 目标：把独立 Streamlit Dashboard 纳入 Compose，修复容器缺少依赖/配置/持久数据路径、导航固定 `127.0.0.1` 和长请求阻塞健康及动态配置读接口的问题。
+  - 非目标：不改变动态配置模型、因子、资产池或纸面运营规则；不连接券商，不自动下单，不把本机页面验收提升为非本机发布证据。
+  - 已完成：主 API 与 Dashboard 已按 Compose 常驻运行且 healthy；`/dynamic-allocation` 按请求主机重定向；健康检查与动态配置读接口不再等待主业务请求锁；桌面/移动浏览器验收通过。
+  - 验收：`docker compose config --quiet`、动态配置运行时聚焦回归、`make local-ci`、主 API 与 Dashboard 容器 healthy、`/dynamic-allocation` 重定向、动态配置 API 及桌面/移动浏览器验收通过。
+  - Handoff：`docs/agent-handoffs/2026-07-29-T-625-dynamic-dashboard-runtime.md`。
+
+- `DONE` T-626 动态配置新鲜度与每日主线预算闭环
+  - 对应：T-589, T-590, T-620, T-625；平台与质量 owner，研究与 AI 工作流、数据与证据、产品与 UI、项目经理 / 发布协调评审。
+  - 目标：把动态配置严格刷新纳入每日定时链路，恢复 38/38 新鲜序列与 8/8 可用因子；修复 20 候选真实每日主线在生成研究清单前耗尽总预算的问题。
+  - 非目标：不改变动态配置因子公式、资产池或仓位规则，不扩大数据 rights，不连接券商，不自动下单。
+  - 当前结果：动态配置实跑已恢复 38/38 fresh、8/8 ready；默认每日主线实跑 `dmrun_3c05122968a7` 在 439.9932 秒完成 4/4 模型尽调和 20/20 清单，`build_daily_queue=passed`，无 `timeout_budget_exceeded`。
+  - 已完成：定时链路默认执行严格动态刷新；来源失败不写部分 observation、不评估旧数据决策、不追加账本；同 vintage 修订以不可变 revision 追加。最终幂等实跑 16,510/16,510 duplicates、0 conflicts，当前目标股票仓位 30%。
+  - 已完成：动态 Dashboard 桌面/移动浏览器验收通过；最终 `make PYTHON=.venv/bin/python local-ci` 为 787 tests、UI static、安全、Markdown、handoff 与文档元数据全部通过。
+  - 验收：动态配置与每日主线聚焦回归、真实公开数据刷新、真实默认主线、桌面/移动 Dashboard、完整 `make local-ci`、运行时健康和 handoff 门禁全部通过。
+  - Handoff：`docs/agent-handoffs/2026-07-30-T-626-runtime-issue-closeout.md`。
+
+- `DONE` T-627 股东关系网络与图谱 UI 验收收口
+  - 对应：E3-US2, E7-US1；产品与 UI owner，平台与质量、数据与证据、项目经理 / 发布协调评审。
+  - 目标：修复事实股东网络重复计数和图谱邻居关系类型显示，给完整 UI 点击验收提供自动临时数据库/本地 adapter 隔离模式。
+  - 非目标：不合并或删除底层关系事实，不改关系审核与数据 rights，不接真实券商，不自动下单，不把本机浏览器产物声明为外部发布证据。
+  - 当前结果：`scripts/ui_interaction_acceptance.py --isolated` 已 55/55 通过；重复 relationship ID 不再放大唯一关联公司计数，邻居、路径、边检查器与画布统一显示“事实股东”等业务标签；临时状态已删除且未触碰长期生产状态。完整 `local-ci` 为 788 tests、UI static、安全、Markdown、handoff 与文档元数据全部通过；主服务定向重启后生产读路径和两个容器健康检查通过。
+  - 验收：关系读取模型聚焦回归、UI static、隔离 55 项浏览器验收、`make PYTHON=.venv/bin/python local-ci` 和 handoff 校验通过。
+  - Handoff：`docs/agent-handoffs/2026-07-30-T-627-shareholder-graph-ui.md`。
 
 - `DONE` T-431 产品重定位与文档统一
   - 对应：愿景扩展/生产化增强
