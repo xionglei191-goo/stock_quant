@@ -277,6 +277,40 @@
       color: var(--muted);
       font-size: 12px;
     }
+    .ask-panel {
+      margin-bottom: 12px;
+    }
+    .ask-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+      flex-wrap: wrap;
+    }
+    .ask-input-row #askSymbol {
+      flex: 0 0 200px;
+      max-width: 100%;
+    }
+    .ask-input-row #askQuestion {
+      flex: 1 1 320px;
+      min-width: 0;
+      resize: vertical;
+    }
+    .ask-input-row #askSubmit {
+      flex: 0 0 auto;
+      align-self: flex-start;
+    }
+    .ask-answer {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 8px;
+      background: rgba(127, 127, 127, 0.08);
+      white-space: pre-wrap;
+      line-height: 1.6;
+    }
+    @media (max-width: 720px) {
+      .ask-input-row #askSymbol,
+      .ask-input-row #askQuestion { flex-basis: 100%; }
+    }
     .daily-mainline-panel {
       margin-bottom: 12px;
     }
@@ -1747,6 +1781,20 @@
       <div id="status" class="status"></div>
 
       <section data-tab="dashboard" class="active">
+        <section class="panel ask-panel" id="askPanel" aria-label="问一问助手">
+          <div class="analysis-header">
+            <div class="analysis-title">
+              <strong>问一问</strong>
+              <span>用一句话提问，助手会基于本地公司资料、行情和研报观点用中文回答，仅供本地研究和纸面模拟，不构成交易建议。</span>
+            </div>
+          </div>
+          <div class="ask-input-row">
+            <input id="askSymbol" type="text" placeholder="股票代码（可选，如 AAPL）" aria-label="股票代码" autocomplete="off" />
+            <textarea id="askQuestion" rows="2" placeholder="例如：这家公司最近有什么值得关注的？" aria-label="问题"></textarea>
+            <button id="askSubmit" type="button" class="primary" data-action="ask-assistant">提问</button>
+          </div>
+          <div id="askAnswer" class="ask-answer" role="status" hidden></div>
+        </section>
         <section class="panel daily-mainline-panel" id="dailyMainlinePanel" aria-label="今日待研究清单">
           <div class="analysis-header">
             <div class="analysis-title">
@@ -8905,6 +8953,43 @@
       return runtime.addDailyMainlineWatchlist(itemId);
     }
 
+    async function askAssistant() {
+      const question = formValue("askQuestion");
+      const answerBox = $("askAnswer");
+      if (!question) {
+        setStatus("请先输入问题", true);
+        return;
+      }
+      const button = $("askSubmit");
+      if (button) button.disabled = true;
+      if (answerBox) {
+        answerBox.hidden = false;
+        answerBox.textContent = "思考中…";
+      }
+      try {
+        const body = { question };
+        const symbol = formValue("askSymbol");
+        if (symbol) body.symbol = symbol;
+        const payload = await api("/api/ask", { method: "POST", body });
+        const data = payload.data || {};
+        if (answerBox) {
+          answerBox.textContent = data.answer || "（无回答）";
+          const notes = [];
+          if (!data.gateway_configured) notes.push("LLM 未配置，以上为本地资料直出");
+          if (data.symbol && data.resolved === false) notes.push("本地库未匹配到该标的记录");
+          answerBox.dataset.mode = data.mode || "";
+          const note = notes.length ? `\n\n（${notes.join("；")}）` : "";
+          if (note) answerBox.textContent += note;
+        }
+        setStatus("已回答 · 仅用于本地研究，不构成交易建议");
+      } catch (error) {
+        if (answerBox) answerBox.textContent = `出错了：${error.message}`;
+        setStatus(`提问失败：${error.message}`, true);
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
     const WORKSPACE_TAB_MODE = {
       dashboard: "personal",
       search: "personal",
@@ -12580,6 +12665,8 @@
           } else if (action === "run-daily-mainline") {
             await runDailyMainline();
             setStatus("今日研究主线已更新");
+          } else if (action === "ask-assistant") {
+            await askAssistant();
           } else if (action === "add-daily-watchlist") {
             await addDailyMainlineWatchlist(target.dataset.itemId || "");
             setStatus("已加入关注池 · 仅用于本地研究");
