@@ -197,6 +197,15 @@ PERMISSION_POLICY_CATALOG: list[dict[str, Any]] = [
         "sensitivity": "yellow",
     },
     {
+        "rule_id": "ask_assistant",
+        "path_prefixes": ["/api/ask"],
+        "sample_paths": {"POST": "/api/ask"},
+        "methods": ["POST"],
+        "actions": {"POST": "execute"},
+        "data_domains": ["company_intelligence", "public_market_data", "local_research_reference"],
+        "sensitivity": "yellow",
+    },
+    {
         "rule_id": "llm_gateway",
         "path_prefixes": ["/api/llm"],
         "sample_paths": {"GET": "/api/llm/tasks/runs", "POST": "/api/llm/tasks/run"},
@@ -449,6 +458,8 @@ class ApiRouter:
         if path.startswith("/api/benchmarks") or path.startswith("/api/prompts/changes") or path.startswith("/api/scorecards"):
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO"}
         if path.startswith("/api/templates") or path.startswith("/api/research-cards") or path.startswith("/api/research-reports") or path.startswith("/api/research/manual-references") or path.startswith("/api/research/answers") or path.startswith("/api/research/tasks") or path.startswith("/api/macro-themes") or path.startswith("/api/industry-chains") or path.startswith("/api/company-database") or path.startswith("/api/data-health") or path.startswith("/api/personal-research") or path.startswith("/api/company-profiles") or path.startswith("/api/company-financial-metrics") or path.startswith("/api/company-events") or path.startswith("/api/company-relationships") or path.startswith("/api/research-report-viewpoints") or path.startswith("/api/research-report-forecasts") or path.startswith("/api/analyst-profiles") or path.startswith("/api/analyst-reliability-scores") or path.startswith("/api/observation-items") or path.startswith("/api/analysis-conclusions") or path.startswith("/api/simulation-feedback") or path.startswith("/api/hotspot-lexicons") or path.startswith("/api/hotspots") or path.startswith("/api/crowding") or path.startswith("/api/challenger") or path.startswith("/api/playbooks") or path.startswith("/api/incident-reports") or path.startswith("/api/drill-schedules") or path.startswith("/api/alerts"):
+            return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO", "PM", "分析师", "海外研究负责人", "数据工程"}
+        if path.startswith("/api/ask"):
             return role in {"system", "NLP/ML 负责人", "风险/合规", "平台负责人", "CIO", "PM", "分析师", "海外研究负责人", "数据工程"}
         if path.startswith("/api/llm"):
             return role in {"system", "CEO", "CIO", "风险/合规", "平台负责人", "分析师", "NLP/ML 负责人", "海外研究负责人"}
@@ -1449,6 +1460,9 @@ class ApiRouter:
 
     def _llm_anthropic_messages(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.llm_anthropic_messages(body, actor=actor)
+
+    def _ask(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.ask(body, actor=actor)
 
     def _register_workflow_definition(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return to_plain(self.service.register_workflow_definition(body, actor=actor))

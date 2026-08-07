@@ -117,6 +117,7 @@ from .search import LocalSearchIndex, LocalSemanticIndex, SearchRecord, create_s
 from .store import InMemoryStore
 from .service_modules import safe_identifier
 from .service_modules import company_quality
+from .service_modules import ask_assistant
 from .service_modules import company_intelligence as company_intelligence_module
 from .service_modules import completeness_policy as completeness_policy_module
 from .service_modules import daily_mainline as daily_mainline_module
@@ -27530,6 +27531,80 @@ class SystemService:
             "after": after_payload,
             "usage_boundary": "company_intelligence_cycle_uses_local_records_only_paper_feedback_no_broker_execution",
         }
+
+    def ask(self, payload: Mapping[str, Any], *, actor: str = "system") -> dict[str, Any]:
+        """Personal research assistant: answer a natural-language question.
+
+        Resolves an optional symbol to local company intelligence, assembles a
+        fact-before-opinion context, and asks the configured LLM gateway. When
+        the gateway is not configured (or fails), it falls back to a
+        deterministic, source-only summary so the assistant still answers
+        offline. Paper research only: never emits broker/live-trading advice.
+        """
+        payload = payload or {}
+        question = str(payload.get("question") or payload.get("q") or "").strip()
+        if not question:
+            raise ValidationError("ask requires a question")
+        symbol = str(payload.get("symbol") or payload.get("ticker") or "").strip()
+
+        intelligence: dict[str, Any] = {}
+        if symbol:
+            intelligence = self.company_intelligence(
+                {"symbol": symbol, "limit": self._bounded_limit(payload.get("context_limit", 20), 100)}
+            )
+        context = ask_assistant.build_context(intelligence)
+        prompt = ask_assistant.build_prompt(question, context)
+
+        gateway_configured = bool(self.llm_gateway.describe().get("configured"))
+        mode = "rule_fallback"
+        model_version = "rule-ask-v1"
+        answer = ""
+        upstream_error = ""
+        if gateway_configured and self._truthy(payload.get("run_model", True)):
+            try:
+                result = self.llm_gateway.openai_chat_completions(
+                    {
+                        "messages": [
+                            {"role": "system", "content": ask_assistant.SYSTEM_INSTRUCTION},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": float(payload.get("temperature", 0.2)),
+                    }
+                )
+                answer = self._llm_output_text({"response": result.get("response")}).strip()
+                if answer:
+                    mode = "llm"
+                    model_version = str(result.get("model") or self.llm_gateway.default_model)
+            except Exception as exc:  # gateway/network failure must not break the answer
+                upstream_error = str(exc)
+        if not answer:
+            answer = ask_assistant.rule_based_answer(question, context)
+
+        self._audit(
+            actor,
+            "ask",
+            "ask_assistant",
+            symbol or "no_symbol",
+            source="local_company_intelligence_and_registered_llm_gateway",
+            model_version=model_version,
+        )
+        response: dict[str, Any] = {
+            "question": question,
+            "symbol": context.get("symbol", symbol),
+            "resolved": context.get("resolved", False),
+            "mode": mode,
+            "answer": answer,
+            "model_version": model_version,
+            "gateway_configured": gateway_configured,
+            "evidence_ids": context.get("evidence_ids", []),
+            "context": context,
+            "paper_only": True,
+            "live_execution_allowed": False,
+            "usage_boundary": ask_assistant.USAGE_BOUNDARY,
+        }
+        if upstream_error:
+            response["upstream_error"] = upstream_error
+        return response
 
     def company_intelligence(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}

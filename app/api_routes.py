@@ -244,6 +244,7 @@ def build_route_table(owner: Any) -> list[tuple[str, str, Callable[..., Any]]]:
             ("GET", r"^/api/llm/tasks/metrics$", owner._llm_task_metrics),
             ("POST", r"^/api/llm/openai/chat/completions$", owner._llm_openai_chat_completions),
             ("POST", r"^/api/llm/anthropic/messages$", owner._llm_anthropic_messages),
+            ("POST", r"^/api/ask$", owner._ask),
             ("POST", r"^/api/orchestration/dags$", owner._register_workflow_definition),
             ("GET", r"^/api/orchestration/dags$", owner._list_workflow_definitions),
             ("POST", r"^/api/orchestration/dags/query$", owner._list_workflow_definitions),
