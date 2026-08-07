@@ -40,21 +40,33 @@ def download(url: str, *, timeout: float = 60.0) -> bytes:
     if cache_path.exists():
         return cache_path.read_bytes()
     try:
-        if url.startswith("https://fred.stlouisfed.org/"):
-            curl_bin = shutil.which("curl")
-            if not curl_bin:
-                raise OSError("curl is required for FRED downloads in this runtime")
-            completed = subprocess.run(
-                [
-                    curl_bin, "--fail", "--location", "--silent", "--show-error",
-                    "--max-time", str(int(timeout)), "--retry", "2", "--retry-delay", "2",
-                    url,
-                ],
-                check=True,
-                capture_output=True,
-                timeout=timeout * 3 + 10,
-            )
-            payload = completed.stdout
+        payload: bytes
+        curl_bin = (
+            shutil.which("curl")
+            if url.startswith("https://fred.stlouisfed.org/")
+            else None
+        )
+        if curl_bin:
+            try:
+                completed = subprocess.run(
+                    [
+                        curl_bin, "--fail", "--location", "--silent", "--show-error",
+                        "--max-time", str(int(timeout)), "--retry", "2", "--retry-delay", "2",
+                        url,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=timeout * 3 + 10,
+                )
+                payload = completed.stdout
+            except (OSError, subprocess.SubprocessError, TimeoutError):
+                # FRED's edge currently stalls for this custom User-Agent on
+                # some routes while accepting urllib's default request.
+                with urlopen(url, timeout=timeout) as response:
+                    payload = response.read()
+        elif url.startswith("https://fred.stlouisfed.org/"):
+            with urlopen(url, timeout=timeout) as response:
+                payload = response.read()
         else:
             request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
             with urlopen(request, timeout=timeout) as response:
@@ -76,11 +88,10 @@ class PublicSourceClient:
         self.source_errors: dict[str, str] = {}
 
     def fred(self, series_id: str) -> list[RawPoint]:
-        query = urlencode({
-            "id": series_id,
-            "cosd": "1990-01-01",
-            "coed": datetime.now(timezone.utc).date().isoformat(),
-        })
+        # FRED's graph endpoint intermittently stalls behind some network paths
+        # when cosd/coed are present. The full public CSV is small, cached once
+        # per day, and downstream collection already applies the as-of cutoff.
+        query = urlencode({"id": series_id})
         url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?{query}"
         rows = csv.DictReader(io.StringIO(self.downloader(url).decode("utf-8-sig")))
         result = []

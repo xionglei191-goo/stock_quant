@@ -102,6 +102,25 @@ class PointInTimeRepositoryTest(unittest.TestCase):
         self.assertEqual(self.repository.count(), 2)
         self.assertEqual(len(self.repository.vintages("fred:CPI", date(2024, 1, 1))), 2)
 
+    def test_public_refresh_appends_changed_same_vintage_as_revision(self) -> None:
+        initial = observation("cpi-current")
+        changed = replace(
+            initial,
+            observation_id="cpi-current-revised",
+            value=3.2,
+            payload_hash="current-revised",
+        )
+
+        first = self.repository.upsert_with_revisions([initial])
+        revised = self.repository.upsert_with_revisions([changed])
+        repeated = self.repository.upsert_with_revisions([changed])
+        vintages = self.repository.vintages(initial.series_id, initial.observation_date)
+
+        self.assertEqual((first.inserted, revised.inserted, revised.conflicts), (1, 1, 0))
+        self.assertEqual(repeated.duplicates, 1)
+        self.assertEqual([item.revision_seq for item in vintages], [0, 1])
+        self.assertEqual([item.value for item in vintages], [3.1, 3.2])
+
     def test_contract_rejects_naive_availability(self) -> None:
         with self.assertRaisesRegex(ValueError, "timezone"):
             observation("bad", available_at=datetime(2024, 2, 10, 13, 30))

@@ -138,6 +138,19 @@ class PublicDataPipeline:
         result = self.collect(**kwargs)
         return result, repository.upsert(result.observations)
 
+    def ingest_strict(
+        self,
+        repository: Any,
+        **kwargs: Any,
+    ) -> tuple[PipelineResult, UpsertSummary]:
+        """Collect all governed sources before mutating the strict daily store."""
+
+        result = self.collect(**kwargs)
+        if result.missing_series or result.source_errors:
+            return result, UpsertSummary(len(result.observations), 0, 0, 0)
+        writer = getattr(repository, "upsert_with_revisions", repository.upsert)
+        return result, writer(result.observations)
+
     def _derive(self, raw: Mapping[str, Sequence[RawPoint]]) -> list[DerivedSeries]:
         result: list[DerivedSeries] = []
 

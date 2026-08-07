@@ -127,6 +127,23 @@ class PublicDataPipelineTest(unittest.TestCase):
         self.assertIn("price_to_ma_200", result.missing_series)
         self.assertIn("forward_pe", result.missing_series)
 
+    def test_strict_ingest_does_not_write_partial_source_results(self) -> None:
+        class BrokenClient(FakePublicClient):
+            def fred_batch(self, series_ids: list[str]) -> dict[str, list[RawPoint]]:
+                return {}
+
+        with tempfile.TemporaryDirectory() as temp:
+            repository = SQLiteObservationRepository(Path(temp) / "strict.sqlite")
+            result, summary = PublicDataPipeline(
+                self.config,
+                BrokenClient(),
+            ).ingest_strict(repository, as_of=AS_OF)
+            stored_count = repository.count()
+
+        self.assertTrue(result.missing_series)
+        self.assertEqual(summary.inserted, 0)
+        self.assertEqual(stored_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

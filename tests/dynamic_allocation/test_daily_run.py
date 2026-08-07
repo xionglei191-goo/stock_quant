@@ -25,11 +25,13 @@ class FakeApplication:
 
     def __init__(self) -> None:
         self.snapshot = build_paper_snapshot(valid_payload()).to_dict()
+        self.evaluate_calls = 0
 
     def history(self, _payload):
         return {"items": [{"target_equity_allocation": 0.7}]}
 
     def evaluate(self, _payload, *, persist):
+        self.evaluate_calls += 1
         return {
             "as_of": AS_OF.isoformat(),
             "ready": True,
@@ -110,6 +112,7 @@ class DynamicAllocationDailyRunTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
 
     def test_strict_failure_exposes_structured_health_without_source_messages(self) -> None:
+        application = FakeApplication()
         with TemporaryDirectory() as temp:
             with self.assertRaises(DailyRunGateError) as raised:
                 run_daily(
@@ -117,13 +120,14 @@ class DynamicAllocationDailyRunTest(unittest.TestCase):
                     market_start=date(2000, 1, 1),
                     execute=True,
                     ledger_path=Path(temp) / "paper.jsonl",
-                    application=FakeApplication(),
+                    application=application,
                     pipeline=FailingPipeline(),
                 )
         self.assertEqual(raised.exception.details["missing_series"], ["vix"])
         self.assertEqual(raised.exception.details["source_error_series"], ["credit_spread"])
         self.assertEqual(raised.exception.details["insert_conflicts"], 1)
         self.assertNotIn("redacted", str(raised.exception.details))
+        self.assertEqual(application.evaluate_calls, 0)
 
     def test_execute_failure_is_archived_for_longitudinal_visibility(self) -> None:
         with TemporaryDirectory() as temp:

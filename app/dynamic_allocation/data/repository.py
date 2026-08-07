@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -75,6 +76,57 @@ class SQLiteObservationRepository:
                     _sql_params(row),
                 )
                 inserted += 1
+        return UpsertSummary(len(rows), inserted, duplicates, conflicts)
+
+    def upsert_with_revisions(
+        self,
+        rows: Sequence[PointInTimeObservation],
+    ) -> UpsertSummary:
+        """Append same-vintage source changes as immutable revisions.
+
+        The ordinary ``upsert`` remains strict and reports a changed primary
+        key as a conflict. Governed public refreshes use this method because a
+        source can revise current-vintage values between same-day retries.
+        """
+
+        inserted = duplicates = conflicts = 0
+        with closing(self._connect()) as connection, connection:
+            for row in rows:
+                existing_rows = connection.execute(
+                    """SELECT * FROM economic_observations
+                       WHERE series_id = ? AND observation_date = ? AND vintage_date = ?
+                       ORDER BY revision_seq""",
+                    (
+                        row.series_id,
+                        row.observation_date.isoformat(),
+                        row.vintage_date.isoformat(),
+                    ),
+                ).fetchall()
+                existing = [_from_sql_row(item) for item in existing_rows]
+                if any(
+                    _material_signature(item) == _material_signature(row)
+                    for item in existing
+                ):
+                    duplicates += 1
+                    continue
+                candidate = row
+                if existing:
+                    candidate = replace(
+                        row,
+                        revision_seq=max(item.revision_seq for item in existing) + 1,
+                    )
+                try:
+                    connection.execute(
+                        """INSERT INTO economic_observations (
+                            observation_id, series_id, observation_date, value, release_date,
+                            available_at, vintage_date, revision_seq, source_id, source_uri,
+                            ingested_at, rights_tag, quality_flags, payload_hash
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        _sql_params(candidate),
+                    )
+                    inserted += 1
+                except sqlite3.IntegrityError:
+                    conflicts += 1
         return UpsertSummary(len(rows), inserted, duplicates, conflicts)
 
     def latest_available(self, series_ids: Sequence[str], as_of: datetime) -> list[PointInTimeObservation]:
