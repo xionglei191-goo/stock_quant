@@ -58,7 +58,9 @@ export function installNavigation({
 }) {
   document.querySelectorAll("[data-open]").forEach((button) => {
     button.addEventListener("click", () => {
-      openTab(button.dataset.open, { mode: button.dataset.workspaceTarget || activeWorkspaceMode() });
+      const mode = button.dataset.workspaceTarget || activeWorkspaceMode();
+      setWorkspaceMode(mode);
+      openTab(button.dataset.open, { mode });
       if (button.dataset.open === "ingestion") loadDataHealthSummary().catch(onError);
     });
   });

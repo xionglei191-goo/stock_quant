@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -16,6 +18,14 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "artifacts" / "ui-interaction-acceptance"
+ISOLATED_ENV_KEYS_TO_CLEAR = (
+    "AI_QUANT_POSTGRES_DSN",
+    "AI_QUANT_DATABASE_URL",
+    "AI_QUANT_LLM_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "AI_QUANT_PADDLEOCR_TOKEN",
+)
 
 
 def _chrome_binary(explicit: str = "") -> str:
@@ -39,6 +49,43 @@ def _free_port() -> int:
 def _http_json(url: str, *, timeout: float = 5.0) -> Any:
     with urllib.request.urlopen(url, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _isolated_server_env(root: Path, port: int) -> dict[str, str]:
+    env = os.environ.copy()
+    for key in ISOLATED_ENV_KEYS_TO_CLEAR:
+        env[key] = ""
+    env.update(
+        {
+            "AI_QUANT_HOST": "127.0.0.1",
+            "AI_QUANT_PORT": str(port),
+            "AI_QUANT_DB": str(root / "app.sqlite"),
+            "AI_QUANT_OBJECT_STORE_BACKEND": "local",
+            "AI_QUANT_OBJECT_STORE": str(root / "objects"),
+            "AI_QUANT_SEARCH_BACKEND": "local",
+            "AI_QUANT_DEPLOYMENT_MODE": "local",
+            "AI_QUANT_AUTH_MODE": "x-role-header",
+            "AI_QUANT_DYNAMIC_ALLOCATION_DB": str(root / "dynamic-allocation.sqlite"),
+        }
+    )
+    return env
+
+
+def _wait_for_service(base_url: str, process: subprocess.Popen[str], *, timeout: float) -> None:
+    deadline = time.time() + timeout
+    last_error = ""
+    while time.time() < deadline:
+        if process.poll() is not None:
+            _stdout, stderr = process.communicate()
+            raise RuntimeError(f"isolated app server exited with {process.returncode}: {stderr[-1000:]}")
+        try:
+            payload = _http_json(base_url.rstrip("/") + "/api/health", timeout=1.0)
+            if payload.get("success") is True:
+                return
+        except Exception as exc:  # noqa: BLE001 - startup diagnostic
+            last_error = str(exc)
+        time.sleep(0.1)
+    raise RuntimeError(f"isolated app server did not become healthy: {last_error}")
 
 
 def _wait_for_debugger(port: int, *, timeout: float) -> None:
@@ -362,7 +409,52 @@ def run_ui_interaction_acceptance(
         )
         ownership_root_js = json.dumps(str(ownership_root))
 
+        maintenance_tabs = ("ingestion", "agents", "committee", "incidents", "search")
+        maintenance_deep_link_checks = [
+            _run_check(
+                client,
+                f"maintenance_deep_link_{tab_id}",
+                (
+                    f"document.querySelector('[data-open=\"{tab_id}\"]"
+                    "[data-workspace-target=\"maintenance\"]').click(); true"
+                ),
+                (
+                    "document.body.dataset.workspaceMode === 'maintenance' "
+                    f"&& document.querySelector('[data-tab=\"{tab_id}\"]').classList.contains('active')"
+                ),
+            )
+            for tab_id in maintenance_tabs
+        ]
+
         checks = [
+            *maintenance_deep_link_checks,
+            _run_check(
+                client,
+                "daily_mainline_failure_stage_and_reason_visible",
+                """
+                renderDailyMainline({
+                  status: "failed",
+                  as_of_date: "2026-07-28",
+                  generated_at: "2026-07-28T09:30:00Z",
+                  progress: {current_stage: "run_auto_diligence", completed_count: 2, total_count: 4},
+                  stages: [
+                    {stage: "scan_market_disturbance", status: "passed", reason_code: ""},
+                    {stage: "build_candidate_pool", status: "passed", reason_code: ""},
+                    {stage: "run_auto_diligence", status: "failed", reason_code: "llm_gateway_unavailable"},
+                    {stage: "build_daily_queue", status: "skipped", reason_code: "upstream_failed"}
+                  ],
+                  items: [],
+                  pending_evidence_items: []
+                });
+                document.querySelector('[data-open="dashboard"]').click();
+                true
+                """,
+                (
+                    "!document.querySelector('#dailyMainlineFailure').hidden "
+                    "&& document.querySelector('#dailyMainlineFailure').textContent.includes('自动尽调') "
+                    "&& document.querySelector('#dailyMainlineFailure').textContent.includes('llm_gateway_unavailable')"
+                ),
+            ),
             _run_check(
                 client,
                 "return_tile_to_market_data",
@@ -726,14 +818,84 @@ def run_ui_interaction_acceptance(
     return result
 
 
+def run_isolated_ui_interaction_acceptance(
+    *,
+    output_dir: str | Path = DEFAULT_OUTPUT_DIR,
+    chrome_bin: str = "",
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    output = Path(output_dir)
+    isolated_root = Path(tempfile.mkdtemp(prefix="ai-quant-ui-acceptance-server-"))
+    port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
+    process = subprocess.Popen(
+        [sys.executable, "-m", "app.server"],
+        cwd=ROOT,
+        env=_isolated_server_env(isolated_root, port),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    result: dict[str, Any] | None = None
+    try:
+        _wait_for_service(base_url, process, timeout=max(timeout, 30.0))
+        result = run_ui_interaction_acceptance(
+            base_url,
+            output_dir=output,
+            chrome_bin=chrome_bin,
+            timeout=timeout,
+        )
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        shutil.rmtree(isolated_root, ignore_errors=True)
+    if result is None:
+        raise RuntimeError("isolated UI interaction acceptance did not produce a result")
+    result["isolation"] = {
+        "enabled": True,
+        "database_backend": "sqlite",
+        "object_store_backend": "local",
+        "search_backend": "local",
+        "temporary_state_removed": not isolated_root.exists(),
+        "production_state_touched": False,
+    }
+    (output / "ui-interaction-acceptance.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run real click-through UI interaction acceptance with headless Chrome.")
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8000")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--chrome-bin", default="")
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--isolated",
+        action="store_true",
+        help="start a temporary SQLite/local-adapter app server and remove its state after acceptance",
+    )
     args = parser.parse_args()
-    result = run_ui_interaction_acceptance(args.base_url, output_dir=args.output_dir, chrome_bin=args.chrome_bin, timeout=args.timeout)
+    if args.isolated:
+        result = run_isolated_ui_interaction_acceptance(
+            output_dir=args.output_dir,
+            chrome_bin=args.chrome_bin,
+            timeout=args.timeout,
+        )
+    else:
+        result = run_ui_interaction_acceptance(
+            args.base_url,
+            output_dir=args.output_dir,
+            chrome_bin=args.chrome_bin,
+            timeout=args.timeout,
+        )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     if result["status"] != "passed":
         raise SystemExit(1)

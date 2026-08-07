@@ -58,6 +58,7 @@ import scripts.latest_analysis_run as latest_analysis_run_script
 import scripts.latency_audit as latency_audit_script
 import scripts.scope_ashare_current_baostock_universe as scope_ashare_current_baostock_universe_script
 import scripts.scope_us_current_yahoo_universe as scope_us_current_yahoo_universe_script
+import scripts.ui_interaction_acceptance as ui_interaction_acceptance_script
 from scripts.import_tdx_market_data import run_tdx_incremental_import
 from scripts.import_tdx_vipdoc_postgres import read_day_rows
 from scripts.tdx_batch_import import infer_exchange, normalize_symbol
@@ -859,7 +860,7 @@ class SystemServiceTests(SystemServiceTestBase):
         self.assertEqual(aggregated.data["simulation_feedback"]["feedback_records"][0]["simulation_feedback_id"], "sf_demo_001")
         self.assertFalse(aggregated.data["simulation_feedback"]["live_execution_allowed"])
         verdict = aggregated.data["completeness_verdict"]
-        self.assertEqual(verdict["status"], "incomplete")
+        self.assertEqual(verdict["status"], "partial")
         self.assertFalse(verdict["is_complete"])
         self.assertIn("market_data", verdict["blocking_gaps"])
         self.assertIn("company_profile", verdict["required_layers"])
@@ -3184,6 +3185,7 @@ class SystemServiceTests(SystemServiceTestBase):
         for relationship_id, issuer_id, security_id, object_id, status, review_status in [
             ("rel_alpha_holder_demo", "issuer_001", "sec_001", "external_company_alpha_capital", "active", "approved"),
             ("rel_alpha_holder_peer", "issuer_peer_holder", "sec_peer_holder", "external_company_alpha_capital", "active", "approved"),
+            ("rel_alpha_holder_peer_duplicate", "issuer_peer_holder", "sec_peer_holder", "external_company_alpha_capital", "active", "approved"),
             ("rel_alpha_holder_candidate", "issuer_unrelated_holder", "sec_unrelated_holder", "external_company_alpha_capital", "active", "needs_review"),
             ("rel_beta_holder_peer", "issuer_unrelated_holder", "sec_unrelated_holder", "external_company_beta_capital", "active", "approved"),
         ]:
@@ -3260,7 +3262,7 @@ class SystemServiceTests(SystemServiceTestBase):
         self.assertTrue(holder_graph.success, holder_graph.error)
         self.assertEqual(
             {item["relationship_id"] for item in holder_graph.data["company_relationships"]},
-            {"rel_alpha_holder_demo", "rel_alpha_holder_peer"},
+            {"rel_alpha_holder_demo", "rel_alpha_holder_peer", "rel_alpha_holder_peer_duplicate"},
         )
         self.assertIn("issuer_peer_holder", {item["issuer_id"] for item in holder_graph.data["issuers"]})
         self.assertNotIn("rel_alpha_holder_candidate", {item["relationship_id"] for item in holder_graph.data["company_relationships"]})
@@ -17359,6 +17361,14 @@ class SystemServiceTests(SystemServiceTestBase):
                     skip_latest_analysis=False,
                     allow_latest_analysis_failure=False,
                     latest_analysis_semantic_timeout_seconds=2.5,
+                    run_dynamic_allocation=True,
+                    allow_dynamic_allocation_failure=False,
+                    dynamic_allocation_as_of="2026-05-24T12:00:00+00:00",
+                    dynamic_allocation_market_start="2000-01-01",
+                    dynamic_allocation_ledger=str(Path(temp_dir) / "dynamic-paper.jsonl"),
+                    dynamic_allocation_output=str(Path(temp_dir) / "dynamic-latest.json"),
+                    dynamic_allocation_history_dir=str(Path(temp_dir) / "dynamic-history"),
+                    dynamic_allocation_timeout_seconds=321,
                     skip_local_production_audit=True,
                     skip_project_completion_audit=True,
                     run_project_completion_audit=False,
@@ -17388,6 +17398,15 @@ class SystemServiceTests(SystemServiceTestBase):
         latest_command = next(command for name, command, _allow_failure in commands if name == "latest_analysis")
         self.assertIn("--semantic-timeout-seconds", latest_command)
         self.assertEqual(latest_command[latest_command.index("--semantic-timeout-seconds") + 1], "2.5")
+        dynamic_command = next(
+            command
+            for name, command, _allow_failure in commands
+            if name == "dynamic_allocation_daily"
+        )
+        self.assertIn("--execute", dynamic_command)
+        self.assertIn("--ledger", dynamic_command)
+        self.assertIn("--history-dir", dynamic_command)
+        self.assertIn("scripts/dynamic_allocation_daily_run.py", dynamic_command)
 
     def test_daily_pipeline_market_end_dates_wait_for_market_ready_windows(self) -> None:
         base_args = argparse.Namespace(
@@ -17599,6 +17618,7 @@ class SystemServiceTests(SystemServiceTestBase):
             "不会 JSON/数据库双写",
             "AI_QUANT_DAILY_US_TICKERS_FROM_DB=true",
             "AI_QUANT_DAILY_RUN_US_SCOPE_REFRESH=true",
+            "AI_QUANT_DAILY_RUN_DYNAMIC_ALLOCATION=true",
             "AI_QUANT_STACK_REBUILD=true",
             "AI_QUANT_DAILY_TDX_INCREMENTAL=true",
             "AI_QUANT_DAILY_LATEST_ANALYSIS_SEMANTIC_TIMEOUT_SECONDS",
@@ -17892,7 +17912,8 @@ class SystemServiceTests(SystemServiceTestBase):
             "const linkId = escapeHtml(link.id)",
             "const sourceId = escapeHtml(source.id)",
             "const targetId = escapeHtml(target.id)",
-            "const edgeLabel = graphEdgeLabel(link.type, link.label)",
+            "function knowledgeGraphLinkLabel",
+            "const edgeLabel = knowledgeGraphLinkLabel(link)",
             "${escapeHtml(edgeLabel)}",
             ".graph-node-svg:focus-visible",
             ".graph-node-svg:focus-visible circle",
@@ -18087,6 +18108,22 @@ class SystemServiceTests(SystemServiceTestBase):
                 dotenv_path.unlink(missing_ok=True)
             else:
                 dotenv_path.write_text(original_content, encoding="utf-8")
+
+    def test_ui_interaction_isolated_server_env_uses_temporary_local_adapters(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            env = ui_interaction_acceptance_script._isolated_server_env(root, 55537)
+
+        self.assertEqual(env["AI_QUANT_PORT"], "55537")
+        self.assertEqual(env["AI_QUANT_DB"], str(root / "app.sqlite"))
+        self.assertEqual(env["AI_QUANT_DYNAMIC_ALLOCATION_DB"], str(root / "dynamic-allocation.sqlite"))
+        self.assertEqual(env["AI_QUANT_OBJECT_STORE_BACKEND"], "local")
+        self.assertEqual(env["AI_QUANT_OBJECT_STORE"], str(root / "objects"))
+        self.assertEqual(env["AI_QUANT_SEARCH_BACKEND"], "local")
+        self.assertEqual(env["AI_QUANT_POSTGRES_DSN"], "")
+        self.assertEqual(env["AI_QUANT_DATABASE_URL"], "")
+        self.assertEqual(env["AI_QUANT_LLM_API_KEY"], "")
+        self.assertEqual(env["AI_QUANT_PADDLEOCR_TOKEN"], "")
 
     def test_server_port_reads_environment_and_validates_range(self) -> None:
         import app.server as server_module
@@ -20190,10 +20227,20 @@ class SystemServiceTests(SystemServiceTestBase):
             self.assertIn(fragment, local_production_stack)
         dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
         self.assertIn("COPY scripts ./scripts", dockerfile)
+        self.assertIn("COPY config ./config", dockerfile)
         self.assertIn("pip install", dockerfile)
-        self.assertIn(".[postgres,market-data]", dockerfile)
+        self.assertIn("postgres,market-data", dockerfile)
+        self.assertIn("dynamic-allocation-dashboard", dockerfile)
         compose = Path("docker-compose.yml").read_text(encoding="utf-8")
-        for fragment in ["postgres:", "minio:", "opensearch:", "neo4j:", "qdrant:", "otel-collector:"]:
+        for fragment in [
+            "dynamic-allocation-dashboard:",
+            "postgres:",
+            "minio:",
+            "opensearch:",
+            "neo4j:",
+            "qdrant:",
+            "otel-collector:",
+        ]:
             self.assertIn(fragment, compose)
         self.assertIn("AI_QUANT_HOST: ${AI_QUANT_HOST:-0.0.0.0}", compose)
 

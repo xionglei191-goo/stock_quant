@@ -8,6 +8,14 @@ import re
 import sys
 from typing import Any, Mapping
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.service_modules.market_data import (  # noqa: E402
+    market_eod_key,
+    market_freshness_annotation,
+)
 
 DEFAULT_DSN = "postgresql://ai_quant:ai_quant_dev_password@127.0.0.1:15432/ai_quant"
 DEFAULT_SOURCE_A = "public_eod_market_data"
@@ -193,6 +201,25 @@ def _fetch_one(cursor: Any, sql: str, params: tuple[Any, ...] = ()) -> tuple[Any
 def _fetch_all(cursor: Any, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
     cursor.execute(sql, params)
     return [tuple(row) for row in cursor.fetchall()]
+
+
+def _market_eod_target(market: str, *, data_type: str, source_a: str, source_u: str) -> dict[str, str]:
+    """按 `market_eod_key` 解析单个市场的 `(market, source_id, data_type)` 三元键。
+
+    `--source-a` / `--source-u` 作为显式覆盖传入，保留既有覆盖通路；未登记市场
+    （如 H）不传覆盖，由 `market_eod_key` 回落到 A 市场公开 EOD 源，与既有
+    “非 U 市场一律走 public_eod_market_data”的行为一致（需求 5.6）。
+    """
+
+    normalized = str(market or "").strip().upper()
+    override = {"A": source_a, "U": source_u}.get(normalized, "")
+    return market_eod_key(normalized, data_type=data_type, source_id=override)
+
+
+def _market_eod_targets(*, data_type: str, source_a: str, source_u: str) -> list[dict[str, str]]:
+    """`market_freshness` 与公司活动条目共用的市场取数键列表（需求 5.6）。"""
+
+    return [_market_eod_target(market, data_type=data_type, source_a=source_a, source_u=source_u) for market in ("A", "U")]
 
 
 def _latest_date(cursor: Any, *, market: str, source_id: str, data_type: str) -> str:
@@ -604,15 +631,23 @@ def _primary_asset_from_report(report: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _fetch_latest_market_context(
+def _fetch_latest_market_rows(
     cursor: Any,
     *,
     security_ids: list[str],
+    market: str,
+    source_id: str,
     data_type: str,
-    source_a: str,
-    source_u: str,
     history_rows: int,
 ) -> dict[str, dict[str, Any]]:
+    """按单个 `(market, source_id, data_type)` 键取这批证券的最新一根 K 线。
+
+    旧实现用 `source_id = ANY([source_a, source_u])` 跨市场源混取，同一 security
+    的最新日期可能落到另一市场的源上；改为按 `market_eod_key` 的三元键分市场取数
+    （需求 5.6）。`market` 为空（证券未登记市场）时退化为按 `source_id` + `data_type`
+    过滤，避免漏掉市场字段缺失的证券。
+    """
+
     if not security_ids:
         return {}
     rows = _fetch_all(
@@ -633,9 +668,10 @@ def _fetch_latest_market_context(
                 amount
             FROM ai_quant.market_data_bars
             WHERE security_id = ANY(%s)
+              AND source_id = %s
               AND data_type = %s
-              AND source_id = ANY(%s)
-            ORDER BY security_id, as_of_date DESC, source_id
+              AND (%s::text = '' OR market = %s::text)
+            ORDER BY security_id, as_of_date DESC
         )
         SELECT
             c.security_id,
@@ -683,14 +719,14 @@ def _fetch_latest_market_context(
             ) AS hist
         ) AS h ON TRUE
         """,
-        (security_ids, data_type, [source_a, source_u], history_rows),
+        (security_ids, source_id, data_type, market, market, history_rows),
     )
     by_security: dict[str, dict[str, Any]] = {}
     for row in rows:
         (
             security_id,
-            market,
-            source_id,
+            row_market,
+            row_source_id,
             as_of_date,
             row_open,
             high,
@@ -713,8 +749,8 @@ def _fetch_latest_market_context(
         avg_volume_f = _safe_float(avg_volume)
         avg_amount_f = _safe_float(avg_amount)
         by_security[str(security_id)] = {
-            "market": str(market or ""),
-            "source_id": str(source_id or ""),
+            "market": str(row_market or ""),
+            "source_id": str(row_source_id or ""),
             "as_of_date": str(as_of_date or ""),
             "previous_date": str(previous_date or ""),
             "open": _safe_float(row_open),
@@ -736,6 +772,72 @@ def _fetch_latest_market_context(
     return by_security
 
 
+def _fetch_latest_market_context(
+    cursor: Any,
+    *,
+    security_ids: list[str],
+    data_type: str,
+    source_a: str,
+    source_u: str,
+    history_rows: int,
+    security_markets: Mapping[str, str] | None = None,
+    security_statuses: Mapping[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """按每只证券所属市场的 EOD 三元键取最新行情，并标注相对市场 EOD 的滞后。
+
+    - 取数键由 `market_eod_key` 提供，与 `market_freshness`（`_latest_date`）同键，
+      修正“公司条目 2026-05-25 与市场 EOD 2026-07-24 并列且无解释”的问题（需求 5.6）。
+    - 公司最新行情日期早于该市场 EOD 日期时，追加 `lag_days` / `reason_code` /
+      `reason_label` / `is_lagging` / `market_eod_date`（需求 5.7）。
+    - 原因码判定信号：`security_statuses` 提供 `Security.status`（停牌/退市优先），
+      未提供时稳定落到 `security_not_in_latest_eod_batch`。
+    """
+
+    if not security_ids:
+        return {}
+    markets = security_markets or {}
+    statuses = security_statuses or {}
+    grouped: dict[tuple[str, str, str], list[str]] = {}
+    keys: dict[tuple[str, str, str], dict[str, str]] = {}
+    for security_id in security_ids:
+        target = _market_eod_target(markets.get(security_id, ""), data_type=data_type, source_a=source_a, source_u=source_u)
+        key = (target["market"], target["source_id"], target["data_type"])
+        keys.setdefault(key, target)
+        grouped.setdefault(key, []).append(security_id)
+    context: dict[str, dict[str, Any]] = {}
+    for key, scoped_ids in grouped.items():
+        target = keys[key]
+        market_eod_date = _latest_date(cursor, **target) if target["market"] else ""
+        rows = _fetch_latest_market_rows(
+            cursor,
+            security_ids=scoped_ids,
+            market=target["market"],
+            source_id=target["source_id"],
+            data_type=target["data_type"],
+            history_rows=history_rows,
+        )
+        for security_id, snapshot in rows.items():
+            annotation = market_freshness_annotation(
+                market=target["market"],
+                company_as_of_date=str(snapshot.get("as_of_date") or ""),
+                market_eod_date=market_eod_date,
+                data_type=target["data_type"],
+                source_id=target["source_id"],
+                security_status=str(statuses.get(security_id, "")),
+            )
+            context[security_id] = {
+                **snapshot,
+                "market_eod_date": annotation["market_eod_date"],
+                "eod_source_id": annotation["source_id"],
+                "data_type": annotation["data_type"],
+                "lag_days": annotation["lag_days"],
+                "reason_code": annotation["reason_code"],
+                "reason_label": annotation["reason_label"],
+                "is_lagging": annotation["is_lagging"],
+            }
+    return context
+
+
 def _research_readout(item: Mapping[str, Any]) -> str:
     reports = [report for report in _list(item.get("reports")) if isinstance(report, Mapping)]
     topics = _unique_strings([topic for report in reports for topic in _list(report.get("topic_tags"))])
@@ -745,6 +847,9 @@ def _research_readout(item: Mapping[str, Any]) -> str:
     parts: list[str] = []
     if latest.get("as_of_date"):
         parts.append(f"{latest.get('as_of_date')} 收盘 {_safe_float(latest.get('close')):.2f}，涨跌幅 {_pct(latest.get('one_day_return'))}")
+        freshness_note = _freshness_note(latest)
+        if freshness_note:
+            parts.append(freshness_note)
     if topics:
         parts.append(f"研报主题: {', '.join(topics[:4])}")
     if metrics:
@@ -816,7 +921,24 @@ def _market_snapshot(item: Mapping[str, Any]) -> dict[str, Any]:
         "one_day_return": _safe_float(source.get("one_day_return")),
         "amount_ratio": _safe_float(source.get("amount_ratio")),
         "volume_ratio": _safe_float(source.get("volume_ratio")),
+        # 与 market_freshness 同键的市场 EOD 基准与滞后标注（需求 5.6、5.7）。
+        "market_eod_date": str(source.get("market_eod_date") or ""),
+        "lag_days": int(_safe_float(source.get("lag_days"))),
+        "reason_code": str(source.get("reason_code") or ""),
+        "reason_label": str(source.get("reason_label") or ""),
+        "is_lagging": bool(source.get("is_lagging")),
     }
+
+
+def _freshness_note(latest: Mapping[str, Any]) -> str:
+    """公司最新行情早于市场 EOD 时的中文滞后说明；不滞后返回空串（需求 5.7）。"""
+
+    if not latest.get("is_lagging"):
+        return ""
+    lag_days = int(_safe_float(latest.get("lag_days")))
+    note = f"滞后市场 EOD {latest.get('market_eod_date') or '-'} 共 {lag_days} 天"
+    label = str(latest.get("reason_label") or "")
+    return f"{note}（{label}）" if label else note
 
 
 def _ensure_company_activity(rows: dict[str, dict[str, Any]], seed: Mapping[str, Any]) -> dict[str, Any]:
@@ -932,6 +1054,9 @@ def _activity_summary(row: Mapping[str, Any]) -> str:
     if latest.get("as_of_date"):
         price = f"收盘 {latest.get('close')}" if latest.get("close") not in {None, ""} else "收盘待补"
         parts.append(f"{latest.get('as_of_date')} {price}，涨跌幅 {_pct(latest.get('one_day_return'))}")
+        freshness_note = _freshness_note(latest)
+        if freshness_note:
+            parts.append(freshness_note)
     reports = [item for item in _list(row.get("activity_items")) if str(item.get("activity_type") or "").endswith("research_report")]
     documents = [item for item in _list(row.get("activity_items")) if item.get("activity_type") == "recent_document_event"]
     market_events = [item for item in _list(row.get("activity_items")) if item.get("activity_type") == "market_abnormal"]
@@ -1089,6 +1214,7 @@ def _fetch_bound_research_watchlist(
         ("research_reports", max(limit * 8, limit)),
     )
     grouped: dict[str, dict[str, Any]] = {}
+    security_statuses: dict[str, str] = {}
     for report_item_id, raw_report, security_item_id, raw_security, raw_issuer in rows:
         report = _payload(raw_report)
         report_date = (
@@ -1110,6 +1236,9 @@ def _fetch_bound_research_watchlist(
             continue
         ticker = str(security.get("ticker") or primary.get("ticker") or security_id)
         issuer_id = str(security.get("issuer_id") or primary.get("issuer_id") or "")
+        # 停牌/退市是滞后原因码的最高优先信号（需求 5.7）；空串按未知处理。
+        if str(security.get("status") or ""):
+            security_statuses[security_id] = str(security.get("status") or "")
         entry = grouped.setdefault(
             security_id,
             {
@@ -1161,6 +1290,8 @@ def _fetch_bound_research_watchlist(
         source_a=source_a,
         source_u=source_u,
         history_rows=history_rows,
+        security_markets={security_id: str(entry.get("market") or "") for security_id, entry in grouped.items()},
+        security_statuses=security_statuses,
     )
 
     watchlist: list[dict[str, Any]] = []
@@ -1256,10 +1387,8 @@ def build_daily_market_insight(
     with _connect(dsn) as connection:
         with connection.cursor() as cursor:
             legacy_count = int(_fetch_one(cursor, "SELECT COUNT(*) FROM ai_quant.records WHERE collection = 'market_data'")[0] or 0)
-            market_targets = [
-                {"market": "A", "source_id": source_a, "data_type": data_type},
-                {"market": "U", "source_id": source_u, "data_type": data_type},
-            ]
+            # market_freshness 与公司活动条目共用 market_eod_key 解析的三元键（需求 5.6）。
+            market_targets = _market_eod_targets(data_type=data_type, source_a=source_a, source_u=source_u)
             market_freshness = []
             movers_by_market: dict[str, Any] = {}
             all_ranked: list[dict[str, Any]] = []
@@ -1579,6 +1708,9 @@ def build_markdown(result: Mapping[str, Any]) -> str:
             if latest.get("as_of_date")
             else "行情待补"
         )
+        freshness_note = _freshness_note(latest)
+        if freshness_note:
+            market_text = f"{market_text}（{freshness_note}）"
         lines.append(
             f"- {item.get('market') or latest.get('market') or '-'} {item.get('ticker')} {item.get('issuer_name')}: "
             f"{item.get('activity_summary') or '-'}；产业链={item.get('chain') or '-'}；节点={nodes or '-'}；行情={market_text}"

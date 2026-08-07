@@ -50,6 +50,10 @@ services:
       AI_QUANT_LLM_DEFAULT_MODEL: ${AI_QUANT_LLM_DEFAULT_MODEL:-qwen3.6-plus}
       AI_QUANT_LLM_TIMEOUT_SECONDS: ${AI_QUANT_LLM_TIMEOUT_SECONDS:-120}
       AI_QUANT_ANTHROPIC_VERSION: ${AI_QUANT_ANTHROPIC_VERSION:-2023-06-01}
+      AI_QUANT_DYNAMIC_ALLOCATION_DB: ${AI_QUANT_DYNAMIC_ALLOCATION_DB:-/data/local/dynamic_allocation.sqlite}
+      AI_QUANT_DYNAMIC_ALLOCATION_CACHE: ${AI_QUANT_DYNAMIC_ALLOCATION_CACHE:-/data/local/dynamic-allocation-cache}
+      AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_PORT: ${AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_HOST_PORT:-8501}
+      AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_URL: ${AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_URL:-}
       AI_QUANT_PADDLEOCR_JOB_URL: ${AI_QUANT_PADDLEOCR_JOB_URL:-https://paddleocr.aistudio-app.com/api/v2/ocr/jobs}
       AI_QUANT_PADDLEOCR_TOKEN: ${AI_QUANT_PADDLEOCR_TOKEN:-}
       AI_QUANT_PADDLEOCR_MODEL: ${AI_QUANT_PADDLEOCR_MODEL:-PaddleOCR-VL-1.5}
@@ -61,6 +65,7 @@ services:
       AI_QUANT_RESEARCH_REPORT_ROOT: ${AI_QUANT_APP_RESEARCH_REPORT_ROOT:-/data/local/research_reports}
     volumes:
       - ./app:/app/app:ro
+      - ./config:/app/config:ro
       - ./docs:/app/docs:ro
       - ./scripts:/app/scripts:ro
       - ./tasks:/app/tasks:ro
@@ -73,6 +78,37 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  dynamic-allocation-dashboard:
+    build: .
+    depends_on:
+      ai-quant-org:
+        condition: service_started
+    command:
+      - python
+      - -m
+      - streamlit
+      - run
+      - app/dynamic_allocation/dashboard/app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
+    ports:
+      - "${AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_HOST_PORT:-8501}:8501"
+    environment:
+      AI_QUANT_API_BASE_URL: http://ai-quant-org:8000
+      AI_QUANT_DYNAMIC_ALLOCATION_ACTOR: ${AI_QUANT_DYNAMIC_ALLOCATION_ACTOR:-dashboard_user}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./app:/app/app:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; response=urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=5); raise SystemExit(0 if response.status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine

@@ -274,6 +274,12 @@ def _company_intelligence_overview(
         next_actions = intelligence.get("next_actions") if isinstance(intelligence.get("next_actions"), list) else []
         summary = relationship_context.get("summary", {}) if isinstance(relationship_context.get("summary"), dict) else {}
         coverage_diagnostics = relationship_context.get("coverage_diagnostics", {}) if isinstance(relationship_context.get("coverage_diagnostics"), dict) else {}
+        # 物化快照与 app/api.py 的逐公司兜底路径取同一字段，保证 /api/analysis/latest
+        # 无论走哪条路径都带公司侧行情滞后标注（需求 5.6、5.7）。
+        facts_and_events = intelligence.get("facts_and_events", {}) if isinstance(intelligence.get("facts_and_events"), dict) else {}
+        market_freshness = facts_and_events.get("latest_market_freshness", {}) if isinstance(facts_and_events.get("latest_market_freshness"), dict) else {}
+        # 与 app/api.py 的兜底路径同口径：`is_complete` 走 `completeness_policy.resolve_status`，
+        # 缺失事实字段或任一覆盖度 < 0.9 一律 False（需求 5.1、5.2），ready_count 因此低于收敛前取值。
         if completeness.get("is_complete"):
             ready_count += 1
         else:
@@ -304,6 +310,8 @@ def _company_intelligence_overview(
                 "relationship_status": coverage_diagnostics.get("status", ""),
                 "next_actions": next_actions[:3],
                 "completeness_verdict": completeness,
+                # 与 daily_insight.market_freshness 同键的公司侧行情滞后标注（需求 5.6、5.7）。
+                "market_freshness": market_freshness,
                 "data_quality": {
                     "profile_available": data_quality.get("profile_available", False),
                     "event_timeline_available": data_quality.get("event_timeline_available", False),

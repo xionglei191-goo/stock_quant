@@ -1808,3 +1808,69 @@ class DrillSchedule:
     last_result: str = ""
     rca_summary: str = ""
     action_items: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class DailyMainlineRun:
+    run_id: str
+    run_date: str
+    status: str = "passed"
+    stages: list[dict[str, Any]] = field(default_factory=list)
+    candidate_count: int = 0
+    queue_count: int = 0
+    unsupported_count: int = 0
+    llm_run_ids: list[str] = field(default_factory=list)
+    failure_reason_codes: list[str] = field(default_factory=list)
+    next_actions: list[dict[str, Any]] = field(default_factory=list)
+    timeout_seconds: int = 600
+    elapsed_seconds: float = 0.0
+    artifact_path: str = ""
+    live_execution_allowed: bool = False
+    paper_only: bool = True
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.status, {"passed", "partial", "failed", "empty"}, "status")
+
+
+@dataclass(slots=True)
+class DailyMainlineQueueItem:
+    item_id: str
+    run_id: str
+    security_id: str
+    issuer_id: str = ""
+    ticker: str = ""
+    market: str = ""
+    rank: int = 0
+    selection_reason: str = ""
+    trigger_metric: str = ""
+    trigger_value: float = 0.0
+    as_of_date: str = ""
+    completeness_status: str = "unknown"
+    missing_layers: list[str] = field(default_factory=list)
+    partition: str = "researchable"
+    viewpoint: dict[str, Any] = field(default_factory=dict)
+    evidence_ids: list[str] = field(default_factory=list)
+    research_answer_id: str = ""
+    llm_task_run_id: str = ""
+    template_id: str = ""
+    review_status: str = "pending"
+    diligence_status: str = "generated"
+    diligence_reason_code: str = ""
+    created_at: Any = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _validate_choice(self.partition, {"researchable", "pending_evidence"}, "partition")
+        _validate_choice(self.review_status, {"pending", "accepted", "rejected"}, "review_status")
+        _validate_choice(self.diligence_status, {"generated", "unsupported", "skipped", "failed"}, "diligence_status")
+
+
+@dataclass(slots=True)
+class DailyWatchlistEntry:
+    entry_id: str
+    security_id: str
+    run_id: str = ""
+    item_id: str = ""
+    selection_reason: str = ""
+    joined_at: Any = field(default_factory=utcnow)
+    actor: str = "system"

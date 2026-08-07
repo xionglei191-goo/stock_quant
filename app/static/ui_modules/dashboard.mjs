@@ -6,6 +6,7 @@ export function createDashboardRuntime({
   api,
   boundaryLabel,
   documentTypeLabel,
+  escapeHtml,
   metaLine,
   pct,
   rawPct,
@@ -20,6 +21,126 @@ export function createDashboardRuntime({
   toneForNumber,
   userEntityLabel,
 }) {
+  const DAILY_MAINLINE_STAGE_LABELS = {
+    scan_market_disturbance: "扫描市场异动",
+    build_candidate_pool: "构建候选池",
+    run_auto_diligence: "自动尽调",
+    build_daily_queue: "生成研究清单",
+  };
+
+  function dailyMainlineStageLabel(value) {
+    return DAILY_MAINLINE_STAGE_LABELS[value] || statusLabel(value || "待运行");
+  }
+
+  function dailyMainlineStatusClass(value) {
+    const normalized = String(value || "").toLowerCase();
+    if (normalized === "passed") return "ok";
+    if (normalized === "failed") return "block";
+    return "warn";
+  }
+
+  function dailyMainlineRow(item = {}, { pending = false } = {}) {
+    const evidenceIds = item.evidence_ref?.evidence_ids || item.evidence_ids || [];
+    const missingLayers = item.missing_layers || [];
+    const viewpoint = item.viewpoint || {};
+    const reason = item.selection_reason || viewpoint.summary || "等待研究判断";
+    const completeness = item.completeness_status || "partial";
+    const evidenceLabel = evidenceIds.length ? `${evidenceIds.length} 条证据` : "待补证据";
+    const evidenceAction = item.ticker
+      ? `<button type="button" data-action="open-company-intel" data-symbol="${escapeHtml(item.ticker)}">查看证据</button>`
+      : `<span class="small-note">${evidenceLabel}</span>`;
+    const watchlistAction = pending
+      ? `<span class="small-note">${escapeHtml(item.diligence_reason_code || "evidence_missing")}</span>`
+      : `<button type="button" data-action="add-daily-watchlist" data-item-id="${escapeHtml(item.item_id)}">加入关注池</button>`;
+    return `<tr>
+      <td>${escapeHtml(item.rank || "-")}</td>
+      <td><strong>${escapeHtml(item.ticker || item.security_id || "-")}</strong>${metaLine("市场", escapeHtml(item.market || "-"))}</td>
+      <td>${escapeHtml(reason)}${metaLine("触发", `${escapeHtml(item.trigger_metric || "-")} ${escapeHtml(item.trigger_value ?? "-")}`)}</td>
+      <td><span class="badge ${completeness === "complete" ? "ok" : "warn"}">${escapeHtml(statusLabel(completeness))}</span>${missingLayers.length ? metaLine("缺口", escapeHtml(missingLayers.slice(0, 3).join("、"))) : ""}</td>
+      <td>${evidenceAction}${metaLine("状态", escapeHtml(evidenceLabel))}</td>
+      <td>${watchlistAction}</td>
+    </tr>`;
+  }
+
+  function renderDailyMainline(data = {}) {
+    const progress = data.progress || {};
+    const stages = data.stages || [];
+    const items = data.items || [];
+    const pendingItems = data.pending_evidence_items || [];
+    const status = data.status || "empty";
+    const failedStage = stages.find((item) => item.status === "failed")
+      || stages.find((item) => item.status === "skipped" && item.reason_code);
+    const failure = $("dailyMainlineFailure");
+    const pending = $("dailyMainlinePending");
+    const empty = $("dailyMainlineEmpty");
+    const runButton = $("runDailyMainline");
+
+    setText("dailyMainlineAsOf", data.as_of_date || "-");
+    setText("dailyMainlineGeneratedAt", data.generated_at || "-");
+    setText("dailyMainlineStatus", statusLabel(status));
+    setText(
+      "dailyMainlineProgress",
+      `${progress.completed_count || 0}/${progress.total_count || 4} · ${dailyMainlineStageLabel(progress.current_stage)}`,
+    );
+    $("dailyMainlineStatus").className = `badge ${dailyMainlineStatusClass(status)}`;
+    $("dailyMainlineRows").innerHTML = items.map((item) => dailyMainlineRow(item)).join("");
+    $("dailyMainlinePendingRows").innerHTML = pendingItems.map((item) => dailyMainlineRow(item, { pending: true })).join("");
+
+    failure.hidden = !failedStage || !["partial", "failed"].includes(status);
+    failure.textContent = failure.hidden
+      ? ""
+      : `失败阶段：${dailyMainlineStageLabel(failedStage.stage)} · 原因码：${failedStage.reason_code || "unknown"}`;
+    pending.hidden = pendingItems.length === 0;
+    empty.hidden = items.length > 0 || pendingItems.length > 0;
+    runButton.disabled = false;
+    runButton.textContent = "运行今日主线";
+    return data;
+  }
+
+  async function loadDailyMainlineQueue() {
+    const { data } = await api("/api/daily-mainline/queue", { role: "analyst" });
+    return renderDailyMainline(data || {});
+  }
+
+  async function runDailyMainline() {
+    const runButton = $("runDailyMainline");
+    runButton.disabled = true;
+    runButton.textContent = "运行中";
+    setText("dailyMainlineStatus", "运行中");
+    setText("dailyMainlineProgress", `0/4 · ${dailyMainlineStageLabel("scan_market_disturbance")}`);
+    $("dailyMainlineStatus").className = "badge warn";
+    try {
+      const { data } = await api("/api/daily-mainline/run", {
+        method: "POST",
+        role: "analyst",
+        body: {},
+      });
+      return renderDailyMainline(data || {});
+    } catch (error) {
+      setText("dailyMainlineStatus", "运行失败");
+      $("dailyMainlineStatus").className = "badge block";
+      $("dailyMainlineFailure").hidden = false;
+      $("dailyMainlineFailure").textContent = `失败阶段：未知 · 原因：${error.message}`;
+      throw error;
+    } finally {
+      runButton.disabled = false;
+      runButton.textContent = "运行今日主线";
+    }
+  }
+
+  async function addDailyMainlineWatchlist(itemId) {
+    const { data } = await api(`/api/daily-mainline/queue/${encodeURIComponent(itemId)}/watchlist`, {
+      method: "POST",
+      role: "analyst",
+      body: {},
+    });
+    document.querySelectorAll(`[data-action="add-daily-watchlist"][data-item-id="${CSS.escape(itemId)}"]`).forEach((button) => {
+      button.disabled = true;
+      button.textContent = data?.created === false ? "已在关注池" : "已加入";
+    });
+    return data;
+  }
+
   function dataHealthStatusClass(value) {
     const normalized = String(value || "").toLowerCase();
     if (["healthy", "success", "ok", "available", "ready"].includes(normalized)) return "ok";
@@ -245,11 +366,16 @@ export function createDashboardRuntime({
   document.body.dataset.uiRuntimeModules = [...currentModules].sort().join(",");
 
   return {
+    addDailyMainlineWatchlist,
     dataHealthNextActionLabel,
     dataHealthStatusClass,
+    dailyMainlineStatusClass,
+    loadDailyMainlineQueue,
     loadDataHealthSummary,
+    renderDailyMainline,
     renderLatestAnalysis,
     renderDataHealthRows,
     renderDataHealthSummary,
+    runDailyMainline,
   };
 }

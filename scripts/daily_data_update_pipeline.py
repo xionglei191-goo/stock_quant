@@ -252,6 +252,16 @@ def _latency_audit(base_url: str, *, output: Path, threshold_ms: float, timeout:
             threshold_ms=threshold_ms,
         ),
         _latency_probe(
+            "daily_mainline_queue",
+            base_url=base_url,
+            method="GET",
+            path="/api/daily-mainline/queue",
+            body=None,
+            role="analyst",
+            timeout=timeout,
+            threshold_ms=threshold_ms,
+        ),
+        _latency_probe(
             "graph_query",
             base_url=base_url,
             method="GET",
@@ -467,6 +477,7 @@ def _daily_summary(
     latency = payloads.get("latency-audit", {})
     latest_analysis = payloads.get("latest_analysis", {})
     personal_intelligence = payloads.get("personal-intelligence-refresh", {})
+    dynamic_allocation = payloads.get("dynamic-allocation-daily", {})
     local_production = payloads.get("local-production-audit", {})
     project_completion = payloads.get("project-completion-audit", {})
 
@@ -521,6 +532,39 @@ def _daily_summary(
             "needs_attention_count": _int_value(personal_intelligence.get("needs_attention_count")),
             "watchlist_symbols": personal_intelligence.get("watchlist_symbols") or [],
             "artifact": str(artifacts.get("personal-intelligence-refresh") or ""),
+        },
+        "dynamic_allocation": {
+            "status": str(dynamic_allocation.get("status") or ""),
+            "decision_ready": bool(
+                (dynamic_allocation.get("decision") or {}).get("ready")
+                if isinstance(dynamic_allocation.get("decision"), Mapping)
+                else False
+            ),
+            "fresh_series_count": _int_value(
+                (dynamic_allocation.get("auditability") or {}).get("fresh_series_count")
+                if isinstance(dynamic_allocation.get("auditability"), Mapping)
+                else 0
+            ),
+            "configured_series_count": _int_value(
+                (dynamic_allocation.get("auditability") or {}).get("configured_series_count")
+                if isinstance(dynamic_allocation.get("auditability"), Mapping)
+                else 0
+            ),
+            "ready_factor_count": _int_value(
+                (dynamic_allocation.get("auditability") or {}).get("ready_factor_count")
+                if isinstance(dynamic_allocation.get("auditability"), Mapping)
+                else 0
+            ),
+            "factor_count": _int_value(
+                (dynamic_allocation.get("auditability") or {}).get("factor_count")
+                if isinstance(dynamic_allocation.get("auditability"), Mapping)
+                else 0
+            ),
+            "paper_only": bool(dynamic_allocation.get("paper_only", True)),
+            "live_execution_allowed": bool(
+                dynamic_allocation.get("live_execution_allowed", False)
+            ),
+            "artifact": str(artifacts.get("dynamic-allocation-daily") or ""),
         },
         "latency": {
             "status": str(latency.get("status") or ""),
@@ -1000,6 +1044,57 @@ def run_daily_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
 
+    if getattr(args, "run_dynamic_allocation", False):
+        dynamic_output = Path(
+            getattr(
+                args,
+                "dynamic_allocation_output",
+                "artifacts/dynamic-allocation/daily-run-latest.json",
+            )
+        )
+        artifacts["dynamic-allocation-daily"] = str(dynamic_output)
+        dynamic_as_of = str(
+            getattr(args, "dynamic_allocation_as_of", "") or datetime.now(timezone.utc).isoformat()
+        )
+        command = [
+            sys.executable,
+            "scripts/dynamic_allocation_daily_run.py",
+            "--as-of",
+            dynamic_as_of,
+            "--market-start",
+            str(getattr(args, "dynamic_allocation_market_start", "2000-01-01")),
+            "--execute",
+            "--ledger",
+            str(
+                getattr(
+                    args,
+                    "dynamic_allocation_ledger",
+                    "data/local/dynamic-allocation-paper.jsonl",
+                )
+            ),
+            "--output",
+            str(dynamic_output),
+            "--history-dir",
+            str(
+                getattr(
+                    args,
+                    "dynamic_allocation_history_dir",
+                    "artifacts/dynamic-allocation/daily-history",
+                )
+            ),
+        ]
+        steps.append(
+            _run_command(
+                "dynamic_allocation_daily",
+                command,
+                timeout=int(getattr(args, "dynamic_allocation_timeout_seconds", 1800)),
+                allow_failure=bool(
+                    getattr(args, "allow_dynamic_allocation_failure", False)
+                ),
+                artifact_path=dynamic_output,
+            )
+        )
+
     insight_output = artifact("daily-insight-json")
     insight_md_output = artifact("daily-insight-md", ".md")
     insight_started = datetime.now(timezone.utc)
@@ -1197,6 +1292,14 @@ def main() -> None:
     parser.add_argument("--personal-intelligence-report-match-limit", type=int, default=100)
     parser.add_argument("--personal-intelligence-structure-report-limit", type=int, default=20)
     parser.add_argument("--personal-intelligence-timeout-seconds", type=int, default=900)
+    parser.add_argument("--run-dynamic-allocation", action="store_true", help="Run the governed public-data refresh and strict paper-only dynamic-allocation decision.")
+    parser.add_argument("--allow-dynamic-allocation-failure", action="store_true", help="Keep later audits running if dynamic allocation fails; the step remains visible as an allowed failure.")
+    parser.add_argument("--dynamic-allocation-as-of", default="", help="Timezone-aware evaluation timestamp; defaults to the current UTC time.")
+    parser.add_argument("--dynamic-allocation-market-start", default="2000-01-01")
+    parser.add_argument("--dynamic-allocation-ledger", default="data/local/dynamic-allocation-paper.jsonl")
+    parser.add_argument("--dynamic-allocation-output", default="artifacts/dynamic-allocation/daily-run-latest.json")
+    parser.add_argument("--dynamic-allocation-history-dir", default="artifacts/dynamic-allocation/daily-history")
+    parser.add_argument("--dynamic-allocation-timeout-seconds", type=int, default=1800)
     parser.add_argument("--skip-local-production-audit", action="store_true")
     parser.add_argument("--skip-project-completion-audit", action="store_true")
     parser.add_argument("--run-project-completion-audit", action="store_true", help="Run the heavier project completion audit. Disabled by default in daily refresh because it imports UI/PIL audit dependencies.")

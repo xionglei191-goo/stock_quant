@@ -7,6 +7,8 @@ import re
 from io import StringIO
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
+from . import completeness_policy
+
 
 class SecurityLike(Protocol):
     security_id: str
@@ -126,7 +128,19 @@ def completeness_verdict(
     database_coverage: Mapping[str, Any],
     profile_field_coverage: Mapping[str, Any],
     deep_coverage_fields: Callable[..., list[str]],
+    relationship_coverage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """公司情报完整度判定，`status` / `is_complete` / `missing_layers` / `next_actions` 委派统一口径。
+
+    `relationship_coverage` 取 `relationship_context["coverage_diagnostics"]`（读取其
+    `coverage_score`），补齐 `completeness_policy.LAYER_COVERAGE_THRESHOLDS` 的第三个阈值项；
+    缺省时按 0.0（未达标）处理，与策略模块"缺键=未达标"的口径一致（需求 5.1、5.2、5.3；设计 §4.8）。
+
+    `level` / `score` / `sections` / `blocking_gaps` / `warning_gaps` / `ready_for_*`
+    等既有字段与语义保持不变：`level` 仍按本地分节 gap 列表（`blocking_gaps` + `warning_gaps`）
+    与加权分计算，不受策略模块新增的覆盖度分层与 `profile_fact_fields` 影响。
+    """
+
     profile_coverage = max(0.0, min(1.0, float(data_quality.get("profile_coverage", 0.0) or 0.0)))
     event_backlink_rate = max(0.0, min(1.0, float(data_quality.get("event_backlink_rate", 0.0) or 0.0)))
     relationship_backlink_rate = max(0.0, min(1.0, float(data_quality.get("relationship_backlink_rate", 0.0) or 0.0)))
@@ -168,12 +182,15 @@ def completeness_verdict(
     ready_for_analysis = ready_for_fact_review and bool(data_quality.get("research_results_available"))
     ready_for_feedback_review = ready_for_analysis and bool(data_quality.get("simulation_feedback_available"))
     required_layers = [section for section, _label, _quality_key, _weight, _blocking, _source_policy, _action in SECTION_SPECS]
-    missing_layers = list(dict.fromkeys([*blocking_gaps, *warning_gaps]))
+    # 分节 gap 列表：`level` 与 `recommended_next_action` 的既有语义只看这一层，
+    # 不吃统一口径新增的覆盖度分层与事实字段分层。
+    section_gap_layers = list(dict.fromkeys([*blocking_gaps, *warning_gaps]))
     database_coverage_score = max(0.0, min(1.0, float(database_coverage.get("coverage_score", 0.0) or 0.0)))
     profile_field_coverage_score = max(0.0, min(1.0, float(profile_field_coverage.get("field_coverage_score", 0.0) or 0.0)))
+    relationship_coverage_score = max(0.0, min(1.0, float((relationship_coverage or {}).get("coverage_score", 0.0) or 0.0)))
     required_fact_fields = [str(field) for field in (profile_field_coverage.get("required_fields") or deep_coverage_fields(include_optional=False))]
     missing_fact_fields = [str(field) for field in profile_field_coverage.get("missing_fields", [])]
-    if score >= 0.9 and not missing_layers:
+    if score >= 0.9 and not section_gap_layers:
         level = "complete"
     elif score >= 0.7:
         level = "near_complete"
@@ -181,37 +198,39 @@ def completeness_verdict(
         level = "partial"
     else:
         level = "sparse"
-    if not data_quality.get("profile_available"):
-        status = "not_found"
-        label = "未建档"
-    elif blocking_gaps:
-        status = "incomplete"
-        label = "需要补库"
-    elif ready_for_feedback_review and score >= 0.9 and not warning_gaps:
-        status = "complete"
-        label = "完整"
-    else:
-        status = "usable_with_gaps"
-        if ready_for_feedback_review:
-            label = "可复盘"
-        elif ready_for_analysis:
-            label = "可分析"
-        elif ready_for_fact_review:
-            label = "事实层可用"
-        else:
-            label = "可用但有缺口"
+    policy_verdict = completeness_policy.resolve_status(
+        profile_available=bool(data_quality.get("profile_available")),
+        blocking_gaps=blocking_gaps,
+        warning_gaps=warning_gaps,
+        missing_fact_fields=missing_fact_fields,
+        coverage_scores={
+            "profile_field_coverage_score": profile_field_coverage_score,
+            "database_coverage_score": database_coverage_score,
+            "relationship_coverage_score": relationship_coverage_score,
+        },
+    )
+    status = str(policy_verdict["status"])
+    label = str(policy_verdict["label"])
+    missing_layers = [str(layer) for layer in policy_verdict["missing_layers"]]
+    policy_next_actions = completeness_policy.next_actions(
+        status=status,
+        missing_layers=missing_layers,
+        missing_fact_fields=missing_fact_fields,
+    )
     recommended_next_action = verdict_next_action(symbol, blocking_gaps, warning_gaps, data_quality)
     return {
         "schema_id": "company-intelligence-completeness-verdict-v1",
         "status": status,
         "label": label,
-        "is_complete": status == "complete",
+        "is_complete": bool(policy_verdict["is_complete"]),
         "level": level,
         "score": round(score, 4),
         "required_layers": required_layers,
         "missing_layers": missing_layers,
+        "section_gap_layers": section_gap_layers,
         "database_coverage_score": database_coverage_score,
         "profile_field_coverage_score": profile_field_coverage_score,
+        "relationship_coverage_score": relationship_coverage_score,
         "required_fact_fields": required_fact_fields,
         "missing_fact_fields": missing_fact_fields,
         "blocking_gaps": list(dict.fromkeys(blocking_gaps)),
@@ -230,6 +249,10 @@ def completeness_verdict(
         "recommended_actions": [recommended_next_action] if recommended_next_action.get("action") != "none" else [],
         "usage_boundary": "completeness_verdict_is_data_readiness_only_not_investment_advice_no_live_trading",
         "recommended_next_action": recommended_next_action,
+        # 统一口径产出的可执行下一步（需求 5.4）。响应顶层的 `next_actions` 是另一条路径
+        # （`SystemService._company_intelligence_next_actions`），本键为新增、不替换顶层结构。
+        "next_actions": policy_next_actions,
+        "status_source": "completeness_policy.resolve_status",
     }
 
 
@@ -268,6 +291,19 @@ def _dedupe_rows(rows: Iterable[Mapping[str, Any]], key: str) -> list[dict[str, 
     for row in rows:
         value = str(row.get(key, "") or "").strip()
         if not value or value in seen:
+            continue
+        result.append(dict(row))
+        seen.add(value)
+    return result
+
+
+def _dedupe_rows_by_keys(rows: Iterable[Mapping[str, Any]], keys: Iterable[str]) -> list[dict[str, Any]]:
+    normalized_keys = tuple(keys)
+    seen: set[tuple[str, ...]] = set()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        value = tuple(str(row.get(key, "") or "").strip() for key in normalized_keys)
+        if not any(value) or value in seen:
             continue
         result.append(dict(row))
         seen.add(value)
@@ -1122,7 +1158,10 @@ def relationship_context(
                     "source": "approved_company_relationship",
                 }
             )
-    approved_shareholder_related_rows = _dedupe_rows(approved_shareholder_related_rows, "relationship_id")[:limit]
+    approved_shareholder_related_rows = _dedupe_rows_by_keys(
+        approved_shareholder_related_rows,
+        ("related_issuer_id", "holder_key"),
+    )[:limit]
     shareholder_related_rows = _dedupe_rows(shareholder_related_rows, "related_issuer_id")[:limit]
 
     graph_edges = graph.get("edges", []) if isinstance(graph.get("edges"), list) else []

@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: local-ci check-handoffs check-doc-metadata artifact-audit milestone-candidate
+.PHONY: local-ci check-handoffs check-doc-metadata artifact-audit milestone-candidate daily-mainline
 
 local-ci:
 	$(PYTHON) -m py_compile app/*.py tests/*.py scripts/*.py
@@ -22,3 +22,6 @@ artifact-audit:
 
 milestone-candidate:
 	$(PYTHON) scripts/local_milestone_candidate.py
+
+daily-mainline:
+	$(PYTHON) scripts/daily_mainline_run.py

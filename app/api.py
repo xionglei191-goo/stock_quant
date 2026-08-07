@@ -261,7 +261,7 @@ PERMISSION_POLICY_CATALOG: list[dict[str, Any]] = [
     },
     {
         "rule_id": "operating_reviews_graph_search",
-        "path_prefixes": ["/api/reviews", "/api/operating-reports", "/api/strategy-replays", "/api/graph", "/api/search", "/api/company-intelligence", "/api/company-database"],
+        "path_prefixes": ["/api/reviews", "/api/operating-reports", "/api/strategy-replays", "/api/graph", "/api/search", "/api/company-intelligence", "/api/company-database", "/api/daily-mainline"],
         "sample_paths": {"GET": "/api/graph/query", "POST": "/api/operating-reports"},
         "methods": ["GET", "POST"],
         "actions": {"GET": "read", "POST": "write"},
@@ -295,12 +295,14 @@ class ApiRouter:
         self.service = service or SystemService()
         self._dynamic_allocation_app = dynamic_allocation
         self._dispatch_lock = RLock()
+        self._dynamic_allocation_lock = RLock()
 
     @property
     def dynamic_allocation(self) -> DynamicAllocationApplication:
-        if self._dynamic_allocation_app is None:
-            self._dynamic_allocation_app = DynamicAllocationApplication()
-        return self._dynamic_allocation_app
+        with self._dynamic_allocation_lock:
+            if self._dynamic_allocation_app is None:
+                self._dynamic_allocation_app = DynamicAllocationApplication()
+            return self._dynamic_allocation_app
 
     def dispatch(
         self,
@@ -312,6 +314,38 @@ class ApiRouter:
         role: str = "system",
         origin: str = "api",
     ) -> ApiResponse:
+        if path == "/api/health":
+            return self._dispatch_locked(
+                method,
+                path,
+                body,
+                actor=actor,
+                role=role,
+                origin=origin,
+                use_service_context=False,
+                persist_service_writes=False,
+                record_usage=False,
+            )
+        if path.startswith("/api/dynamic-allocation"):
+            normalized_role = self._normalize_role(role)
+            with self._dynamic_allocation_lock:
+                response = self._dispatch_locked(
+                    method,
+                    path,
+                    body,
+                    actor=actor,
+                    role=normalized_role,
+                    origin=origin,
+                    use_service_context=False,
+                    persist_service_writes=False,
+                    record_usage=False,
+                )
+            if response.success and self._dispatch_lock.acquire(blocking=False):
+                try:
+                    self.service.record_usage(method.upper(), path, role=normalized_role, origin=origin)
+                finally:
+                    self._dispatch_lock.release()
+            return response
         with self._dispatch_lock:
             return self._dispatch_locked(method, path, body, actor=actor, role=role, origin=origin)
 
@@ -324,11 +358,15 @@ class ApiRouter:
         actor: str = "system",
         role: str = "system",
         origin: str = "api",
+        use_service_context: bool = True,
+        persist_service_writes: bool = True,
+        record_usage: bool = True,
     ) -> ApiResponse:
         body = body or {}
         trace_id = new_id("trace")
         role = self._normalize_role(role)
-        self.service.set_trace_id(trace_id)
+        if use_service_context:
+            self.service.set_trace_id(trace_id)
         try:
             handler = self._resolve(method.upper(), path)
             if handler is None:
@@ -339,9 +377,10 @@ class ApiRouter:
             data = handler(path, body, actor=actor)
             # Some domain methods rely on the request boundary for persistence.
             # Flush business mutations before usage telemetry narrows the dirty scope.
-            if method.upper() != "GET":
+            if persist_service_writes and method.upper() != "GET":
                 self.service.store.commit_all()
-            self.service.record_usage(method.upper(), path, role=role, origin=origin)
+            if record_usage:
+                self.service.record_usage(method.upper(), path, role=role, origin=origin)
             return ApiResponse(success=True, data=data, error=None, status_code=200, trace_id=trace_id)
         except ValidationError as exc:
             return self._error(422, "validation_error", str(exc), trace_id)
@@ -358,7 +397,8 @@ class ApiRouter:
         except Exception as exc:  # pragma: no cover - safe fallback
             return self._error(500, "internal_error", str(exc), trace_id)
         finally:
-            self.service.set_trace_id("")
+            if use_service_context:
+                self.service.set_trace_id("")
 
     def _error(self, status_code: int, kind: str, message: str, trace_id: str) -> ApiResponse:
         return ApiResponse(success=False, data=None, error={"type": kind, "message": message}, status_code=status_code, trace_id=trace_id)
@@ -396,6 +436,8 @@ class ApiRouter:
             return method == "GET" or role in {"system", "风险/合规", "平台负责人", "数据工程"}
         if path.startswith("/api/dynamic-allocation"):
             return method == "GET" or role in {"system", "CIO", "PM", "风险/合规", "平台负责人", "分析师", "数据工程", "NLP/ML 负责人", "海外研究负责人"}
+        if path.startswith("/api/daily-mainline"):
+            return role in {"system", "CEO", "CIO", "PM", "风险/合规", "平台负责人", "分析师", "海外研究负责人"}
         if path.startswith("/api/corporate-actions"):
             return method == "GET" or role in {"system", "风险/合规", "平台负责人", "数据工程"}
         if path.startswith("/api/13f"):
@@ -792,6 +834,11 @@ class ApiRouter:
                     next_actions = intelligence.get("next_actions") if isinstance(intelligence.get("next_actions"), list) else []
                     summary = relationship_context.get("summary", {}) if isinstance(relationship_context.get("summary"), dict) else {}
                     coverage_diagnostics = relationship_context.get("coverage_diagnostics", {}) if isinstance(relationship_context.get("coverage_diagnostics"), dict) else {}
+                    facts_and_events = intelligence.get("facts_and_events", {}) if isinstance(intelligence.get("facts_and_events"), dict) else {}
+                    market_freshness = facts_and_events.get("latest_market_freshness", {}) if isinstance(facts_and_events.get("latest_market_freshness"), dict) else {}
+                    # `is_complete` 由 `completeness_policy.resolve_status` 产出，口径已收紧：
+                    # 缺失事实字段或任一覆盖度 < 0.9 一律 False（需求 5.1、5.2）。因此 ready_count
+                    # 会低于收敛前取值，needs_attention_count 相应升高；键名与语义未变。
                     if completeness.get("is_complete"):
                         ready_count += 1
                     else:
@@ -822,6 +869,8 @@ class ApiRouter:
                             "relationship_status": coverage_diagnostics.get("status", ""),
                             "next_actions": next_actions[:3],
                             "completeness_verdict": completeness,
+                            # 与 daily_insight.market_freshness 同键的公司侧行情滞后标注（需求 5.6、5.7）。
+                            "market_freshness": market_freshness,
                             "data_quality": {
                                 "profile_available": data_quality.get("profile_available", False),
                                 "event_timeline_available": data_quality.get("event_timeline_available", False),
@@ -895,6 +944,29 @@ class ApiRouter:
             "business_acceptance": acceptance,
             "board_pack": analysis.get("board_pack") or {},
         }
+
+    def _run_daily_mainline(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.run_daily_mainline(body, actor=actor)
+
+    def _daily_mainline_queue(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.daily_mainline_queue_payload(body)
+
+    def _daily_mainline_runs(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        return self.service.daily_mainline_runs_payload(body)
+
+    def _add_daily_mainline_watchlist(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/daily-mainline/queue/(?P<item_id>[^/]+)/watchlist$", path)
+        return self.service.add_daily_queue_item_to_watchlist(
+            {**body, "item_id": match["item_id"]},
+            actor=actor,
+        )
+
+    def _review_daily_mainline_viewpoint(self, path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
+        match = re.fullmatch(r"^/api/daily-mainline/viewpoints/(?P<item_id>[^/]+)/review$", path)
+        return self.service.review_daily_mainline_viewpoint(
+            {**body, "item_id": match["item_id"]},
+            actor=actor,
+        )
 
     def _structured_logs_export(self, _path: str, body: dict[str, Any], *, actor: str) -> dict[str, Any]:
         return self.service.structured_logs_export(body, actor=actor)

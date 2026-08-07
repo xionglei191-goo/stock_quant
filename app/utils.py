@@ -6,7 +6,7 @@ from html.parser import HTMLParser
 import os
 import re
 import uuid
-from typing import Any
+from typing import Any, Mapping
 import zlib
 
 
@@ -30,8 +30,15 @@ def parse_datetime(value: Any) -> datetime:
     raise TypeError(f"Unsupported datetime value: {type(value)!r}")
 
 
-def env_text(name: str, default: str | None = None) -> str | None:
-    raw = os.environ.get(name)
+def env_text(name: str, default: str | None = None, *, env: Mapping[str, str] | None = None) -> str | None:
+    """读取一个环境键；缺失或空白值回落 `default`。
+
+    `env` 为可选的环境映射（依赖注入）。缺省时读 `os.environ`，与既有调用方行为一致；
+    显式传入时只读该映射，便于领域模块保持纯函数、无需 patch 进程环境即可测试。
+    """
+
+    source = os.environ if env is None else env
+    raw = source.get(name)
     if raw is None:
         return default
     value = str(raw).strip()
@@ -40,8 +47,15 @@ def env_text(name: str, default: str | None = None) -> str | None:
     return value
 
 
-def env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
-    raw = env_text(name)
+def env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    raw = env_text(name, env=env)
     if raw is None:
         value = default
     else:

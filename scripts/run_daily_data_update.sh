@@ -70,6 +70,8 @@ SKIP_LATEST_ANALYSIS="${AI_QUANT_DAILY_SKIP_LATEST_ANALYSIS:-false}"
 SKIP_PERSONAL_INTELLIGENCE="${AI_QUANT_DAILY_SKIP_PERSONAL_INTELLIGENCE:-false}"
 RUN_PERSONAL_INTELLIGENCE_EXECUTE="${AI_QUANT_DAILY_PERSONAL_INTELLIGENCE_EXECUTE:-true}"
 ALLOW_PERSONAL_INTELLIGENCE_FAILURE="${AI_QUANT_DAILY_ALLOW_PERSONAL_INTELLIGENCE_FAILURE:-false}"
+RUN_DYNAMIC_ALLOCATION="${AI_QUANT_DAILY_RUN_DYNAMIC_ALLOCATION:-true}"
+ALLOW_DYNAMIC_ALLOCATION_FAILURE="${AI_QUANT_DAILY_ALLOW_DYNAMIC_ALLOCATION_FAILURE:-false}"
 SKIP_LOCAL_PRODUCTION_AUDIT="${AI_QUANT_DAILY_SKIP_LOCAL_PRODUCTION_AUDIT:-false}"
 SKIP_PROJECT_COMPLETION_AUDIT="${AI_QUANT_DAILY_SKIP_PROJECT_COMPLETION_AUDIT:-false}"
 
@@ -97,12 +99,14 @@ if [ "$RUNNER" = "compose" ]; then
   PIPELINE_DSN="$CONTAINER_DSN"
   PIPELINE_BASE_URL="$CONTAINER_BASE_URL"
   PIPELINE_VIPDOC_PATH="$CONTAINER_VIPDOC_PATH"
+  PIPELINE_DYNAMIC_ALLOCATION_LEDGER="${AI_QUANT_DAILY_DYNAMIC_ALLOCATION_LEDGER:-/data/local/dynamic-allocation-paper.jsonl}"
   PYTHON_RUN=("${COMPOSE[@]}" exec -T "$SERVICE" python)
 elif [ "$RUNNER" = "host" ]; then
   wait_app "$HOST_BASE_URL"
   PIPELINE_DSN="$HOST_DSN"
   PIPELINE_BASE_URL="$HOST_BASE_URL"
   PIPELINE_VIPDOC_PATH="$HOST_VIPDOC_PATH"
+  PIPELINE_DYNAMIC_ALLOCATION_LEDGER="${AI_QUANT_DAILY_DYNAMIC_ALLOCATION_LEDGER:-data/local/dynamic-allocation-paper.jsonl}"
   PYTHON_RUN=(python3)
 else
   echo "Unsupported AI_QUANT_DAILY_RUNNER=$RUNNER; expected compose or host." >&2
@@ -268,6 +272,11 @@ PIPELINE_ARGS=(
   "--personal-intelligence-report-match-limit" "${AI_QUANT_DAILY_PERSONAL_INTELLIGENCE_REPORT_MATCH_LIMIT:-100}"
   "--personal-intelligence-structure-report-limit" "${AI_QUANT_DAILY_PERSONAL_INTELLIGENCE_STRUCTURE_REPORT_LIMIT:-20}"
   "--personal-intelligence-timeout-seconds" "${AI_QUANT_DAILY_PERSONAL_INTELLIGENCE_TIMEOUT_SECONDS:-900}"
+  "--dynamic-allocation-market-start" "${AI_QUANT_DAILY_DYNAMIC_ALLOCATION_MARKET_START:-2000-01-01}"
+  "--dynamic-allocation-ledger" "$PIPELINE_DYNAMIC_ALLOCATION_LEDGER"
+  "--dynamic-allocation-output" "${AI_QUANT_DAILY_DYNAMIC_ALLOCATION_OUTPUT:-artifacts/dynamic-allocation/daily-run-latest.json}"
+  "--dynamic-allocation-history-dir" "${AI_QUANT_DAILY_DYNAMIC_ALLOCATION_HISTORY_DIR:-artifacts/dynamic-allocation/daily-history}"
+  "--dynamic-allocation-timeout-seconds" "${AI_QUANT_DAILY_DYNAMIC_ALLOCATION_TIMEOUT_SECONDS:-1800}"
 )
 
 if [ -n "$END_DATE" ]; then
@@ -340,6 +349,14 @@ fi
 
 if bool_enabled "$ALLOW_PERSONAL_INTELLIGENCE_FAILURE"; then
   PIPELINE_ARGS+=("--allow-personal-intelligence-failure")
+fi
+
+if bool_enabled "$RUN_DYNAMIC_ALLOCATION"; then
+  PIPELINE_ARGS+=("--run-dynamic-allocation")
+fi
+
+if bool_enabled "$ALLOW_DYNAMIC_ALLOCATION_FAILURE"; then
+  PIPELINE_ARGS+=("--allow-dynamic-allocation-failure")
 fi
 
 if bool_enabled "$SKIP_LOCAL_PRODUCTION_AUDIT"; then

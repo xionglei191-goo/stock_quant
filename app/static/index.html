@@ -277,6 +277,61 @@
       color: var(--muted);
       font-size: 12px;
     }
+    .daily-mainline-panel {
+      margin-bottom: 12px;
+    }
+    .daily-mainline-panel .system-strip {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .daily-mainline-table-wrap {
+      overflow-x: auto;
+      max-width: 100%;
+    }
+    .daily-mainline-table {
+      min-width: 760px;
+      table-layout: fixed;
+    }
+    .daily-mainline-table th:nth-child(1) { width: 7%; }
+    .daily-mainline-table th:nth-child(2) { width: 14%; }
+    .daily-mainline-table th:nth-child(3) { width: 30%; }
+    .daily-mainline-table th:nth-child(4) { width: 17%; }
+    .daily-mainline-table th:nth-child(5) { width: 17%; }
+    .daily-mainline-table th:nth-child(6) { width: 15%; }
+    .daily-mainline-table td {
+      overflow-wrap: anywhere;
+      vertical-align: top;
+    }
+    .daily-mainline-failure {
+      border-left: 3px solid var(--red);
+      background: #fff7f7;
+      color: #991b1b;
+      padding: 9px 11px;
+      margin-bottom: 10px;
+      font-size: 12px;
+    }
+    .daily-mainline-pending {
+      border-top: 1px solid var(--line);
+      margin-top: 12px;
+      padding-top: 12px;
+    }
+    .daily-mainline-pending h3 {
+      font-size: 14px;
+      margin: 0 0 8px;
+    }
+    .daily-mainline-empty {
+      border: 1px dashed var(--line);
+      border-radius: 6px;
+      margin-top: 10px;
+      padding: 12px;
+      color: var(--muted);
+    }
+    .daily-mainline-empty p {
+      margin: 0 0 8px;
+    }
+    .daily-mainline-empty code {
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
     .decision-summary {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1608,6 +1663,8 @@
       .nav-footer { display: none; }
       .span-2, .span-3, .span-4, .span-6, .span-8 { grid-column: span 12; }
       .workspace-hero { grid-template-columns: 1fr; }
+      .daily-mainline-panel .analysis-header { align-items: stretch; flex-direction: column; }
+      .daily-mainline-panel .analysis-header button { align-self: flex-start; }
       .personal-card { grid-column: span 6; }
       .flow, .agent-grid, .system-strip, .quick-start { grid-template-columns: 1fr; }
       .method-grid, .method-lane, .template-grid, .score-band, .prompt-builder, .pipeline-grid, .pipeline-summary { grid-template-columns: 1fr; }
@@ -1668,7 +1725,7 @@
         <button data-open="search" data-workspace-target="personal">公司情报</button>
         <button data-open="entity" data-workspace-target="personal">知识图谱</button>
         <button data-open="ingestion" data-workspace-target="personal">K 线行情</button>
-        <a class="nav-external" href="http://127.0.0.1:8501" target="_blank" rel="noopener" aria-label="在新窗口打开动态资产配置研究页面">动态配置</a>
+        <a class="nav-external" href="/dynamic-allocation" target="_blank" rel="noopener" aria-label="在新窗口打开动态资产配置研究页面">动态配置</a>
         <button data-open="chokepoint" data-workspace-target="personal">研究结论</button>
         <button data-open="review" data-workspace-target="personal">模拟反馈</button>
         <p class="nav-help">默认只呈现个人研究闭环；复盘反馈、导入、调度、治理和复核在后台维护中继续可用。</p>
@@ -1690,6 +1747,41 @@
       <div id="status" class="status"></div>
 
       <section data-tab="dashboard" class="active">
+        <section class="panel daily-mainline-panel" id="dailyMainlinePanel" aria-label="今日待研究清单">
+          <div class="analysis-header">
+            <div class="analysis-title">
+              <strong>今天看什么</strong>
+              <span>市场异动、公司证据与自动尽调汇总，仅用于本地研究和纸面模拟。</span>
+            </div>
+            <button id="runDailyMainline" type="button" class="primary" data-action="run-daily-mainline">运行今日主线</button>
+          </div>
+          <div class="system-strip">
+            <div class="system-box"><strong>数据日期</strong><span id="dailyMainlineAsOf">-</span></div>
+            <div class="system-box"><strong>生成时间</strong><span id="dailyMainlineGeneratedAt">-</span></div>
+            <div class="system-box"><strong>运行状态</strong><span class="badge warn" id="dailyMainlineStatus">待载入</span></div>
+            <div class="system-box"><strong>阶段进度</strong><span id="dailyMainlineProgress">0/4</span></div>
+          </div>
+          <div id="dailyMainlineFailure" class="daily-mainline-failure" role="status" hidden></div>
+          <div class="daily-mainline-table-wrap">
+            <table class="daily-mainline-table">
+              <thead><tr><th>排名</th><th>标的</th><th>入选理由</th><th>完整度</th><th>证据</th><th>操作</th></tr></thead>
+              <tbody id="dailyMainlineRows"></tbody>
+            </table>
+          </div>
+          <div id="dailyMainlinePending" class="daily-mainline-pending" hidden>
+            <h3>待补证据</h3>
+            <div class="daily-mainline-table-wrap">
+              <table class="daily-mainline-table">
+                <thead><tr><th>排名</th><th>标的</th><th>入选理由</th><th>完整度</th><th>证据</th><th>原因</th></tr></thead>
+                <tbody id="dailyMainlinePendingRows"></tbody>
+              </table>
+            </div>
+          </div>
+          <div id="dailyMainlineEmpty" class="daily-mainline-empty" hidden>
+            <p>今日暂无清单。点击“运行今日主线”，或执行：</p>
+            <code>python3 scripts/daily_mainline_run.py --as-of-date YYYY-MM-DD</code>
+          </div>
+        </section>
         <div class="quick-start" aria-label="常用运行路径">
           <div class="quick-step">
             <strong>1. 建立公司档案</strong>
@@ -5941,6 +6033,13 @@
       return statusLabel(fallback || type || "关系").slice(0, 12);
     }
 
+    function knowledgeGraphLinkLabel(link = {}) {
+      const relationshipType = String(link?.meta?.relationship_type || "").trim();
+      return relationshipType
+        ? relationshipTypeDisplayLabel(relationshipType)
+        : graphEdgeLabel(link?.type || "", link?.label || "关系");
+    }
+
     function graphTypeRank(type) {
       return { issuer: 0, security: 1, industry: 2, chain_node: 3, market_data: 4, research: 5, event: 6, evidence: 7, decision: 8, portfolio: 9, risk: 10 }[type] ?? 11;
     }
@@ -7235,7 +7334,7 @@
       const target = graphNodeById(link.target);
       const strength = graphLinkStrength(link);
       return {
-        label: graphEdgeLabel(link.type, link.label),
+        label: knowledgeGraphLinkLabel(link),
         source: source.fullLabel || source.label || graphRef(link.source),
         target: target.fullLabel || target.label || graphRef(link.target),
         weight: Number(link.weight || 0),
@@ -7469,11 +7568,11 @@
       $("knowledgeGraphPathSteps").innerHTML = result.nodes.map((nodeId, index) => {
         const node = graphNodeById(nodeId);
         const link = result.links[index - 1];
-        const prefix = index === 0 ? "起点" : graphEdgeLabel(link?.type || "", link?.label || "关系");
+        const prefix = index === 0 ? "起点" : knowledgeGraphLinkLabel(link);
         const nextHops = graphPathNextHops(nodeId, 3)
           .map((item) => {
             const nextNode = item.node;
-            return `<button type="button" class="subtle graph-next-hop" data-node-id="${escapeHtml(nextNode.id)}" title="${escapeHtml(`${graphEdgeLabel(item.link.type, item.link.label)} · ${graphNodeTypeLabel(nextNode.type)}`)}" aria-label="继续探索 ${escapeHtml(nextNode.label)}">${escapeHtml(nextNode.label)}</button>`;
+            return `<button type="button" class="subtle graph-next-hop" data-node-id="${escapeHtml(nextNode.id)}" title="${escapeHtml(`${knowledgeGraphLinkLabel(item.link)} · ${graphNodeTypeLabel(nextNode.type)}`)}" aria-label="继续探索 ${escapeHtml(nextNode.label)}">${escapeHtml(nextNode.label)}</button>`;
           }).join("");
         return `<div class="graph-path-step"><strong>${escapeHtml(prefix)}</strong> · ${escapeHtml(node.label)} <span class="small-note">${escapeHtml(graphNodeTypeLabel(node.type))}</span>${nextHops ? `<div class="graph-path-next-hops">${nextHops}</div>` : ""}</div>`;
       }).join("");
@@ -7494,7 +7593,7 @@
     function renderKnowledgeGraphLinkInspector(link) {
       const source = graphNodeById(link.source);
       const target = graphNodeById(link.target);
-      const edgeLabel = graphEdgeLabel(link.type, link.label);
+      const edgeLabel = knowledgeGraphLinkLabel(link);
       const strength = graphLinkStrength(link);
       setText("knowledgeGraphNodeTitle", `${source.fullLabel || source.label || graphRef(link.source)} -> ${target.fullLabel || target.label || graphRef(link.target)}`);
       setText("knowledgeGraphNodeType", `关系 · ${edgeLabel}`);
@@ -7544,7 +7643,7 @@
         .map((link) => {
           const neighborId = link.source === node.id ? link.target : link.source;
           const neighbor = knowledgeGraphState.nodeById.get(neighborId) || { id: neighborId, label: graphRef(neighborId), type: "evidence" };
-          const edgeLabel = graphEdgeLabel(link.type, link.label);
+          const edgeLabel = knowledgeGraphLinkLabel(link);
           return `<button type="button" class="graph-neighbor" data-action="focus-graph-node" data-node-id="${escapeHtml(neighbor.id)}"><strong>${escapeHtml(neighbor.label)}</strong><span class="small-note">${escapeHtml(edgeLabel)} · ${escapeHtml(graphNodeTypeLabel(neighbor.type))}</span></button>`;
         });
       $("knowledgeGraphNeighborRows").innerHTML = neighbors.join("") || `<div class="small-note">暂无相邻关系</div>`;
@@ -7739,7 +7838,7 @@
         const linkId = escapeHtml(link.id);
         const sourceId = escapeHtml(source.id);
         const targetId = escapeHtml(target.id);
-        const edgeLabel = graphEdgeLabel(link.type, link.label);
+        const edgeLabel = knowledgeGraphLinkLabel(link);
         const strength = graphLinkStrength(link);
         const confidenceText = strength.confidence ? ` · 置信 ${Math.round(strength.confidence * 100)}%` : "";
         const directionLabel = `${source.label} → ${target.label} · ${edgeLabel} · 强度 ${strength.strokeWidth.toFixed(2)}${confidenceText}`;
@@ -8454,6 +8553,9 @@
         available: "可用",
         usable: "可用",
         usable_with_warnings: "可用但有警告",
+        // 完整度取值域已于 2026-07-28 收敛为 complete / partial / not_found（设计 §9 风险 1）。
+        // usable_with_gaps 与 incomplete 只会被收敛前的历史物化产物回放触达，仍保留通用兜底文案；
+        // 完整度场景一律走 completenessStatusLabel()，由它归并到后端 label。
         usable_with_gaps: "有缺口可用",
         complete: "完整",
         near_complete: "接近完整",
@@ -8537,6 +8639,8 @@
         needs_verification: "需要复核",
         non_factual: "非事实线索",
         verified: "已验证",
+        // partial 是跨域通用取值（批量构建、作业、覆盖档位等），保留通用文案不动；
+        // 完整度判定的 partial 请用 completenessStatusLabel()，对齐后端 label"部分完整"。
         partial: "部分补齐",
         needs_review: "需要复核",
         in_progress: "进行中",
@@ -8637,6 +8741,23 @@
         opinion_and_attention_slots_only_not_fact_source: "仅观点和关注度信号，不作事实源"
       };
       return labels[value] || value || "-";
+    }
+
+    // 完整度取值域与后端 app/service_modules/completeness_policy.py 的 STATUS_LABELS 同源：
+    // complete -> 完整、partial -> 部分完整、not_found -> 未建档（需求 5.1、5.2、5.3；设计 §4.8）。
+    // 收敛前的历史物化产物仍可能带 usable_with_gaps / incomplete，这里一并归并为"部分完整"，
+    // 避免同一概念在界面上出现两套取值（设计 §9 风险 1，取值域收敛已于 2026-07-28 获批）。
+    const COMPLETENESS_STATUS_LABELS = {
+      complete: "完整",
+      partial: "部分完整",
+      not_found: "未建档",
+      usable_with_gaps: "部分完整",
+      incomplete: "部分完整"
+    };
+
+    function completenessStatusLabel(value) {
+      const key = String(value || "").trim();
+      return COMPLETENESS_STATUS_LABELS[key] || statusLabel(key);
     }
 
     function compactId(value, fallback = "-") {
@@ -8763,6 +8884,25 @@
     async function loadDataHealthSummary() {
       const runtime = dashboardRuntime || await dashboardRuntimeReady;
       return runtime.loadDataHealthSummary();
+    }
+
+    function renderDailyMainline(data = {}) {
+      return dashboardRuntime.renderDailyMainline(data);
+    }
+
+    async function loadDailyMainlineQueue() {
+      const runtime = dashboardRuntime || await dashboardRuntimeReady;
+      return runtime.loadDailyMainlineQueue();
+    }
+
+    async function runDailyMainline() {
+      const runtime = dashboardRuntime || await dashboardRuntimeReady;
+      return runtime.runDailyMainline();
+    }
+
+    async function addDailyMainlineWatchlist(itemId) {
+      const runtime = dashboardRuntime || await dashboardRuntimeReady;
+      return runtime.addDailyMainlineWatchlist(itemId);
     }
 
     const WORKSPACE_TAB_MODE = {
@@ -8976,6 +9116,7 @@
         const metricsPromise = api("/api/metrics", { role: "ceo" });
         const latestPromise = api("/api/analysis/latest", { role: "ceo" });
         const dataHealthPromise = loadDataHealthSummary();
+        const dailyMainlinePromise = loadDailyMainlineQueue();
         const industryChainPromise = loadIndustryChainSummary();
 
         const latest = await latestPromise;
@@ -8985,7 +9126,12 @@
         $("chipResearch").textContent = `研报 ${latest.data?.research_evidence?.counts?.research_reports || latest.data?.counts?.research_reports || counts.research_reports || 0}`;
         setStatus("最新分析已载入");
 
-        const [healthResult, metricsResult] = await Promise.allSettled([healthPromise, metricsPromise, dataHealthPromise]);
+        const [healthResult, metricsResult] = await Promise.allSettled([
+          healthPromise,
+          metricsPromise,
+          dataHealthPromise,
+          dailyMainlinePromise,
+        ]);
         const health = healthResult.status === "fulfilled" ? healthResult.value : { data: { status: "unknown", store: "-" } };
         const metrics = metricsResult.status === "fulfilled" ? metricsResult.value : { data: { audit_events: 0 } };
         $("chipService").textContent = `${statusLabel(health.data.status)} · ${health.data.store}`;
@@ -9660,10 +9806,27 @@
       return `<button data-action="company-intel-guidance" data-guidance-action="${action}">${label}</button>`;
     }
 
-    function companyIntelVerdictTone(status) {
+    function companyIntelVerdictTone(status, verdict = {}) {
+      if (status === "not_found") return "block";
+      // 取值域收敛后 incomplete 不再出现。旧口径的"红"等价于"存在 blocking gap"，
+      // 因此改按 blocking_gaps 判红，事实层阻塞的公司不会被降级成黄色告警（设计 §9 风险 1）。
+      if ((verdict.blocking_gaps || []).length) return "block";
       if (status === "complete") return "ok";
-      if (status === "not_found" || status === "incomplete") return "block";
       return "warn";
+    }
+
+    function companyIntelVerdictView(verdict = {}, fallbackStatus = "unknown") {
+      const declaredStatus = String(verdict.status || fallbackStatus || "unknown");
+      const missingFields = verdict.missing_fact_fields || [];
+      // 收敛前的取值（usable_with_gaps / incomplete）与其旧 label（可分析 / 需要补库 等）
+      // 仍可能出现在历史物化产物里，统一归并为 partial，界面上不再出现两套取值。
+      const legacyStatus = declaredStatus === "usable_with_gaps" || declaredStatus === "incomplete";
+      // 统一口径下 complete 必须无缺失事实字段；历史物化产物若仍报 complete 且带缺失字段，
+      // UI 侧同样降级为 partial，确保"完整"不与缺失字段并列（需求 5.1、5.3）。
+      const downgraded = declaredStatus === "complete" && missingFields.length > 0;
+      const status = legacyStatus || downgraded ? "partial" : declaredStatus;
+      const label = legacyStatus || downgraded || !verdict.label ? completenessStatusLabel(status) : verdict.label;
+      return { status, label, tone: companyIntelVerdictTone(status, verdict), missingFields, downgraded };
     }
 
     function readinessLabel(value) {
@@ -9672,14 +9835,14 @@
 
     function renderCompanyIntelCompletenessVerdict(data) {
       const verdict = data.completeness_verdict || {};
-      const status = verdict.status || "unknown";
-      const label = verdict.label || statusLabel(status);
+      const view = companyIntelVerdictView(verdict);
+      const label = view.label;
       const level = verdict.level ? ` · ${statusLabel(verdict.level)}` : "";
       const score = Number(verdict.score || 0);
-      const missingFields = verdict.missing_fact_fields || [];
+      const missingFields = view.missingFields;
       const recommended = verdict.recommended_next_action || {};
       const policy = verdict.source_policy_summary || {};
-      $("companyIntelVerdictStatus").innerHTML = `<span class="badge ${companyIntelVerdictTone(status)}">${label}</span>${level}`;
+      $("companyIntelVerdictStatus").innerHTML = `<span class="badge ${view.tone}">${label}</span>${level}`;
       $("companyIntelVerdictScore").textContent = pct(score);
       $("companyIntelFactReadiness").textContent = readinessLabel(verdict.ready_for_fact_review);
       $("companyIntelAnalysisReadiness").textContent = readinessLabel(verdict.ready_for_analysis);
@@ -9699,6 +9862,19 @@
           tone: "warn",
           type: "字段级证据",
           detail: missingFields.slice(0, 8).map(statusLabel).join(", "),
+        });
+      }
+      // missing_layers 在统一口径下追加了覆盖度分层与 profile_fact_fields；分节缺口已在上面逐行展示，
+      // 这里只补"分节全绿但仍是部分完整"的原因，避免判定不可解释（需求 5.2、5.5）。
+      const sectionGapLayers = verdict.section_gap_layers || verdict.blocking_gaps || [];
+      const coverageGapLayers = (verdict.missing_layers || []).filter((layer) => !sectionGapLayers.includes(layer) && layer !== "profile_fact_fields");
+      if (coverageGapLayers.length) {
+        sectionRows.push({
+          layer: "覆盖度分层",
+          status: `${coverageGapLayers.length} 项未达阈值`,
+          tone: "warn",
+          type: "统一口径阈值",
+          detail: `${coverageGapLayers.join(", ")}${metaLine("画像字段", pct(verdict.profile_field_coverage_score || 0))}${metaLine("公司库", pct(verdict.database_coverage_score || 0))}${metaLine("关系", pct(verdict.relationship_coverage_score || 0))}`,
         });
       }
       if (recommended.action && recommended.action !== "none") {
@@ -11431,7 +11607,8 @@
       const workflow = data.analysis_workflow || {};
       const simulation = data.simulation_feedback || {};
       const nextAction = firstNonEmpty(data.next_actions || [], {});
-      const verdictLabel = verdict.label || statusLabel(verdict.status || data.status || "unknown");
+      // 与完整度判断区块同一取值域解析器，避免两处对同一 verdict 给出不同文案（需求 5.3）。
+      const verdictLabel = companyIntelVerdictView(verdict, data.status).label;
       const scoreText = pct(Number(verdict.score || 0));
       const missing = verdict.missing_fact_fields || data.data_quality?.missing_sections || [];
       $("companyIntelPersonalVerdict").textContent = `${verdictLabel} · 完整度 ${scoreText}${missing.length ? ` · 缺 ${missing.length} 项` : ""}`;
@@ -12396,11 +12573,17 @@
     document.addEventListener("click", async (event) => {
       const target = event.target.closest("[data-action]");
       if (!target) return;
-      const action = target.dataset.action;
-      try {
-        if (action === "seed-demo") {
-          await seedDemo();
-        } else if (action === "open-security") {
+        const action = target.dataset.action;
+        try {
+          if (action === "seed-demo") {
+            await seedDemo();
+          } else if (action === "run-daily-mainline") {
+            await runDailyMainline();
+            setStatus("今日研究主线已更新");
+          } else if (action === "add-daily-watchlist") {
+            await addDailyMainlineWatchlist(target.dataset.itemId || "");
+            setStatus("已加入关注池 · 仅用于本地研究");
+          } else if (action === "open-security") {
           await openSecurityContext(target.dataset.securityId, target.dataset.label);
         } else if (action === "open-research") {
           openResearchContext({
@@ -12479,6 +12662,7 @@
           api,
           boundaryLabel,
           documentTypeLabel,
+          escapeHtml,
           metaLine,
           pct,
           rawPct,

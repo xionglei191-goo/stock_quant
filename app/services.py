@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from email.message import EmailMessage
 from smtplib import SMTP, SMTPException, SMTP_SSL
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -47,6 +47,9 @@ from .models import (
     CompanyProfileFieldAssertion,
     CompanyRelationship,
     CorporateAction,
+    DailyMainlineQueueItem,
+    DailyMainlineRun,
+    DailyWatchlistEntry,
     DrillSchedule,
     DisclosureEvent,
     EntityMapping,
@@ -115,6 +118,11 @@ from .store import InMemoryStore
 from .service_modules import safe_identifier
 from .service_modules import company_quality
 from .service_modules import company_intelligence as company_intelligence_module
+from .service_modules import completeness_policy as completeness_policy_module
+from .service_modules import daily_mainline as daily_mainline_module
+from .service_modules import daily_mainline_artifact as daily_mainline_artifact_module
+from .service_modules import daily_mainline_diligence as daily_mainline_diligence_module
+from .service_modules import daily_mainline_scan as daily_mainline_scan_module
 from .service_modules import graph_derived_relationships
 from .service_modules import graph_intelligence
 from .service_modules import graph_enrichment_runner
@@ -489,12 +497,16 @@ class SystemService:
                 },
             },
         ]
+        defaults.extend(daily_mainline_diligence_module.seed_specs(()))
         created: list[LLMTaskTemplate] = []
         for item in defaults:
             if item["template_id"] in self.store.llm_task_templates:
                 created.append(self.store.llm_task_templates[item["template_id"]])
                 continue
-            change_id = f"pr_{item['template_id']}_baseline"
+            change_id = str(
+                item.get("approved_prompt_change_id")
+                or daily_mainline_diligence_module.baseline_prompt_change_id(str(item["template_id"]))
+            )
             if change_id not in self.store.prompt_changes:
                 self.create_prompt_change(
                     {
@@ -513,7 +525,7 @@ class SystemService:
                         **item,
                         "status": "approved",
                         "approved_prompt_change_id": change_id,
-                        "prompt_version": change_id,
+                        "prompt_version": str(item.get("prompt_version") or change_id),
                     },
                     actor=actor,
                 )
@@ -622,6 +634,836 @@ class SystemService:
             runs = [item for item in runs if item.status == status]
         runs = sorted(runs, key=lambda item: item.created_at, reverse=True)[:limit]
         return {"runs": [to_plain(item) for item in runs], "total": len(runs)}
+
+    def run_daily_mainline(self, payload: Mapping[str, Any] | None = None, *, actor: str = "system") -> dict[str, Any]:
+        """Run the local research-only daily mainline through the domain modules."""
+
+        request = dict(payload or {})
+        config = daily_mainline_module.resolve_config(os.environ, overrides=request)
+        run_date = str(request.get("as_of_date") or self._daily_mainline_latest_market_date() or date.today().isoformat())
+        run_id = str(request.get("run_id") or new_id("dmrun"))
+        started_clock = time.monotonic()
+        timeout_seconds = int(config["timeout_seconds"])
+        deadline_clock = started_clock + timeout_seconds
+        stage_runners = {
+            "scan_market_disturbance": lambda _context: self._daily_mainline_scan_stage(run_date),
+            "build_candidate_pool": lambda context: self._daily_mainline_candidate_stage(context, config),
+            "run_auto_diligence": lambda context: self._daily_mainline_diligence_stage(
+                context,
+                config,
+                actor=actor,
+                remaining_budget_seconds=lambda: max(0.0, deadline_clock - time.monotonic()),
+            ),
+            "build_daily_queue": lambda context: self._daily_mainline_queue_stage(
+                context,
+                run_id=run_id,
+                actor=actor,
+            ),
+        }
+        stages = daily_mainline_module.run_stages(
+            stage_runners=stage_runners,
+            timeout_seconds=timeout_seconds,
+            clock=time.monotonic,
+            now_iso=lambda: utcnow().isoformat(),
+        )
+        queue_items = sorted(
+            (
+                item
+                for item in self.store.daily_mainline_queue_items.values()
+                if item.run_id == run_id
+            ),
+            key=lambda item: (item.rank, item.item_id),
+        )
+        candidates = next(
+            (
+                list(stage.payload.get("candidates") or [])
+                for stage in stages
+                if stage.stage == "build_candidate_pool" and isinstance(stage.payload, Mapping)
+            ),
+            [],
+        )
+        status = daily_mainline_module.derive_run_status(stages, queue_count=len(queue_items))
+        reason_codes = self._unique_strings(
+            [
+                *[stage.reason_code for stage in stages if stage.reason_code],
+                *[item.diligence_reason_code for item in queue_items if item.diligence_reason_code],
+            ]
+        )
+        next_actions = daily_mainline_module.build_next_actions(stages, status=status)
+        artifact_path = daily_mainline_artifact_module.artifact_path(
+            run_date=run_date,
+            run_id=run_id,
+            artifact_dir=str(config["artifact_dir"]),
+        )
+        llm_run_ids = self._unique_strings(
+            [item.llm_task_run_id for item in queue_items if item.llm_task_run_id]
+        )
+        run = DailyMainlineRun(
+            run_id=run_id,
+            run_date=run_date,
+            status=status,
+            stages=daily_mainline_module.stage_records(stages),
+            candidate_count=len(candidates),
+            queue_count=len(queue_items),
+            unsupported_count=sum(1 for item in queue_items if item.partition == "pending_evidence"),
+            llm_run_ids=llm_run_ids,
+            failure_reason_codes=reason_codes,
+            next_actions=next_actions,
+            timeout_seconds=int(config["timeout_seconds"]),
+            elapsed_seconds=round(max(0.0, time.monotonic() - started_clock), 4),
+            artifact_path=artifact_path,
+        )
+        try:
+            artifact = daily_mainline_artifact_module.artifact_payload(
+                run=to_plain(run),
+                items=[to_plain(item) for item in queue_items],
+                producer_command=str(
+                    request.get("producer_command")
+                    or f"python3 scripts/daily_mainline_run.py --as-of-date {run_date}"
+                ),
+                environment=str(
+                    request.get("environment")
+                    or os.environ.get("AI_QUANT_DEPLOYMENT_MODE")
+                    or "local"
+                ),
+                generated_at=run.created_at,
+            )
+            output_path = Path(artifact_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                json.dumps(artifact, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            run.status = "failed"
+            run.artifact_path = ""
+            run.failure_reason_codes = self._unique_strings(
+                [*run.failure_reason_codes, "store_write_failed"]
+            )
+            run.next_actions = [
+                {
+                    "action": "retry_daily_mainline",
+                    "reason_code": "store_write_failed",
+                    "command": f"python3 scripts/daily_mainline_run.py --as-of-date {run_date}",
+                }
+            ]
+        self.store.daily_mainline_runs[run.run_id] = run
+        self._audit(
+            actor,
+            "run_daily_mainline",
+            "daily_mainline_run",
+            run.run_id,
+            source="local_market_data_and_registered_llm_gateway",
+            version=daily_mainline_diligence_module.PROMPT_VERSION,
+            approval_state=run.status,
+        )
+        result = self.daily_mainline_queue_payload({"run_id": run.run_id})
+        result.update(
+            {
+                "artifact_path": run.artifact_path,
+                "candidate_count": run.candidate_count,
+                "queue_count": run.queue_count,
+                "unsupported_count": run.unsupported_count,
+                "llm_run_ids": list(run.llm_run_ids),
+                "llm_success_count": sum(
+                    1
+                    for llm_run_id in run.llm_run_ids
+                    if (
+                        self.store.llm_task_runs.get(llm_run_id) is not None
+                        and self.store.llm_task_runs[llm_run_id].status == "succeeded"
+                    )
+                ),
+                "timeout_seconds": run.timeout_seconds,
+                "elapsed_seconds": run.elapsed_seconds,
+            }
+        )
+        return result
+
+    def daily_mainline_queue_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        run_id = str(filters.get("run_id") or "").strip()
+        as_of_date = str(filters.get("as_of_date") or filters.get("run_date") or "").strip()
+        runs = list(self.store.daily_mainline_runs.values())
+        if run_id:
+            runs = [item for item in runs if item.run_id == run_id]
+        if as_of_date:
+            runs = [item for item in runs if item.run_date == as_of_date]
+        runs.sort(key=lambda item: (to_plain(item.created_at), item.run_id), reverse=True)
+        run = runs[0] if runs else None
+        if run is None:
+            return {
+                "schema_id": "daily-mainline-queue-v1",
+                "status": "empty",
+                "run_id": "",
+                "as_of_date": as_of_date,
+                "generated_at": "",
+                "progress": {
+                    "current_stage": daily_mainline_module.STAGES[0],
+                    "completed_count": 0,
+                    "total_count": len(daily_mainline_module.STAGES),
+                },
+                "stages": [],
+                "items": [],
+                "pending_evidence_items": [],
+                "next_actions": [
+                    {
+                        "action": "run_daily_mainline",
+                        "reason_code": "no_candidates",
+                        "command": daily_mainline_module.DAILY_MAINLINE_CLI_COMMAND,
+                        "endpoint": daily_mainline_module.DAILY_MAINLINE_RUN_ENDPOINT,
+                    }
+                ],
+                "paper_only": True,
+                "live_execution_allowed": False,
+                "usage_boundary": "daily_mainline_is_local_research_queue_paper_only_no_broker_execution",
+            }
+        items = sorted(
+            (
+                item
+                for item in self.store.daily_mainline_queue_items.values()
+                if item.run_id == run.run_id
+            ),
+            key=lambda item: (item.rank, item.item_id),
+        )
+        limit = self._bounded_limit(filters.get("limit", 100), max_value=1000)
+        projected = [self._daily_mainline_queue_item_payload(item) for item in items[:limit]]
+        stages = self._daily_mainline_stage_results(run.stages)
+        return {
+            "schema_id": "daily-mainline-queue-v1",
+            "status": run.status,
+            "run_id": run.run_id,
+            "as_of_date": run.run_date,
+            "generated_at": to_plain(run.created_at),
+            "progress": daily_mainline_module.build_progress(stages),
+            "stages": list(run.stages),
+            "items": [item for item in projected if item["partition"] == "researchable"],
+            "pending_evidence_items": [
+                item for item in projected if item["partition"] == "pending_evidence"
+            ],
+            "next_actions": list(run.next_actions),
+            "paper_only": True,
+            "live_execution_allowed": False,
+            "usage_boundary": "daily_mainline_is_local_research_queue_paper_only_no_broker_execution",
+        }
+
+    def daily_mainline_runs_payload(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        filters = filters or {}
+        run_id = str(filters.get("run_id") or "").strip()
+        run_date = str(filters.get("as_of_date") or filters.get("run_date") or "").strip()
+        status = str(filters.get("status") or "").strip()
+        runs = list(self.store.daily_mainline_runs.values())
+        if run_id:
+            runs = [item for item in runs if item.run_id == run_id]
+        if run_date:
+            runs = [item for item in runs if item.run_date == run_date]
+        if status:
+            runs = [item for item in runs if item.status == status]
+        runs.sort(key=lambda item: (to_plain(item.created_at), item.run_id), reverse=True)
+        limit = self._bounded_limit(filters.get("limit", 50), max_value=1000)
+        return {
+            "schema_id": "daily-mainline-runs-v1",
+            "runs": [to_plain(item) for item in runs[:limit]],
+            "total": len(runs),
+            "paper_only": True,
+            "live_execution_allowed": False,
+        }
+
+    def add_daily_queue_item_to_watchlist(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        item_id = str(payload.get("item_id") or "").strip()
+        item = self.store.daily_mainline_queue_items.get(item_id)
+        if item is None:
+            raise NotFoundError(f"daily mainline queue item {item_id} not found")
+        existing = next(
+            (
+                entry
+                for entry in self.store.daily_watchlist_entries.values()
+                if entry.item_id == item.item_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return {
+                "entry": to_plain(existing),
+                "created": False,
+                "paper_only": True,
+                "live_execution_allowed": False,
+            }
+        import_result = self.import_company_watchlist(
+            {
+                "items": [
+                    {
+                        "symbol": item.ticker or item.security_id,
+                        "market": item.market,
+                        "reason": item.selection_reason,
+                    }
+                ],
+                "execute": True,
+                "record_run": False,
+            },
+            actor=actor,
+        )
+        entry = DailyWatchlistEntry(
+            entry_id=str(payload.get("entry_id") or new_id("dmwatch")),
+            security_id=item.security_id,
+            run_id=item.run_id,
+            item_id=item.item_id,
+            selection_reason=item.selection_reason,
+            actor=actor,
+        )
+        self.store.daily_watchlist_entries[entry.entry_id] = entry
+        self._audit(
+            actor,
+            "add_daily_queue_item_to_watchlist",
+            "daily_watchlist_entry",
+            entry.entry_id,
+            source=item.run_id,
+            approval_state="paper_only",
+        )
+        return {
+            "entry": to_plain(entry),
+            "created": True,
+            "company_watchlist_import": import_result,
+            "paper_only": True,
+            "live_execution_allowed": False,
+        }
+
+    def review_daily_mainline_viewpoint(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        item_id = str(payload.get("item_id") or "").strip()
+        item = self.store.daily_mainline_queue_items.get(item_id)
+        if item is None:
+            raise NotFoundError(f"daily mainline queue item {item_id} not found")
+        status = str(payload.get("status") or "pending").strip()
+        if status not in {"pending", "accepted", "rejected"}:
+            self._audit(
+                actor,
+                "reject_daily_mainline_viewpoint_review",
+                "daily_mainline_queue_item",
+                item.item_id,
+                source=item.run_id,
+                approval_state=status,
+            )
+            raise ValidationError("daily mainline review status must be pending, accepted, or rejected")
+        item.review_status = status
+        if isinstance(item.viewpoint, dict):
+            item.viewpoint["review_status"] = status
+        answer = self.store.research_answers.get(item.research_answer_id)
+        if answer is not None:
+            answer.human_review_status = {
+                "pending": "pending",
+                "accepted": "approved",
+                "rejected": "rejected",
+            }[status]
+            answer.reviewer = str(payload.get("reviewer") or actor)
+            answer.updated_at = utcnow()
+        self._audit(
+            actor,
+            "review_daily_mainline_viewpoint",
+            "daily_mainline_queue_item",
+            item.item_id,
+            source=item.run_id,
+            model_version=str(item.viewpoint.get("model") or "") if isinstance(item.viewpoint, Mapping) else "",
+            prompt_version=str(item.viewpoint.get("prompt_version") or "") if isinstance(item.viewpoint, Mapping) else "",
+            approval_state=status,
+        )
+        return {
+            "item": self._daily_mainline_queue_item_payload(item),
+            "research_answer": to_plain(answer) if answer is not None else {},
+            "paper_only": True,
+            "live_execution_allowed": False,
+        }
+
+    def _daily_mainline_latest_market_date(self) -> str:
+        dates: list[str] = []
+        for market in ("A", "U"):
+            key = self._market_eod_key(market)
+            if self._market_data_direct_query_enabled():
+                points = self._query_market_data_points(
+                    market=key["market"],
+                    source_id=key["source_id"],
+                    data_type=key["data_type"],
+                    limit=1,
+                    descending=True,
+                )
+                if points:
+                    dates.append(points[0].as_of_date)
+                continue
+            dates.extend(
+                point.as_of_date
+                for point in self.store.market_data.values()
+                if point.market == key["market"]
+                and point.source_id == key["source_id"]
+                and point.data_type == key["data_type"]
+            )
+        return max(dates) if dates else ""
+
+    def _daily_mainline_scan_rows(self, run_date: str) -> list[dict[str, Any]]:
+        targets = [self._market_eod_key(market) for market in ("A", "U")]
+        query = getattr(self.store, "query_market_disturbance_rows", None)
+        if callable(query):
+            raw_rows = query(as_of_date=run_date, targets=targets, history_rows=20)
+            return [
+                daily_mainline_scan_module.derive_disturbance_row(
+                    row,
+                    previous_close=row.get("previous_close"),
+                    average_volume=row.get("average_volume"),
+                    average_amount=row.get("average_amount"),
+                )
+                for row in raw_rows
+            ]
+        target_keys = {
+            (target["market"], target["source_id"], target["data_type"])
+            for target in targets
+        }
+        grouped: dict[str, list[MarketDataPoint]] = {}
+        for point in self.store.market_data.values():
+            if (
+                (point.market, point.source_id, point.data_type) in target_keys
+                and point.as_of_date <= run_date
+            ):
+                grouped.setdefault(point.security_id, []).append(point)
+        rows: list[dict[str, Any]] = []
+        for security_id, points in grouped.items():
+            points.sort(key=lambda item: (item.as_of_date, item.data_id), reverse=True)
+            latest = points[0]
+            history = points[1:21]
+            security = self.store.securities.get(security_id)
+            rows.append(
+                daily_mainline_scan_module.derive_disturbance_row(
+                    to_plain(latest),
+                    previous_close=history[0].close if history else 0.0,
+                    average_volume=self._daily_mainline_average(
+                        [point.volume for point in history]
+                    ),
+                    average_amount=self._daily_mainline_average(
+                        [point.amount for point in history]
+                    ),
+                    security=to_plain(security) if security is not None else {},
+                )
+            )
+        return rows
+
+    def _daily_mainline_scan_stage(self, run_date: str) -> daily_mainline_module.StageResult:
+        rows = self._daily_mainline_scan_rows(run_date)
+        if not rows:
+            return daily_mainline_module.StageResult(
+                stage="scan_market_disturbance",
+                status="failed",
+                started_at="",
+                finished_at="",
+                reason_code="market_data_unavailable",
+            )
+        latest_date = max(str(row.get("as_of_date") or "") for row in rows)
+        return daily_mainline_module.StageResult(
+            stage="scan_market_disturbance",
+            status="partial" if latest_date < run_date else "passed",
+            started_at="",
+            finished_at="",
+            record_count=len(rows),
+            reason_code="market_data_stale" if latest_date < run_date else "",
+            payload={"scan_rows": rows, "latest_market_date": latest_date},
+        )
+
+    def _daily_mainline_candidate_stage(
+        self,
+        context: Mapping[str, Any],
+        config: Mapping[str, Any],
+    ) -> daily_mainline_module.StageResult:
+        candidates = daily_mainline_scan_module.build_candidate_pool(
+            list(context.get("scan_rows") or []),
+            candidate_limit=int(config["candidate_limit"]),
+            market_quota=int(config["market_quota"]),
+        )
+        return daily_mainline_module.StageResult(
+            stage="build_candidate_pool",
+            status="passed",
+            started_at="",
+            finished_at="",
+            record_count=len(candidates),
+            reason_code="no_candidates" if not candidates else "",
+            payload={"candidates": candidates},
+        )
+
+    def _daily_mainline_diligence_stage(
+        self,
+        context: Mapping[str, Any],
+        config: Mapping[str, Any],
+        *,
+        actor: str,
+        remaining_budget_seconds: Callable[[], float] | None = None,
+    ) -> daily_mainline_module.StageResult:
+        candidates = list(context.get("candidates") or [])
+        if not candidates:
+            return daily_mainline_module.StageResult(
+                stage="run_auto_diligence",
+                status="skipped",
+                started_at="",
+                finished_at="",
+                reason_code="no_candidates",
+                payload={"diligence_items": []},
+            )
+        self.seed_default_llm_task_templates(actor=actor)
+        gateway_configured = bool(self.llm_gateway.describe().get("configured"))
+        diligence_items: list[dict[str, Any]] = []
+        reason_codes: list[str] = []
+        diligence_limit = int(config["diligence_limit"])
+        budget_remaining = remaining_budget_seconds or (
+            lambda: float(config["timeout_seconds"])
+        )
+        processable_count = min(len(candidates), diligence_limit)
+        for index, candidate in enumerate(candidates):
+            intelligence, completeness, evidence = self._daily_mainline_candidate_context(candidate)
+            item: dict[str, Any] = {
+                "candidate": candidate,
+                "completeness": completeness,
+                "evidence": evidence,
+                "viewpoint": {},
+                "llm_task_run_id": "",
+                "template_id": "",
+                "diligence_status": "skipped",
+                "diligence_reason_code": "",
+                "partition": "researchable",
+            }
+            if index >= diligence_limit:
+                item["diligence_reason_code"] = "diligence_budget_exhausted"
+                reason_codes.append("diligence_budget_exhausted")
+                diligence_items.append(item)
+                continue
+            if not gateway_configured:
+                item["diligence_status"] = "failed"
+                item["diligence_reason_code"] = "llm_gateway_unconfigured"
+                reason_codes.append("llm_gateway_unconfigured")
+                diligence_items.append(item)
+                continue
+            call_timeout_seconds = daily_mainline_module.diligence_call_timeout_seconds(
+                remaining_seconds=budget_remaining(),
+                remaining_candidates=processable_count - index,
+                remaining_contexts=len(candidates) - index,
+                gateway_timeout_seconds=self.llm_gateway.timeout,
+                total_timeout_seconds=config["timeout_seconds"],
+            )
+            if call_timeout_seconds <= 0:
+                item["diligence_reason_code"] = daily_mainline_module.SKIP_REASON_TIMEOUT
+                reason_codes.append(daily_mainline_module.SKIP_REASON_TIMEOUT)
+                diligence_items.append(item)
+                continue
+            template_id = "tpl_daily_candidate_diligence"
+            run = self.run_llm_task(
+                {
+                    "template_id": template_id,
+                    "role": daily_mainline_diligence_module.DEFAULT_TEMPLATE_ROLE,
+                    "variables": self._daily_mainline_prompt_variables(
+                        candidate,
+                        completeness,
+                        evidence,
+                    ),
+                    "timeout_seconds": call_timeout_seconds,
+                },
+                actor=actor,
+            )
+            item["llm_task_run_id"] = run.run_id
+            item["template_id"] = template_id
+            if run.status != "succeeded":
+                reason = "llm_timeout" if "timed out" in str(run.error).lower() else "llm_call_failed"
+                item["diligence_status"] = "failed"
+                item["diligence_reason_code"] = reason
+                reason_codes.append(reason)
+                diligence_items.append(item)
+                continue
+            viewpoint = daily_mainline_diligence_module.build_viewpoint(
+                candidate=candidate,
+                llm_output_text=self._llm_output_text(run.output),
+                evidence_candidates=evidence,
+                llm_task_run_id=run.run_id,
+                template_id=template_id,
+                prompt_version=run.prompt_version,
+                model=run.model,
+            )
+            item.update(
+                {
+                    "viewpoint": viewpoint,
+                    "diligence_status": viewpoint["diligence_status"],
+                    "diligence_reason_code": viewpoint["diligence_reason_code"],
+                    "partition": viewpoint["partition"],
+                }
+            )
+            diligence_items.append(item)
+        reason_code = (
+            daily_mainline_module.SKIP_REASON_TIMEOUT
+            if daily_mainline_module.SKIP_REASON_TIMEOUT in reason_codes
+            else reason_codes[0] if reason_codes else ""
+        )
+        return daily_mainline_module.StageResult(
+            stage="run_auto_diligence",
+            status="partial" if reason_codes else "passed",
+            started_at="",
+            finished_at="",
+            record_count=sum(
+                1 for item in diligence_items if item["diligence_status"] == "generated"
+            ),
+            reason_code=reason_code,
+            payload={"diligence_items": diligence_items},
+        )
+
+    def _daily_mainline_queue_stage(
+        self,
+        context: Mapping[str, Any],
+        *,
+        run_id: str,
+        actor: str,
+    ) -> daily_mainline_module.StageResult:
+        diligence_items = list(context.get("diligence_items") or [])
+        if not diligence_items:
+            return daily_mainline_module.StageResult(
+                stage="build_daily_queue",
+                status="skipped",
+                started_at="",
+                finished_at="",
+                reason_code="no_candidates",
+            )
+        created: list[DailyMainlineQueueItem] = []
+        completeness_unavailable = False
+        try:
+            for row in diligence_items:
+                candidate = dict(row.get("candidate") or {})
+                viewpoint = dict(row.get("viewpoint") or {})
+                completeness = dict(row.get("completeness") or {})
+                evidence_ids = [
+                    str(item)
+                    for item in viewpoint.get("evidence_ids", [])
+                    if str(item).strip()
+                ]
+                answer = self._daily_mainline_research_answer(
+                    candidate=candidate,
+                    viewpoint=viewpoint,
+                    evidence_ids=evidence_ids,
+                    actor=actor,
+                )
+                completeness_status = str(completeness.get("status") or "unknown")
+                if completeness_status == "unknown":
+                    completeness_unavailable = True
+                item = DailyMainlineQueueItem(
+                    item_id=new_id("dmitem"),
+                    run_id=run_id,
+                    security_id=str(candidate.get("security_id") or ""),
+                    issuer_id=str(candidate.get("issuer_id") or ""),
+                    ticker=str(candidate.get("ticker") or ""),
+                    market=str(candidate.get("market") or ""),
+                    rank=int(candidate.get("rank") or 0),
+                    selection_reason=str(candidate.get("selection_reason") or ""),
+                    trigger_metric=str(candidate.get("trigger_metric") or ""),
+                    trigger_value=float(candidate.get("trigger_value") or 0.0),
+                    as_of_date=str(candidate.get("as_of_date") or ""),
+                    completeness_status=completeness_status,
+                    missing_layers=[
+                        str(item) for item in completeness.get("missing_layers", [])
+                    ],
+                    partition=str(row.get("partition") or "researchable"),
+                    viewpoint=viewpoint,
+                    evidence_ids=evidence_ids,
+                    research_answer_id=answer.answer_id if answer is not None else "",
+                    llm_task_run_id=str(row.get("llm_task_run_id") or ""),
+                    template_id=str(row.get("template_id") or ""),
+                    diligence_status=str(row.get("diligence_status") or "skipped"),
+                    diligence_reason_code=str(row.get("diligence_reason_code") or ""),
+                )
+                self.store.daily_mainline_queue_items[item.item_id] = item
+                created.append(item)
+        except Exception as exc:  # noqa: BLE001 - stage result must retain diagnostics
+            return daily_mainline_module.StageResult(
+                stage="build_daily_queue",
+                status="failed",
+                started_at="",
+                finished_at="",
+                record_count=len(created),
+                reason_code="store_write_failed",
+                payload={
+                    "item_ids": [item.item_id for item in created],
+                    "error_type": type(exc).__name__,
+                },
+            )
+        return daily_mainline_module.StageResult(
+            stage="build_daily_queue",
+            status="partial" if completeness_unavailable else "passed",
+            started_at="",
+            finished_at="",
+            record_count=len(created),
+            reason_code="completeness_unavailable" if completeness_unavailable else "",
+            payload={"item_ids": [item.item_id for item in created]},
+        )
+
+    def _daily_mainline_candidate_context(
+        self,
+        candidate: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+        try:
+            intelligence = self.company_intelligence(
+                {"symbol": candidate.get("ticker") or candidate.get("security_id"), "limit": 20}
+            )
+            completeness = dict(intelligence.get("completeness_verdict") or {})
+        except Exception:  # noqa: BLE001 - one candidate must not fail the stage
+            intelligence = {}
+            completeness = {"status": "unknown", "missing_layers": ["company_profile"]}
+        if not completeness:
+            completeness = completeness_policy_module.resolve_status(
+                profile_available=False,
+                blocking_gaps=[],
+                warning_gaps=[],
+                missing_fact_fields=[],
+                coverage_scores={},
+            )
+        facts = intelligence.get("facts_and_events")
+        raw_evidence = facts.get("evidence", []) if isinstance(facts, Mapping) else []
+        evidence: list[dict[str, Any]] = []
+        for raw in raw_evidence:
+            if not isinstance(raw, Mapping):
+                continue
+            item = dict(raw)
+            document = self.store.documents.get(str(item.get("document_id") or ""))
+            if document is not None:
+                item["source_type"] = document.source_type or document.document_type
+            evidence.append(item)
+        return intelligence, completeness, evidence[:8]
+
+    def _daily_mainline_prompt_variables(
+        self,
+        candidate: Mapping[str, Any],
+        completeness: Mapping[str, Any],
+        evidence: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), Mapping) else {}
+        trigger_digest = ", ".join(
+            f"{key}={metrics.get(key, 0)}"
+            for key in ("one_day_return", "amount_ratio", "volume_ratio", "intraday_range")
+        )
+        evidence_digest = "\n".join(
+            " | ".join(
+                [
+                    str(item.get("evidence_id") or ""),
+                    daily_mainline_diligence_module.classify_evidence_source(item),
+                    daily_mainline_artifact_module.truncate_text(
+                        item.get("canonical_text") or item.get("span_text") or "",
+                        max_length=240,
+                    ),
+                ]
+            )
+            for item in evidence
+        )
+        return {
+            "ticker": str(candidate.get("ticker") or candidate.get("security_id") or ""),
+            "market": str(candidate.get("market") or ""),
+            "security_id": str(candidate.get("security_id") or ""),
+            "as_of_date": str(candidate.get("as_of_date") or ""),
+            "selection_reason": str(candidate.get("selection_reason") or ""),
+            "trigger_digest": trigger_digest,
+            "completeness_digest": (
+                f"{completeness.get('status', 'unknown')}: "
+                f"{', '.join(str(item) for item in completeness.get('missing_layers', []))}"
+            ),
+            "evidence_digest": evidence_digest or "no_bindable_evidence",
+        }
+
+    def _daily_mainline_research_answer(
+        self,
+        *,
+        candidate: Mapping[str, Any],
+        viewpoint: Mapping[str, Any],
+        evidence_ids: list[str],
+        actor: str,
+    ) -> ResearchAnswer | None:
+        if not viewpoint or viewpoint.get("diligence_status") != "generated" or not evidence_ids:
+            return None
+        evidence = [
+            self.store.evidence[evidence_id]
+            for evidence_id in evidence_ids
+            if evidence_id in self.store.evidence
+        ]
+        answer = ResearchAnswer(
+            answer_id=new_id("ans"),
+            question=(
+                f"daily_mainline:{candidate.get('as_of_date', '')}:"
+                f"{candidate.get('security_id', '')}"
+            ),
+            issuer_id=str(candidate.get("issuer_id") or ""),
+            evidence_ids=[item.evidence_id for item in evidence],
+            source_document_ids=sorted({item.document_id for item in evidence if item.document_id}),
+            chinese_summary=str(viewpoint.get("summary") or ""),
+            summary_version=daily_mainline_diligence_module.PROMPT_VERSION,
+            prompt_version=str(viewpoint.get("prompt_version") or ""),
+            model_version=str(viewpoint.get("model") or ""),
+            source_publicness="mixed",
+            citations=[
+                {
+                    "evidence_id": item.evidence_id,
+                    "document_id": item.document_id,
+                    "section": item.section,
+                    "page_no": item.page_no,
+                }
+                for item in evidence
+            ],
+            human_review_status="pending",
+        )
+        self.store.research_answers[answer.answer_id] = answer
+        self._audit(
+            actor,
+            "create_daily_mainline_research_answer",
+            "research_answer",
+            answer.answer_id,
+            source=str(candidate.get("security_id") or ""),
+            model_version=answer.model_version,
+            prompt_version=answer.prompt_version,
+            approval_state=answer.human_review_status,
+        )
+        return answer
+
+    def _daily_mainline_queue_item_payload(
+        self,
+        item: DailyMainlineQueueItem,
+    ) -> dict[str, Any]:
+        payload = to_plain(item)
+        payload["evidence_ref"] = {
+            "evidence_ids": list(item.evidence_ids),
+            "endpoint": f"/api/company-intelligence/{item.ticker or item.security_id}",
+        }
+        payload["watchlist_action"] = {
+            "endpoint": f"/api/daily-mainline/queue/{item.item_id}/watchlist",
+            "method": "POST",
+        }
+        payload["review_action"] = {
+            "endpoint": f"/api/daily-mainline/viewpoints/{item.item_id}/review",
+            "method": "POST",
+        }
+        return payload
+
+    def _daily_mainline_stage_results(
+        self,
+        stages: Iterable[Mapping[str, Any]],
+    ) -> list[daily_mainline_module.StageResult]:
+        return [
+            daily_mainline_module.StageResult(
+                stage=str(stage.get("stage") or ""),
+                status=str(stage.get("status") or "skipped"),
+                started_at=str(stage.get("started_at") or ""),
+                finished_at=str(stage.get("finished_at") or ""),
+                record_count=int(stage.get("record_count") or 0),
+                reason_code=str(stage.get("reason_code") or ""),
+            )
+            for stage in stages
+            if isinstance(stage, Mapping)
+        ]
+
+    def _daily_mainline_average(self, values: Iterable[Any]) -> float:
+        numbers = [float(value) for value in values if float(value or 0.0) > 0.0]
+        return sum(numbers) / len(numbers) if numbers else 0.0
 
     def llm_task_review_queue(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -6792,21 +7634,26 @@ class SystemService:
         limit = max(1, min(10000, int(filters.get("limit", 100) or 100)))
         by_market: dict[str, Any] = {}
         for market in markets:
-            source_id = self._market_data_source_for_market(market, filters)
+            # 与 market_freshness 同源的 (market, source_id, data_type) 键（需求 5.6）。
+            eod_key = self._market_eod_key(market, filters)
+            source_id = eod_key["source_id"]
+            data_type = eod_key["data_type"]
             securities = [security for security in self.store.securities.values() if security.market == market and security.status == "active"]
             securities.sort(key=lambda item: (item.ticker.upper(), item.security_id))
             missing: list[dict[str, Any]] = []
             stale: list[dict[str, Any]] = []
+            covered_dates: list[tuple[Security, str]] = []
             covered = 0
             latest_market_date = ""
             for security in securities:
-                latest = self._latest_market_data_point(security.security_id, source_id=source_id, data_type=str(filters.get("data_type", "eod")), as_of_date=as_of_date)
+                latest = self._latest_market_data_point(security.security_id, source_id=source_id, data_type=data_type, as_of_date=as_of_date)
                 if latest is None:
                     if len(missing) < limit:
                         missing.append({"security_id": security.security_id, "ticker": security.ticker, "issue": "missing_market_data"})
                     continue
                 covered += 1
                 latest_market_date = max(latest_market_date, latest.as_of_date)
+                covered_dates.append((security, latest.as_of_date))
                 lag_days = (date.fromisoformat(as_of_date) - date.fromisoformat(latest.as_of_date)).days
                 if lag_days > stale_after_days and len(stale) < limit:
                     stale.append(
@@ -6818,17 +7665,39 @@ class SystemService:
                         }
                     )
             source = self.store.sources.get(source_id)
+            coverage_ratio = round(covered / max(1, len(securities)), 4) if securities else 1.0
+            lagging = [
+                {
+                    "security_id": security.security_id,
+                    "ticker": security.ticker,
+                    "latest_as_of_date": company_as_of_date,
+                    **self._market_freshness_annotation(
+                        market=market,
+                        company_as_of_date=company_as_of_date,
+                        market_eod_date=latest_market_date,
+                        source_id=source_id,
+                        data_type=data_type,
+                        security_status=security.status,
+                        source_coverage_ratio=coverage_ratio,
+                    ),
+                }
+                for security, company_as_of_date in covered_dates
+                if company_as_of_date < latest_market_date
+            ]
             by_market[market] = {
                 "market": market,
                 "source_id": source_id,
+                "data_type": data_type,
                 "security_count": len(securities),
                 "covered_count": covered,
                 "missing_count": len(securities) - covered,
                 "stale_count": len(stale),
                 "latest_market_date": latest_market_date,
-                "coverage": round(covered / max(1, len(securities)), 4) if securities else 1.0,
+                "coverage": coverage_ratio,
                 "missing_samples": missing,
                 "stale_samples": stale,
+                "lagging_count": len(lagging),
+                "lagging_samples": lagging[:limit],
                 "source_governance_gaps": self._source_governance_gaps(source) if source else ["missing_source_definition"],
             }
         return {
@@ -7417,10 +8286,83 @@ class SystemService:
             )
         return rows
 
+    def _market_data_source_override(self, market: str, payload: Mapping[str, Any]) -> str:
+        field = "us_source_id" if str(market or "").strip().upper() == "U" else "ashare_source_id"
+        return self._canonical_source_id(str(payload.get(field, payload.get("source_id", ""))))
+
     def _market_data_source_for_market(self, market: str, payload: Mapping[str, Any]) -> str:
-        if market == "U":
-            return self._canonical_source_id(str(payload.get("us_source_id", payload.get("source_id", "yahoo_chart_us_eod"))))
-        return self._canonical_source_id(str(payload.get("ashare_source_id", payload.get("source_id", PUBLIC_EOD_MARKET_DATA_SOURCE_ID))))
+        return self._market_eod_key(market, payload)["source_id"]
+
+    def _market_eod_key(self, market: str, payload: Mapping[str, Any] | None = None) -> dict[str, str]:
+        """公司视图与 market_freshness 共用的 `(market, source_id, data_type)` 键（需求 5.6）。
+
+        市场→源解析委派 `market_data_module.market_eod_key`；`ashare_source_id` /
+        `us_source_id` / `source_id` 请求字段仍作为显式覆盖，覆盖值先经
+        `_canonical_source_id` 归一（`SOURCE_ID_ALIASES`），保持既有覆盖通路不变。
+        """
+
+        payload = payload or {}
+        return market_data_module.market_eod_key(
+            market,
+            data_type=str(payload.get("data_type", market_data_module.DEFAULT_EOD_DATA_TYPE) or market_data_module.DEFAULT_EOD_DATA_TYPE),
+            source_id=self._market_data_source_override(market, payload),
+        )
+
+    def _market_eod_latest_date(self, market: str, *, source_id: str, data_type: str) -> str:
+        """市场侧 EOD 最新日期，取数键与 `market_freshness` 完全一致（需求 5.6）。"""
+
+        if self._market_data_direct_query_enabled():
+            points = self._query_market_data_points(market=market, source_id=source_id, data_type=data_type, limit=1, descending=True)
+            return points[0].as_of_date if points else ""
+        dates = [
+            str(point.as_of_date)
+            for point in self.store.market_data.values()
+            if point.source_id == source_id and point.data_type == data_type and (not market or point.market == market)
+        ]
+        return max(dates) if dates else ""
+
+    def _company_latest_market_freshness(self, security: Security | None, points: list[MarketDataPoint]) -> dict[str, Any]:
+        """公司情报视图的最新行情滞后标注（需求 5.6、5.7）。
+
+        公司侧日期只取 `market_eod_key` 解析出的 `(source_id, data_type)` 键下的最新一根，
+        市场侧 EOD 日期用同一键查询，二者同源后再由领域模块判定滞后天数与原因码，
+        修正“公司 2026-05-25 与市场 EOD 2026-07-24 并列且无解释”的问题。
+        """
+
+        if security is None and not points:
+            return {}
+        market = str((security.market if security else "") or (points[0].market if points else ""))
+        key = self._market_eod_key(market)
+        point = next((item for item in points if item.source_id == key["source_id"] and item.data_type == key["data_type"]), None)
+        return self._market_freshness_annotation(
+            market=key["market"],
+            company_as_of_date=str(point.as_of_date if point else ""),
+            market_eod_date=self._market_eod_latest_date(**key),
+            source_id=key["source_id"],
+            data_type=key["data_type"],
+            security_status=str(security.status if security else ""),
+        )
+
+    def _market_freshness_annotation(
+        self,
+        *,
+        market: str,
+        company_as_of_date: str,
+        market_eod_date: str,
+        source_id: str,
+        data_type: str,
+        security_status: str = "",
+        source_coverage_ratio: float | None = None,
+    ) -> dict[str, Any]:
+        return market_data_module.market_freshness_annotation(
+            market=market,
+            company_as_of_date=company_as_of_date,
+            market_eod_date=market_eod_date,
+            data_type=data_type,
+            source_id=source_id,
+            security_status=security_status,
+            source_coverage_ratio=source_coverage_ratio,
+        )
 
     def _market_data_backfill_markets(self, value: Any) -> list[str]:
         if isinstance(value, str):
@@ -27001,6 +27943,7 @@ class SystemService:
             section_counts,
             database_coverage=database_coverage_row,
             profile_field_coverage=profile_field_coverage_row,
+            relationship_coverage=relationship_context.get("coverage_diagnostics", {}),
         )
 
         return {
@@ -27036,6 +27979,7 @@ class SystemService:
             "facts_and_events": {
                 "market_data": plain_rows(market_data),
                 "latest_market_snapshot": to_plain(market_data[0]) if market_data else {},
+                "latest_market_freshness": self._company_latest_market_freshness(primary_security, market_data),
                 "corporate_actions": plain_rows(corporate_actions),
                 "financial_metrics": plain_rows(financial_metrics),
                 "latest_financial_snapshot": self._latest_financial_snapshot_from_metrics(primary_issuer.issuer_id, security_ids) if primary_issuer else {},
@@ -27112,6 +28056,7 @@ class SystemService:
         *,
         database_coverage: Mapping[str, Any],
         profile_field_coverage: Mapping[str, Any],
+        relationship_coverage: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         return company_intelligence_module.completeness_verdict(
             symbol,
@@ -27120,6 +28065,7 @@ class SystemService:
             database_coverage=database_coverage,
             profile_field_coverage=profile_field_coverage,
             deep_coverage_fields=self._company_profile_deep_coverage_fields,
+            relationship_coverage=relationship_coverage,
         )
 
     def _company_intelligence_verdict_section_count(self, section: str, section_counts: Mapping[str, Any]) -> int:
@@ -30264,6 +31210,10 @@ class SystemService:
                 "alert_rules": len(self.store.alert_rules),
                 "open_alerts": open_alerts,
                 "alert_notifications": len(self.store.alert_notifications),
+                # design §9 风险 2：新增 collection 不会自动出现在这个显式字典里，按加法补三个键
+                "daily_mainline_runs": len(self.store.daily_mainline_runs),
+                "daily_mainline_queue_items": len(self.store.daily_mainline_queue_items),
+                "daily_watchlist_entries": len(self.store.daily_watchlist_entries),
             },
             "market_data_summary": market_data_summary,
             "corporate_action_summary": corporate_action_summary,

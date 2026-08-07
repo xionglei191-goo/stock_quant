@@ -2,17 +2,48 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
 from .api import ApiRouter, create_default_router
 from .services import SystemService
 from .store import PostgreSQLStore, SQLiteStore
-from .utils import env_text, to_plain
+from .utils import env_int, env_text, to_plain
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+
+
+def _dynamic_allocation_dashboard_url(
+    headers: Mapping[str, str],
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    source = os.environ if env is None else env
+    configured = str(env_text("AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_URL", "", env=source) or "").rstrip("/")
+    if configured.startswith(("http://", "https://")):
+        return configured
+
+    forwarded_host = str(headers.get("X-Forwarded-Host", "")).split(",", 1)[0].strip()
+    raw_host = forwarded_host or str(headers.get("Host", "")).strip() or "127.0.0.1"
+    if not re.fullmatch(r"[A-Za-z0-9._:\-\[\]]+", raw_host):
+        raw_host = "127.0.0.1"
+    hostname = urlparse(f"//{raw_host}").hostname or "127.0.0.1"
+    host_literal = f"[{hostname}]" if ":" in hostname else hostname
+
+    forwarded_proto = str(headers.get("X-Forwarded-Proto", "")).split(",", 1)[0].strip().lower()
+    scheme = forwarded_proto if forwarded_proto in {"http", "https"} else "http"
+    port = env_int(
+        "AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_PORT",
+        8501,
+        minimum=1,
+        maximum=65535,
+        env=source,
+    )
+    return f"{scheme}://{host_literal}:{port}"
 
 
 def _load_dotenv(path: Path = ROOT_DIR / ".env") -> None:
@@ -94,6 +125,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self._write_body(data)
 
+    def _send_redirect(self, location: str) -> None:
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _send_html(self, filename: str) -> None:
         path = STATIC_DIR / filename
         data = path.read_bytes()
@@ -141,6 +179,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/ui_modules/"):
             self._send_ui_module(path.removeprefix("/ui_modules/"))
+            return
+        if path in {"/dynamic-allocation", "/dynamic-allocation/"}:
+            self._send_redirect(_dynamic_allocation_dashboard_url(self.headers))
             return
         if path == "/favicon.ico":
             self.send_response(204)

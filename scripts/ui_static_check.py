@@ -58,7 +58,8 @@ REQUIRED_TEXT_SNIPPETS = [
     "relationshipType",
     "relationshipTypeDisplayLabel",
     "item.relationship_type ? relationshipTypeDisplayLabel",
-    "const edgeLabel = graphEdgeLabel(link.type, link.label)",
+    "function knowledgeGraphLinkLabel",
+    "const edgeLabel = knowledgeGraphLinkLabel(link)",
     "relationshipTypeDisplayLabel(item.default_kind",
     "item.source_issuer_id || item.from_issuer_id || item.subject_id",
     "item.target_issuer_id || item.to_issuer_id || item.object_id",
@@ -82,10 +83,16 @@ REQUIRED_TEXT_SNIPPETS = [
     "调度追溯",
     "材料入库追溯",
     "今日数据状态",
+    "今天看什么",
+    "python3 scripts/daily_mainline_run.py --as-of-date YYYY-MM-DD",
+    'data-action="run-daily-mainline"',
+    'data-workspace-target="personal"',
+    'data-workspace-target="maintenance"',
     "来源健康中心",
     "个人研究桌面",
     "后台维护",
     "K 线行情",
+    'href="/dynamic-allocation"',
     "maintenance-only",
     'data-workspace-mode="personal"',
     'data-workspace-mode="maintenance"',
@@ -116,6 +123,17 @@ REQUIRED_TEXT_SNIPPETS = [
 
 REQUIRED_IDS = [
     "metrics",
+    "dailyMainlinePanel",
+    "runDailyMainline",
+    "dailyMainlineAsOf",
+    "dailyMainlineGeneratedAt",
+    "dailyMainlineStatus",
+    "dailyMainlineProgress",
+    "dailyMainlineFailure",
+    "dailyMainlineRows",
+    "dailyMainlinePending",
+    "dailyMainlinePendingRows",
+    "dailyMainlineEmpty",
     "analysisMeta",
     "analysisStatus",
     "analysisReturns",
@@ -517,6 +535,10 @@ REQUIRED_IDS = [
 
 REQUIRED_JS_FUNCTIONS = [
     "loadDashboard",
+    "renderDailyMainline",
+    "loadDailyMainlineQueue",
+    "runDailyMainline",
+    "addDailyMainlineWatchlist",
     "dataHealthStatusClass",
     "dataHealthNextActionLabel",
     "renderDataHealthRows",
@@ -681,6 +703,8 @@ REQUIRED_JS_FUNCTIONS = [
 ]
 
 REQUIRED_INTERACTION_MARKERS = [
+    'data-action="run-daily-mainline"',
+    'data-action="add-daily-watchlist"',
     'data-action="open-security"',
     'data-action="open-research"',
     'data-action="open-company"',
@@ -823,10 +847,38 @@ def validate_ui_module_scaffold(*, run_node: bool = True) -> dict[str, object]:
     ]
     navigation_selector = 'document.querySelectorAll("[data-open]").forEach((button) => {'
     navigation_extracted = navigation_selector in helper_source and navigation_selector not in html
-    dashboard_functions = ["dataHealthStatusClass", "dataHealthNextActionLabel", "renderDataHealthRows", "renderDataHealthSummary", "loadDataHealthSummary", "renderLatestAnalysis"]
+    dashboard_functions = [
+        "dailyMainlineStatusClass",
+        "renderDailyMainline",
+        "loadDailyMainlineQueue",
+        "runDailyMainline",
+        "addDailyMainlineWatchlist",
+        "dataHealthStatusClass",
+        "dataHealthNextActionLabel",
+        "renderDataHealthRows",
+        "renderDataHealthSummary",
+        "loadDataHealthSummary",
+        "renderLatestAnalysis",
+    ]
     dashboard_extracted = all(f"function {name}(" in dashboard_source for name in dashboard_functions)
-    dashboard_wrappers = all(f"return dashboardRuntime.{name}(" in html for name in dashboard_functions if name != "loadDataHealthSummary")
-    dashboard_wrappers = dashboard_wrappers and "return runtime.loadDataHealthSummary();" in html
+    direct_dashboard_wrappers = [
+        "renderDailyMainline",
+        "dataHealthStatusClass",
+        "dataHealthNextActionLabel",
+        "renderDataHealthRows",
+        "renderDataHealthSummary",
+        "renderLatestAnalysis",
+    ]
+    ready_dashboard_wrappers = [
+        "loadDailyMainlineQueue",
+        "runDailyMainline",
+        "addDailyMainlineWatchlist",
+        "loadDataHealthSummary",
+    ]
+    dashboard_wrappers = all(f"return dashboardRuntime.{name}(" in html for name in direct_dashboard_wrappers)
+    dashboard_wrappers = dashboard_wrappers and all(
+        f"return runtime.{name}(" in html for name in ready_dashboard_wrappers
+    )
     if (
         helper_import not in html
         or dashboard_import not in html

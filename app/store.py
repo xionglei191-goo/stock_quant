@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 from .market_data_storage import upsert_market_data_bar as upsert_typed_market_data_bar
 
@@ -33,6 +33,9 @@ from .models import (
     CompanyProfile,
     CompanyProfileFieldAssertion,
     CompanyRelationship,
+    DailyMainlineQueueItem,
+    DailyMainlineRun,
+    DailyWatchlistEntry,
     DrillSchedule,
     DisclosureEvent,
     EntityMapping,
@@ -184,6 +187,9 @@ COLLECTIONS: tuple[CollectionSpec, ...] = (
     ("alert_notifications", "notification_id", AlertNotification),
     ("exceptions", "exception_id", ExceptionItem),
     ("usage_metrics", "feature", UsageMetric),
+    ("daily_mainline_runs", "run_id", DailyMainlineRun),
+    ("daily_mainline_queue_items", "item_id", DailyMainlineQueueItem),
+    ("daily_watchlist_entries", "entry_id", DailyWatchlistEntry),
 )
 
 
@@ -372,6 +378,9 @@ DATETIME_FIELDS: dict[type, tuple[str, ...]] = {
     LineageEvent: ("created_at",),
     ModelVersionRecord: ("created_at",),
     UsageMetric: ("first_seen_at", "last_seen_at"),
+    DailyMainlineRun: ("created_at",),
+    DailyMainlineQueueItem: ("created_at",),
+    DailyWatchlistEntry: ("joined_at",),
 }
 
 
@@ -518,6 +527,9 @@ class InMemoryStore:
     alert_notifications: dict[str, AlertNotification] = field(default_factory=dict)
     exceptions: dict[str, ExceptionItem] = field(default_factory=dict)
     usage_metrics: dict[str, UsageMetric] = field(default_factory=dict)
+    daily_mainline_runs: dict[str, DailyMainlineRun] = field(default_factory=dict)
+    daily_mainline_queue_items: dict[str, DailyMainlineQueueItem] = field(default_factory=dict)
+    daily_watchlist_entries: dict[str, DailyWatchlistEntry] = field(default_factory=dict)
     audit_log: list[AuditEvent] = field(default_factory=list)
 
     def commit(self) -> None:
@@ -1041,6 +1053,155 @@ class PostgreSQLStore(InMemoryStore):
                     cursor.execute(sql, tuple(params))
                     return int(cursor.fetchone()[0] or 0)
         return 0
+
+    def query_market_disturbance_rows(
+        self,
+        *,
+        as_of_date: str,
+        targets: Sequence[Mapping[str, Any]],
+        history_rows: int = 20,
+        limit: int = 20000,
+    ) -> list[dict[str, Any]]:
+        """Read the latest EOD bar plus prior/history aggregates per security."""
+
+        normalized_targets = [
+            {
+                "market": str(item.get("market") or "").strip().upper(),
+                "source_id": str(item.get("source_id") or "").strip(),
+                "data_type": str(item.get("data_type") or "eod").strip(),
+            }
+            for item in targets
+            if isinstance(item, Mapping)
+            and str(item.get("market") or "").strip()
+            and str(item.get("source_id") or "").strip()
+        ]
+        if not normalized_targets or not self.market_data_bars_available():
+            return []
+        target_clauses: list[str] = []
+        params: list[Any] = [str(as_of_date)]
+        for target in normalized_targets:
+            target_clauses.append("(b.market = %s AND b.source_id = %s AND b.data_type = %s)")
+            params.extend([target["market"], target["source_id"], target["data_type"]])
+        params.extend(
+            [
+                max(1, min(int(history_rows or 20), 120)),
+                max(1, min(int(limit or 20000), 50000)),
+            ]
+        )
+        sql = f"""
+            WITH ranked AS (
+                SELECT
+                    b.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY b.security_id
+                        ORDER BY b.as_of_date DESC, b.data_id DESC
+                    ) AS row_number
+                FROM ai_quant.market_data_bars AS b
+                WHERE b.as_of_date <= %s::date
+                  AND ({' OR '.join(target_clauses)})
+            ),
+            current_rows AS (
+                SELECT *
+                FROM ranked
+                WHERE row_number = 1
+            )
+            SELECT
+                c.security_id,
+                c.market,
+                c.source_id,
+                c.data_type,
+                c.as_of_date::text,
+                c.open,
+                c.high,
+                c.low,
+                c.close,
+                c.volume,
+                c.amount,
+                previous.close,
+                history.avg_volume,
+                history.avg_amount,
+                COALESCE(security.payload->>'issuer_id', ''),
+                COALESCE(security.payload->>'ticker', c.security_id),
+                COALESCE(issuer.payload->>'legal_name', security.payload->>'ticker', c.security_id)
+            FROM current_rows AS c
+            LEFT JOIN LATERAL (
+                SELECT b.close
+                FROM ai_quant.market_data_bars AS b
+                WHERE b.security_id = c.security_id
+                  AND b.source_id = c.source_id
+                  AND b.data_type = c.data_type
+                  AND b.as_of_date < c.as_of_date
+                ORDER BY b.as_of_date DESC, b.data_id DESC
+                LIMIT 1
+            ) AS previous ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT
+                    AVG(NULLIF(recent.volume, 0)) AS avg_volume,
+                    AVG(NULLIF(recent.amount, 0)) AS avg_amount
+                FROM (
+                    SELECT b.volume, b.amount
+                    FROM ai_quant.market_data_bars AS b
+                    WHERE b.security_id = c.security_id
+                      AND b.source_id = c.source_id
+                      AND b.data_type = c.data_type
+                      AND b.as_of_date < c.as_of_date
+                    ORDER BY b.as_of_date DESC, b.data_id DESC
+                    LIMIT %s
+                ) AS recent
+            ) AS history ON TRUE
+            LEFT JOIN ai_quant.records AS security
+              ON security.collection = 'securities'
+             AND security.item_id = c.security_id
+            LEFT JOIN ai_quant.records AS issuer
+              ON issuer.collection = 'issuers'
+             AND issuer.item_id = security.payload->>'issuer_id'
+            ORDER BY c.as_of_date DESC, c.security_id
+            LIMIT %s
+        """
+        with closing(self._connect()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, tuple(params))
+                rows = cursor.fetchall()
+        return [
+            {
+                "security_id": str(security_id),
+                "market": str(market),
+                "source_id": str(source_id),
+                "data_type": str(data_type),
+                "as_of_date": str(row_date),
+                "open": float(row_open or 0.0),
+                "high": float(high or 0.0),
+                "low": float(low or 0.0),
+                "close": float(close or 0.0),
+                "volume": float(volume or 0.0),
+                "amount": float(amount or 0.0),
+                "previous_close": float(previous_close or 0.0),
+                "average_volume": float(average_volume or 0.0),
+                "average_amount": float(average_amount or 0.0),
+                "issuer_id": str(issuer_id or ""),
+                "ticker": str(ticker or security_id),
+                "issuer_name": str(issuer_name or ticker or security_id),
+            }
+            for (
+                security_id,
+                market,
+                source_id,
+                data_type,
+                row_date,
+                row_open,
+                high,
+                low,
+                close,
+                volume,
+                amount,
+                previous_close,
+                average_volume,
+                average_amount,
+                issuer_id,
+                ticker,
+                issuer_name,
+            ) in rows
+        ]
 
     def estimate_market_data_points(self) -> int:
         if not self.market_data_bars_available():
