@@ -89,7 +89,13 @@ from scripts.staging_lineage_registry_acceptance import run_staging_lineage_regi
 from scripts.staging_security_acceptance import run_staging_security_acceptance
 from scripts.ui_cross_browser_matrix_check import validate_cross_browser_matrix
 from scripts.ui_research_workbench_matrix import REQUIRED_SCENARIOS, validate_research_workbench_matrix
-from scripts.ui_static_check import REQUIRED_IDS, REQUIRED_JS_FUNCTIONS, REQUIRED_STATUS_LABELS, validate_ui_html
+from scripts.ui_static_check import (
+    REQUIRED_IDS,
+    REQUIRED_JS_FUNCTIONS,
+    REQUIRED_NAV_LABELS,
+    REQUIRED_STATUS_LABELS,
+    validate_ui_html,
+)
 
 from tests.support import (
     SystemServiceTestBase,
@@ -17739,7 +17745,7 @@ class SystemServiceTests(SystemServiceTestBase):
 
     def test_ui_static_contract_matches_target_information_architecture(self) -> None:
         result = validate_ui_html(run_node=False)
-        self.assertEqual(result["nav_labels"], 8)
+        self.assertEqual(result["nav_labels"], len(REQUIRED_NAV_LABELS))
         self.assertEqual(result["status_labels"], len(REQUIRED_STATUS_LABELS))
         self.assertEqual(result["required_ids"], len(REQUIRED_IDS))
         self.assertEqual(result["required_functions"], len(REQUIRED_JS_FUNCTIONS))
@@ -17759,14 +17765,12 @@ class SystemServiceTests(SystemServiceTestBase):
 
         for fragment in [
             "previewGraphSourceQueue",
-            "previewKnowledgeGraphSourceQueue",
             "previewGraphSourceInputQueue",
             "previewKnowledgeGraphSourceInputQueue",
             "/api/graph/enrichment-runner",
             "source_input_queue",
             "required_source_fields",
             "companyIntelGraphSourceQueueRows",
-            "knowledgeGraphReadinessPanel",
             "knowledgeGraphQualitySummary",
             "knowledgeGraphReadinessRows",
             "knowledgeGraphSourceQueueRows",

@@ -49,30 +49,9 @@ export function rows(items, empty, mapper) {
   return items.map(mapper).join("");
 }
 
-export function installNavigation({
-  activeWorkspaceMode,
-  loadDataHealthSummary,
-  onError,
-  openTab,
-  setWorkspaceMode,
-}) {
+export function installNavigation({ openTab }) {
   document.querySelectorAll("[data-open]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const mode = button.dataset.workspaceTarget || activeWorkspaceMode();
-      setWorkspaceMode(mode);
-      openTab(button.dataset.open, { mode });
-      if (button.dataset.open === "ingestion") loadDataHealthSummary().catch(onError);
-    });
-  });
-
-  document.querySelectorAll("[data-workspace-mode]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const mode = button.dataset.workspaceMode || "personal";
-      const activeInMode = document.querySelector(`[data-workspace-target="${mode}"].active`);
-      const fallback = document.querySelector(`[data-workspace-target="${mode}"]`);
-      setWorkspaceMode(mode);
-      if (!activeInMode && fallback) openTab(fallback.dataset.open, { mode });
-    });
+    button.addEventListener("click", () => openTab(button.dataset.open));
   });
 
   const currentModules = new Set((document.body.dataset.uiRuntimeModules || "").split(",").filter(Boolean));
