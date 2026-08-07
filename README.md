@@ -2,8 +2,8 @@
 
 - Status: active
 - Owner group: PM / Release Coordination
-- Last updated: 2026-07-17
-- Related tasks: T-431, T-424, T-573, T-575, T-581, T-582, T-583, T-584, T-585, T-586, T-587, T-588, T-589, T-590, T-591, T-598
+- Last updated: 2026-07-30
+- Related tasks: T-431, T-424, T-573, T-575, T-581, T-582, T-583, T-584, T-585, T-586, T-587, T-588, T-589, T-590, T-591, T-598, T-620, T-621, T-622, T-623, T-624, T-625, T-626, T-627
 - Scope: 产品定位、本机运行入口、数据边界与当前验收快照
 - Non-goals: 真实券商连接、自动下单、将本机证据声明为非本机生产发布证据
 
@@ -24,6 +24,20 @@
 - 将研报、新闻、政策、网页和本地文件作为可回链的非结构化情报来源。
 - 把研报作为关注度信号、观点样本库和分析师可靠性复盘来源。
 - 用模拟交易和观察反馈验证分析结论是否有效，不触发真实交易。
+
+### 每日研究入口
+
+启动服务后，打开 `http://127.0.0.1:8000/ui`。个人研究总览顶部的“今天看什么”会读取最近一次每日主线结果；点击“运行今日主线”可依次执行市场异动扫描、候选池、自动尽调和研究清单生成。主清单与待补证据分区独立展示，条目可加入本地公司关注池。
+
+同一条 facade 也可从命令行运行：
+
+```bash
+make daily-mainline
+# 或指定数据日期
+python3 scripts/daily_mainline_run.py --as-of-date 2026-07-28
+```
+
+默认配置位于 `.env.example`：总预算 600 秒、候选上限 20 条、单市场上限 10 条、自动尽调前 4 条，其余候选仍完整进入清单并标记 `diligence_budget_exhausted`。对应变量为 `AI_QUANT_DAILY_BRIEF_TIMEOUT_SECONDS`、`AI_QUANT_DAILY_MAINLINE_CANDIDATE_LIMIT`、`AI_QUANT_DAILY_MAINLINE_MARKET_QUOTA`、`AI_QUANT_DAILY_MAINLINE_DILIGENCE_LIMIT`、`AI_QUANT_DAILY_MAINLINE_ARTIFACT_DIR`。每次运行保留独立 `run_id` 和 `local-only` JSON 产物；它们不是非本机发布证据。该链路只生成研究清单与 paper-only 记录，不连接券商、不下单。
 
 ## 数据与研报边界
 
@@ -61,16 +75,23 @@ make local-ci
 
 该模块长期持有美国资产，但只输出 paper-only 目标仓位，不输出买卖指令。第一阶段资产池为 `SPY`、`QQQ`、`SGOV`，股票风险仓位限定为 `10%/30%/50%/70%/90%`。PIT 数据、八类因子、规则与 ML 对照、Fractional Kelly、walk-forward 回测和决策快照均保留解释与数据回链。
 
-安装研究与 Dashboard 依赖：
+Compose 本机栈会同时启动主 API 和动态配置 Dashboard。打开 `/ui` 后点击“动态配置”，或直接访问：
+
+```bash
+docker compose up -d ai-quant-org dynamic-allocation-dashboard
+# 本机默认入口
+http://127.0.0.1:8000/dynamic-allocation
+```
+
+入口会按当前访问主机重定向到 Dashboard 端口，局域网访问不再固定跳回访问者自己的 `127.0.0.1`。需要修改宿主机端口时设置 `AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_HOST_PORT`；已有反向代理时可用 `AI_QUANT_DYNAMIC_ALLOCATION_DASHBOARD_URL` 指定完整地址。
+
+不使用 Compose 时，先安装研究与 Dashboard 依赖，再单独启动 Streamlit：
 
 ```bash
 python3 -m pip install '.[dynamic-allocation-analysis,dynamic-allocation-ml,dynamic-allocation-dashboard]'
-```
-
-主 API 启动后，可单独启动 Streamlit 研究页面：
-
-```bash
-AI_QUANT_API_BASE_URL=http://127.0.0.1:8000 streamlit run app/dynamic_allocation/dashboard/app.py --server.port 8501
+AI_QUANT_API_BASE_URL=http://127.0.0.1:8000 \
+  python3 -m streamlit run app/dynamic_allocation/dashboard/app.py \
+  --server.address 0.0.0.0 --server.port 8501
 ```
 
 首次运行先接入官方免密公开数据并生成当前纸面决策：
@@ -94,6 +115,8 @@ python3 scripts/dynamic_allocation_daily_run.py \
   --output artifacts/dynamic-allocation/daily-run-latest.json \
   --history-dir artifacts/dynamic-allocation/daily-history
 ```
+
+`scripts/run_daily_data_update.sh` 默认把这条严格刷新接入工作日定时任务。严格模式会先完成全部 38 个公开序列的采集校验，任一来源不完整时不写入部分批次；完整批次才一次落库并生成 8/8 因子纸面决策。同一 vintage 的上游修订以新的不可变 revision 追加，不覆盖历史 observation。
 
 纵向运营报告默认只读，校验账本哈希链并按月汇总成功、失败和数据健康状态，同时显示 3/6/12 个月复核门；只有显式 `--execute --output` 才写盘：
 
@@ -301,8 +324,10 @@ python3 scripts/ui_static_check.py
 UI 点击联动验收会用 Headless Chrome 打开 `/ui` 并真实点击总览收益卡、研报观点证据、公司定位、产业链和模拟反馈/兼容方案入口，确认能切换到对应工作台并带入上下文：
 
 ```bash
-python3 scripts/ui_interaction_acceptance.py http://127.0.0.1:8000 --output-dir artifacts/ui-interaction-acceptance
+python3 scripts/ui_interaction_acceptance.py --isolated --output-dir artifacts/ui-interaction-acceptance
 ```
+
+`--isolated` 会自动启动临时 SQLite/local-adapter 服务，并在验收后删除数据库、对象目录和浏览器状态；默认不读写长期运行的 PostgreSQL/对象存储。只有明确要验证已运行实例时，才传入其 `base_url` 并省略 `--isolated`。
 
 提交或部署前可运行密钥与 `.env` 误提交检查：
 
