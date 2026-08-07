@@ -30,6 +30,7 @@ ROLE_ALIASES = {
 
 CANONICAL_ROLES = [
     "system",
+    "personal",
     "CEO",
     "CIO",
     "PM",
