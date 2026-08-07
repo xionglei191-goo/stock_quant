@@ -49,7 +49,19 @@ def run_daily(
     refresh: dict[str, Any]
     if execute:
         worker = pipeline or PublicDataPipeline(app.config)
-        collected, upsert = worker.ingest(app.observations, as_of=as_of, market_start=market_start)
+        strict_ingest = getattr(worker, "ingest_strict", None)
+        if callable(strict_ingest):
+            collected, upsert = strict_ingest(
+                app.observations,
+                as_of=as_of,
+                market_start=market_start,
+            )
+        else:
+            collected, upsert = worker.ingest(
+                app.observations,
+                as_of=as_of,
+                market_start=market_start,
+            )
         refresh = {
             "pipeline": collected.summary(),
             "upsert": asdict(upsert),
@@ -60,19 +72,29 @@ def run_daily(
             "upsert": {"received": 0, "inserted": 0, "duplicates": 0, "conflicts": 0},
         }
 
-    evaluation = app.evaluate({"as_of": as_of.isoformat()}, persist=execute)
     if execute:
         missing = refresh["pipeline"].get("missing_series", [])
         errors = refresh["pipeline"].get("source_errors", {})
-        if missing or errors or refresh["upsert"]["conflicts"] or not evaluation.get("ready"):
+        if missing or errors or refresh["upsert"]["conflicts"]:
             raise DailyRunGateError(
                 {
                     "missing_series": sorted(str(item) for item in missing),
                     "source_error_series": sorted(str(item) for item in errors),
                     "insert_conflicts": int(refresh["upsert"]["conflicts"]),
-                    "decision_ready": bool(evaluation.get("ready")),
+                    "decision_ready": False,
                 }
             )
+
+    evaluation = app.evaluate({"as_of": as_of.isoformat()}, persist=execute)
+    if execute and not evaluation.get("ready"):
+        raise DailyRunGateError(
+            {
+                "missing_series": [],
+                "source_error_series": [],
+                "insert_conflicts": 0,
+                "decision_ready": False,
+            }
+        )
 
     append: dict[str, Any] = {"appended": False, "record_hash": None, "ledger_records": 0}
     if execute:
