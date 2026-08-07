@@ -428,7 +428,7 @@ class ApiRouter:
     def _authorize(self, method: str, path: str, role: str) -> bool:
         if path.startswith("/api/health") or path.startswith("/api/metrics") or path.startswith("/api/analysis/latest") or path.startswith("/api/usage-metrics"):
             return True
-        safe_roles = {"system", "CEO", "CIO", "PM", "风险/合规", "平台负责人", "分析师", "数据工程", "NLP/ML 负责人", "海外研究负责人"}
+        safe_roles = {"system", "personal", "CEO", "CIO", "PM", "风险/合规", "平台负责人", "分析师", "数据工程", "NLP/ML 负责人", "海外研究负责人"}
         if role not in safe_roles:
             return False
         if path.startswith("/api/observability"):
